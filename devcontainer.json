@@ -1,0 +1,42 @@
+{
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "Anthropic.claude-code",
+                "bierner.markdown-mermaid",
+                "GitHub.copilot-chat",
+                "GitHub.vscode-pull-request-github",
+                "redhat.vscode-yaml",
+                "yzhang.markdown-all-in-one"
+            ]
+        }
+    },
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "name": "project-name",
+    "onCreateCommand": "mkdir -p ${containerWorkspaceFolder}",
+    "postCreateCommand": "/opt/devcontainer/devcontainer-setup.sh",
+    "remoteEnv": {
+        "AUTO_UPDATE": "true",
+        "CLEAN_CREDENTIALS": "false",
+        "DEBUG_MODE": "false",
+        "DEFAULT_BRANCH": "main",
+        "DUMP_ERROR_STACK": "true",
+        "GITHUB_EMAIL": "cristiano.souzapaz@gmail.com",
+        "GITHUB_USER": "cristianosouzapaz",
+        "LOG_FILE": "/tmp/setup.log",
+        "LOG_LEVEL": "INFO",
+        "REPO_SOURCE": "",
+        "SSH_SIGNING": "true",
+        "STRUCTURED_LOGS": "false",
+        "VALIDATE_TOKEN": "true"
+    },
+    "remoteUser": "root",
+    "runArgs": [
+        "--name=project-name",
+        "--privileged"
+    ],
+    "workspaceFolder": "/workspace/project-name",
+    "workspaceMount": "source=project-name-data,target=/workspace/project-name,type=volume"
+}

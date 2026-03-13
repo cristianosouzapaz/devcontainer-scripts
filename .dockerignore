@@ -1,0 +1,12 @@
+# Version control
+.git
+
+# Dependencies
+node_modules
+
+# Build outputs
+dist
+
+# Temporary files
+.tmp
+.cache
