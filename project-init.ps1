@@ -81,22 +81,15 @@ function Write-Section {
 function Write-Message {
     param(
         [string]$Message,
-        [string]$Level = "Info",
-        [switch]$NoNewline
+        [string]$Level = "Info"
     )
-    
+
     $timestamp = Get-Date -Format "HH:mm:ss"
     $color = if ($Colors[$Level]) { $Colors[$Level] } else { $Colors["Info"] }
     $prefix = "[$timestamp]"
-    
-    if ($NoNewline) {
-        Write-Host $prefix -ForegroundColor "DarkGray" -NoNewline
-        Write-Host " $Message" -ForegroundColor $color -NoNewline
-    }
-    else {
-        Write-Host $prefix -ForegroundColor "DarkGray" -NoNewline
-        Write-Host " $Message" -ForegroundColor $color
-    }
+
+    Write-Host $prefix -ForegroundColor "DarkGray" -NoNewline
+    Write-Host " $Message" -ForegroundColor $color
 }
 
 <#
@@ -429,16 +422,23 @@ function Add-MountsToConfig {
     }
 
     # Rebuild config as sorted ordered hashtable so 'mounts' lands alphabetically
-    # Omit the 'mounts' key entirely if there are no mounts to inject
     $sortedConfig = [ordered]@{}
-    $mountsKeys = if ($mounts.Count -gt 0) { @('mounts') } else { @() }
-    $allKeys = @($config.PSObject.Properties.Name | Where-Object { $_ -ne 'mounts' }) + $mountsKeys | Sort-Object
+    $allKeys = @($config.PSObject.Properties.Name | Where-Object { $_ -ne 'mounts' }) + @('mounts') | Sort-Object
     foreach ($key in $allKeys) {
         $sortedConfig[$key] = if ($key -eq 'mounts') { [string[]]$mounts.ToArray() } else { $config.$key }
     }
 
     $json = $sortedConfig | ConvertTo-Json -Depth 10
-    $json = $json -replace '"mounts":\s*"(.*?)"', '"mounts": ["$1"]'
+
+    # PS5.1 ConvertTo-Json unwraps single-element [string[]] to a plain JSON string.
+    # Detect that case and rebuild the mounts value as a properly-typed JSON array.
+    if ($mounts.Count -eq 1) {
+        $mountsJsonArray = '[' + (ConvertTo-Json $mounts[0] -Compress) + ']'
+        # Escape '$' → '$$' so the PS regex engine treats it literally, not as a back-reference.
+        $safeArray = $mountsJsonArray -replace '\$', '$$$$'
+        $json = $json -replace '"mounts"\s*:\s*"(?:[^"\\]|\\.)*"', "`"mounts`": $safeArray"
+    }
+
     $json = Format-Json -Json $json
     [System.IO.File]::WriteAllText($FilePath, ($json + [System.Environment]::NewLine))
 
