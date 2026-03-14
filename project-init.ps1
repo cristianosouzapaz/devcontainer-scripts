@@ -196,6 +196,20 @@ function Get-EntryManifest {
     return @(Get-Content -Path $EntryManifestPath -Raw | ConvertFrom-Json)
 }
 
+function _Get-RawKey {
+    <#
+    .SYNOPSIS
+        Reads a single raw keypress from the console.
+    .DESCRIPTION
+        Thin wrapper around $Host.UI.RawUI.ReadKey extracted so that tests can
+        mock the function and inject a synthetic key sequence without needing to
+        interact with the real console host.
+    .OUTPUTS
+        System.Management.Automation.Host.KeyInfo — the key that was pressed.
+    #>
+    return $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+}
+
 function Select-Features {
     <#
     .SYNOPSIS
@@ -245,7 +259,7 @@ function Select-Features {
         }
         Write-Host ""
 
-        $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        $key = _Get-RawKey
         switch ($key.VirtualKeyCode) {
             38 { if ($cursor -gt 0) { $cursor-- } }                             # UpArrow
             40 { if ($cursor -lt ($optional.Count - 1)) { $cursor++ } }         # DownArrow
@@ -533,6 +547,8 @@ function Copy-ConfigurationFiles {
     }
 }
 
+if ($MyInvocation.InvocationName -ne '.') {
+
 # ----- INPUT COLLECTION -------------------------------------------------------
 
 $useCompose      = Get-ProjectTypeSelection
@@ -589,3 +605,5 @@ try {
     Write-Message $_.ScriptStackTrace  -Level "Warning"
     exit 1
 }
+
+} # end guard: if ($MyInvocation.InvocationName -ne '.')
