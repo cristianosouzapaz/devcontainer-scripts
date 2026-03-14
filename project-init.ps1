@@ -421,23 +421,26 @@ function Add-MountsToConfig {
         [void]$mounts.Add($e.mount)
     }
 
+    # Build the mounts JSON array manually to avoid PS5.1 single-element array collapse.
+    # ConvertTo-Json serialises [string[]] with one element as a plain string, not an array.
+    # Using a placeholder guarantees a trivial, regex-safe substitution that works for any count.
+    $mountItems  = @($mounts.ToArray() | ForEach-Object { ConvertTo-Json $_ -Compress })
+    $mountsJson  = '[' + ($mountItems -join ',') + ']'
+    $placeholder = '__MOUNTS_ARRAY_PLACEHOLDER__'
+
     # Rebuild config as sorted ordered hashtable so 'mounts' lands alphabetically
     $sortedConfig = [ordered]@{}
     $allKeys = @($config.PSObject.Properties.Name | Where-Object { $_ -ne 'mounts' }) + @('mounts') | Sort-Object
     foreach ($key in $allKeys) {
-        $sortedConfig[$key] = if ($key -eq 'mounts') { [string[]]$mounts.ToArray() } else { $config.$key }
+        $sortedConfig[$key] = if ($key -eq 'mounts') { $placeholder } else { $config.$key }
     }
 
     $json = $sortedConfig | ConvertTo-Json -Depth 10
 
-    # PS5.1 ConvertTo-Json unwraps single-element [string[]] to a plain JSON string.
-    # Detect that case and rebuild the mounts value as a properly-typed JSON array.
-    if ($mounts.Count -eq 1) {
-        $mountsJsonArray = '[' + (ConvertTo-Json $mounts[0] -Compress) + ']'
-        # Escape '$' → '$$' so the PS regex engine treats it literally, not as a back-reference.
-        $safeArray = $mountsJsonArray -replace '\$', '$$$$'
-        $json = $json -replace '"mounts"\s*:\s*"(?:[^"\\]|\\.)*"', "`"mounts`": $safeArray"
-    }
+    # Replace the placeholder string with the real JSON array.
+    # Escape '$' so .NET regex treats them as literals, not capture-group back-references.
+    $safeArray = $mountsJson -replace '\$', '$$$$'
+    $json = $json -replace ('"' + $placeholder + '"'), $safeArray
 
     $json = Format-Json -Json $json
     [System.IO.File]::WriteAllText($FilePath, ($json + [System.Environment]::NewLine))
