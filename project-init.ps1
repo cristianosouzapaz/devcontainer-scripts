@@ -429,13 +429,16 @@ function Add-MountsToConfig {
     }
 
     # Rebuild config as sorted ordered hashtable so 'mounts' lands alphabetically
+    # Omit the 'mounts' key entirely if there are no mounts to inject
     $sortedConfig = [ordered]@{}
-    $allKeys = @($config.PSObject.Properties.Name | Where-Object { $_ -ne 'mounts' }) + 'mounts' | Sort-Object
+    $mountsKeys = if ($mounts.Count -gt 0) { @('mounts') } else { @() }
+    $allKeys = @($config.PSObject.Properties.Name | Where-Object { $_ -ne 'mounts' }) + $mountsKeys | Sort-Object
     foreach ($key in $allKeys) {
         $sortedConfig[$key] = if ($key -eq 'mounts') { [string[]]$mounts.ToArray() } else { $config.$key }
     }
 
     $json = $sortedConfig | ConvertTo-Json -Depth 10
+    $json = $json -replace '"mounts":\s*"(.*?)"', '"mounts": ["$1"]'
     $json = Format-Json -Json $json
     [System.IO.File]::WriteAllText($FilePath, ($json + [System.Environment]::NewLine))
 
