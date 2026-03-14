@@ -437,10 +437,10 @@ function Add-MountsToConfig {
 
     $json = $sortedConfig | ConvertTo-Json -Depth 10
 
-    # Replace the placeholder string with the real JSON array.
-    # Escape '$' so .NET regex treats them as literals, not capture-group back-references.
-    $safeArray = $mountsJson -replace '\$', '$$$$'
-    $json = $json -replace ('"' + $placeholder + '"'), $safeArray
+    # Replace the placeholder with the real JSON array using a literal string replacement.
+    # .Replace() has no special handling for '$', '{', '\' or any other character,
+    # so it is safe on PS5.1 (JavaScriptSerializer) and PS7 alike.
+    $json = $json.Replace(('"' + $placeholder + '"'), $mountsJson)
 
     $json = Format-Json -Json $json
     [System.IO.File]::WriteAllText($FilePath, ($json + [System.Environment]::NewLine))
