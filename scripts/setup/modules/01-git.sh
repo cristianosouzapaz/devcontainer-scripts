@@ -123,14 +123,21 @@ _resolve_repo_url() {
 
 # _setup_repository: Initializes or updates the Git repository in the current directory
 _setup_repository() {
+	local current_branch
 	log_info "Checking repository status in $(pwd)"
 
 	# CASE 1: Repo exists (Bind mount with .git or volume with previous clone)
 	if [[ -d ".git" ]]; then
 		log_info "Existing repository detected"
 		if [[ "${AUTO_UPDATE}" == "true" ]]; then
-			git fetch origin --quiet &&
-				git pull --quiet --ff-only || log_warning "Could not auto-update repository"
+			current_branch=$(git symbolic-ref --short HEAD 2>/dev/null) || true
+			if [[ -n "${current_branch}" ]]; then
+				git fetch origin "${current_branch}" --quiet &&
+					git pull --quiet --ff-only origin "${current_branch}" || \
+					log_warning "Could not auto-update repository"
+			else
+				log_warning "Detached HEAD — skipping auto-update"
+			fi
 		fi
 		return 0
 	fi
