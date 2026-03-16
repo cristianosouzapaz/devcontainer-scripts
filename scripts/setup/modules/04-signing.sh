@@ -61,12 +61,9 @@ _configure_git_signing() {
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# ssh_signing_setup: Entry point for the ssh-signing module.
-# Skips if SSH_SIGNING is not true or SSH_AUTH_SOCK is not a valid socket.
-# Fails if ssh-keygen is unavailable. Otherwise writes SSH signing settings
-# to the global git config; skips git config writes if already correct.
-# GIT_SIGNING_KEY is cleared via a registered cleanup handler on exit.
-# Returns: 0 on success or skip, 1 if ssh-keygen is missing.
+# ssh_signing_setup: Module entry point.
+# Fails if ssh-keygen is unavailable. Delegates to _configure_git_signing
+# only when not already correctly set; clears GIT_SIGNING_KEY on exit.
 ssh_signing_setup() {
 	setup_error_traps || true
 	register_cleanup 'unset GIT_SIGNING_KEY'

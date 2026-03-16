@@ -48,7 +48,7 @@ main() {
 	load_env_file
 
 	if [[ "${DEBUG_MODE}" == "true" ]]; then
-		log_debug "User: ${GITHUB_USER}"
+		log_debug "User: ${GIT_USER}"
 		log_debug "Context: $(pwd)"
 	fi
 

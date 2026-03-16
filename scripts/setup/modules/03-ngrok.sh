@@ -26,11 +26,9 @@ readonly _NGROK_CONFIG_COMMAND="config add-authtoken"
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# ngrok_setup: Entry point for the ngrok module.
-# Registers NGROK_AUTHTOKEN for cleanup, then skips if ngrok is not installed
-# or NGROK_AUTHTOKEN is unset. Otherwise applies the authtoken via
-# `ngrok config add-authtoken` with retry/backoff.
-# Returns: 0 on success or skip, 1 on configuration failure.
+# ngrok_setup: Module entry point.
+# Skips when ngrok is not installed or NGROK_AUTHTOKEN is unset.
+# Applies the authtoken with retry/backoff; clears NGROK_AUTHTOKEN on exit.
 ngrok_setup() {
 	local ngrok_output
 	setup_error_traps || true

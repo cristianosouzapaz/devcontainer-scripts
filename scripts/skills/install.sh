@@ -1,9 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-# Load shared utilities
-source "$(dirname "${BASH_SOURCE[0]}")/../setup/shared/loader.sh"
-
 # main: Downloads the latest skills installer assets and installs dependencies.
 # Fetches index.js and package.json from the public repository into
 # the script's own directory and runs `npm install`.

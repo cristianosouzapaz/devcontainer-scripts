@@ -38,9 +38,9 @@ source "$SHARED_DIR/validation.sh"
 #                         via the forwarded 1Password SSH agent socket.
 #                         Default: (empty)
 #
-# GITHUB_EMAIL            Email for git configuration (required)
+# GIT_EMAIL               Email for git configuration (required)
 #
-# GITHUB_USER             GitHub username for git configuration (required)
+# GIT_USER                Git username for git configuration and repository URLs (required)
 #
 # LOG_FILE                Path to log file (if empty, logs to stdout/stderr only)
 #                         Default: (empty)
@@ -53,7 +53,7 @@ source "$SHARED_DIR/validation.sh"
 #                         Owner shorthand (e.g. "myorg") → github.com/myorg/<folder>.git
 #                         Base URL (e.g. "https://gitlab.com/myorg") → <base>/<folder>.git
 #                         Full URL (e.g. "https://github.com/org/repo.git") → used as-is
-#                         Default: (auto-constructed from GITHUB_USER)
+#                         Default: (auto-constructed from GIT_USER)
 #
 # SSH_SIGNING             Enable SSH commit signing via Docker Desktop SSH agent forwarding (true/false)
 #                         Default: true
@@ -61,7 +61,7 @@ source "$SHARED_DIR/validation.sh"
 # STRUCTURED_LOGS         Output logs in JSON format (true/false)
 #                         Default: false
 #
-# VALIDATE_TOKEN          Validate GitHub token connectivity on startup (true/false)
+# VALIDATE_TOKEN          Validate git token connectivity on startup (true/false)
 #                         Default: true
 #
 
@@ -71,9 +71,9 @@ DEBUG_MODE="${DEBUG_MODE:-false}"
 DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
 DUMP_ERROR_STACK="${DUMP_ERROR_STACK:-true}"
 GIT_SIGNING_KEY="${GIT_SIGNING_KEY:-}"
-GITHUB_CLONE_TOKEN="${GITHUB_CLONE_TOKEN:-}"
-GITHUB_EMAIL="${GITHUB_EMAIL:-}"
-GITHUB_USER="${GITHUB_USER:-}"
+GIT_CLONE_TOKEN="${GIT_CLONE_TOKEN:-}"
+GIT_EMAIL="${GIT_EMAIL:-}"
+GIT_USER="${GIT_USER:-}"
 LOG_FILE="${LOG_FILE:-}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 NGROK_AUTHTOKEN="${NGROK_AUTHTOKEN:-}"

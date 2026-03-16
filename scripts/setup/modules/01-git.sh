@@ -8,10 +8,10 @@ set -euo pipefail
 # Git repository setup module - Simplified for Bind Mounts and Named Volumes
 #
 # This module initializes or updates a Git repository in the current directory.
-# It configures Git credentials, validates GitHub token access, clones or
-# fetches the repository, installs dependencies using pnpm or npm, and
-# cleans up sensitive data afterward. It leverages shared utilities for logging,
-# error handling, retries, and environment variable loading.
+# It configures git credentials, validates token access on any HTTPS git host
+# (GitHub, GitLab, Gitea, Bitbucket, etc.),
+# clones or fetches the repository, and installs dependencies using pnpm or npm.
+# Shared utilities provide logging, error handling, and environment variable loading.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -23,108 +23,112 @@ source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
 # - AUTO_UPDATE
 # - CLEAN_CREDENTIALS
 # - DEFAULT_BRANCH
-# - GITHUB_CLONE_TOKEN (from .config/.env)
-# - GITHUB_EMAIL
-# - GITHUB_USER
+# - GIT_CLONE_TOKEN (from .config/.env)
+# - GIT_EMAIL
+# - GIT_USER
 # - REPO_SOURCE
 # - VALIDATE_TOKEN
 
 # ----- PATH AND STRUCTURE VARIABLES -------------------------------------------
 
 readonly _GIT_CREDENTIALS_FILE="$HOME/.git-credentials"
-readonly _GITHUB_API_URL="https://api.github.com/user"
 readonly _GITHUB_BASE_URL="https://github.com"
-readonly _PNPM_STORE_DIR=".pnpm-store"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# _configure_git_credentials: Sets up Git credentials for authentication
+# _configure_git_credentials <repo_url>: Writes the credential store entry for GIT_CLONE_TOKEN.
+# Derives the credential host from repo_url; falls back to github.com when repo_url is empty.
 _configure_git_credentials() {
-	if ! check_env_var GITHUB_USER; then
-		push_error $VALIDATION_ERROR "${LINENO}" "_configure_git_credentials" "GITHUB_USER" "GITHUB_USER is not set"
-		log_error "GITHUB_USER is required for git configuration"
+	local repo_url="${1:-}" credential_host
+	if ! check_env_var GIT_USER; then
+		push_error "$VALIDATION_ERROR" "${LINENO}" "_configure_git_credentials" "GIT_USER" "GIT_USER is not set"
+		log_error "GIT_USER is required for git configuration"
 		return 1
 	fi
 
-	if ! validate_env_var_format GITHUB_EMAIL email; then
-		push_error $VALIDATION_ERROR "${LINENO}" "_configure_git_credentials" "GITHUB_EMAIL=${GITHUB_EMAIL}" "Invalid or missing GITHUB_EMAIL"
-		log_error "GITHUB_EMAIL is not a valid email address: ${GITHUB_EMAIL}"
+	if ! validate_env_var_format GIT_EMAIL email; then
+		push_error "$VALIDATION_ERROR" "${LINENO}" "_configure_git_credentials" "GIT_EMAIL=${GIT_EMAIL}" "Invalid or missing GIT_EMAIL"
+		log_error "GIT_EMAIL is not a valid email address: ${GIT_EMAIL}"
 		return 1
 	fi
 
 	git config --global credential.helper store
-	git config --global user.email "${GITHUB_EMAIL}"
-	git config --global user.name "${GITHUB_USER}"
+	git config --global user.email "${GIT_EMAIL}"
+	git config --global user.name "${GIT_USER}"
 
-	if [[ -n "${GITHUB_CLONE_TOKEN}" ]]; then
-		echo "https://${GITHUB_CLONE_TOKEN}@${_GITHUB_BASE_URL#https://}" >"$_GIT_CREDENTIALS_FILE"
+	if [[ -n "${GIT_CLONE_TOKEN}" ]]; then
+		if [[ "$repo_url" == https://* ]]; then
+			credential_host="${repo_url#https://}"
+			credential_host="${credential_host%%/*}"
+		else
+			credential_host="${_GITHUB_BASE_URL#https://}"
+		fi
+		echo "https://${GIT_USER}:${GIT_CLONE_TOKEN}@${credential_host}" >"$_GIT_CREDENTIALS_FILE"
 		chmod 600 "$_GIT_CREDENTIALS_FILE"
 	fi
 	log_success "Git credentials configured"
 }
 
-# _validate_github_access: Validates GitHub access using the provided token
-_validate_github_access() {
-	check_env_var GITHUB_CLONE_TOKEN || {
-		log_debug "GITHUB_CLONE_TOKEN not set"
-		return 0
-	}
-
-	if [[ "${VALIDATE_TOKEN}" == "true" ]] && check_command curl; then
-		if retry_curl 3 1 10 -H "Authorization: token $GITHUB_CLONE_TOKEN" "$_GITHUB_API_URL"; then
-			log_success "Token validated"
-			return 0
-		else
-			push_error $AUTH_ERROR "${LINENO}" "_validate_github_access" "curl $_GITHUB_API_URL" "Token validation failed"
-			log_error "Token validation failed"
-			return 1
-		fi
+# _validate_token_access <repo_url>: Runs git ls-remote to confirm token access.
+# No-ops when GIT_CLONE_TOKEN is unset, VALIDATE_TOKEN != true, or url is empty.
+# Relies on the credential store written by _configure_git_credentials.
+_validate_token_access() {
+	local url="${1:-}"
+	check_env_var GIT_CLONE_TOKEN || { log_debug "GIT_CLONE_TOKEN not set"; return 0; }
+	[[ "${VALIDATE_TOKEN}" == "true" ]] || return 0
+	[[ -n "$url" ]] || { log_debug "No repo URL — skipping token validation"; return 0; }
+	log_debug "Validating token via git ls-remote $url"
+	if git ls-remote "$url" HEAD >/dev/null 2>&1; then
+		log_success "Token validated"
+	else
+		push_error "$AUTH_ERROR" "${LINENO}" "_validate_token_access" "git ls-remote $url" "Token validation failed"
+		log_error "Token validation failed"
+		return 1
 	fi
 }
 
-# ----- CORE SETUP -------------------------------------------------------------
-
-# _resolve_repo_url <folder_name>
-# Resolves REPO_SOURCE into a full git URL using the following rules:
-#   *.git suffix  → used as-is (full explicit URL)
-#   contains ://  → base URL on a custom host; appends /<folder>.git
-#   non-empty     → GitHub owner/org shorthand; builds github.com/<owner>/<folder>.git
-#   empty         → falls back to github.com/<GITHUB_USER>/<folder>.git
-# Returns 1 and logs an error if REPO_SOURCE is set but invalid.
+# _resolve_repo_url <folder_name>: Builds a full clone URL from REPO_SOURCE and folder_name.
+#   *.git suffix  → used as-is
+#   contains ://  → treated as base URL; appends /<folder_name>.git
+#   plain string  → GitHub owner/org shorthand; builds github.com/<owner>/<folder_name>.git
+#   empty         → falls back to github.com/<GIT_USER>/<folder_name>.git
+# Returns 1 if REPO_SOURCE is set but fails validation.
 _resolve_repo_url() {
 	local folder_name="$1"
 
 	if [[ -z "${REPO_SOURCE:-}" ]]; then
-		if [[ -n "${GITHUB_USER:-}" ]]; then
-			echo "${_GITHUB_BASE_URL}/${GITHUB_USER}/${folder_name}.git"
+		if [[ -n "${GIT_USER:-}" ]]; then
+			echo "${_GITHUB_BASE_URL}/${GIT_USER}/${folder_name}.git"
 		fi
 		return
 	fi
 
 	if [[ "$REPO_SOURCE" == *.git ]]; then
 		if ! validate_url "$REPO_SOURCE"; then
-			push_error $VALIDATION_ERROR "${LINENO}" "_resolve_repo_url" "REPO_SOURCE=$REPO_SOURCE" "Invalid full URL in REPO_SOURCE"
+			push_error "$VALIDATION_ERROR" "${LINENO}" "_resolve_repo_url" "REPO_SOURCE=$REPO_SOURCE" "Invalid full URL in REPO_SOURCE"
 			return 1
 		fi
 		echo "$REPO_SOURCE"
 	elif [[ "$REPO_SOURCE" == *://* ]]; then
 		if ! validate_url "$REPO_SOURCE"; then
-			push_error $VALIDATION_ERROR "${LINENO}" "_resolve_repo_url" "REPO_SOURCE=$REPO_SOURCE" "Invalid base URL in REPO_SOURCE"
+			push_error "$VALIDATION_ERROR" "${LINENO}" "_resolve_repo_url" "REPO_SOURCE=$REPO_SOURCE" "Invalid base URL in REPO_SOURCE"
 			return 1
 		fi
 		echo "${REPO_SOURCE%/}/${folder_name}.git"
 	else
 		if [[ ! "$REPO_SOURCE" =~ ^[A-Za-z0-9_-]+$ ]]; then
-			push_error $VALIDATION_ERROR "${LINENO}" "_resolve_repo_url" "REPO_SOURCE=$REPO_SOURCE" "Invalid owner shorthand in REPO_SOURCE"
+			push_error "$VALIDATION_ERROR" "${LINENO}" "_resolve_repo_url" "REPO_SOURCE=$REPO_SOURCE" "Invalid owner shorthand in REPO_SOURCE"
 			return 1
 		fi
 		echo "${_GITHUB_BASE_URL}/${REPO_SOURCE}/${folder_name}.git"
 	fi
 }
 
-# _setup_repository: Initializes or updates the Git repository in the current directory
+# _setup_repository <resolved_url>: Three cases: (1) .git exists → optionally fast-forward merge;
+# (2) GIT_CLONE_TOKEN absent → skip; (3) no .git → init, add remote, fetch, and checkout.
 _setup_repository() {
-	local current_branch fetch_output merge_output init_output current_folder_name resolved_url
+	local resolved_url="${1:-}"
+	local current_branch fetch_output merge_output init_output current_folder_name
 	log_info "Checking repository status in $(pwd)"
 
 	# CASE 1: Repo exists (Bind mount with .git or volume with previous clone)
@@ -157,16 +161,18 @@ _setup_repository() {
 	fi
 
 	# CASE 2: Skip if no token — cannot clone without credentials
-	if [[ -z "${GITHUB_CLONE_TOKEN:-}" ]]; then
-		log_warning "GITHUB_CLONE_TOKEN not set — skipping repository initialization"
+	if [[ -z "${GIT_CLONE_TOKEN:-}" ]]; then
+		log_warning "GIT_CLONE_TOKEN not set — skipping repository initialization"
 		return 0
 	fi
 
 	# CASE 3: Resolve repository source to a full URL
-	current_folder_name=$(basename "$(pwd)")
-	if ! resolved_url="$(_resolve_repo_url "$current_folder_name")"; then
-		log_error "Failed to resolve repository URL: invalid REPO_SOURCE='${REPO_SOURCE:-}'"
-		return 1
+	if [[ -z "$resolved_url" ]]; then
+		current_folder_name=$(basename "$(pwd)")
+		if ! resolved_url="$(_resolve_repo_url "$current_folder_name")"; then
+			log_error "Failed to resolve repository URL: invalid REPO_SOURCE='${REPO_SOURCE:-}'"
+			return 1
+		fi
 	fi
 
 	log_info "Initializing repository from $resolved_url"
@@ -177,14 +183,18 @@ _setup_repository() {
 	log_debug "${fetch_output}"
 
 	# Try to checkout without overwriting existing local config files
-	if git checkout "$DEFAULT_BRANCH" 2>/dev/null; then
+	local checkout_output
+	if checkout_output=$(git checkout "$DEFAULT_BRANCH" 2>&1); then
+		log_debug "${checkout_output}"
 		log_success "Repository initialized"
 	else
+		log_debug "${checkout_output}"
 		log_warning "Repository initialized but checkout skipped (conflicts likely). Please check manually"
 	fi
 }
 
-# _install_dependencies: Installs project dependencies using pnpm or npm
+# _install_dependencies [pnpm_store_dir]: Skips when package.json is absent.
+# Tries pnpm frozen-lockfile, then pnpm (no lockfile), then npm as a last resort.
 _install_dependencies() {
 	local pnpm_store_dir="${1:-.pnpm-store}"
 
@@ -212,37 +222,38 @@ _install_dependencies() {
 		log_success "Dependencies installed with npm"
 		return 0
 	else
-		push_error $FATAL_ERROR "${LINENO}" "_install_dependencies" "pnpm/npm install" "Dependency installation failed"
+		push_error "$FATAL_ERROR" "${LINENO}" "_install_dependencies" "pnpm/npm install" "Dependency installation failed"
 		log_error "Dependency installation failed"
 		return 1
 	fi
 }
 
-# _cleanup_sensitive_data: Removes sensitive data from environment and files
+# _cleanup_sensitive_data: Unsets GIT_CLONE_TOKEN; removes the credentials file when CLEAN_CREDENTIALS=true.
 _cleanup_sensitive_data() {
-	unset GITHUB_CLONE_TOKEN
+	unset GIT_CLONE_TOKEN
 	[[ "$CLEAN_CREDENTIALS" == "true" ]] && rm -f "$_GIT_CREDENTIALS_FILE"
 	return 0
 }
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# git_setup: Entry point for the git module.
-# Configures credentials, validates token access, clones or updates the
-# repository, and installs project dependencies.
-# Returns: 0 on success, 1 on failure.
+# git_setup: Module entry point. Orchestrates _configure_git_credentials,
+# _validate_token_access, _setup_repository, and _install_dependencies.
 git_setup() {
-	log_info "Starting Git setup"
+	local folder_name repo_url
 	setup_error_traps || true
 	register_cleanup _cleanup_sensitive_data
 
-	if ! _configure_git_credentials; then
+	folder_name=$(basename "$(pwd)")
+	repo_url="$(_resolve_repo_url "$folder_name")" || repo_url=""
+
+	if ! _configure_git_credentials "$repo_url"; then
 		return 1
 	fi
-	if ! _validate_github_access; then
+	if ! _validate_token_access "$repo_url"; then
 		return 1
 	fi
 
-	_setup_repository
-	_install_dependencies "$_PNPM_STORE_DIR"
+	_setup_repository "$repo_url"
+	_install_dependencies
 }

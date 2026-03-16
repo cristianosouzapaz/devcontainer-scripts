@@ -23,10 +23,8 @@ readonly _CLAUDE_INSTALL_NAME="@anthropic-ai/claude-code"
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# claude_ai_setup: Entry point for the claude-ai module.
-# Installs the Claude AI CLI globally via npm. Skips if the CLI is already
-# present. Fails hard if the installation fails, aborting the setup pipeline.
-# Returns: 0 on success or skip, 1 on installation failure.
+# claude_ai_setup: Module entry point.
+# Skips when the claude CLI is already present. Fails hard on install failure.
 claude_ai_setup() {
 	local npm_output
 	setup_error_traps || true
