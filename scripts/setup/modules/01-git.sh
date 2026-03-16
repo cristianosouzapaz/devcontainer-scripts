@@ -133,7 +133,7 @@ _setup_repository() {
 			current_branch=$(git symbolic-ref --short HEAD 2>/dev/null) || true
 			if [[ -n "${current_branch}" ]]; then
 				git fetch origin "${current_branch}" --quiet &&
-					git pull --quiet --ff-only origin "${current_branch}" || \
+					git merge --quiet --ff-only "origin/${current_branch}" || \
 					log_warning "Could not auto-update repository"
 			else
 				log_warning "Detached HEAD — skipping auto-update"
