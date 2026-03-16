@@ -60,6 +60,7 @@ _configure_git_credentials() {
 		echo "https://${GITHUB_CLONE_TOKEN}@${_GITHUB_BASE_URL#https://}" >"$_GIT_CREDENTIALS_FILE"
 		chmod 600 "$_GIT_CREDENTIALS_FILE"
 	fi
+	log_success "Git credentials configured"
 }
 
 # _validate_github_access: Validates GitHub access using the provided token
@@ -71,7 +72,7 @@ _validate_github_access() {
 
 	if [[ "${VALIDATE_TOKEN}" == "true" ]] && check_command curl; then
 		if retry_curl 3 1 10 -H "Authorization: token $GITHUB_CLONE_TOKEN" "$_GITHUB_API_URL"; then
-			log_debug "Token validated"
+			log_success "Token validated"
 			return 0
 		else
 			push_error $AUTH_ERROR "${LINENO}" "_validate_github_access" "curl $_GITHUB_API_URL" "Token validation failed"
@@ -123,7 +124,7 @@ _resolve_repo_url() {
 
 # _setup_repository: Initializes or updates the Git repository in the current directory
 _setup_repository() {
-	local current_branch
+	local current_branch fetch_output merge_output init_output current_folder_name resolved_url
 	log_info "Checking repository status in $(pwd)"
 
 	# CASE 1: Repo exists (Bind mount with .git or volume with previous clone)
@@ -132,9 +133,22 @@ _setup_repository() {
 		if [[ "${AUTO_UPDATE}" == "true" ]]; then
 			current_branch=$(git symbolic-ref --short HEAD 2>/dev/null) || true
 			if [[ -n "${current_branch}" ]]; then
-				git fetch origin "${current_branch}" --quiet &&
-					git merge --quiet --ff-only "origin/${current_branch}" || \
+				log_debug "Fetching origin/${current_branch}"
+				fetch_output=$(git fetch origin "${current_branch}" 2>&1) || {
 					log_warning "Could not auto-update repository"
+					return 0
+				}
+				log_debug "${fetch_output}"
+				merge_output=$(git merge --ff-only "origin/${current_branch}" 2>&1) || {
+					log_warning "Could not auto-update repository"
+					return 0
+				}
+				log_debug "${merge_output}"
+				if [[ "${merge_output}" == *"Already up to date"* ]]; then
+					log_info "Repository already up to date"
+				else
+					log_success "Repository auto-updated"
+				fi
 			else
 				log_warning "Detached HEAD — skipping auto-update"
 			fi
@@ -149,7 +163,6 @@ _setup_repository() {
 	fi
 
 	# CASE 3: Resolve repository source to a full URL
-	local current_folder_name resolved_url
 	current_folder_name=$(basename "$(pwd)")
 	if ! resolved_url="$(_resolve_repo_url "$current_folder_name")"; then
 		log_error "Failed to resolve repository URL: invalid REPO_SOURCE='${REPO_SOURCE:-}'"
@@ -157,9 +170,11 @@ _setup_repository() {
 	fi
 
 	log_info "Initializing repository from $resolved_url"
-	git init -b "$DEFAULT_BRANCH"
+	init_output=$(git init -b "$DEFAULT_BRANCH" 2>&1)
+	log_debug "${init_output}"
 	git remote add origin "$resolved_url"
-	git fetch origin
+	fetch_output=$(git fetch origin 2>&1)
+	log_debug "${fetch_output}"
 
 	# Try to checkout without overwriting existing local config files
 	if git checkout "$DEFAULT_BRANCH" 2>/dev/null; then
@@ -179,15 +194,20 @@ _install_dependencies() {
 	}
 
 	log_info "Installing dependencies"
-	pnpm config set store-dir "$pnpm_store_dir"
+	pnpm config set store-dir "$pnpm_store_dir" >/dev/null 2>&1
 
+	log_debug "Attempting pnpm install --frozen-lockfile"
 	if pnpm install --frozen-lockfile >/dev/null 2>&1; then
 		log_success "Dependencies installed with pnpm"
 		return 0
-	elif pnpm install >/dev/null 2>&1; then
+	fi
+	log_debug "Attempting pnpm install (no lockfile)"
+	if pnpm install >/dev/null 2>&1; then
 		log_success "Dependencies installed with pnpm (fallback)"
 		return 0
-	elif check_command npm && npm install >/dev/null 2>&1; then
+	fi
+	log_debug "Attempting npm install"
+	if check_command npm && npm install >/dev/null 2>&1; then
 		log_warning "pnpm failed, fell back to npm"
 		log_success "Dependencies installed with npm"
 		return 0

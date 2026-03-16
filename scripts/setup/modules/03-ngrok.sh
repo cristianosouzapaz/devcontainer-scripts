@@ -32,6 +32,7 @@ readonly _NGROK_CONFIG_COMMAND="config add-authtoken"
 # `ngrok config add-authtoken` with retry/backoff.
 # Returns: 0 on success or skip, 1 on configuration failure.
 ngrok_setup() {
+	local ngrok_output
 	setup_error_traps || true
 	register_cleanup 'unset NGROK_AUTHTOKEN'
 
@@ -48,9 +49,10 @@ ngrok_setup() {
 	}
 
 	log_debug "Configuring ngrok with authtoken"
-	retry_command 3 1 "$(command -v ngrok || echo 'ngrok')" ${_NGROK_CONFIG_COMMAND} "${NGROK_AUTHTOKEN}" || {
+	ngrok_output=$(retry_command 3 1 "$(command -v ngrok || echo 'ngrok')" ${_NGROK_CONFIG_COMMAND} "${NGROK_AUTHTOKEN}" 2>&1) || {
 		push_error "$NETWORK_ERROR" "${LINENO}" "ngrok_setup" "ngrok $_NGROK_CONFIG_COMMAND" "ngrok configuration failed after retries"
 		log_error "ngrok configuration failed after retries: check authtoken or network"
 		return 1
 	}
+	log_debug "${ngrok_output}"
 }

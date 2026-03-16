@@ -56,6 +56,7 @@ _configure_git_signing() {
 	if [[ -n "${GIT_SIGNING_KEY:-}" ]]; then
 		git config --global user.signingkey "${GIT_SIGNING_KEY}"
 	fi
+	log_success "SSH commit signing configured"
 }
 
 # ----- CORE SETUP -------------------------------------------------------------
@@ -89,6 +90,7 @@ ssh_signing_setup() {
 
 	local ssh_keygen_path
 	ssh_keygen_path="$(command -v ssh-keygen)"
+	log_debug "ssh-keygen found at: ${ssh_keygen_path}"
 
 	if _is_signing_configured "${ssh_keygen_path}"; then
 		log_debug "SSH commit signing already configured, skipping"

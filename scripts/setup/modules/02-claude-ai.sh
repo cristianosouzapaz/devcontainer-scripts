@@ -28,6 +28,7 @@ readonly _CLAUDE_INSTALL_NAME="@anthropic-ai/claude-code"
 # present. Fails hard if the installation fails, aborting the setup pipeline.
 # Returns: 0 on success or skip, 1 on installation failure.
 claude_ai_setup() {
+	local npm_output
 	setup_error_traps || true
 
 	check_command "${_CLAUDE_CLI_COMMAND}" && {
@@ -36,9 +37,11 @@ claude_ai_setup() {
 	}
 
 	log_info "Installing Claude CLI (${_CLAUDE_INSTALL_NAME})"
-	npm install -g "${_CLAUDE_INSTALL_NAME}" || {
+	npm_output=$(npm install -g "${_CLAUDE_INSTALL_NAME}" 2>&1) || {
 		push_error "$FATAL_ERROR" "${LINENO}" "claude_ai_setup" "npm install -g ${_CLAUDE_INSTALL_NAME}" "Claude CLI installation failed"
 		log_error "Claude CLI installation failed"
+		log_debug "${npm_output}"
 		return 1
 	}
+	log_debug "${npm_output}"
 }
