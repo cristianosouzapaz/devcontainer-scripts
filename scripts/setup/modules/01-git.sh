@@ -52,6 +52,7 @@ _configure_git_credentials() {
 		return 1
 	fi
 
+	git config --global credential.helper ''
 	git config --global credential.helper store
 	git config --global user.email "${GIT_EMAIL}"
 	git config --global user.name "${GIT_USER}"
