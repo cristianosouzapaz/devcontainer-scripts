@@ -15,7 +15,6 @@
         "dockerfile": "Dockerfile"
     },
     "name": "project-name",
-    "onCreateCommand": "mkdir -p ${containerWorkspaceFolder}",
     "postCreateCommand": "/opt/devcontainer/devcontainer-setup.sh",
     "remoteEnv": {
         "AUTO_UPDATE": "true",
@@ -27,6 +26,7 @@
         "GIT_USER": "cristianosouzapaz",
         "LOG_FILE": "/tmp/setup.log",
         "LOG_LEVEL": "INFO",
+        "PROJECT_NAME": "project-name",
         "REPO_SOURCE": "",
         "SSH_SIGNING": "true",
         "STRUCTURED_LOGS": "false",

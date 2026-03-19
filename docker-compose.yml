@@ -1,0 +1,11 @@
+services:
+  project-name:
+    build:
+      context: .
+    container_name: project-name
+    stdin_open: true
+    volumes:
+      - project-name-workspace:/workspace
+
+volumes:
+  project-name-workspace:

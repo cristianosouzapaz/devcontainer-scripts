@@ -35,6 +35,34 @@ check_env_var() {
 	fi
 }
 
+# repo_entry_folder_name <url>: Extracts the last path segment without the .git extension.
+# Used by both 01-git.sh and 05-workspaces.sh to derive the workspace folder name from a clone URL.
+# Examples: https://github.com/org/repo.git → repo
+#           https://gitlab.com/myorg/my-app  → my-app
+repo_entry_folder_name() {
+	local url="${1##*/}"
+	echo "${url%.git}"
+}
+
+# sanitize_string: remove control characters and trim
+sanitize_string() {
+	local s="$1"
+	# remove non-printable characters
+	s=$(echo -n "$s" | tr -cd '\11\12\15\40-\176')
+	# trim
+	s=$(echo -n "$s" | sed -e 's/^\s\+//' -e 's/\s\+$//')
+	printf '%s' "$s"
+}
+
+# sanitize_env_var: sanitize and export a variable safely
+sanitize_env_var() {
+	local var_name="$1"
+	local val="${!var_name:-}"
+	local clean
+	clean=$(sanitize_string "$val")
+	export "$var_name"="$clean"
+}
+
 # validate: Dispatcher for different validation types
 # Usage: validate <type> <args...>
 validate() {
@@ -197,23 +225,4 @@ validate_env_var_format() {
 		;;
 	esac
 	return 0
-}
-
-# sanitize_string: remove control characters and trim
-sanitize_string() {
-	local s="$1"
-	# remove non-printable characters
-	s=$(echo -n "$s" | tr -cd '\11\12\15\40-\176')
-	# trim
-	s=$(echo -n "$s" | sed -e 's/^\s\+//' -e 's/\s\+$//')
-	printf '%s' "$s"
-}
-
-# sanitize_env_var: sanitize and export a variable safely
-sanitize_env_var() {
-	local var_name="$1"
-	local val="${!var_name:-}"
-	local clean
-	clean=$(sanitize_string "$val")
-	export "$var_name"="$clean"
 }
