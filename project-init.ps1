@@ -77,7 +77,6 @@ if (-not $ProjectName) {
     }
 }
 
-Write-Message "Enter repository URLs" -Level "Highlight"
 $repoList = @(Get-RepoList)
 
 # ----- VALIDATION -------------------------------------------------------------
