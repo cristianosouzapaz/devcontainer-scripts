@@ -58,6 +58,16 @@ function Get-RepoList {
     $acceptedFolders = [System.Collections.Generic.HashSet[string]]@()
     $repoIndex       = 1
 
+    Write-Section "Repository Sources"
+    Write-Host "  Accepted formats:" -ForegroundColor $Colors['Info']
+    Write-Host "    owner/repo" -NoNewline -ForegroundColor $Colors['Highlight']
+    Write-Host "                    GitHub shorthand (https://github.com/owner/repo.git)" -ForegroundColor "DarkGray"
+    Write-Host "    https://host/owner/repo" -NoNewline -ForegroundColor $Colors['Highlight']
+    Write-Host "     full URL without .git" -ForegroundColor "DarkGray"
+    Write-Host "    https://host/owner/repo.git" -NoNewline -ForegroundColor $Colors['Highlight']
+    Write-Host "  full URL with .git" -ForegroundColor "DarkGray"
+    Write-Host ""
+
     while ($true) {
         $mandatory = $repoIndex -eq 1
         $prompt    = if ($mandatory) { "Repo $repoIndex" } else { "Repo $repoIndex (blank to finish)" }
@@ -74,7 +84,7 @@ function Get-RepoList {
             }
 
             if (-not (Test-RepoEntry -Entry $raw)) {
-                Write-Message "[!] Not a valid repo entry. Use 'owner/repo' or a full https URL." -Level 'Warning'
+                Write-Message "[!] Not a valid repo entry. Use 'owner/repo', 'https://host/owner/repo', or 'https://host/owner/repo.git'." -Level 'Warning'
                 continue
             }
 
