@@ -63,9 +63,9 @@ function Get-RepoList {
     Write-Host "    owner/repo" -NoNewline -ForegroundColor $Colors['Highlight']
     Write-Host "                    GitHub shorthand (https://github.com/owner/repo.git)" -ForegroundColor "DarkGray"
     Write-Host "    https://host/owner/repo" -NoNewline -ForegroundColor $Colors['Highlight']
-    Write-Host "     full URL without .git" -ForegroundColor "DarkGray"
+    Write-Host "       full URL without .git" -ForegroundColor "DarkGray"
     Write-Host "    https://host/owner/repo.git" -NoNewline -ForegroundColor $Colors['Highlight']
-    Write-Host "  full URL with .git" -ForegroundColor "DarkGray"
+    Write-Host "   full URL with .git" -ForegroundColor "DarkGray"
     Write-Host ""
 
     while ($true) {
