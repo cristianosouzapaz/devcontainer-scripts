@@ -21,16 +21,31 @@ source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
 readonly _CLAUDE_CLI_COMMAND="claude"
 readonly _CLAUDE_INSTALL_NAME="@anthropic-ai/claude-code"
 
+# ----- HELPER FUNCTIONS -------------------------------------------------------
+
+# _log_auth_status: logs whether Claude OAuth credentials are present in the
+# shared volume mounted at /root/.claude. Informational only; does not fail.
+_log_auth_status() {
+	local creds_file="/root/.claude/.credentials.json"
+	if [[ -f "${creds_file}" ]]; then
+		log_info "Claude credentials found in shared volume — authentication pre-loaded"
+	else
+		log_warning "Claude credentials not found — run 'claude login' to authenticate"
+	fi
+}
+
 # ----- CORE SETUP -------------------------------------------------------------
 
 # claude_ai_setup: Module entry point.
 # Skips when the claude CLI is already present. Fails hard on install failure.
+# Logs whether OAuth credentials exist in the shared volume after install/skip.
 claude_ai_setup() {
 	local npm_output
 	setup_error_traps || true
 
 	check_command "${_CLAUDE_CLI_COMMAND}" && {
 		log_debug "Claude CLI already installed, skipping"
+		_log_auth_status
 		return 0
 	}
 
@@ -42,4 +57,5 @@ claude_ai_setup() {
 		return 1
 	}
 	log_debug "${npm_output}"
+	_log_auth_status
 }
