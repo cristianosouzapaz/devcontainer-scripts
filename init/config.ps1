@@ -52,6 +52,7 @@ function Add-MountsToConfig {
 
     $mounts = [System.Collections.ArrayList]@()
     [void]$mounts.Add('source=${localEnv:USERPROFILE}\.config\.env,target=/tmp/.env,type=bind,consistency=cached,readonly')
+    [void]$mounts.Add('source=claude-auth-data,target=/root/.claude,type=volume')
     foreach ($e in ($SelectedEntries | Where-Object { -not [string]::IsNullOrWhiteSpace($_.mount) })) {
         [void]$mounts.Add($e.mount)
     }

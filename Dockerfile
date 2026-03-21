@@ -6,6 +6,9 @@ ENV PNPM_HOME=/root/.local/share/pnpm \
     PATH=/root/.local/share/pnpm:$PATH \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
+# SET ENVIRONMENT VARIABLES FOR CLAUDE CONFIGURATION
+ENV CLAUDE_CONFIG_DIR=/root/.claude
+
 # DOWNLOAD SETUP SCRIPTS FROM REPO
 ARG SCRIPTS_REF="main"
 ARG SCRIPTS_REPO="cristianosouzapaz/devcontainer-scripts"
