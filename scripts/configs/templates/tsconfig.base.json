@@ -1,0 +1,44 @@
+{
+    // https://www.typescriptlang.org/tsconfig
+    // Version: 1.0.0
+    //
+    // Base TypeScript configuration for Node.js projects.
+    // Extends strict mode with additional rules for maximum code robustness.
+    // Requires TypeScript 5.5+.
+    "compilerOptions": {
+        "allowJs": true,
+        "allowUnreachableCode": false,
+        "allowUnusedLabels": false,
+        "erasableSyntaxOnly": true,
+        "esModuleInterop": true,
+        "exactOptionalPropertyTypes": true,
+        "incremental": true,
+        "isolatedModules": true,
+        "lib": [
+            "ES2022"
+        ],
+        "module": "NodeNext",
+        "moduleDetection": "force",
+        "moduleResolution": "NodeNext",
+        "noFallthroughCasesInSwitch": true,
+        "noPropertyAccessFromIndexSignature": true,
+        "noUncheckedIndexedAccess": true,
+        "noUncheckedSideEffectImports": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "outDir": "dist",
+        "resolveJsonModule": true,
+        "skipLibCheck": true,
+        "strict": true,
+        "target": "es2022",
+        "verbatimModuleSyntax": true
+    },
+    "exclude": [
+        "node_modules",
+        "dist"
+    ],
+    "include": [
+        "**/*.ts",
+        "**/*.cjs"
+    ]
+}

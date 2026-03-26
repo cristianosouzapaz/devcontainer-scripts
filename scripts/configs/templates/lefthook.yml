@@ -1,0 +1,52 @@
+# https://github.com/evilmartians/lefthook/blob/master/docs/usage.md
+# Refer for explanation to following link: https://lefthook.dev/configuration/
+# Version: 1.0.0
+
+# ✔ Runs Biome on staged files (fixes issues automatically and restages changes)
+# ✔ Checks for TypeScript errors before committing
+# ✔ Enforces branch naming conventions
+# ✔ Prevents committing .env files to avoid leaking secrets
+# ✔ Validates commit messages to ensure consistency
+# ✔ Blocks pushing directly to main or master to enforce proper Git flow
+
+pre-commit:
+  parallel: true
+  commands:
+    check:
+      run: |
+        FILES=$(git diff --cached --name-only --diff-filter=d)
+        if [ -n "$FILES" ]; then
+          npx biome check --fix --unsafe --no-errors-on-unmatched --files-ignore-unknown=true $FILES
+          git update-index --again
+        fi
+    ts:
+      run: npx tsc --noEmit
+      fail_text: TypeScript errors
+    branch:
+      run: |
+        BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
+        echo "🔗 Current branch: $BRANCH_NAME"
+        echo "$BRANCH_NAME" | grep -Eq '^(feature|fix|config|chore)/[a-zA-Z0-9_-]+$' || {
+          echo "❌ Invalid branch name. Must be: feature/, fix/, config/, chore/ followed by a valid name."
+          exit 1
+        }
+      fail_text: Invalid branch name
+    check-env:
+      run: |
+        if git diff --cached --name-only | grep -E '\.env$|\.env\.local$|\.env\.development$|\.env\.production$'; then
+          echo "❌ Do not commit .env files (except .env.example)."
+          exit 1
+        fi
+commit-msg:
+  commands:
+    lint-commit-msg:
+      run: npx commitlint --edit
+pre-push:
+  commands:
+    prevent-main-push:
+      run: |
+        BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
+        if [ "$BRANCH_NAME" = "main" ] || [ "$BRANCH_NAME" = "master" ]; then
+          echo "❌ Pushing to main/master is not allowed."
+          exit 1
+        fi

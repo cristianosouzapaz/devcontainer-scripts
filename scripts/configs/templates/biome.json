@@ -1,0 +1,81 @@
+{
+    // https://biomejs.dev/guides/configure-biome/
+    // Version: 1.0.0
+    //
+    // Biome linter and formatter for Next.js projects with Tailwind CSS.
+    // ✔ Excludes Prisma auto-generated files (src/generated) from linting.
+    // ✔ Relaxes a11y and security rules for shadcn/ui components (src/components/ui).
+    "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+    "assist": {
+        "actions": {
+            "source": {
+                "organizeImports": "on",
+                "useSortedAttributes": "on",
+                "useSortedKeys": "on",
+                "useSortedProperties": "on"
+            }
+        }
+    },
+    "css": {
+        "parser": {
+            "tailwindDirectives": true
+        }
+    },
+    "files": {
+        "includes": [
+            "**",
+            "!package.json",
+            "!src/generated"
+        ]
+    },
+    "formatter": {
+        "enabled": true,
+        "lineWidth": 120
+    },
+    "linter": {
+        "enabled": true,
+        "rules": {
+            "nursery": {
+                "useSortedClasses": {
+                    "fix": "safe",
+                    "level": "info",
+                    "options": {
+                        "functions": [
+                            "clsx",
+                            "cva",
+                            "cn"
+                        ]
+                    }
+                }
+            },
+            "recommended": true,
+            "suspicious": {
+                "noUnknownAtRules": "off"
+            }
+        }
+    },
+    "overrides": [
+        {
+            "includes": [
+                "src/components/ui/**"
+            ],
+            "linter": {
+                "rules": {
+                    "a11y": {
+                        "noLabelWithoutControl": "off",
+                        "useKeyWithClickEvents": "off",
+                        "useSemanticElements": "off"
+                    },
+                    "security": {
+                        "noDangerouslySetInnerHtml": "off"
+                    }
+                }
+            }
+        }
+    ],
+    "vcs": {
+        "clientKind": "git",
+        "enabled": true,
+        "useIgnoreFile": true
+    }
+}

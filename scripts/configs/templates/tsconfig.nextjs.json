@@ -1,0 +1,61 @@
+{
+    // https://www.typescriptlang.org/tsconfig
+    // Version: 1.0.0
+    //
+    // TypeScript configuration for Next.js projects using the App Router.
+    // Extends strict mode with additional rules for maximum code robustness.
+    // Requires TypeScript 5.5+.
+    "compilerOptions": {
+        "allowJs": true,
+        "allowUnreachableCode": false,
+        "allowUnusedLabels": false,
+        "baseUrl": ".",
+        "erasableSyntaxOnly": true,
+        "esModuleInterop": true,
+        "exactOptionalPropertyTypes": true,
+        "incremental": true,
+        "isolatedModules": true,
+        "jsx": "react-jsx",
+        "lib": [
+            "dom",
+            "dom.iterable",
+            "ES2022"
+        ],
+        "module": "ESNext",
+        "moduleDetection": "force",
+        "moduleResolution": "Bundler",
+        "noEmit": true,
+        "noFallthroughCasesInSwitch": true,
+        "noPropertyAccessFromIndexSignature": true,
+        "noUncheckedIndexedAccess": true,
+        "noUncheckedSideEffectImports": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "paths": {
+            "@/*": [
+                "./src/*"
+            ]
+        },
+        "plugins": [
+            {
+                "name": "next"
+            }
+        ],
+        "resolveJsonModule": true,
+        "skipLibCheck": true,
+        "strict": true,
+        "target": "es2022",
+        "verbatimModuleSyntax": true
+    },
+    "exclude": [
+        "node_modules"
+    ],
+    "include": [
+        "next-env.d.ts",
+        "**/*.ts",
+        "**/*.tsx",
+        "**/*.cjs",
+        ".next/types/**/*.ts",
+        ".next/dev/types/**/*.ts"
+    ]
+}
