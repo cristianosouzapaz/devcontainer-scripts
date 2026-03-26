@@ -13,16 +13,13 @@ main() {
 	curl -fsSL "${base_url}/index.js"    -o "${configs_dir}/index.js"
 	curl -fsSL "${base_url}/package.json" -o "${configs_dir}/package.json"
 
-	declare -a _TEMPLATES=(
-		"templates/biome.json"
-		"templates/tsconfig.base.json"
-		"templates/tsconfig.nextjs.json"
-		"templates/lefthook.yml"
-	)
-
 	mkdir -p "${configs_dir}/templates"
-	for _file in "${_TEMPLATES[@]}"; do
-		curl -fsSL "${base_url}/${_file}" -o "${configs_dir}/${_file}"
+
+	declare -a _templates
+	mapfile -t _templates < <(grep 'templateFile:' "${configs_dir}/index.js" | sed 's/.*templateFile: "\([^"]*\)".*/\1/')
+
+	for _name in "${_templates[@]}"; do
+		curl -fsSL "${base_url}/templates/${_name}" -o "${configs_dir}/templates/${_name}"
 	done
 
 	cd "${configs_dir}"
