@@ -1,6 +1,6 @@
 {
     // https://www.typescriptlang.org/tsconfig
-    // Version: 1.0.0
+    // Version: 1.0
     //
     // TypeScript configuration for Next.js projects using the App Router.
     // Extends strict mode with additional rules for maximum code robustness.

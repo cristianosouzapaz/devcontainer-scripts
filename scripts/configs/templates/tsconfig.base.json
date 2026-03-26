@@ -1,6 +1,6 @@
 {
     // https://www.typescriptlang.org/tsconfig
-    // Version: 1.0.0
+    // Version: 1.0
     //
     // Base TypeScript configuration for Node.js projects.
     // Extends strict mode with additional rules for maximum code robustness.

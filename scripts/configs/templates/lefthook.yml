@@ -1,6 +1,6 @@
 # https://github.com/evilmartians/lefthook/blob/master/docs/usage.md
 # Refer for explanation to following link: https://lefthook.dev/configuration/
-# Version: 1.0.0
+# Version: 1.0
 
 # ✔ Runs Biome on staged files (fixes issues automatically and restages changes)
 # ✔ Checks for TypeScript errors before committing

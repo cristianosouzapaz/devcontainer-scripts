@@ -1,6 +1,6 @@
 {
     // https://biomejs.dev/guides/configure-biome/
-    // Version: 1.0.0
+    // Version: 1.0
     //
     // Biome linter and formatter for Next.js projects with Tailwind CSS.
     // ✔ Excludes Prisma auto-generated files (src/generated) from linting.
