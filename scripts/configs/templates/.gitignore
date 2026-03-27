@@ -1,0 +1,65 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# This file lists files and folders Git should ignore
+# to keep local artifacts out of the repository history.
+# Version: 1.0
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+.pnpm-store
+
+# package manager caches
+.npm/
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# testing
+/coverage
+
+# build outputs
+/build
+/dist
+
+# framework outputs
+/.next/
+/out/
+/.turbo/
+/.cache/
+next-env.d.ts
+
+# databases and local state
+/prisma/db.sqlite
+/prisma/db.sqlite-journal
+db.sqlite
+
+# local environment files
+# Keep .env.example committed, ignore all runtime-specific env files.
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# deployment
+.vercel
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# tooling caches
+.eslintcache
+
+# misc
+.DS_Store
+Thumbs.db
+*.pem
+
+# typescript
+*.tsbuildinfo

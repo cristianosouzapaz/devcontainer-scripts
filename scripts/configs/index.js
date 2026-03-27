@@ -27,6 +27,24 @@ const CONFIGS = [
         templateFile: "biome.json",
     },
     {
+        name: "Git Ignore",
+        filename: ".gitignore",
+        tags: ["git"],
+        templateFile: ".gitignore",
+    },
+    {
+        name: "Git Attributes",
+        filename: ".gitattributes",
+        tags: ["git"],
+        templateFile: ".gitattributes",
+    },
+    {
+        name: "Lefthook",
+        filename: "lefthook.yml",
+        tags: ["git-hooks"],
+        templateFile: "lefthook.yml",
+    },
+    {
         name: "TypeScript (base)",
         filename: "tsconfig.json",
         tags: ["typescript"],
@@ -37,12 +55,6 @@ const CONFIGS = [
         filename: "tsconfig.json",
         tags: ["typescript", "nextjs"],
         templateFile: "tsconfig.nextjs.json",
-    },
-    {
-        name: "Lefthook",
-        filename: "lefthook.yml",
-        tags: ["git-hooks"],
-        templateFile: "lefthook.yml",
     },
 ];
 
