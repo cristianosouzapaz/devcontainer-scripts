@@ -10,7 +10,8 @@ set -euo pipefail
 # This module initializes or updates Git repositories in the container workspace.
 # It configures git credentials, validates token access on any HTTPS git host
 # (GitHub, GitLab, Gitea, Bitbucket, etc.),
-# clones or fetches repositories, and installs dependencies using pnpm or npm.
+# clones or fetches repositories, and installs dependencies using the package manager
+# detected from the project (pnpm, npm, or yarn).
 # Shared utilities provide logging, error handling, and environment variable loading.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
@@ -101,39 +102,83 @@ _configure_git_credentials() {
 	log_success "Git credentials configured"
 }
 
-# _install_dependencies [pnpm_store_dir]: Skips when package.json is absent.
-# Tries pnpm frozen-lockfile, then pnpm (no lockfile), then npm as a last resort.
-_install_dependencies() {
-	local pnpm_store_dir="${1:-.pnpm-store}"
+# _detect_package_manager: Prints the package manager to use for the current project.
+# Priority: packageManager field in package.json >
+#           lock file presence (pnpm-lock.yaml > package-lock.json > yarn.lock) > npm default.
+# Logs a warning when multiple lock files are detected.
+_detect_package_manager() {
+	# 1. packageManager field in package.json (Node.js standard)
+	local declared_pm
+	declared_pm=$(node -e "try{const p=JSON.parse(require('fs').readFileSync('package.json','utf8'));if(p.packageManager){const m=p.packageManager.match(/^(\w+)@/);if(m)console.log(m[1]);}}catch(e){}" 2>/dev/null || true)
+	if [[ -n "$declared_pm" ]]; then
+		log_debug "Package manager declared in package.json: ${declared_pm}"
+		echo "$declared_pm"
+		return 0
+	fi
 
+	# 2. Lock file detection — warn when multiple are present
+	local -a found_locks=()
+	[[ -f "pnpm-lock.yaml" ]]    && found_locks+=("pnpm-lock.yaml")
+	[[ -f "package-lock.json" ]] && found_locks+=("package-lock.json")
+	[[ -f "yarn.lock" ]]         && found_locks+=("yarn.lock")
+
+	if [[ "${#found_locks[@]}" -gt 1 ]]; then
+		log_warning "Multiple lock files found: ${found_locks[*]} — using pnpm > npm > yarn priority"
+	fi
+
+	[[ -f "pnpm-lock.yaml" ]]    && echo "pnpm" && return 0
+	[[ -f "package-lock.json" ]] && echo "npm"  && return 0
+	[[ -f "yarn.lock" ]]         && echo "yarn" && return 0
+
+	# 3. Safe default
+	log_debug "No lock file found, defaulting to npm"
+	echo "npm"
+}
+
+# _install_dependencies: Skips when package.json is absent.
+# Detects the package manager via _detect_package_manager and runs the appropriate install.
+# When pnpm is used, the store is set to an absolute path outside the workspace.
+_install_dependencies() {
 	[[ -f "package.json" ]] || {
 		log_debug "No package.json found, skipping dependency installation"
 		return 0
 	}
 
-	log_info "Installing dependencies"
-	pnpm config set store-dir "$pnpm_store_dir" >/dev/null 2>&1
+	local pm
+	pm="$(_detect_package_manager)"
+	log_info "Installing dependencies with ${pm}"
 
-	log_debug "Attempting pnpm install --frozen-lockfile"
-	if pnpm install --frozen-lockfile >/dev/null 2>&1; then
-		log_success "Dependencies installed with pnpm"
-		return 0
-	fi
-	log_debug "Attempting pnpm install (no lockfile)"
-	if pnpm install >/dev/null 2>&1; then
-		log_success "Dependencies installed with pnpm (fallback)"
-		return 0
-	fi
-	log_debug "Attempting npm install"
-	if check_command npm && npm install >/dev/null 2>&1; then
-		log_warning "pnpm failed, fell back to npm"
-		log_success "Dependencies installed with npm"
-		return 0
-	else
-		push_error "$FATAL_ERROR" "${LINENO}" "_install_dependencies" "pnpm/npm install" "Dependency installation failed"
-		log_error "Dependency installation failed"
-		return 1
-	fi
+	case "$pm" in
+		pnpm)
+			pnpm config set store-dir /root/.local/share/pnpm/store >/dev/null 2>&1
+			if [[ -f "pnpm-lock.yaml" ]]; then
+				if pnpm install --frozen-lockfile >/dev/null 2>&1; then
+					log_success "Dependencies installed with pnpm (frozen-lockfile)"
+					return 0
+				fi
+			fi
+			if pnpm install >/dev/null 2>&1; then
+				log_success "Dependencies installed with pnpm"
+				return 0
+			fi
+			;;
+		yarn)
+			if yarn install --frozen-lockfile >/dev/null 2>&1; then
+				log_success "Dependencies installed with yarn"
+				return 0
+			fi
+			;;
+		npm)
+			if npm install >/dev/null 2>&1; then
+				log_success "Dependencies installed with npm"
+				return 0
+			fi
+			;;
+	esac
+
+	push_error "$FATAL_ERROR" "${LINENO}" "_install_dependencies" "${pm} install" "Dependency installation failed"
+	log_error "Dependency installation failed with ${pm}"
+	return 1
 }
 
 # _setup_repository <resolved_url>: Two cases: (1) .git exists → optionally fast-forward merge;
