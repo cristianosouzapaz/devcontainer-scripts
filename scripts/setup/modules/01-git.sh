@@ -157,7 +157,7 @@ _install_dependencies() {
 			pnpm config set store-dir /root/.local/share/pnpm/store >/dev/null 2>&1
 			if [[ -f "pnpm-lock.yaml" ]]; then
 				exit_code=0
-				install_output=$(timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --frozen-lockfile --no-interactive 2>&1) || exit_code=$?
+				install_output=$(timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --frozen-lockfile 2>&1) || exit_code=$?
 				log_debug "${install_output}"
 				if [[ $exit_code -eq 0 ]]; then
 					log_success "Dependencies installed with pnpm (frozen-lockfile)"
@@ -169,7 +169,7 @@ _install_dependencies() {
 			fi
 			if [[ "$skip_fallback" == false ]]; then
 				exit_code=0
-				install_output=$(timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --no-interactive 2>&1) || exit_code=$?
+				install_output=$(timeout "$_PKG_INSTALL_TIMEOUT" pnpm install 2>&1) || exit_code=$?
 				log_debug "${install_output}"
 				if [[ $exit_code -eq 0 ]]; then
 					log_success "Dependencies installed with pnpm"
