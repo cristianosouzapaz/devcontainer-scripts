@@ -35,6 +35,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
 # ----- PATH AND STRUCTURE VARIABLES -------------------------------------------
 
 readonly _GIT_CREDENTIALS_FILE="$HOME/.git-credentials"
+readonly _PKG_INSTALL_TIMEOUT=180
 
 # Test seam — not readonly so tests can override it
 _WORKSPACE_DIR="${_WORKSPACE_DIR:-/workspace}"
@@ -138,38 +139,58 @@ _detect_package_manager() {
 # _install_dependencies: Skips when package.json is absent.
 # Detects the package manager via _detect_package_manager and runs the appropriate install.
 # When pnpm is used, the store is set to an absolute path outside the workspace.
+# Each install attempt is bounded by _PKG_INSTALL_TIMEOUT seconds; for pnpm, the unfrozen
+# fallback is skipped when the frozen-lockfile attempt times out (exit code 124).
 _install_dependencies() {
 	[[ -f "package.json" ]] || {
 		log_debug "No package.json found, skipping dependency installation"
 		return 0
 	}
 
-	local pm
+	local pm install_output exit_code skip_fallback
 	pm="$(_detect_package_manager)"
 	log_info "Installing dependencies with ${pm}"
 
 	case "$pm" in
 		pnpm)
+			skip_fallback=false
 			pnpm config set store-dir /root/.local/share/pnpm/store >/dev/null 2>&1
 			if [[ -f "pnpm-lock.yaml" ]]; then
-				if pnpm install --frozen-lockfile >/dev/null 2>&1; then
+				exit_code=0
+				install_output=$(timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --frozen-lockfile --no-interactive 2>&1) || exit_code=$?
+				log_debug "${install_output}"
+				if [[ $exit_code -eq 0 ]]; then
 					log_success "Dependencies installed with pnpm (frozen-lockfile)"
 					return 0
 				fi
+				if [[ $exit_code -eq 124 ]]; then
+					skip_fallback=true
+				fi
 			fi
-			if pnpm install >/dev/null 2>&1; then
-				log_success "Dependencies installed with pnpm"
-				return 0
+			if [[ "$skip_fallback" == false ]]; then
+				exit_code=0
+				install_output=$(timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --no-interactive 2>&1) || exit_code=$?
+				log_debug "${install_output}"
+				if [[ $exit_code -eq 0 ]]; then
+					log_success "Dependencies installed with pnpm"
+					return 0
+				fi
 			fi
 			;;
 		yarn)
-			if yarn install --frozen-lockfile >/dev/null 2>&1; then
+			exit_code=0
+			install_output=$(timeout "$_PKG_INSTALL_TIMEOUT" yarn install --frozen-lockfile --non-interactive 2>&1) || exit_code=$?
+			log_debug "${install_output}"
+			if [[ $exit_code -eq 0 ]]; then
 				log_success "Dependencies installed with yarn"
 				return 0
 			fi
 			;;
 		npm)
-			if npm install >/dev/null 2>&1; then
+			exit_code=0
+			install_output=$(timeout "$_PKG_INSTALL_TIMEOUT" npm install 2>&1) || exit_code=$?
+			log_debug "${install_output}"
+			if [[ $exit_code -eq 0 ]]; then
 				log_success "Dependencies installed with npm"
 				return 0
 			fi
