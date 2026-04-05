@@ -9,3 +9,5 @@ services:
 
 volumes:
   project-name-workspace:
+  claude-auth-data:
+    name: claude-auth-data
