@@ -120,11 +120,15 @@ function New-ComposeWithRepoVolumes {
         writes the result to the destination .devcontainer folder.
     .DESCRIPTION
         Performs placeholder substitution (project-name → ProjectName), then
-        injects service volume entries and top-level volume declarations for each
-        repo immediately after their respective anchor lines. Uses text manipulation
-        (no YAML parser) against the known fixed template structure. The function
-        always runs regardless of repo count — single-repo compose produces one
-        workspace volume plus one repo volume.
+        handles two distinct layouts depending on repo count:
+        - Single-repo: replaces the workspace root volume line with the single
+          repo volume (<project>-<folder>-data:/workspace/<folder>), keeping
+          the output consistent with standard (non-compose) mode.
+        - Multi-repo: preserves the workspace root volume and injects per-repo
+          service volume entries and top-level volume declarations for each repo
+          immediately after their respective anchor lines.
+        Uses text manipulation (no YAML parser) against the known fixed template
+        structure.
     .PARAMETER TemplateFile
         Absolute path to the source docker-compose.yml template.
     .PARAMETER ProjectName
@@ -139,42 +143,57 @@ function New-ComposeWithRepoVolumes {
 
     $content = (Get-Content -Path $TemplateFile -Raw) -replace '\r\n', "`n"
     $content = $content.Replace('project-name', $ProjectName)
-    $lines   = [System.Collections.ArrayList]@($content -split "`n")
 
-    $serviceMarker    = "      - $ProjectName-workspace:/workspace"
-    $volumeMarker     = "  $ProjectName-workspace:"
-    $serviceInsertIdx = -1
-    $volumeInsertIdx  = -1
+    if ($RepoList.Count -eq 1) {
+        $folder     = _Get-RepoFolderName -Url $RepoList[0]
+        $volumeName = "$ProjectName-$folder-data"
+        $content    = $content.Replace(
+            "      - $ProjectName-workspace:/workspace",
+            "      - ${volumeName}:/workspace/$folder"
+        )
+        $content    = $content.Replace(
+            "  $ProjectName-workspace:",
+            "  ${volumeName}:"
+        )
+    } else {
+        $lines   = [System.Collections.ArrayList]@($content -split "`n")
 
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($lines[$i].Contains($serviceMarker)) { $serviceInsertIdx = $i }
-        if ($lines[$i].Contains($volumeMarker))  { $volumeInsertIdx  = $i }
+        $serviceMarker    = "      - $ProjectName-workspace:/workspace"
+        $volumeMarker     = "  $ProjectName-workspace:"
+        $serviceInsertIdx = -1
+        $volumeInsertIdx  = -1
+
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i].Contains($serviceMarker)) { $serviceInsertIdx = $i }
+            if ($lines[$i].Contains($volumeMarker))  { $volumeInsertIdx  = $i }
+        }
+
+        $serviceLines = [System.Collections.ArrayList]@()
+        foreach ($url in $RepoList) {
+            $folder = _Get-RepoFolderName -Url $url
+            [void]$serviceLines.Add("      - $ProjectName-$folder-data:/workspace/$folder")
+        }
+        if ($serviceInsertIdx -ge 0) {
+            $lines.InsertRange($serviceInsertIdx + 1, $serviceLines)
+        }
+
+        # Recompute volumeInsertIdx after service line insertions
+        $volumeInsertIdx += $serviceLines.Count
+
+        $volumeLines = [System.Collections.ArrayList]@()
+        foreach ($url in $RepoList) {
+            $folder = _Get-RepoFolderName -Url $url
+            [void]$volumeLines.Add("  $ProjectName-$folder-data:")
+        }
+        if ($volumeInsertIdx -ge 0) {
+            $lines.InsertRange($volumeInsertIdx + 1, $volumeLines)
+        }
+
+        $content = $lines -join "`n"
     }
 
-    $serviceLines = [System.Collections.ArrayList]@()
-    foreach ($url in $RepoList) {
-        $folder = _Get-RepoFolderName -Url $url
-        [void]$serviceLines.Add("      - $ProjectName-$folder-data:/workspace/$folder")
-    }
-    if ($serviceInsertIdx -ge 0) {
-        $lines.InsertRange($serviceInsertIdx + 1, $serviceLines)
-    }
-
-    # Recompute volumeInsertIdx after service line insertions
-    $volumeInsertIdx += $serviceLines.Count
-
-    $volumeLines = [System.Collections.ArrayList]@()
-    foreach ($url in $RepoList) {
-        $folder = _Get-RepoFolderName -Url $url
-        [void]$volumeLines.Add("  $ProjectName-$folder-data:")
-    }
-    if ($volumeInsertIdx -ge 0) {
-        $lines.InsertRange($volumeInsertIdx + 1, $volumeLines)
-    }
-
-    $result     = $lines -join "`n"
     $outputPath = Join-Path -Path $Destination -ChildPath 'docker-compose.yml'
-    [System.IO.File]::WriteAllText($outputPath, $result)
+    [System.IO.File]::WriteAllText($outputPath, $content)
 
     Write-LogEntry "docker-compose.yml generated ($($RepoList.Count) repos)" -Status Success
 }
