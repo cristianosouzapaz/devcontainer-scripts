@@ -143,12 +143,12 @@ function Copy-ConfigurationFiles {
             Set-WorkspaceMountInConfig  -FilePath $destConfig -ProjectName $ProjectName
             Add-RepoMountsToConfig      -FilePath $destConfig -ProjectName $ProjectName -RepoList $RepoList
             Set-OnCreateCommandInConfig -FilePath $destConfig -RepoList $RepoList
+        }
 
-            if ($UseCompose) {
-                $templateFile = Join-Path -Path $Source -ChildPath $DockerComposeYml
-                New-ComposeWithRepoVolumes -TemplateFile $templateFile -ProjectName $ProjectName `
-                    -RepoList $RepoList -Destination $destDevContainerPath
-            }
+        if ($UseCompose) {
+            $templateFile = Join-Path -Path $Source -ChildPath $DockerComposeYml
+            New-ComposeWithRepoVolumes -TemplateFile $templateFile -ProjectName $ProjectName `
+                -RepoList $RepoList -Destination $destDevContainerPath
         }
     } else {
         Write-LogEntry "Template not found: $srcConfig" -Status Error
