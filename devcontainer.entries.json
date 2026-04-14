@@ -15,27 +15,6 @@
         }
     },
     {
-        "label": "Git",
-        "key": "git",
-        "mandatory": true,
-        "feature": {
-            "url": "ghcr.io/devcontainers/features/git:1",
-            "options": {}
-        }
-    },
-    {
-        "label": "Node.js + pnpm",
-        "key": "node",
-        "mandatory": true,
-        "feature": {
-            "url": "ghcr.io/devcontainers/features/node:1",
-            "options": {
-                "version": "lts",
-                "pnpmVersion": "latest"
-            }
-        }
-    },
-    {
         "label": "Docker (outside-of-docker)",
         "key": "docker",
         "default": true,
@@ -52,27 +31,12 @@
         "mount": "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
     },
     {
-        "label": "PostgreSQL client",
-        "key": "psql",
-        "default": false,
-        "mandatory": false,
+        "label": "Git",
+        "key": "git",
+        "mandatory": true,
         "feature": {
-            "url": "ghcr.io/robbert229/devcontainer-features/postgresql-client:1",
-            "options": {
-                "version": "18"
-            }
-        }
-    },
-    {
-        "label": "uv (Python package manager)",
-        "key": "uv",
-        "default": false,
-        "mandatory": false,
-        "feature": {
-            "url": "ghcr.io/va-h/devcontainers-features/uv:1",
-            "options": {
-                "version": "latest"
-            }
+            "url": "ghcr.io/devcontainers/features/git:1",
+            "options": {}
         }
     },
     {
@@ -86,10 +50,45 @@
         }
     },
     {
+        "label": "Node.js + pnpm",
+        "key": "node",
+        "mandatory": true,
+        "feature": {
+            "url": "ghcr.io/devcontainers/features/node:1",
+            "options": {
+                "version": "lts",
+                "pnpmVersion": "latest"
+            }
+        }
+    },
+    {
+        "label": "PostgreSQL client",
+        "key": "psql",
+        "default": false,
+        "mandatory": false,
+        "feature": {
+            "url": "ghcr.io/robbert229/devcontainer-features/postgresql-client:1",
+            "options": {
+                "version": "18"
+            }
+        }
+    },
+    {
         "label": "SSH Commit Signing (1Password)",
         "key": "ssh-signing",
         "default": true,
         "mandatory": false,
         "feature": null
+    },
+    {
+        "label": "uv (Python package manager)",
+        "key": "uv",
+        "mandatory": true,
+        "feature": {
+            "url": "ghcr.io/va-h/devcontainers-features/uv:1",
+            "options": {
+                "version": "latest"
+            }
+        }
     }
 ]
