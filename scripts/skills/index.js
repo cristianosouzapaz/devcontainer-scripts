@@ -26,6 +26,12 @@ const SKILLS = [
         url: "https://github.com/better-auth/skills",
     },
     {
+        name: "Brainstorming",
+        skill: "brainstorming",
+        tags: ["ideation", "planning"],
+        url: "https://github.com/obra/superpowers",
+    },
+    {
         name: "Find Skills",
         skill: "find-skills",
         tags: ["discovery", "tools"],
@@ -78,6 +84,18 @@ const SKILLS = [
         skill: "web-design-guidelines",
         tags: ["design", "web"],
         url: "https://github.com/vercel-labs/agent-skills",
+    },
+    {
+        name: "Impeccable",
+        skill: "impeccable",
+        tags: ["design", "frontend", "ui"],
+        url: "https://github.com/pbakaus/impeccable",
+    },
+    {
+        name: "Grill Me",
+        skill: "grill-me",
+        tags: ["planning", "design", "interview"],
+        url: "https://github.com/mattpocock/skills",
     },
 ];
 const AGENTS = {
