@@ -18,7 +18,6 @@ const AGENTS = {
     claude: "claude-code",
 };
 const PROMPT_MESSAGE = "Select skills to INSTALL:";
-const SKILLS = loadSkillsCatalog();
 
 // ─── Functions ───────────────────────────────────────────────────────────────
 
@@ -92,6 +91,8 @@ const installSkillForAgents = (url, skill, agents) => {
  */
 const askUser = async () => {
     try {
+        const skills = loadSkillsCatalog();
+
         const agentAnswer = await inquirer.prompt([{
             type: "confirm",
             name: "includeClaude",
@@ -103,7 +104,7 @@ const askUser = async () => {
             ? [AGENTS.copilot, AGENTS.claude]
             : [AGENTS.copilot];
 
-        const choices = SKILLS.map(buildSkillChoice);
+        const choices = skills.map(buildSkillChoice);
 
         const answer = await inquirer.prompt([
             {
