@@ -1,0 +1,140 @@
+[
+    {
+        "name": "Agent Browser",
+        "skill": "agent-browser",
+        "tags": [
+            "automation",
+            "web"
+        ],
+        "url": "https://github.com/vercel-labs/agent-browser"
+    },
+    {
+        "name": "Better Auth Best Practices",
+        "skill": "better-auth-best-practices",
+        "tags": [
+            "authentication",
+            "security"
+        ],
+        "url": "https://github.com/better-auth/skills"
+    },
+    {
+        "name": "Brainstorming",
+        "skill": "brainstorming",
+        "tags": [
+            "ideation",
+            "planning"
+        ],
+        "url": "https://github.com/obra/superpowers"
+    },
+    {
+        "name": "Find Skills",
+        "skill": "find-skills",
+        "tags": [
+            "discovery",
+            "tools"
+        ],
+        "url": "https://github.com/vercel-labs/skills"
+    },
+    {
+        "name": "Frontend Design",
+        "skill": "frontend-design",
+        "tags": [
+            "design",
+            "frontend"
+        ],
+        "url": "https://github.com/anthropics/skills"
+    },
+    {
+        "name": "Next.js App Router Patterns",
+        "skill": "nextjs-app-router-patterns",
+        "tags": [
+            "nextjs",
+            "routing"
+        ],
+        "url": "https://github.com/wshobson/agents"
+    },
+    {
+        "name": "Next.js Best Practices",
+        "skill": "next-best-practices",
+        "tags": [
+            "nextjs",
+            "best-practices"
+        ],
+        "url": "https://github.com/vercel-labs/next-skills"
+    },
+    {
+        "name": "Reducing Entropy",
+        "skill": "reducing-entropy",
+        "tags": [
+            "code-quality",
+            "refactoring"
+        ],
+        "url": "https://github.com/softaworks/agent-toolkit"
+    },
+    {
+        "name": "Skill Creator",
+        "skill": "skill-creator",
+        "tags": [
+            "development",
+            "tools"
+        ],
+        "url": "https://github.com/anthropics/skills"
+    },
+    {
+        "name": "Vercel Composition Patterns",
+        "skill": "vercel-composition-patterns",
+        "tags": [
+            "vercel",
+            "patterns"
+        ],
+        "url": "https://github.com/vercel-labs/agent-skills"
+    },
+    {
+        "name": "Vercel React Best Practices",
+        "skill": "vercel-react-best-practices",
+        "tags": [
+            "vercel",
+            "react",
+            "best-practices"
+        ],
+        "url": "https://github.com/vercel-labs/agent-skills"
+    },
+    {
+        "name": "Web Design Guidelines",
+        "skill": "web-design-guidelines",
+        "tags": [
+            "design",
+            "web"
+        ],
+        "url": "https://github.com/vercel-labs/agent-skills"
+    },
+    {
+        "name": "Impeccable",
+        "skill": "impeccable",
+        "tags": [
+            "design",
+            "frontend",
+            "ui"
+        ],
+        "url": "https://github.com/pbakaus/impeccable"
+    },
+    {
+        "name": "Grill Me",
+        "skill": "grill-me",
+        "tags": [
+            "planning",
+            "design",
+            "interview"
+        ],
+        "url": "https://github.com/mattpocock/skills"
+    },
+    {
+        "name": "Agent Skills (All skills)",
+        "skill": "*",
+        "tags": [
+            "bundle",
+            "workflow"
+        ],
+        "url": "https://github.com/addyosmani/agent-skills"
+    }
+]

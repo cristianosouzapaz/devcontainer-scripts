@@ -1,4 +1,5 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import chalk from "chalk";
 import consola from "consola";
 import inquirer from "inquirer";
@@ -9,106 +10,87 @@ import inquirer from "inquirer";
 
 consola.options = { ...consola.options, formatOptions: { ...consola.options.formatOptions, date: false } };
 
-/**
- * Predefined list of available skills to choose from.
- */
-const SKILLS = [
-    {
-        name: "Agent Browser",
-        skill: "agent-browser",
-        tags: ["automation", "web"],
-        url: "https://github.com/vercel-labs/agent-browser",
-    },
-    {
-        name: "Better Auth Best Practices",
-        skill: "better-auth-best-practices",
-        tags: ["authentication", "security"],
-        url: "https://github.com/better-auth/skills",
-    },
-    {
-        name: "Brainstorming",
-        skill: "brainstorming",
-        tags: ["ideation", "planning"],
-        url: "https://github.com/obra/superpowers",
-    },
-    {
-        name: "Find Skills",
-        skill: "find-skills",
-        tags: ["discovery", "tools"],
-        url: "https://github.com/vercel-labs/skills",
-    },
-    {
-        name: "Frontend Design",
-        skill: "frontend-design",
-        tags: ["design", "frontend"],
-        url: "https://github.com/anthropics/skills",
-    },
-    {
-        name: "Next.js App Router Patterns",
-        skill: "nextjs-app-router-patterns",
-        tags: ["nextjs", "routing"],
-        url: "https://github.com/wshobson/agents",
-    },
-    {
-        name: "Next.js Best Practices",
-        skill: "next-best-practices",
-        tags: ["nextjs", "best-practices"],
-        url: "https://github.com/vercel-labs/next-skills",
-    },
-    {
-        name: "Reducing Entropy",
-        skill: "reducing-entropy",
-        tags: ["code-quality", "refactoring"],
-        url: "https://github.com/softaworks/agent-toolkit",
-    },
-    {
-        name: "Skill Creator",
-        skill: "skill-creator",
-        tags: ["development", "tools"],
-        url: "https://github.com/anthropics/skills",
-    },
-    {
-        name: "Vercel Composition Patterns",
-        skill: "vercel-composition-patterns",
-        tags: ["vercel", "patterns"],
-        url: "https://github.com/vercel-labs/agent-skills",
-    },
-    {
-        name: "Vercel React Best Practices",
-        skill: "vercel-react-best-practices",
-        tags: ["vercel", "react", "best-practices"],
-        url: "https://github.com/vercel-labs/agent-skills",
-    },
-    {
-        name: "Web Design Guidelines",
-        skill: "web-design-guidelines",
-        tags: ["design", "web"],
-        url: "https://github.com/vercel-labs/agent-skills",
-    },
-    {
-        name: "Impeccable",
-        skill: "impeccable",
-        tags: ["design", "frontend", "ui"],
-        url: "https://github.com/pbakaus/impeccable",
-    },
-    {
-        name: "Grill Me",
-        skill: "grill-me",
-        tags: ["planning", "design", "interview"],
-        url: "https://github.com/mattpocock/skills",
-    },
-];
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+const SKILLS_FILE_URL = new URL("./skills.json", import.meta.url);
 const AGENTS = {
     copilot: "github-copilot",
     claude: "claude-code",
 };
 const PROMPT_MESSAGE = "Select skills to INSTALL:";
+const SKILLS = loadSkillsCatalog();
+
+// ─── Functions ───────────────────────────────────────────────────────────────
+
+/**
+ * Load and validate the skills catalog from the JSON file.
+ * 
+ * @returns An array of skill entries from the catalog.
+ * @throws Will throw an error if the catalog is invalid or cannot be read.
+ */
+const loadSkillsCatalog = () => {
+    const raw = readFileSync(SKILLS_FILE_URL, "utf8");
+    const parsed = JSON.parse(raw);
+
+    if (!Array.isArray(parsed)) throw new Error("Invalid skills catalog: expected an array.");
+
+    for (const [index, entry] of parsed.entries()) {
+        const isValidEntry =
+            typeof entry?.name === "string"
+            && typeof entry?.skill === "string"
+            && typeof entry?.url === "string"
+            && Array.isArray(entry?.tags)
+            && entry.tags.every((tag) => typeof tag === "string");
+
+        if (!isValidEntry) throw new Error(`Invalid skills catalog entry at index ${index}.`);
+    }
+
+    return parsed;
+}
+
+/**
+ * Convert an error to a string message.
+ * 
+ * @param error - The error to convert.
+ * @returns A string message representing the error.
+ */
+const toErrorMessage = (error) => error instanceof Error ? error.message : String(error);
+
+/**
+ * Build a choice object for inquirer from a skill entry.
+ * 
+ * @param skillEntry - The skill entry to build the choice from.
+ * @returns An object with `name` and `value` properties for inquirer.
+ */
+const buildSkillChoice = (skillEntry) => {
+    const tagsStr = skillEntry.tags.map((tag) => chalk.bgWhite.black(` ${tag} `)).join(" ");
+    return {
+        name: `${skillEntry.name} ${tagsStr}`,
+        value: skillEntry,
+    };
+}
+
+/**
+ * Install a skill for the specified agents.
+ * 
+ * @param url - The URL of the skill to install.
+ * @param skill - The name of the skill to install.
+ * @param agents - The agents to install the skill for.
+ * @throws Will throw an error if the installation fails.
+ */
+const installSkillForAgents = (url, skill, agents) => {
+    for (const agent of agents) {
+        execFileSync("npx", ["skills", "add", url, "--skill", skill, "--agent", agent, "--yes"], {
+            stdio: "pipe",
+        });
+    }
+}
 
 /**
  * Prompt the user to select skills to install.
  * @async
  */
-async function askUser() {
+const askUser = async () => {
     try {
         const agentAnswer = await inquirer.prompt([{
             type: "confirm",
@@ -121,10 +103,7 @@ async function askUser() {
             ? [AGENTS.copilot, AGENTS.claude]
             : [AGENTS.copilot];
 
-        const choices = SKILLS.map((s) => {
-            const tagsStr = s.tags.map((tag) => chalk.bgWhite.black(` ${tag} `)).join(" ");
-            return { name: `${s.name} ${tagsStr}`, value: s };
-        });
+        const choices = SKILLS.map(buildSkillChoice);
 
         const answer = await inquirer.prompt([
             {
@@ -137,20 +116,17 @@ async function askUser() {
         for (const { url, skill } of answer.selectedSkills) {
             consola.start(`Installing ${skill}`);
             try {
-                for (const agent of selectedAgents) {
-                    execSync(`echo 'y' | npx skills add "${url}" --skill "${skill}" --agent ${agent} --yes`, {
-                        stdio: "pipe",
-                    });
-                }
+                installSkillForAgents(url, skill, selectedAgents);
                 consola.success(`${skill} installed`);
             } catch (e) {
-                consola.error(`Failed to install ${skill}: ${e.message}`);
+                consola.error(`Failed to install ${skill}: ${toErrorMessage(e)}`);
             }
         }
     } catch (e) {
-        if (e.message?.includes("User force closed the prompt with SIGINT")) process.exit(0);
+        const message = toErrorMessage(e);
+        if (message.includes("User force closed the prompt with SIGINT")) process.exit(0);
         else {
-            consola.error(`An error occurred: ${e.message}`);
+            consola.error(`An error occurred: ${message}`);
             process.exit(1);
         }
     }

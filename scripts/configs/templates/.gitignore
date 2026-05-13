@@ -63,3 +63,6 @@ Thumbs.db
 
 # typescript
 *.tsbuildinfo
+
+# ai tools
+/*.superpowers/
