@@ -10,8 +10,9 @@ main() {
 	skills_dir="$(dirname "${BASH_SOURCE[0]}")"
 	base_url="https://raw.githubusercontent.com/cristianosouzapaz/devcontainer-scripts/main/scripts/skills"
     
-	curl -fsSL "${base_url}/index.js"    -o "${skills_dir}/index.js"
+	curl -fsSL "${base_url}/index.js"     -o "${skills_dir}/index.js"
 	curl -fsSL "${base_url}/package.json" -o "${skills_dir}/package.json"
+	curl -fsSL "${base_url}/skills.json"  -o "${skills_dir}/skills.json"
 	cd "${skills_dir}"
 	npm i >/dev/null 2>&1
 }
