@@ -93,17 +93,6 @@ const askUser = async () => {
     try {
         const skills = loadSkillsCatalog();
 
-        const agentAnswer = await inquirer.prompt([{
-            type: "confirm",
-            name: "includeClaude",
-            message: "Also install skills for Claude Code?",
-            default: false,
-        }]);
-
-        const selectedAgents = agentAnswer.includeClaude
-            ? [AGENTS.copilot, AGENTS.claude]
-            : [AGENTS.copilot];
-
         const choices = skills.map(buildSkillChoice);
 
         const answer = await inquirer.prompt([
@@ -113,11 +102,31 @@ const askUser = async () => {
                 name: "selectedSkills",
                 type: "checkbox",
             },
+            {
+                type: "checkbox",
+                name: "selectedAgents",
+                message: "Install for which tool(s)?",
+                choices: [
+                    { name: "GitHub Copilot", value: AGENTS.copilot, checked: true },
+                    { name: "Claude Code", value: AGENTS.claude, checked: true },
+                ],
+            },
         ]);
+
+        if (answer.selectedSkills.length === 0) {
+            consola.info("No skills selected.");
+            return;
+        }
+
+        if (answer.selectedAgents.length === 0) {
+            consola.info("No target selected.");
+            return;
+        }
+
         for (const { url, skill } of answer.selectedSkills) {
             consola.start(`Installing ${skill}`);
             try {
-                installSkillForAgents(url, skill, selectedAgents);
+                installSkillForAgents(url, skill, answer.selectedAgents);
                 consola.success(`${skill} installed`);
             } catch (e) {
                 consola.error(`Failed to install ${skill}: ${toErrorMessage(e)}`);

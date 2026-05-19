@@ -6,9 +6,10 @@ set -euo pipefail
 # into the script's own directory and runs `npm install`.
 # Returns: 0 on success.
 main() {
-	local configs_dir base_url
+	local configs_dir base_url scripts_ref
 	configs_dir="$(dirname "${BASH_SOURCE[0]}")"
-	base_url="https://raw.githubusercontent.com/cristianosouzapaz/devcontainer-scripts/main/scripts/configs"
+	scripts_ref="${SCRIPTS_REF:-main}"
+	base_url="https://raw.githubusercontent.com/cristianosouzapaz/devcontainer-scripts/${scripts_ref}/scripts/configs"
 
 	curl -fsSL "${base_url}/index.js"    -o "${configs_dir}/index.js"
 	curl -fsSL "${base_url}/package.json" -o "${configs_dir}/package.json"
@@ -16,7 +17,7 @@ main() {
 	mkdir -p "${configs_dir}/templates"
 
 	declare -a _templates
-	mapfile -t _templates < <(grep 'templateFile:' "${configs_dir}/index.js" | sed 's/.*templateFile: "\([^"]*\)".*/\1/')
+	mapfile -t _templates < <(grep 'templateFile:' "${configs_dir}/index.js" | sed -n 's/.*templateFile: "\([^"]*\)".*/\1/p')
 
 	for _name in "${_templates[@]}"; do
 		curl -fsSL "${base_url}/templates/${_name}" -o "${configs_dir}/templates/${_name}"

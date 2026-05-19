@@ -12,6 +12,7 @@ ENV CLAUDE_CONFIG_DIR=/root/.claude
 # DOWNLOAD SETUP SCRIPTS FROM REPO
 ARG SCRIPTS_REF="main"
 ARG SCRIPTS_REPO="cristianosouzapaz/devcontainer-scripts"
+ENV SCRIPTS_REF=${SCRIPTS_REF}
 
 RUN mkdir -p /tmp/dc-init \
     && node --input-type=module -e " \

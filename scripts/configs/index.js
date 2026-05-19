@@ -13,7 +13,7 @@ consola.options = { ...consola.options, formatOptions: { ...consola.options.form
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// ----- CONFIG REGISTRY --------------------------------------------------------
+// ─── Constants ───────────────────────────────────────────────────────────────
 
 /**
  * Predefined list of available config templates.
@@ -58,14 +58,14 @@ const CONFIGS = [
     },
 ];
 
-// ----- INSTALLER --------------------------------------------------------------
+// ─── Functions ───────────────────────────────────────────────────────────────
 
 /**
  * Prompt the user to select config files to copy into the current directory.
  * Handles conflicts (overwrite / skip / backup and replace) per file.
  * @async
  */
-async function askUser() {
+const askUser = async () => {
     try {
         const choices = CONFIGS.map((c) => {
             const tagsStr = c.tags.map((tag) => chalk.bgWhite.black(` ${tag} `)).join(" ");

@@ -2,9 +2,10 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Install VS Code Skills",
+            "label": "Framework: Install VS Code Skills",
+            "detail": "Installs VS Code skills provided by the custom devcontainer framework when available.",
             "type": "shell",
-            "command": "bash /opt/devcontainer/skills/install.sh && node /opt/devcontainer/skills/index.js",
+            "command": "bash -lc 'if [ -f /opt/devcontainer/skills/install.sh ] && [ -f /opt/devcontainer/skills/index.js ]; then bash /opt/devcontainer/skills/install.sh && node /opt/devcontainer/skills/index.js; else echo \"[Framework] VS Code Skills installer is not available in this devcontainer. Task skipped.\"; fi'",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
@@ -14,9 +15,23 @@
             }
         },
         {
-            "label": "Install Config Templates",
+            "label": "Framework: Install Configuration Templates",
+            "detail": "Installs configuration templates provided by the custom devcontainer framework when available.",
             "type": "shell",
-            "command": "bash /opt/devcontainer/configs/install.sh && node /opt/devcontainer/configs/index.js",
+            "command": "bash -lc 'if [ -f /opt/devcontainer/configs/install.sh ] && [ -f /opt/devcontainer/configs/index.js ]; then bash /opt/devcontainer/configs/install.sh && node /opt/devcontainer/configs/index.js; else echo \"[Framework] Configuration Templates installer is not available in this devcontainer. Task skipped.\"; fi'",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true,
+                "focus": true
+            }
+        },
+        {
+            "label": "Framework: Install Agent Templates",
+            "detail": "Installs agent instruction and prompt templates provided by the custom devcontainer framework when available.",
+            "type": "shell",
+            "command": "bash -lc 'if [ -f /opt/devcontainer/agents/install.sh ] && [ -f /opt/devcontainer/agents/index.js ]; then bash /opt/devcontainer/agents/install.sh && node /opt/devcontainer/agents/index.js; else echo \"[Framework] Agent Templates installer is not available in this devcontainer. Task skipped.\"; fi'",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
