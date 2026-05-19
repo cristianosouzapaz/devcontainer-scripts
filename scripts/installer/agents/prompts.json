@@ -1,0 +1,11 @@
+[
+    {
+        "name": "Index Components",
+        "filename": "index-components.prompt.md",
+        "commandFilename": "index-components.md",
+        "version": "1.0.0",
+        "tags": ["react", "docs"],
+        "templateFile": "prompts/index-components.prompt.md",
+        "commandTemplateFile": "prompts/index-components.md"
+    }
+]

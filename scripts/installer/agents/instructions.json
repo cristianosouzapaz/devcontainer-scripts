@@ -1,0 +1,30 @@
+[
+    {
+        "name": "Agent Orchestration",
+        "filename": "agent-orchestration.instructions.md",
+        "version": "1.0.0",
+        "tags": ["agents", "multi-agent"],
+        "templateFile": "instructions/agent-orchestration.instructions.md"
+    },
+    {
+        "name": "Documentation Rules",
+        "filename": "documentation.instructions.md",
+        "version": "1.0.0",
+        "tags": ["docs", "jsdoc", "typescript"],
+        "templateFile": "instructions/documentation.instructions.md"
+    },
+    {
+        "name": "Next.js Rules",
+        "filename": "nextjs.instructions.md",
+        "version": "1.0.0",
+        "tags": ["nextjs", "react"],
+        "templateFile": "instructions/nextjs.instructions.md"
+    },
+    {
+        "name": "TypeScript Rules",
+        "filename": "typescript.instructions.md",
+        "version": "1.0.0",
+        "tags": ["typescript"],
+        "templateFile": "instructions/typescript.instructions.md"
+    }
+]
