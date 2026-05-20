@@ -1,6 +1,6 @@
 ---
 name: "Documentation Rules"
-version: "1.0.0"
+version: "1.0.1"
 description: "Use when writing JSDoc, module headers, or inline comments in TypeScript or TSX files. Covers summaries, placement, tag usage, cross-references, and documentation anti-patterns."
 applyTo: "**/*.{ts,tsx}"
 ---
@@ -14,7 +14,17 @@ applyTo: "**/*.{ts,tsx}"
 - Do not start summaries with phrases such as `This function`.
 - Wrap lines at about 100 columns.
 
+## TSX Files
+
+TSX files (React components) have a lighter documentation surface than pure TypeScript modules.
+
+- Do **not** add a module header block comment (`/* */`) to `.tsx` files.
+- Do **not** add JSDoc blocks to functions in `.tsx` files.
+- Section comments (`// ─── Types ───`) are allowed and follow the same format rules below.
+
 ## Module Header
+
+Applies to `.ts` files only.
 
 - Start every module with a non-JSDoc block comment that describes the file's role in 1 to 4 lines.
 - Place the header before the first import or declaration.
@@ -27,6 +37,8 @@ applyTo: "**/*.{ts,tsx}"
 - Only `Types`, `Constants`, or `Functions` are allowed as the section label.
 
 ## Functions
+
+Applies to `.ts` files only.
 
 - Add a JSDoc block to every exported function and every internal function.
 - Include one summary line, one `@param` tag for each parameter, and one `@returns` tag.
