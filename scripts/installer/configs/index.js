@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
@@ -72,8 +72,10 @@ const askUser = async () => {
         const destDir = process.cwd();
 
         for (const config of selectedConfigs) {
+            const destPath = join(destDir, config.filename);
+            mkdirSync(dirname(destPath), { recursive: true });
             const content = readFileSync(join(__dirname, "templates", config.templateFile), "utf8");
-            await writeWithConflict(join(destDir, config.filename), content, config.filename);
+            await writeWithConflict(destPath, content, config.filename);
         }
     } catch (e) {
         handleError(e);
