@@ -25,10 +25,10 @@ main() {
 
 	declare -a _agent_templates
 	mapfile -t _agent_templates < <(
-		grep -hE '"templateFile"|"commandTemplateFile"' \
+		grep -h '"templateFile"' \
 			"${installer_dir}/agents/instructions.json" \
 			"${installer_dir}/agents/prompts.json" \
-		| sed -n 's/.*"[^"]*emplateFile":\s*"\([^"]*\)".*/\1/p' \
+		| sed -n 's/.*"templateFile":\s*"\([^"]*\)".*/\1/p' \
 		| sort -u
 	)
 
