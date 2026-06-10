@@ -136,5 +136,14 @@
             "workflow"
         ],
         "url": "https://github.com/addyosmani/agent-skills"
+    },
+    {
+        "name": "Superpowers (All skills)",
+        "skill": "*",
+        "tags": [
+            "bundle",
+            "workflow"
+        ],
+        "url": "https://github.com/obra/superpowers"
     }
 ]
