@@ -231,8 +231,8 @@ const installPrompts = async (prompts, destRoot, tool) => {
  */
 const askUser = async () => {
     try {
-        const instructions = () => loadCatalog(INSTRUCTIONS_FILE_URL, [], "instructions");
-        const prompts = () => loadCatalog(PROMPTS_FILE_URL, ["commandFilename"], "prompts");
+        const instructions = loadCatalog(INSTRUCTIONS_FILE_URL, [], "instructions");
+        const prompts = loadCatalog(PROMPTS_FILE_URL, ["commandFilename"], "prompts");
         const destRoot = process.cwd();
 
         const instructionChoices = instructions.map(({ filename, version, name, tags }) => {
