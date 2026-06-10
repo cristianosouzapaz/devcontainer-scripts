@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import consola from "consola";
 import inquirer from "inquirer";
+import { select } from "@inquirer/prompts";
 import { buildTagsStr, handleError, loadJsonCatalog, readInstalledVersion, setupConsola, writeWithConflict } from "../shared/utils.js";
 
 /**
@@ -235,24 +236,24 @@ const askUser = async () => {
         const prompts = loadCatalog(PROMPTS_FILE_URL, ["commandFilename"], "prompts");
         const destRoot = process.cwd();
 
-        const instructionChoices = instructions.map(({ filename, version, name, tags }) => {
+        const instructionChoices = instructions.map(({ filename, version, name, tags, templateFile }) => {
             const claudePath = join(destRoot, ".claude", "rules", toClaudeRuleFilename(filename));
             const copilotPath = join(destRoot, ".github", "instructions", filename);
             const installedVersion = readInstalledVersion(claudePath) ?? readInstalledVersion(copilotPath);
             const versionStr = installedVersion
                 ? chalk.gray(`(installed: v${installedVersion} → v${version})`)
                 : chalk.gray(`(v${version})`);
-            return { name: `${name} ${versionStr} ${buildTagsStr(tags)}`, value: { filename, version, name, tags } };
+            return { name: `${name} ${versionStr} ${buildTagsStr(tags)}`, value: { filename, version, name, tags, templateFile } };
         });
 
-        const promptChoices = prompts.map(({ filename, commandFilename, version, name, tags }) => {
+        const promptChoices = prompts.map(({ filename, commandFilename, version, name, tags, templateFile }) => {
             const copilotPath = join(destRoot, ".github", "prompts", filename);
             const claudePath = join(destRoot, ".claude", "commands", commandFilename);
             const installedVersion = readInstalledVersion(copilotPath) ?? readInstalledVersion(claudePath);
             const versionStr = installedVersion
                 ? chalk.gray(`(installed: v${installedVersion} → v${version})`)
                 : chalk.gray(`(v${version})`);
-            return { name: `${name} ${versionStr} ${buildTagsStr(tags)}`, value: { filename, version, name, tags } };
+            return { name: `${name} ${versionStr} ${buildTagsStr(tags)}`, value: { filename, commandFilename, version, name, tags, templateFile } };
         });
 
         const { selectedInstructions } = await inquirer.prompt([{
@@ -274,16 +275,14 @@ const askUser = async () => {
             return;
         }
 
-        const { selectedTool } = await inquirer.prompt([{
-            type: "list",
-            name: "selectedTool",
+        const selectedTool = await select({
             message: "Select target tool(s):",
             choices: [
                 { name: "All supported tools", value: TOOL.all },
                 { name: "GitHub Copilot", value: TOOL.copilot },
                 { name: "Claude Code", value: TOOL.claude },
             ],
-        }]);
+        });
 
         if (selectedInstructions.length > 0) await installInstructions(selectedInstructions, destRoot, selectedTool);
         if (selectedPrompts.length > 0) await installPrompts(selectedPrompts, destRoot, selectedTool);
