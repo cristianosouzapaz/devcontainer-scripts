@@ -1,3 +1,5 @@
+// https://docs.anthropic.com/en/docs/claude-code/settings
+// Version: 1.0
 {
     "enableAllProjectMcpServers": true,
     "permissions": {
@@ -9,10 +11,13 @@
             "Skill(impeccable)"
         ],
         "deny": [
-            "Bash(git commit *)",
-            "Bash(git commit --*)",
-            "Bash(git push *)",
-            "Bash(gh pr create *)"
+            "Bash(git commit*)",
+            "Bash(git push*)",
+            "Bash(gh pr create *)",
+            "Bash(gh pr merge *)",
+            "Bash(gh pr close *)",
+            "Bash(gh pr edit *)",
+            "Bash(gh pr review *)"
         ]
     }
 }
