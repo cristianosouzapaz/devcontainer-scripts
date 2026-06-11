@@ -1,6 +1,5 @@
 ---
 name: "generate-pr"
-version: "1.0.0"
 description: "Generate a strict pull request title and description from a PR already in chat context or from local git using Conventional Commits."
 argument-hint: "Optional target branch, for example: main"
 agent: "agent"

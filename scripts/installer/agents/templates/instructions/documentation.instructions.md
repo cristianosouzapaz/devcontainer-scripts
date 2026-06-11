@@ -1,6 +1,5 @@
 ---
 name: "Documentation Rules"
-version: "1.0.1"
 description: "Use when writing JSDoc, module headers, or inline comments in TypeScript or TSX files. Covers summaries, placement, tag usage, cross-references, and documentation anti-patterns."
 applyTo: "**/*.{ts,tsx}"
 ---

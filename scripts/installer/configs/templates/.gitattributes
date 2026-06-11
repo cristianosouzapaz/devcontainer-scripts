@@ -1,6 +1,5 @@
 # This file defines Git attribute rules for line-ending normalization
 # and marks binary files to prevent unwanted content conversion.
-# Version 1.0
 
 # Set default behavior to automatically normalize line endings.
 * text=auto eol=lf

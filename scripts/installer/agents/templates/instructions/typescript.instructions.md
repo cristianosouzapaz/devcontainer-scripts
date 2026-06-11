@@ -1,6 +1,5 @@
 ---
 name: "TypeScript Rules"
-version: "1.0.0"
 description: "Use when writing or reviewing TypeScript or TSX code. Covers naming, type design, imports and exports, function style, mutation safety, and file organization."
 applyTo: "**/*.{ts,tsx}"
 ---

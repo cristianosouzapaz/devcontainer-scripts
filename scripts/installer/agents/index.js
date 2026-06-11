@@ -5,7 +5,7 @@ import chalk from "chalk";
 import consola from "consola";
 import inquirer from "inquirer";
 import { select } from "@inquirer/prompts";
-import { buildTagsStr, handleError, loadJsonCatalog, readInstalledVersion, setupConsola, writeWithConflict } from "../shared/utils.js";
+import { buildTagsStr, handleError, loadJsonCatalog, readLockFile, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
 
 /**
  * @fileoverview Interactive installer for agent instruction and prompt templates.
@@ -18,8 +18,12 @@ import { buildTagsStr, handleError, loadJsonCatalog, readInstalledVersion, setup
  *
  *   Prompts:
  *     Copilot / All → .github/prompts/<name>.prompt.md               (canonical)
- *     All           → .claude/commands/<name>.md                     (wrapper referencing .github/prompts/)
+ *     All           → .claude/commands/<name>.md                     (wrapper referencing .github/prompts/, no version)
  *     Claude only   → .claude/commands/<name>.md                     (full content, self-contained)
+ *
+ * On install, updates template-lock.json in the project root with the written paths and versions.
+ * Wrapper files (.claude/commands/ under tool=all) are not tracked since they carry no version.
+ * Version display in the UI is read from template-lock.json (single source of truth for installed versions).
  *
  * Installed at /opt/devcontainer/installer/agents/ inside the container.
  */
@@ -85,7 +89,7 @@ const toClaudeRuleFilename = (instructionFilename) => instructionFilename.replac
 
 /**
  * Build the content for a .claude/rules/ file from a Copilot instruction template.
- * Strips Copilot-specific frontmatter keys, preserving version, description, and body.
+ * Strips Copilot-specific frontmatter keys, preserving description and body.
  * 
  * @param {string} templateContent
  * @returns {string}
@@ -109,24 +113,24 @@ const buildClaudeCommandWrapper = (item, raw) => {
     const lines = ["---"];
     if (raw.description) lines.push(`description: ${raw.description}`);
     if (raw["argument-hint"]) lines.push(`argument-hint: ${raw["argument-hint"]}`);
-    lines.push("---", "", `Follow @../../.github/prompts/${item.filename}.`, "", "$ARGUMENTS");
-    
+    lines.push("---", "", `Follow @../../.github/prompts/${item.filename}.`);
+
     return lines.join("\n") + "\n";
 };
 
 /**
  * Build a self-contained .claude/commands/ file for Claude-only installs.
- * Strips Copilot-specific frontmatter keys, keeps version for conflict detection,
- * and appends $ARGUMENTS so the user's input is forwarded to the command.
- * 
+ * Strips Copilot-specific frontmatter keys. Claude Code automatically appends
+ * the user's argument when $ARGUMENTS is absent from the content.
+ *
  * @param {string} templateContent
  * @returns {string}
  */
 const buildClaudeCommandFull = (templateContent) => {
     const { raw, body } = parseFrontmatter(templateContent);
     const filtered = Object.fromEntries(Object.entries(raw).filter(([k]) => !COPILOT_PROMPT_KEYS.includes(k)));
-    
-    return buildFrontmatter(filtered, body.trimEnd() + "\n\n$ARGUMENTS\n");
+
+    return buildFrontmatter(filtered, body);
 };
 
 // ─── Catalog loaders ─────────────────────────────────────────────────────────
@@ -157,15 +161,20 @@ const loadCatalog = (url, extraKeys, catalogName) => {
 
 /**
  * Write instruction files to the appropriate directory based on the selected tool.
+ * Returns a map of written relative paths to their installed versions.
  *
- * Claude / All  → .claude/rules/<basename>.md  (Copilot also reads this natively in VS Code)
+ * Claude / All  → .claude/rules/<basename>.md
  * Copilot only  → .github/instructions/<filename>
  *
  * @param {object[]} instructions - Selected instruction entries.
  * @param {string} destRoot - Project root directory.
  * @param {string} tool - One of TOOL.copilot | TOOL.claude | TOOL.all.
+ * @param {object} lock - Parsed template-lock.json used to resolve the currently installed version.
+ * @returns {Promise<Record<string, string>>}
  */
-const installInstructions = async (instructions, destRoot, tool) => {
+const installInstructions = async (instructions, destRoot, tool, lock) => {
+    const written = {};
+
     if (tool === TOOL.claude || tool === TOOL.all) {
         const rulesDir = join(destRoot, ".claude", "rules");
         mkdirSync(rulesDir, { recursive: true });
@@ -173,7 +182,9 @@ const installInstructions = async (instructions, destRoot, tool) => {
             const template = readFileSync(join(__dirname, "templates", item.templateFile), "utf8");
             const content = buildClaudeRuleContent(template);
             const filename = toClaudeRuleFilename(item.filename);
-            await writeWithConflict(join(rulesDir, filename), content, filename, item.version);
+            const relPath = join(".claude", "rules", filename);
+            const ok = await writeWithConflict(join(rulesDir, filename), content, filename, item.version, lock.instructions[relPath] ?? null);
+            if (ok) written[relPath] = item.version;
         }
     }
 
@@ -182,13 +193,19 @@ const installInstructions = async (instructions, destRoot, tool) => {
         mkdirSync(instructionsDir, { recursive: true });
         for (const item of instructions) {
             const content = readFileSync(join(__dirname, "templates", item.templateFile), "utf8");
-            await writeWithConflict(join(instructionsDir, item.filename), content, item.filename, item.version);
+            const relPath = join(".github", "instructions", item.filename);
+            const ok = await writeWithConflict(join(instructionsDir, item.filename), content, item.filename, item.version, lock.instructions[relPath] ?? null);
+            if (ok) written[relPath] = item.version;
         }
     }
+
+    return written;
 };
 
 /**
  * Write prompt files to the appropriate directories based on the selected tool.
+ * Returns a map of written relative paths to their installed versions.
+ * Wrapper files (tool = all) are not tracked since they carry no version.
  *
  * Copilot / All  → .github/prompts/<filename>              (canonical, Copilot-native format)
  * All            → .claude/commands/<commandFilename>      (wrapper referencing .github/prompts/)
@@ -197,14 +214,23 @@ const installInstructions = async (instructions, destRoot, tool) => {
  * @param {object[]} prompts - Selected prompt entries.
  * @param {string} destRoot - Project root directory.
  * @param {string} tool - One of TOOL.copilot | TOOL.claude | TOOL.all.
+ * @param {object} lock - Parsed template-lock.json used to resolve the currently installed version.
+ * @returns {Promise<Record<string, string>>}
  */
-const installPrompts = async (prompts, destRoot, tool) => {
+const installPrompts = async (prompts, destRoot, tool, lock) => {
+    const written = {};
+    const templateCache = new Map(
+        prompts.map((item) => [item.templateFile, readFileSync(join(__dirname, "templates", item.templateFile), "utf8")])
+    );
+
     if (tool === TOOL.copilot || tool === TOOL.all) {
         const promptsDir = join(destRoot, ".github", "prompts");
         mkdirSync(promptsDir, { recursive: true });
         for (const item of prompts) {
-            const content = readFileSync(join(__dirname, "templates", item.templateFile), "utf8");
-            await writeWithConflict(join(promptsDir, item.filename), content, item.filename, item.version);
+            const content = templateCache.get(item.templateFile);
+            const relPath = join(".github", "prompts", item.filename);
+            const ok = await writeWithConflict(join(promptsDir, item.filename), content, item.filename, item.version, lock.prompts[relPath] ?? null);
+            if (ok) written[relPath] = item.version;
         }
     }
 
@@ -212,34 +238,38 @@ const installPrompts = async (prompts, destRoot, tool) => {
         const commandsDir = join(destRoot, ".claude", "commands");
         mkdirSync(commandsDir, { recursive: true });
         for (const item of prompts) {
-            const template = readFileSync(join(__dirname, "templates", item.templateFile), "utf8");
+            const template = templateCache.get(item.templateFile);
             const { raw } = parseFrontmatter(template);
             const content = tool === TOOL.all
                 ? buildClaudeCommandWrapper(item, raw)
                 : buildClaudeCommandFull(template);
             const version = tool === TOOL.all ? null : item.version;
-            await writeWithConflict(join(commandsDir, item.commandFilename), content, item.commandFilename, version);
+            const relPath = join(".claude", "commands", item.commandFilename);
+            const ok = await writeWithConflict(join(commandsDir, item.commandFilename), content, item.commandFilename, version, version ? (lock.prompts[relPath] ?? null) : null);
+            if (ok && version) written[relPath] = version;
         }
     }
+
+    return written;
 };
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 /**
  * Prompt the user to select instruction and prompt templates, then install them.
- * 
- * @async
+ * On completion, updates template-lock.json in the project root with the installed versions.
  */
 const askUser = async () => {
     try {
         const instructions = loadCatalog(INSTRUCTIONS_FILE_URL, [], "instructions");
         const prompts = loadCatalog(PROMPTS_FILE_URL, ["commandFilename"], "prompts");
         const destRoot = process.cwd();
+        const lock = readLockFile(destRoot);
 
         const instructionChoices = instructions.map(({ filename, version, name, tags, templateFile }) => {
-            const claudePath = join(destRoot, ".claude", "rules", toClaudeRuleFilename(filename));
-            const copilotPath = join(destRoot, ".github", "instructions", filename);
-            const installedVersion = readInstalledVersion(claudePath) ?? readInstalledVersion(copilotPath);
+            const claudeRelPath = join(".claude", "rules", toClaudeRuleFilename(filename));
+            const copilotRelPath = join(".github", "instructions", filename);
+            const installedVersion = lock.instructions[claudeRelPath] ?? lock.instructions[copilotRelPath] ?? null;
             const versionStr = installedVersion
                 ? chalk.gray(`(installed: v${installedVersion} → v${version})`)
                 : chalk.gray(`(v${version})`);
@@ -247,9 +277,9 @@ const askUser = async () => {
         });
 
         const promptChoices = prompts.map(({ filename, commandFilename, version, name, tags, templateFile }) => {
-            const copilotPath = join(destRoot, ".github", "prompts", filename);
-            const claudePath = join(destRoot, ".claude", "commands", commandFilename);
-            const installedVersion = readInstalledVersion(copilotPath) ?? readInstalledVersion(claudePath);
+            const copilotRelPath = join(".github", "prompts", filename);
+            const claudeRelPath = join(".claude", "commands", commandFilename);
+            const installedVersion = lock.prompts[copilotRelPath] ?? lock.prompts[claudeRelPath] ?? null;
             const versionStr = installedVersion
                 ? chalk.gray(`(installed: v${installedVersion} → v${version})`)
                 : chalk.gray(`(v${version})`);
@@ -284,8 +314,16 @@ const askUser = async () => {
             ],
         });
 
-        if (selectedInstructions.length > 0) await installInstructions(selectedInstructions, destRoot, selectedTool);
-        if (selectedPrompts.length > 0) await installPrompts(selectedPrompts, destRoot, selectedTool);
+        if (selectedInstructions.length > 0) {
+            const writtenInstructions = await installInstructions(selectedInstructions, destRoot, selectedTool, lock);
+            Object.assign(lock.instructions, writtenInstructions);
+        }
+        if (selectedPrompts.length > 0) {
+            const writtenPrompts = await installPrompts(selectedPrompts, destRoot, selectedTool, lock);
+            Object.assign(lock.prompts, writtenPrompts);
+        }
+
+        writeLockFile(destRoot, lock);
     } catch (e) {
         handleError(e);
     }

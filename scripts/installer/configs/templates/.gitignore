@@ -1,7 +1,6 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 # This file lists files and folders Git should ignore
 # to keep local artifacts out of the repository history.
-# Version: 1.0
 
 # dependencies
 /node_modules

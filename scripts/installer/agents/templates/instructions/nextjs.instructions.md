@@ -1,6 +1,5 @@
 ---
 name: "Next.js Rules"
-version: "1.0.0"
 description: "Use when building Next.js pages, layouts, components, and mutations. Covers Server Components, Promise streaming, Server Actions, accessibility, and image handling."
 applyTo: "**/*.{ts,tsx}"
 ---

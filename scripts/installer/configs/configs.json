@@ -2,42 +2,49 @@
     {
         "name": "Biome",
         "filename": "biome.json",
+        "version": "1.0.0",
         "tags": ["linting", "formatting"],
         "templateFile": "biome.json"
     },
     {
         "name": "Git Ignore",
         "filename": ".gitignore",
+        "version": "1.0.0",
         "tags": ["git"],
         "templateFile": ".gitignore"
     },
     {
         "name": "Git Attributes",
         "filename": ".gitattributes",
+        "version": "1.0.0",
         "tags": ["git"],
         "templateFile": ".gitattributes"
     },
     {
         "name": "Lefthook",
         "filename": "lefthook.yml",
+        "version": "1.0.0",
         "tags": ["git-hooks"],
         "templateFile": "lefthook.yml"
     },
     {
         "name": "TypeScript (base)",
         "filename": "tsconfig.json",
+        "version": "1.0.0",
         "tags": ["typescript"],
         "templateFile": "tsconfig.base.json"
     },
     {
         "name": "TypeScript (Next.js)",
         "filename": "tsconfig.json",
+        "version": "1.0.0",
         "tags": ["typescript", "nextjs"],
         "templateFile": "tsconfig.nextjs.json"
     },
     {
         "name": "Claude Code Settings",
         "filename": ".claude/settings.local.json",
+        "version": "1.0.0",
         "tags": ["claude"],
         "templateFile": "claude.settings.local.json"
     }

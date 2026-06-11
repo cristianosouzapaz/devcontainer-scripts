@@ -1,11 +1,19 @@
 import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
+import { join } from "node:path";
 import chalk from "chalk";
 import consola from "consola";
-import inquirer from "inquirer";
 import { select } from "@inquirer/prompts";
 
 /**
  * @fileoverview Shared utilities for all framework installer scripts.
+ *
+ * Exports:
+ *   - File writing:  writeWithConflict
+ *   - Version read:  readConfigInstalledVersion (lock file)
+ *   - Lock file:     readLockFile, writeLockFile  →  template-lock.json in the user's project root
+ *   - UI helpers:    buildTagsStr, setupConsola
+ *   - Catalog:       loadJsonCatalog
+ *   - Error:         handleError
  */
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -49,34 +57,20 @@ export const buildTagsStr = (tags) =>
     tags.map((tag) => chalk.bgWhite.black(` ${tag} `)).join(" ");
 
 /**
- * Extract the version string from the YAML frontmatter of a markdown file.
- * Returns null if the file has no frontmatter or no version field.
- * @param {string} filePath - Absolute path to the file.
- * @returns {string|null} Semver string or null.
- */
-export const readInstalledVersion = (filePath) => {
-    try {
-        const content = readFileSync(filePath, "utf8");
-        const match = content.match(/^---\n[\s\S]*?^version:\s*["']?([^"'\n]+)["']?\s*\n[\s\S]*?^---/m);
-        return match ? match[1].trim() : null;
-    } catch {
-        return null;
-    }
-};
-
-/**
  * Write content to destPath, prompting the user to resolve conflicts.
  * When both files carry a version, the conflict message shows the version transition.
+ * Returns true if the file was written, false if skipped.
  * @param {string} destPath - Absolute destination path.
  * @param {string} content - File content to write.
  * @param {string} filename - Display name used in conflict prompts.
  * @param {string|null} templateVersion - Version string from the registry entry.
+ * @param {string|null} knownInstalledVersion - Installed version read from template-lock.json.
+ * @returns {Promise<boolean>}
  */
-export const writeWithConflict = async (destPath, content, filename, templateVersion = null) => {
+export const writeWithConflict = async (destPath, content, filename, templateVersion = null, knownInstalledVersion = null) => {
     if (existsSync(destPath)) {
-        const installedVersion = readInstalledVersion(destPath);
-        const versionHint = installedVersion && templateVersion
-            ? ` (v${installedVersion} → v${templateVersion})`
+        const versionHint = knownInstalledVersion && templateVersion
+            ? ` (v${knownInstalledVersion} → v${templateVersion})`
             : "";
 
         const action = await select({
@@ -91,7 +85,7 @@ export const writeWithConflict = async (destPath, content, filename, templateVer
 
         if (action === "skip") {
             consola.info(`Skipped ${filename}`);
-            return;
+            return false;
         }
 
         if (action === "backup and replace") {
@@ -102,7 +96,45 @@ export const writeWithConflict = async (destPath, content, filename, templateVer
 
     writeFileSync(destPath, content, "utf8");
     consola.success(`${filename} written`);
+    return true;
 };
+
+// ─── Lock file ───────────────────────────────────────────────────────────────
+
+/**
+ * Read and parse template-lock.json from the user's project root.
+ * Returns a default empty structure if the file does not exist or cannot be parsed.
+ * @param {string} projectRoot - Absolute path to the user's project root.
+ * @returns {{ version: string, updatedAt: string, configs: object, instructions: object, prompts: object }}
+ */
+export const readLockFile = (projectRoot) => {
+    const empty = { version: "1", updatedAt: "", configs: {}, instructions: {}, prompts: {} };
+    try {
+        return { ...empty, ...JSON.parse(readFileSync(join(projectRoot, "template-lock.json"), "utf8")) };
+    } catch {
+        return empty;
+    }
+};
+
+/**
+ * Write lock data to template-lock.json in the user's project root.
+ * Always sets updatedAt to the current UTC timestamp.
+ * @param {string} projectRoot - Absolute path to the user's project root.
+ * @param {{ version: string, configs: object, instructions: object, prompts: object }} lockData
+ */
+export const writeLockFile = (projectRoot, lockData) => {
+    const data = { ...lockData, updatedAt: new Date().toISOString() };
+    writeFileSync(join(projectRoot, "template-lock.json"), JSON.stringify(data, null, 4) + "\n", "utf8");
+};
+
+/**
+ * Read the installed version of a config from template-lock.json.
+ * Returns null if the config is not recorded or the lock file does not exist.
+ * @param {string} projectRoot - Absolute path to the user's project root.
+ * @param {string} filename - The config filename key (e.g. "biome.json", ".claude/settings.local.json").
+ * @returns {string|null}
+ */
+export const readConfigInstalledVersion = (projectRoot, filename) => readLockFile(projectRoot).configs[filename] ?? null;
 
 /**
  * Handle a top-level installer error.

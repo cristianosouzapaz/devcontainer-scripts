@@ -40,6 +40,16 @@
         }
     },
     {
+        "label": "GitHub CLI",
+        "key": "github-cli",
+        "default": true,
+        "mandatory": false,
+        "feature": {
+            "url": "ghcr.io/devcontainers/features/github-cli:1",
+            "options": {}
+        }
+    },
+    {
         "label": "ngrok (HTTP tunneling)",
         "key": "ngrok",
         "default": false,

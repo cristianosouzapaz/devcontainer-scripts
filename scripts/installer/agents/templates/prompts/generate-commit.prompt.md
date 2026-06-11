@@ -1,6 +1,5 @@
 ---
 name: "generate-commit"
-version: "1.0.0"
 description: "Generate a Conventional Commit message from current git changes without creating the commit."
 argument-hint: "Optional scope hint or mode, for example: vscode or --staged"
 agent: "agent"

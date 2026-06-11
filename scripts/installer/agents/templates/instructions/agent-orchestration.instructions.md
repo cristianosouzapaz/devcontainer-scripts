@@ -1,6 +1,5 @@
 ---
 name: "Agent Orchestration"
-version: "1.0.0"
 description: "Use when planning or executing work that may need decomposition into subagents. Covers independence checks, batching, prompt contracts, and synthesis for audits, repeated transformations, and multi-module implementation."
 applyTo: "**"
 ---

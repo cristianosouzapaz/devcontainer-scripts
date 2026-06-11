@@ -1,5 +1,12 @@
 [
     {
+        "name": "Bash Rules",
+        "filename": "bash.instructions.md",
+        "version": "1.0.0",
+        "tags": ["bash", "shell"],
+        "templateFile": "instructions/bash.instructions.md"
+    },
+    {
         "name": "Agent Orchestration",
         "filename": "agent-orchestration.instructions.md",
         "version": "1.0.0",

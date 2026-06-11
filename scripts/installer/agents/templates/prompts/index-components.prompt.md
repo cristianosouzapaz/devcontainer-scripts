@@ -1,6 +1,5 @@
 ---
 name: index-components
-version: "1.0.0"
 description: Index React components in one or more folders by reading local component files and summarizing each component's architectural role. Use when documenting component folders anywhere in a workspace.
 argument-hint: Folder path, glob, or natural-language scope describing which React component folders to process
 ---
