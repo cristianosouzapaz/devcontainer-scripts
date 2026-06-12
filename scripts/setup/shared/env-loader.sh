@@ -3,33 +3,30 @@
 [[ -n "${_ENV_LOADER_SH_LOADED:-}" ]] && return 0
 readonly _ENV_LOADER_SH_LOADED=1
 
-# Environment file loader - Loads variables from mounted .env file
+# Environment file loader - Loads and persists variables from mounted .env file
 #
-# This module provides a small, safe loader for environment variables
-# stored in a simple key=value file (commonly named `.env`). It strips
-# carriage returns, ignores comments and blank lines, and exports any
-# non-empty values into the current shell environment.
+# Provides two public functions:
+#   load_env_file    - Reads key=value pairs from $_ENV_FILE_PATH and exports
+#                      them into the current shell for use during setup.
+#   persist_env_vars - Writes variables prefixed with PERSIST_ to
+#                      $_ETC_ENVIRONMENT_PATH (default /etc/environment),
+#                      stripping the prefix so they are available to all
+#                      container processes (including Claude Code) after setup.
+#
+# Usage in .env:
+#   PERSIST_CONTEXT7_API_KEY=your-key   # persisted as CONTEXT7_API_KEY
+#   GIT_CLONE_TOKEN=secret              # available during setup only
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
 _ENV_FILE_PATH="${_ENV_FILE_PATH:-/tmp/.env}"
+_ETC_ENVIRONMENT_PATH="${_ETC_ENVIRONMENT_PATH:-/etc/environment}"
 
 # ----- FUNCTIONS --------------------------------------------------------------
 
 # load_env_file: Load environment variables from a file into the current shell.
-# Usage: load_env_file
-# Behavior:
-#   - If `$_ENV_FILE_PATH` does not exist, logs an informational message and
-#     returns 0 (no-op).
-#   - Reads the file line-by-line, parsing `key=value` pairs.
-#   - Strips Windows-style carriage returns and surrounding whitespace.
-#   - Ignores blank lines and lines starting with `#`.
-#   - Exports variables with non-empty values and logs a debug message
-#     for each loaded key.
 # Args: none
-# Returns:
-#   0 on success (including when file is absent), non-zero only if an
-#   unexpected error occurs while reading the file.
+# Returns: 0 on success (including when file is absent).
 load_env_file() {
 	[[ -f "$_ENV_FILE_PATH" ]] || {
 		log_info "No .env file found"
@@ -51,4 +48,35 @@ load_env_file() {
 		# only export non-empty values to avoid overwriting with blanks
 		[[ -n "$value" ]] && export "$key"="$value" && log_debug "Loaded: $key"
 	done <"$_ENV_FILE_PATH"
+}
+
+# persist_env_vars: Write PERSIST_* variables from the current environment to
+# $_ETC_ENVIRONMENT_PATH, stripping the PERSIST_ prefix.
+# Existing entries for the same key are replaced (idempotent).
+# Must be called after load_env_file so PERSIST_* vars are in the environment.
+# Args: none
+# Returns: 0 always
+persist_env_vars() {
+	local line key stripped value
+	local -a persist_keys=()
+
+	while IFS= read -r line; do
+		key="${line%%=*}"
+		[[ "$key" == PERSIST_* ]] && persist_keys+=("$key")
+	done < <(env)
+
+	if [[ "${#persist_keys[@]}" -eq 0 ]]; then
+		log_debug "No PERSIST_* variables found — skipping environment persistence"
+		return 0
+	fi
+
+	for key in "${persist_keys[@]}"; do
+		stripped="${key#PERSIST_}"
+		value="${!key}"
+		[[ -f "$_ETC_ENVIRONMENT_PATH" ]] && sed -i "/^${stripped}=/d" "$_ETC_ENVIRONMENT_PATH"
+		echo "${stripped}=${value}" >> "$_ETC_ENVIRONMENT_PATH"
+		log_debug "Persisted: ${stripped}"
+	done
+
+	log_success "Persisted ${#persist_keys[@]} variable(s) to /etc/environment"
 }

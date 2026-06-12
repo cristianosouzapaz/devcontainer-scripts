@@ -64,6 +64,10 @@ source "$SHARED_DIR/validation.sh"
 # VALIDATE_TOKEN          Validate git token connectivity on startup (true/false)
 #                         Default: true
 #
+# PERSIST_<NAME>          Any variable in the .env file whose name begins with PERSIST_ is written
+#                         to /etc/environment (with the prefix stripped) by persist_env_vars during
+#                         setup, making <NAME> available to all container processes at runtime.
+#                         Example: PERSIST_CONTEXT7_API_KEY=xxx → CONTEXT7_API_KEY in /etc/environment
 
 AUTO_UPDATE="${AUTO_UPDATE:-false}"
 CLEAN_CREDENTIALS="${CLEAN_CREDENTIALS:-false}"

@@ -46,6 +46,7 @@ main() {
 	log_info "Starting setup in $(pwd)"
 
 	load_env_file
+	persist_env_vars
 
 	if [[ "${DEBUG_MODE}" == "true" ]]; then
 		log_debug "User: ${GIT_USER}"
