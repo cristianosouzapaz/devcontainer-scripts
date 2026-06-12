@@ -27,6 +27,15 @@
         "url": "https://github.com/obra/superpowers"
     },
     {
+        "name": "Caveman",
+        "skill": "caveman",
+        "tags": [
+            "productivity",
+            "communication"
+        ],
+        "url": "https://github.com/juliusbrussee/caveman"
+    },
+    {
         "name": "Find Skills",
         "skill": "find-skills",
         "tags": [
@@ -125,6 +134,17 @@
             "planning",
             "design",
             "interview"
+        ],
+        "url": "https://github.com/mattpocock/skills"
+    },
+    {
+        "name": "Grill With Docs",
+        "skill": "grill-with-docs",
+        "tags": [
+            "planning",
+            "design",
+            "interview",
+            "documentation"
         ],
         "url": "https://github.com/mattpocock/skills"
     },
