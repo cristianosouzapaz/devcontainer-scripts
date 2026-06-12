@@ -4,24 +4,20 @@
         "allow": [
             "Bash(*)",
             "Edit(*)",
+            "mcp__context7__query-docs(*)",
+            "mcp__context7__resolve-library-id(*)",
             "Read(*)",
-            "WebFetch(*)",
-            "Skill(impeccable)"
+            "Skill(impeccable)",
+            "WebFetch(*)"
         ],
         "deny": [
-            "Bash(git commit*)",
-            "Bash(git push*)",
-            "Bash(gh pr create *)",
-            "Bash(gh pr merge *)",
             "Bash(gh pr close *)",
+            "Bash(gh pr create *)",
             "Bash(gh pr edit *)",
-            "Bash(gh pr review *)"
+            "Bash(gh pr merge *)",
+            "Bash(gh pr review *)",
+            "Bash(git commit*)",
+            "Bash(git push*)"
         ]
-    },
-    "mcpServers": {
-        "context7": {
-            "command": "npx",
-            "args": ["-y", "@upstash/context7-mcp@latest"]
-        }
     }
 }
