@@ -11,9 +11,10 @@ import { select } from "@inquirer/prompts";
  *   - File writing:  writeWithConflict
  *   - Version read:  readConfigInstalledVersion (lock file)
  *   - Lock file:     readLockFile, writeLockFile  →  template-lock.json in the user's project root
- *   - UI helpers:    buildTagsStr, setupConsola
+ *   - UI helpers:    buildTagsStr, setupConsola, selectTargetTool
  *   - Catalog:       loadJsonCatalog
  *   - Error:         handleError
+ *   - Constants:     AGENTS, TOOLS
  */
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -24,6 +25,15 @@ import { select } from "@inquirer/prompts";
 export const AGENTS = {
     copilot: "github-copilot",
     claude: "claude-code",
+};
+
+/**
+ * Logical tool targets used across installers for routing installation output.
+ */
+export const TOOLS = {
+    all: "all",
+    copilot: "copilot",
+    claude: "claude",
 };
 
 // ─── Functions ───────────────────────────────────────────────────────────────
@@ -55,6 +65,19 @@ export const setupConsola = () => {
  */
 export const buildTagsStr = (tags) =>
     tags.map((tag) => chalk.bgWhite.black(` ${tag} `)).join(" ");
+
+/**
+ * Prompt the user to select a target tool via a single-choice radio.
+ * @returns {Promise<"all"|"copilot"|"claude">}
+ */
+export const selectTargetTool = () => select({
+    message: "Select target tool(s):",
+    choices: [
+        { name: "All supported tools", value: TOOLS.all },
+        { name: "GitHub Copilot",      value: TOOLS.copilot },
+        { name: "Claude Code",         value: TOOLS.claude },
+    ],
+});
 
 /**
  * Write content to destPath, prompting the user to resolve conflicts.

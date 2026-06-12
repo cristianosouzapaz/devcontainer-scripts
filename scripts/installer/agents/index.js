@@ -4,8 +4,7 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import consola from "consola";
 import inquirer from "inquirer";
-import { select } from "@inquirer/prompts";
-import { buildTagsStr, handleError, loadJsonCatalog, readLockFile, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
+import { buildTagsStr, handleError, loadJsonCatalog, readLockFile, selectTargetTool, setupConsola, TOOLS, writeLockFile, writeWithConflict } from "../shared/utils.js";
 
 /**
  * @fileoverview Interactive installer for agent instruction and prompt templates.
@@ -39,7 +38,6 @@ const COPILOT_INSTRUCTION_KEYS = ["applyTo", "name"];
 const COPILOT_PROMPT_KEYS = ["agent", "name"];
 const INSTRUCTIONS_FILE_URL = new URL("./instructions.json", import.meta.url);
 const PROMPTS_FILE_URL = new URL("./prompts.json", import.meta.url);
-const TOOL = { copilot: "copilot", claude: "claude", all: "all" };
 
 // ─── Frontmatter helpers ─────────────────────────────────────────────────────
 
@@ -168,14 +166,14 @@ const loadCatalog = (url, extraKeys, catalogName) => {
  *
  * @param {object[]} instructions - Selected instruction entries.
  * @param {string} destRoot - Project root directory.
- * @param {string} tool - One of TOOL.copilot | TOOL.claude | TOOL.all.
+ * @param {string} tool - One of TOOLS.copilot | TOOLS.claude | TOOLS.all.
  * @param {object} lock - Parsed template-lock.json used to resolve the currently installed version.
  * @returns {Promise<Record<string, string>>}
  */
 const installInstructions = async (instructions, destRoot, tool, lock) => {
     const written = {};
 
-    if (tool === TOOL.claude || tool === TOOL.all) {
+    if (tool === TOOLS.claude || tool === TOOLS.all) {
         const rulesDir = join(destRoot, ".claude", "rules");
         mkdirSync(rulesDir, { recursive: true });
         for (const item of instructions) {
@@ -188,7 +186,7 @@ const installInstructions = async (instructions, destRoot, tool, lock) => {
         }
     }
 
-    if (tool === TOOL.copilot) {
+    if (tool === TOOLS.copilot) {
         const instructionsDir = join(destRoot, ".github", "instructions");
         mkdirSync(instructionsDir, { recursive: true });
         for (const item of instructions) {
@@ -213,7 +211,7 @@ const installInstructions = async (instructions, destRoot, tool, lock) => {
  *
  * @param {object[]} prompts - Selected prompt entries.
  * @param {string} destRoot - Project root directory.
- * @param {string} tool - One of TOOL.copilot | TOOL.claude | TOOL.all.
+ * @param {string} tool - One of TOOLS.copilot | TOOLS.claude | TOOLS.all.
  * @param {object} lock - Parsed template-lock.json used to resolve the currently installed version.
  * @returns {Promise<Record<string, string>>}
  */
@@ -223,7 +221,7 @@ const installPrompts = async (prompts, destRoot, tool, lock) => {
         prompts.map((item) => [item.templateFile, readFileSync(join(__dirname, "templates", item.templateFile), "utf8")])
     );
 
-    if (tool === TOOL.copilot || tool === TOOL.all) {
+    if (tool === TOOLS.copilot || tool === TOOLS.all) {
         const promptsDir = join(destRoot, ".github", "prompts");
         mkdirSync(promptsDir, { recursive: true });
         for (const item of prompts) {
@@ -234,16 +232,16 @@ const installPrompts = async (prompts, destRoot, tool, lock) => {
         }
     }
 
-    if (tool === TOOL.claude || tool === TOOL.all) {
+    if (tool === TOOLS.claude || tool === TOOLS.all) {
         const commandsDir = join(destRoot, ".claude", "commands");
         mkdirSync(commandsDir, { recursive: true });
         for (const item of prompts) {
             const template = templateCache.get(item.templateFile);
             const { raw } = parseFrontmatter(template);
-            const content = tool === TOOL.all
+            const content = tool === TOOLS.all
                 ? buildClaudeCommandWrapper(item, raw)
                 : buildClaudeCommandFull(template);
-            const version = tool === TOOL.all ? null : item.version;
+            const version = tool === TOOLS.all ? null : item.version;
             const relPath = join(".claude", "commands", item.commandFilename);
             const ok = await writeWithConflict(join(commandsDir, item.commandFilename), content, item.commandFilename, version, version ? (lock.prompts[relPath] ?? null) : null);
             if (ok && version) written[relPath] = version;
@@ -305,14 +303,7 @@ const askUser = async () => {
             return;
         }
 
-        const selectedTool = await select({
-            message: "Select target tool(s):",
-            choices: [
-                { name: "All supported tools", value: TOOL.all },
-                { name: "GitHub Copilot", value: TOOL.copilot },
-                { name: "Claude Code", value: TOOL.claude },
-            ],
-        });
+        const selectedTool = await selectTargetTool();
 
         if (selectedInstructions.length > 0) {
             const writtenInstructions = await installInstructions(selectedInstructions, destRoot, selectedTool, lock);

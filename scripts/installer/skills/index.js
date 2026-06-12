@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import consola from "consola";
 import inquirer from "inquirer";
-import { AGENTS, buildTagsStr, handleError, loadJsonCatalog, setupConsola } from "../shared/utils.js";
+import { AGENTS, buildTagsStr, handleError, loadJsonCatalog, selectTargetTool, setupConsola, TOOLS } from "../shared/utils.js";
 
 /**
  * @fileoverview Interactive installer for VS Code Skills.
@@ -78,25 +78,18 @@ const askUser = async () => {
             return;
         }
 
-        const { selectedAgents } = await inquirer.prompt([{
-            type: "checkbox",
-            name: "selectedAgents",
-            message: "Install for which tool(s)?",
-            choices: [
-                { name: "GitHub Copilot", value: AGENTS.copilot, checked: true },
-                { name: "Claude Code", value: AGENTS.claude, checked: true },
-            ],
-        }]);
+        const selectedTool = await selectTargetTool();
 
-        if (selectedAgents.length === 0) {
-            consola.info("No target selected.");
-            return;
-        }
+        const agentsByTool = {
+            [TOOLS.all]:     [AGENTS.copilot, AGENTS.claude],
+            [TOOLS.copilot]: [AGENTS.copilot],
+            [TOOLS.claude]:  [AGENTS.claude],
+        };
 
         for (const { url, skill } of selectedSkills) {
             consola.start(`Installing ${skill}`);
             try {
-                installSkillForAgents(url, skill, selectedAgents);
+                installSkillForAgents(url, skill, agentsByTool[selectedTool]);
                 consola.success(`${skill} installed`);
             } catch (e) {
                 consola.error(`Failed to install ${skill}: ${e instanceof Error ? e.message : String(e)}`);
