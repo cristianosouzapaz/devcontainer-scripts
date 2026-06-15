@@ -2,67 +2,62 @@
 # This file lists files and folders Git should ignore
 # to keep local artifacts out of the repository history.
 
-# dependencies
+# Package dependencies
 /node_modules
 /.pnp
 .pnp.js
 .pnpm-store
 
-# package manager caches
-.npm/
-.yarn/cache
-.yarn/unplugged
-.yarn/build-state.yml
-.yarn/install-state.gz
-
-# testing
-/coverage
-
-# build outputs
+# Build & framework output
 /build
 /dist
-
-# framework outputs
 /.next/
 /out/
 /.turbo/
 /.cache/
 next-env.d.ts
 
-# databases and local state
-/prisma/db.sqlite
-/prisma/db.sqlite-journal
-db.sqlite
+# Test output & coverage
+/coverage
 
-# local environment files
-# Keep .env.example committed, ignore all runtime-specific env files.
+# Cache & temporary files
+.npm/
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.eslintcache
+
+# Generated source
+*.tsbuildinfo
+
+# Environment & secrets
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
+*.pem
 
-# deployment
+# Database & local state
+/prisma/db.sqlite
+/prisma/db.sqlite-journal
+db.sqlite
+
+# Deployment config
 .vercel
 
-# logs
+# Tooling & editor config
+/*.superpowers/
+.claude/settings.local.json
+
+# Logs
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# tooling caches
-.eslintcache
-
-# misc
+# OS files
 .DS_Store
 Thumbs.db
-*.pem
-
-# typescript
-*.tsbuildinfo
-
-# ai tools
-/*.superpowers/
-.claude/settings.local.json

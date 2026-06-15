@@ -12,7 +12,7 @@
     {
         "name": "Git Ignore",
         "filename": ".gitignore",
-        "version": "1.0.1",
+        "version": "1.0.2",
         "tags": [
             "git"
         ],
@@ -73,5 +73,15 @@
             "tool"
         ],
         "templateFile": "claude.mcp.json"
+    },
+    {
+        "name": "Graphify Ignore",
+        "filename": ".graphifyignore",
+        "version": "1.0.0",
+        "tags": [
+            "ai",
+            "tool"
+        ],
+        "templateFile": ".graphifyignore"
     }
 ]

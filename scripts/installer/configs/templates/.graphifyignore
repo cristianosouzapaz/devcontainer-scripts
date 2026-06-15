@@ -1,0 +1,59 @@
+# See https://github.com/safishamsi/graphify for more about ignoring files.
+# This file lists files and folders Graphify should ignore
+# to keep non-source artefacts out of the code graph analysis.
+
+# Package dependencies
+node_modules/
+.pnpm-store/
+.yarn/
+
+# Build & framework output
+.next/
+dist/
+build/
+out/
+graphify-out/
+storybook-static/
+
+# Test output & coverage
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+
+# Cache & temporary files
+.cache/
+.turbo/
+.eslintcache
+.parcel-cache/
+
+# Generated source
+*.tsbuildinfo
+prisma/migrations/
+
+# Lock files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+bun.lockb
+
+# Environment & secrets
+.env
+.env.*
+
+# Static assets
+public/
+
+# Tooling & editor config
+.agents/
+.claude/
+.github/
+.idea/
+.vscode/
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
