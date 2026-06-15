@@ -19,7 +19,8 @@
         "includes": [
             "**",
             "!package.json",
-            "!src/generated"
+            "!src/generated",
+            "!graphify-out"
         ]
     },
     "formatter": {
