@@ -4,7 +4,9 @@
         "filename": "generate-commit.prompt.md",
         "commandFilename": "generate-commit.md",
         "version": "1.0.0",
-        "tags": ["git"],
+        "tags": [
+            "git"
+        ],
         "templateFile": "prompts/generate-commit.prompt.md"
     },
     {
@@ -12,7 +14,9 @@
         "filename": "generate-pr.prompt.md",
         "commandFilename": "generate-pr.md",
         "version": "1.0.0",
-        "tags": ["git"],
+        "tags": [
+            "git"
+        ],
         "templateFile": "prompts/generate-pr.prompt.md"
     },
     {
@@ -20,7 +24,10 @@
         "filename": "index-components.prompt.md",
         "commandFilename": "index-components.md",
         "version": "1.0.0",
-        "tags": ["react", "docs"],
+        "tags": [
+            "react",
+            "docs"
+        ],
         "templateFile": "prompts/index-components.prompt.md"
     }
 ]

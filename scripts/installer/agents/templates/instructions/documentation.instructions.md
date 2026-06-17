@@ -8,60 +8,77 @@ applyTo: "**/*.{ts,tsx}"
 
 ## Language And Style
 
-- Write comments and JSDoc in English.
-- Write summary lines as one sentence in imperative present tense ending with a period.
-- Do not start summaries with phrases such as `This function`.
-- Wrap lines at about 100 columns.
+- **Language:** MUST write all comments and JSDoc in English.
+- **Summary tense:** MUST write summary lines as one imperative present-tense sentence ending with a period.
+  - ✓ `Validates the user token against the session store.`
+  - ✗ `This function validates the user token.`
+  - ✗ `Validates the user token` _(missing period)_
+- **Forbidden summary openers:** MUST NOT start summaries with `This function`, `This method`, or similar subject phrases.
+- **Line length:** SHOULD wrap lines at about 100 columns.
 
-## TSX Files
+## Section Comments
 
-TSX files (React components) have a lighter documentation surface than pure TypeScript modules.
+Applies to both `.ts` and `.tsx` files.
 
-- Do **not** add a module header block comment (`/* */`) to `.tsx` files.
-- Do **not** add JSDoc blocks to functions in `.tsx` files.
-- Section comments (`// ─── Types ───`) are allowed and follow the same format rules below.
+- **When to add:** MUST add a section comment before each section when a file has two or more distinct sections (Types, Constants, Functions).
+- **Placement after imports:** MUST place the first section comment after the last import, with one blank line before it and one blank line after it.
+- **Placement between sections:** MUST place each subsequent section comment with one blank line before it and one blank line after it.
+- **Format:** MUST use this exact 80-character format including `//`:
+  ```
+  // ─── Types ───────────────────────────────────────────────────────────────────
+  ```
+- **Allowed labels:** MUST use only `Types`, `Constants`, or `Functions` as the section label.
 
 ## Module Header
 
 Applies to `.ts` files only.
 
-- Start every module with a non-JSDoc block comment that describes the file's role in 1 to 4 lines.
-- Place the header before the first import or declaration.
-- If the file starts with `"use client";` or `"use server";`, place the header after the directive with one blank line between them.
-- Do not hardcode symbol names, `{@link ...}` references, JSDoc tags, or backticked identifiers in the header.
+- **Required:** MUST start every `.ts` module with a non-JSDoc block comment (`/* */`) that describes the file's role in 1 to 4 lines.
+- **Placement:** MUST place the header before the first import or declaration.
+- **Directive exception:** MUST place the header after the directive with one blank line between them when the file starts with `"use client";` or `"use server";`.
+- **Forbidden content:** MUST NOT hardcode symbol names, `{@link ...}` references, JSDoc tags, or backticked identifiers in the header.
 
-## Section Comments
+## TSX Files
 
-- When section comments are used, they must use this exact 80-character format including `//`: `// ─── Types ───────────────────────────────────────────────────────────────────`.
-- Only `Types`, `Constants`, or `Functions` are allowed as the section label.
+TSX files (React components) have a lighter documentation surface than pure TypeScript modules.
+
+- **No module header:** MUST NOT add a module header block comment (`/* */`) to `.tsx` files.
+- **No JSDoc:** MUST NOT add JSDoc blocks to functions in `.tsx` files.
+- **Section comments:** MUST follow the same Section Comments rules as `.ts` files.
 
 ## Functions
 
 Applies to `.ts` files only.
 
-- Add a JSDoc block to every exported function and every internal function.
-- Include one summary line, one `@param` tag for each parameter, and one `@returns` tag.
-- Do not include parameter or return types inside JSDoc tags.
-- Use `@returns Never returns; the function always throws.` for functions that always throw.
-- Use `@example` only when the call syntax is not obvious from the signature.
-- Do not use `@author`, `@since`, `@version`, `@description`, or `@deprecated`.
-- Do not add JSDoc to functions declared inside the body of a `use*` hook.
-- Put the why for those nested functions in the module header or in the hook's own JSDoc.
+- **Coverage:** MUST add a JSDoc block to every exported function and every internal function.
+- **Required tags:** MUST include one summary line, one `@param` tag for each parameter, and one `@returns` tag.
+- **No types in tags:** MUST NOT include parameter or return types inside JSDoc tags (TypeScript types are the source of truth).
+  - ✓ `@param userId The ID of the user to fetch.`
+  - ✗ `@param {string} userId The ID of the user to fetch.`
+- **Always-throws return:** MUST use `@returns Never returns; the function always throws.` for functions that always throw.
+- **Example tag:** SHOULD use `@example` only when the call syntax is not obvious from the signature.
+- **Forbidden tags:** MUST NOT use `@author`, `@since`, `@version`, `@description`, or `@deprecated`.
+- **Hook internals:** MUST NOT add JSDoc to functions declared inside the body of a `use*` hook. Put the why in the module header or in the hook's own JSDoc instead.
 
-## Types Interfaces And Constants
+## Types, Interfaces, and Constants
 
-- Do not add JSDoc to types, interfaces, or constants.
-- Express semantic invariants through naming, branded types, or field-name suffixes.
-- For constant-specific context, use an inline `//` comment on the same line or above.
+- **No JSDoc:** MUST NOT add JSDoc blocks to types, interfaces, or constants.
+- **Semantic naming:** SHOULD express semantic invariants through naming, branded types, or field-name suffixes rather than comments.
+- **Inline context:** MAY use an inline `//` comment on the same line or above for constant-specific context that naming alone cannot convey.
 
 ## Cross References
 
-- Use `{@link name}` for references to other symbols in the codebase.
-- Do not use backtick-only references when the target is a linkable symbol.
+- **Link syntax:** MUST use `{@link name}` for references to other symbols in the codebase.
+- **No backtick-only refs:** MUST NOT use backtick-only references when the target is a linkable symbol.
+  - ✓ `See {@link validateToken} for the token format.`
+  - ✗ `See \`validateToken\` for the token format.`
 
 ## Anti Patterns
 
-- Do not paraphrase what the code already makes obvious.
-- Document the why, the constraints, and the edge cases.
-- Do not mention the current task, PR, or caller in comments.
-- Update or remove stale JSDoc during refactors.
+- **No paraphrase:** MUST NOT describe what the code already makes obvious.
+  - ✗ `// Increments the counter` above `counter++`
+  - ✓ omit entirely; rename the variable if intent is unclear
+- **Document the why:** SHOULD document constraints, edge cases, and non-obvious reasons — not the what.
+- **No task references:** MUST NOT mention the current task, PR number, issue, or caller in comments.
+  - ✗ `// Added for the auth refactor (PR #42)`
+- **No stale JSDoc:** MUST update or remove JSDoc during refactors; stale docs are worse than no docs.

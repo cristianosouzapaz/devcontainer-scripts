@@ -8,59 +8,65 @@ applyTo: "**/*.{ts,tsx}"
 
 ## Naming
 
-- Use `kebab-case` for files and folders.
-- Use `PascalCase` for types and interfaces.
-- Prefix generic type parameters with `T`.
-- Use `camelCase` for variables and functions.
-- Name the main exported component props shape `Props`.
-- Prefix intentionally unused parameters with `_`. Do not use the underscore prefix for any other purpose.
-- Use `SCREAMING_SNAKE_CASE` only for top-level primitive literal constants.
+- **File and folder names:** MUST use `kebab-case`.
+- **Types and interfaces:** MUST use `PascalCase`.
+- **Generic type parameters:** MUST prefix with `T` (e.g. `TItem`, `TResult`).
+- **Variables and functions:** MUST use `camelCase`.
+- **Component props shape:** MUST name the main exported component props type `Props`.
+- **Unused parameters:** MUST prefix intentionally unused parameters with `_`. MUST NOT use the underscore prefix for any other purpose.
+- **Top-level primitive constants:** MUST use `SCREAMING_SNAKE_CASE` only for top-level primitive literal constants.
 
 ## Type Design
 
-- Use `interface` for object shapes.
-- Use `type` for unions, intersections, and other compositions.
-- Compose interfaces with `extends`.
-- Compose props with `type` intersections.
-- Use discriminated unions for mutually exclusive states.
-- Do not add optional properties unless every call site already justifies the null handling with checks such as `if` or `??`.
-- External API interfaces may use optional properties when the source contract requires them.
-- Do not use `any`.
-- Use `unknown` and narrow it explicitly.
+- **Object shapes:** MUST use `interface` for object shapes.
+- **Compositions:** MUST use `type` for unions, intersections, and other compositions.
+- **Interface extension:** MUST compose interfaces with `extends`.
+- **Props composition:** MUST compose props with `type` intersections.
+- **Exclusive states:** MUST use discriminated unions for mutually exclusive states.
+  - ✓ `type State = { status: "loading" } | { status: "error"; error: Error } | { status: "ok"; data: Data }`
+  - ✗ `type State = { loading?: boolean; error?: Error; data?: Data }`
+- **Optional properties:** MUST NOT add optional properties unless every call site already justifies the null handling with checks such as `if` or `??`. External API interfaces may use optional properties when the source contract requires them.
+- **No `any`:** MUST NOT use `any`.
+- **Unknown narrowing:** MUST use `unknown` and narrow it explicitly.
+  - ✓ `function parse(value: unknown) { if (typeof value === "string") { ... } }`
+  - ✗ `function parse(value: any) { ... }`
 
 ## Imports And Exports
 
-- Use `import type` for type-only imports.
-- Use named imports and named exports by default.
-- Default exports are allowed only for React components whose names start with an uppercase letter.
-- Use absolute internal aliases for project modules.
+- **Type imports:** MUST use `import type` for type-only imports.
+- **Named by default:** MUST use named imports and named exports by default.
+- **Default exports:** Default exports are allowed ONLY for React components whose names start with an uppercase letter.
+- **Internal aliases:** MUST use absolute internal aliases for project modules.
 
 ## Functions
 
-- Use arrow functions except for React components and class methods.
-- Define React components with `function ComponentName()` declarations, not arrow-function components.
-- Omit explicit return types when TypeScript can infer them correctly.
-- Add an explicit return type only for recursive functions, public APIs, or when intentionally restricting the inferred type.
-- Omit braces for single-statement `if` bodies.
+- **Arrow functions:** MUST use arrow functions except for React components and class methods.
+- **React components:** MUST define React components with `function ComponentName()` declarations, not arrow-function components.
+  - ✓ `function UserCard({ name }: Props) { ... }`
+  - ✗ `const UserCard = ({ name }: Props) => { ... }`
+- **Return type inference:** SHOULD omit explicit return types when TypeScript can infer them correctly.
+- **Explicit return types:** MUST add an explicit return type for recursive functions, public APIs, or when intentionally restricting the inferred type.
+- **Single-statement if:** MUST omit braces for single-statement `if` bodies.
 
 ## Variables
 
-- Use `const` for every variable declaration.
-- Do not use `let` or `var`.
+- **Const only:** MUST use `const` for every variable declaration.
+- **No let or var:** MUST NOT use `let` or `var`.
 
 ## Mutation And Error Handling
 
-- Do not mutate function arguments.
-- Do not mutate external state or objects and arrays reached through those inputs.
-- Local variables, `reduce` accumulators, locally created `Map` and `Set` instances, and private class fields are exempt.
-- In React hooks only, `Ref.current` is exempt for internal tracking.
-- Do not use `try-catch` for predictable control flow.
-- Return structured result objects for recoverable errors instead of throwing.
+- **Argument mutation:** MUST NOT mutate function arguments.
+- **External state mutation:** MUST NOT mutate external state or objects and arrays reached through function inputs.
+- **Mutation exemptions:** The following are exempt: local variables, `reduce` accumulators, locally created `Map` and `Set` instances, private class fields, and `Ref.current` inside React hooks for internal tracking.
+- **Predictable control flow:** MUST NOT use `try-catch` for predictable control flow.
+- **Recoverable errors:** MUST return structured result objects for recoverable errors instead of throwing.
+  - ✓ `return { ok: false, error: "Not found" }`
+  - ✗ `throw new Error("Not found")`
 
 ## File Organization
 
-- Keep one responsibility per file.
-- Order each file from top to bottom as types and interfaces, then constants, then functions.
-- Within each section, declare dependencies before dependents.
-- Group related functions together.
-- Within a function group, place callees before callers.
+- **Single responsibility:** MUST keep one responsibility per file.
+- **Top-to-bottom order:** MUST order each file from top to bottom as: types and interfaces, then constants, then functions.
+- **Dependency order:** MUST declare dependencies before dependents within each section.
+- **Function grouping:** SHOULD group related functions together.
+- **Callee placement:** MUST place callees before callers within a function group.
