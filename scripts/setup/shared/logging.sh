@@ -168,7 +168,10 @@ except Exception:
 	printf '"%s"' "$(printf "%s" "$input" | sed -e 's/\\/\\\\/g' -e 's/"/\\\"/g' -e ':a;N;s/\n/\\n/g;ta')"
 }
 
-# _write_log: outputs either structured JSON or legacy formatted text
+# _write_log: outputs either structured JSON or legacy formatted text.
+# Supports multi-line messages: each non-empty line is prefixed with the
+# level symbol and color; blank lines are skipped to suppress spurious
+# empty-prefix output from tools like npm or git.
 _write_log() {
 	local level="$1"
 	local message
@@ -208,9 +211,15 @@ _write_log() {
 		FATAL)   _sym="$_SYMBOL_FATAL"   ; _color="$_COLOR_RED_BOLD" ;;
 		esac
 		if [[ "$dest" == "stderr" ]]; then
-			printf '%b%s%b  %s\n' "$_color" "$_sym" "$_COLOR_RESET" "$message" >&2
+			while IFS= read -r _line; do
+				[[ -z "$_line" ]] && continue
+				printf '%b%s%b  %s\n' "$_color" "$_sym" "$_COLOR_RESET" "$_line" >&2
+			done <<< "$message"
 		else
-			printf '%b%s%b  %s\n' "$_color" "$_sym" "$_COLOR_RESET" "$message"
+			while IFS= read -r _line; do
+				[[ -z "$_line" ]] && continue
+				printf '%b%s%b  %s\n' "$_color" "$_sym" "$_COLOR_RESET" "$_line"
+			done <<< "$message"
 		fi
 		if [[ -n "$LOG_FILE" ]]; then
 			printf '[%s] [%s] %s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$level" "$message" >>"$LOG_FILE" 2>/dev/null || true
