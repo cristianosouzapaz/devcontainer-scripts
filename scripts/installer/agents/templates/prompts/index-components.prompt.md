@@ -1,83 +1,48 @@
 ---
 name: index-components
-description: Index React components in one or more folders by reading local component files and summarizing each component's architectural role. Use when documenting component folders anywhere in a workspace.
+description: Index React components in one or more folders by reading local component files and summarizing each component's UI role. Use when documenting component folders anywhere in a workspace.
 argument-hint: Folder path, glob, or natural-language scope describing which React component folders to process
 ---
-Create or replace `index.md` in each requested folder that contains React components.
+Create or replace `index.md` in each folder that directly contains React component files (`.tsx`/`.jsx`).
 
-## Input
+## Scope
 
-The prompt argument may be any of the following:
-
-- One folder path.
-- Multiple folder paths.
-- A glob-like scope.
-- A natural-language request such as "create it for every folder with React components under dashboard".
-
-If the input points to a broad parent folder, treat it as a recursive search scope and process only descendant folders that contain React components.
-
-## Task
-
-1. Resolve the requested scope into one or more target folders.
-2. If the request names a broad parent folder or area, search recursively for descendant folders that contain React components and use only those folders as targets.
-3. In each target folder, identify the local React component files that should be documented.
-4. Read each component file to understand what it renders and its role in that folder.
-5. Infer one role for each file using only these labels:
-   - `entry-point`
-   - `layout`
-   - `form`
-   - `sub-component`
-   - `provider`
-6. Write `index.md` into each target folder using the exact structure below.
+The argument may be a folder path, multiple folder paths, a glob, or a natural-language request (e.g. "every folder with React components under dashboard"). If it names a broad parent, search recursively and target only descendant folders that directly contain component files — never a parent folder that has none directly inside it.
 
 ## Output Format
 
 ```md
-<One sentence describing the folder scope and its main components. Imperative present tense.>
+---
+update: Rewrite from scratch on every change. UI role only — no props, hooks, refs, state, libraries, or history.
+---
+<One sentence, imperative present tense, ending with a period, naming the folder's feature/group and what it covers.>
 
 | File         | Role     | Description |
 | ------------ | -------- | ----------- |
 | `<filename>` | `<role>` | ...         |
 ```
 
-## Rules
+## Content Rules
 
-### Context Sentence
+- **Describe the UI, not the implementation.** Say what the component shows or does for the user. Never mention prop names, hook names, refs, internal state, libraries, or the history of how it got that way.
+- `Description`: starts with a verb (`Renders`, `Displays`, `Wraps`, ...), 80 characters max, one line.
+- `File`: filename in backticks.
+- `Role`: exactly one label — `entry-point`, `layout`, `form`, `sub-component`, `provider`.
+- Row order: `entry-point` first, then alphabetical by filename.
+- When `index.md` already exists, rewrite every changed row from scratch against these rules — never append to or extend prior wording.
 
-- One line only.
-- Imperative present tense.
-- End with a period.
-- Mention the feature, area, or component group and summarize what the folder covers.
+## Role Labels
 
-### Table Columns
+- `entry-point`: root component of the feature, page, or group.
+- `layout`: visual shell or wrapper with no business logic.
+- `form`: controlled input fields for CRUD operations.
+- `sub-component`: reusable piece consumed within the same local feature or group.
+- `provider`: context or state wrapper.
 
-- `File` uses the filename in backticks.
-- `Role` uses exactly one allowed label.
-- `Description` is in English, starts with a verb such as `Renders`, `Displays`, or `Wraps`, and stays within about 80 characters.
+## Edge Cases
 
-### Role Labels
-
-- `entry-point`: Root component of the feature, page, or component group.
-- `layout`: Visual shell or wrapper with no business logic.
-- `form`: Controlled input fields for CRUD operations.
-- `sub-component`: Reusable piece consumed within the same local feature or group.
-- `provider`: Context or state wrapper.
-
-### Row Order
-
-- Put the `entry-point` row first.
-- Sort all remaining rows alphabetically by filename.
-
-## Constraints
-
-- Work only inside folders resolved from the user's request.
-- Treat `.tsx` and `.jsx` files as React component candidates. Ignore files that clearly are not React components.
-- A folder qualifies as a target only if it directly contains at least one React component file.
-- When searching recursively, do not generate `index.md` for parent folders that do not directly contain React components.
-- Do not include `index.md` itself in any table.
-- Generate one `index.md` per target folder.
-- Do not combine files from different folders into the same `index.md`.
-- Do not mention this prompt, any source template, or external instructions in the generated file.
-- If the user requests a broad scope, process every matching folder that contains React components.
-- If a resolved folder has no React component files, skip it and mention that in the chat response.
-- If no matching folders contain React component files, stop and explain that no component index can be generated.
+- One `index.md` per folder; never merge files from different folders into one.
+- Never list `index.md` itself as a row.
+- Never mention this prompt, any template, or external instructions in the output.
+- A folder with no component files: skip it and say so in the chat response.
+- No matching folders at all: stop and say no index can be generated.
