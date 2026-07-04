@@ -12,7 +12,7 @@
     {
         "name": "Agent Orchestration",
         "filename": "agent-orchestration.instructions.md",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "tags": [
             "agents",
             "multi-agent"
