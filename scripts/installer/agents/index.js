@@ -269,7 +269,9 @@ const askUser = async () => {
             const copilotRelPath = join(".github", "instructions", filename);
             const installedVersion = lock.instructions[claudeRelPath] ?? lock.instructions[copilotRelPath] ?? null;
             const versionStr = installedVersion
-                ? chalk.gray(`(installed: v${installedVersion} → v${version})`)
+                ? installedVersion === version
+                    ? chalk.gray(`(installed: v${installedVersion})`)
+                    : chalk.gray(`(installed: v${installedVersion} → v${version})`)
                 : chalk.gray(`(v${version})`);
             return { name: `${name} ${versionStr} ${buildTagsStr(tags)}`, value: { filename, version, name, tags, templateFile } };
         });
@@ -279,7 +281,9 @@ const askUser = async () => {
             const claudeRelPath = join(".claude", "commands", commandFilename);
             const installedVersion = lock.prompts[copilotRelPath] ?? lock.prompts[claudeRelPath] ?? null;
             const versionStr = installedVersion
-                ? chalk.gray(`(installed: v${installedVersion} → v${version})`)
+                ? installedVersion === version
+                    ? chalk.gray(`(installed: v${installedVersion})`)
+                    : chalk.gray(`(installed: v${installedVersion} → v${version})`)
                 : chalk.gray(`(v${version})`);
             return { name: `${name} ${versionStr} ${buildTagsStr(tags)}`, value: { filename, commandFilename, version, name, tags, templateFile } };
         });

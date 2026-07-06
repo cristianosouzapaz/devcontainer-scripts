@@ -63,7 +63,9 @@ const askUser = async () => {
         const choices = configs.map((c) => {
             const installedVersion = readConfigInstalledVersion(destDir, c.filename);
             const versionStr = installedVersion
-                ? chalk.gray(`(installed: v${installedVersion} → v${c.version})`)
+                ? installedVersion === c.version
+                    ? chalk.gray(`(installed: v${installedVersion})`)
+                    : chalk.gray(`(installed: v${installedVersion} → v${c.version})`)
                 : chalk.gray(`(v${c.version})`);
             return { name: `${c.name} ${versionStr} ${buildTagsStr(c.tags)}`, value: c };
         });

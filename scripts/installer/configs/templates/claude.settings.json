@@ -9,7 +9,8 @@
             "Read(*)",
             "Skill(impeccable)",
             "WebFetch(*)",
-            "WebSearch(*)"
+            "WebSearch(*)",
+            "Write(*)"
         ],
         "deny": [
             "Bash(gh pr close *)",
