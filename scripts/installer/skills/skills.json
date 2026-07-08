@@ -135,7 +135,10 @@
             "design",
             "interview"
         ],
-        "url": "https://github.com/mattpocock/skills"
+        "url": "https://github.com/mattpocock/skills",
+        "requires": [
+            "grilling"
+        ]
     },
     {
         "name": "Grill With Docs",
@@ -146,7 +149,11 @@
             "interview",
             "documentation"
         ],
-        "url": "https://github.com/mattpocock/skills"
+        "url": "https://github.com/mattpocock/skills",
+        "requires": [
+            "grilling",
+            "domain-modeling"
+        ]
     },
     {
         "name": "Agent Skills (All skills)",

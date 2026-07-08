@@ -32,7 +32,9 @@ const loadSkillsCatalog = () => {
             && typeof entry?.skill === "string"
             && typeof entry?.url === "string"
             && Array.isArray(entry?.tags)
-            && entry.tags.every((tag) => typeof tag === "string");
+            && entry.tags.every((tag) => typeof tag === "string")
+            && (entry?.requires === undefined
+                || (Array.isArray(entry.requires) && entry.requires.every((dep) => typeof dep === "string")));
 
         if (!isValidEntry) throw new Error(`Invalid skills catalog entry at index ${index}.`);
     }
@@ -86,10 +88,11 @@ const askUser = async () => {
             [TOOLS.claude]:  [AGENTS.claude],
         };
 
-        for (const { url, skill } of selectedSkills) {
+        for (const { url, skill, requires = [] } of selectedSkills) {
             consola.start(`Installing ${skill}`);
             try {
                 installSkillForAgents(url, skill, agentsByTool[selectedTool]);
+                for (const dependency of requires) installSkillForAgents(url, dependency, agentsByTool[selectedTool]);
                 consola.success(`${skill} installed`);
             } catch (e) {
                 consola.error(`Failed to install ${skill}: ${e instanceof Error ? e.message : String(e)}`);
