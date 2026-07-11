@@ -61,15 +61,24 @@ const parseFrontmatter = (content) => {
 
 /**
  * Reconstruct a markdown file from frontmatter fields and body.
- * Field values are written as-is, preserving the original quoting from the source template.
- * 
- * @param {Record<string, string>} fields
+ * String values are written as-is, preserving the original quoting from the source template.
+ * Array values are written as a YAML list, one item per line.
+ *
+ * @param {Record<string, string | string[]>} fields
  * @param {string} body
  * @returns {string}
  */
 const buildFrontmatter = (fields, body) => {
-    const fm = Object.entries(fields).map(([k, v]) => `${k}: ${v}`).join("\n");
-    return `---\n${fm}\n---\n${body}`;
+    const lines = [];
+    for (const [k, v] of Object.entries(fields)) {
+        if (Array.isArray(v)) {
+            lines.push(`${k}:`);
+            for (const item of v) lines.push(`  - ${item}`);
+        } else {
+            lines.push(`${k}: ${v}`);
+        }
+    }
+    return `---\n${lines.join("\n")}\n---\n${body}`;
 };
 
 // ─── Filename helpers ────────────────────────────────────────────────────────
@@ -86,16 +95,32 @@ const toClaudeRuleFilename = (instructionFilename) => instructionFilename.replac
 // ─── Claude content builders ─────────────────────────────────────────────────
 
 /**
+ * Whether a Copilot `applyTo` glob targets every file, e.g. `"**"` or `**`.
+ *
+ * @param {string} applyTo - Raw (possibly quoted) applyTo value.
+ * @returns {boolean}
+ */
+const appliesToAllFiles = (applyTo) => applyTo.replace(/^"|"$/g, "") === "**";
+
+/**
  * Build the content for a .claude/rules/ file from a Copilot instruction template.
- * Strips Copilot-specific frontmatter keys, preserving description and body.
- * 
+ * Strips Copilot-specific frontmatter keys (name), preserving description and body.
+ * Translates `applyTo` into Claude Code's `paths:` field, the only field Claude Code
+ * reads for conditional rule loading. When `applyTo` targets every file (`**`), `paths`
+ * is omitted so the rule loads unconditionally at session start, matching Claude Code's
+ * own convention for rules without `paths:`.
+ *
  * @param {string} templateContent
  * @returns {string}
  */
 const buildClaudeRuleContent = (templateContent) => {
     const { raw, body } = parseFrontmatter(templateContent);
     const filtered = Object.fromEntries(Object.entries(raw).filter(([k]) => !COPILOT_INSTRUCTION_KEYS.includes(k)));
-    
+
+    if (raw.applyTo && !appliesToAllFiles(raw.applyTo)) {
+        filtered.paths = [raw.applyTo];
+    }
+
     return buildFrontmatter(filtered, body);
 };
 

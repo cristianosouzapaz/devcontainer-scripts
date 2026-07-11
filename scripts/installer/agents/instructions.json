@@ -2,7 +2,7 @@
     {
         "name": "Bash Rules",
         "filename": "bash.instructions.md",
-        "version": "1.1.0",
+        "version": "1.1.1",
         "tags": [
             "bash",
             "shell"
@@ -22,7 +22,7 @@
     {
         "name": "Documentation Rules",
         "filename": "documentation.instructions.md",
-        "version": "1.1.0",
+        "version": "1.1.1",
         "tags": [
             "docs",
             "jsdoc",
@@ -33,7 +33,7 @@
     {
         "name": "Next.js Rules",
         "filename": "nextjs.instructions.md",
-        "version": "1.1.0",
+        "version": "1.1.1",
         "tags": [
             "nextjs",
             "react"
@@ -43,7 +43,7 @@
     {
         "name": "TypeScript Rules",
         "filename": "typescript.instructions.md",
-        "version": "1.1.0",
+        "version": "1.1.1",
         "tags": [
             "typescript"
         ],
