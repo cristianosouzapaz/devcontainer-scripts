@@ -3,7 +3,7 @@
         "name": "Generate Commit",
         "filename": "generate-commit.prompt.md",
         "commandFilename": "generate-commit.md",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "tags": [
             "git"
         ],
