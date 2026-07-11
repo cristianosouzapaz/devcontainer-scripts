@@ -333,17 +333,20 @@ const askUser = async () => {
         }
 
         const selectedTool = await selectTargetTool();
+        const writtenFlags = [];
 
         if (selectedInstructions.length > 0) {
             const writtenInstructions = await installInstructions(selectedInstructions, destRoot, selectedTool, lock);
             Object.assign(lock.instructions, writtenInstructions);
+            writtenFlags.push(Object.keys(writtenInstructions).length > 0);
         }
         if (selectedPrompts.length > 0) {
             const writtenPrompts = await installPrompts(selectedPrompts, destRoot, selectedTool, lock);
             Object.assign(lock.prompts, writtenPrompts);
+            writtenFlags.push(Object.keys(writtenPrompts).length > 0);
         }
 
-        writeLockFile(destRoot, lock);
+        if (writtenFlags.some(Boolean)) writeLockFile(destRoot, lock);
     } catch (e) {
         handleError(e);
     }

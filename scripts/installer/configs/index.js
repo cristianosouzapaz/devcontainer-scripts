@@ -83,6 +83,7 @@ const askUser = async () => {
         }
 
         const lock = readLockFile(destDir);
+        const writtenFlags = [];
 
         for (const config of selectedConfigs) {
             const destPath = join(destDir, config.filename);
@@ -90,9 +91,10 @@ const askUser = async () => {
             const content = readFileSync(join(__dirname, "templates", config.templateFile), "utf8");
             const written = await writeWithConflict(destPath, content, config.filename, config.version, lock.configs[config.filename] ?? null);
             if (written) lock.configs[config.filename] = config.version;
+            writtenFlags.push(written);
         }
 
-        writeLockFile(destDir, lock);
+        if (writtenFlags.some(Boolean)) writeLockFile(destDir, lock);
     } catch (e) {
         handleError(e);
     }
