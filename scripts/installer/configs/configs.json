@@ -58,7 +58,7 @@
     {
         "name": "Claude Code Settings",
         "filename": ".claude/settings.json",
-        "version": "1.0.1",
+        "version": "1.0.2",
         "tags": [
             "claude"
         ],

@@ -4,10 +4,9 @@
         "allow": [
             "Bash(*)",
             "Edit(*)",
-            "mcp__context7__query-docs",
-            "mcp__context7__resolve-library-id",
+            "mcp__*",
             "Read(*)",
-            "Skill(impeccable)",
+            "Skill(*)",
             "WebFetch(*)",
             "WebSearch(*)",
             "Write(*)"
