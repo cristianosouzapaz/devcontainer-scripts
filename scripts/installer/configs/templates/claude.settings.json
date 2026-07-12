@@ -4,7 +4,7 @@
         "allow": [
             "Bash(*)",
             "Edit(*)",
-            "mcp__*",
+            "mcp__context7__*",
             "Read(*)",
             "Skill(*)",
             "WebFetch(*)",
