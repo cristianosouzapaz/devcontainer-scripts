@@ -156,6 +156,25 @@
         ]
     },
     {
+        "name": "Handoff",
+        "skill": "handoff",
+        "tags": [
+            "planning",
+            "workflow",
+            "context"
+        ],
+        "url": "https://github.com/mattpocock/skills"
+    },
+    {
+        "name": "Ponytail",
+        "skill": "ponytail",
+        "tags": [
+            "productivity",
+            "communication"
+        ],
+        "url": "https://github.com/dietrichgebert/ponytail"
+    },
+    {
         "name": "Agent Skills (All skills)",
         "skill": "*",
         "tags": [
