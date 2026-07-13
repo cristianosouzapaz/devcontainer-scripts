@@ -46,7 +46,7 @@ readonly _SYMBOL_FATAL='✖'
 log_debug() {
 	# Show debug when DEBUG_MODE true or LOG_LEVEL allows DEBUG
 	if [[ "${DEBUG_MODE}" == "true" ]] || _should_log "DEBUG"; then
-		_log_output "DEBUG" "$*"
+		_log_output "DEBUG" "$*" "stderr"
 	fi
 }
 
@@ -57,17 +57,17 @@ log_error() {
 
 # log_info: Logs informational messages
 log_info() {
-	_log_output "INFO" "$*"
+	_log_output "INFO" "$*" "stderr"
 }
 
 # log_success: Logs success messages
 log_success() {
-	_log_output "SUCCESS" "$*"
+	_log_output "SUCCESS" "$*" "stderr"
 }
 
 # log_warning: Logs warning messages
 log_warning() {
-	_log_output "WARNING" "$*"
+	_log_output "WARNING" "$*" "stderr"
 }
 
 # log_fatal: Logs fatal error messages and exits
@@ -230,9 +230,8 @@ _write_log() {
 # _log_output: public wrapper that checks level filtering
 _log_output() {
 	local level="$1"
-	shift
-	local message="$*"
-	local dest="${LOG_DEST:-stdout}"
+	local message="$2"
+	local dest="${3:-stdout}"
 	# Allow DEBUG messages when DEBUG_MODE is explicitly enabled
 	if [[ "$level" == "DEBUG" && "${DEBUG_MODE}" == "true" ]]; then
 		:

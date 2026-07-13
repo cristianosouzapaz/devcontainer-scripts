@@ -91,11 +91,12 @@ dump_error_stack() {
 	if [[ "${#_ERROR_STACK[@]}" -eq 0 ]]; then
 		return 0
 	fi
-	local i entry code lineno func cmd msg
+	local i entry code lineno func cmd msg line
 	for i in "${!_ERROR_STACK[@]}"; do
 		entry="${_ERROR_STACK[$i]}"
 		IFS='|' read -r code lineno func cmd msg <<<"$entry"
-		printf '%s: code=%s lineno=%s func=%s cmd=%s msg=%s\n' "$((i + 1))" "$code" "$lineno" "$func" "$cmd" "${msg:-}"
+		line=$(printf '%s: code=%s lineno=%s func=%s cmd=%s msg=%s' "$((i + 1))" "$code" "$lineno" "$func" "$cmd" "${msg:-}")
+		log_error "$line"
 	done
 }
 
