@@ -11,10 +11,10 @@ import { select } from "@inquirer/prompts";
  *   - File writing:  writeWithConflict
  *   - Version read:  readConfigInstalledVersion (lock file)
  *   - Lock file:     readLockFile, writeLockFile  →  template-lock.json in the user's project root
- *   - UI helpers:    buildTagsStr, setupConsola, selectTargetTool
+ *   - UI helpers:    buildTagsStr, setupConsola, selectTargetTool, resolvePageSize
  *   - Catalog:       loadJsonCatalog
  *   - Error:         handleError
- *   - Constants:     AGENTS, TOOLS
+ *   - Constants:     AGENTS, TOOLS, MAX_CATALOG_PAGE_SIZE
  */
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -35,6 +35,12 @@ export const TOOLS = {
     copilot: "copilot",
     claude: "claude",
 };
+
+/**
+ * Upper bound on checkbox pageSize, so a catalog stays on one screen without
+ * an unbounded prompt height if it grows very large.
+ */
+export const MAX_CATALOG_PAGE_SIZE = 30;
 
 // ─── Functions ───────────────────────────────────────────────────────────────
 
@@ -65,6 +71,14 @@ export const setupConsola = () => {
  */
 export const buildTagsStr = (tags) =>
     tags.map((tag) => chalk.bgWhite.black(` ${tag} `)).join(" ");
+
+/**
+ * Resolve a checkbox prompt's pageSize so the full choice list (including any
+ * Separator rows) renders on one screen, capped at MAX_CATALOG_PAGE_SIZE.
+ * @param {number} choiceCount - Total number of rendered rows (choices + separators).
+ * @returns {number}
+ */
+export const resolvePageSize = (choiceCount) => Math.min(choiceCount, MAX_CATALOG_PAGE_SIZE);
 
 /**
  * Prompt the user to select a target tool via a single-choice radio.

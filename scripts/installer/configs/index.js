@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import consola from "consola";
 import inquirer from "inquirer";
-import { buildTagsStr, handleError, loadJsonCatalog, readConfigInstalledVersion, readLockFile, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
+import { buildTagsStr, handleError, loadJsonCatalog, readConfigInstalledVersion, readLockFile, resolvePageSize, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
 
 /**
  * @fileoverview Interactive installer for project config file templates.
@@ -28,7 +28,7 @@ const CONFIGS_FILE_URL = new URL("./configs.json", import.meta.url);
 
 /**
  * Load and validate the config templates catalog from configs.json.
- * Each entry must have: name, filename, version (semver), templateFile, tags.
+ * Each entry must have: name, filename, version (semver), description, templateFile, tags.
  * @returns {object[]} An array of validated config template entries.
  * @throws Will throw an error if the catalog is invalid or cannot be read.
  */
@@ -40,6 +40,8 @@ const loadConfigsCatalog = () => {
             typeof entry?.name === "string"
             && typeof entry?.filename === "string"
             && typeof entry?.version === "string"
+            && typeof entry?.description === "string"
+            && entry.description.length > 0
             && typeof entry?.templateFile === "string"
             && Array.isArray(entry?.tags)
             && entry.tags.every((tag) => typeof tag === "string");
@@ -67,13 +69,14 @@ const askUser = async () => {
                     ? chalk.gray(`(installed: v${installedVersion})`)
                     : chalk.gray(`(installed: v${installedVersion} → v${c.version})`)
                 : chalk.gray(`(v${c.version})`);
-            return { name: `${c.name} ${versionStr} ${buildTagsStr(c.tags)}`, value: c };
+            return { name: `${c.name} ${versionStr} ${buildTagsStr(c.tags)}`, value: c, description: c.description };
         });
 
         const { selectedConfigs } = await inquirer.prompt([{
             choices,
             message: "Select config files to copy:",
             name: "selectedConfigs",
+            pageSize: resolvePageSize(choices.length),
             type: "checkbox",
         }]);
 

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import consola from "consola";
 import inquirer from "inquirer";
-import { buildTagsStr, handleError, loadJsonCatalog, readLockFile, selectTargetTool, setupConsola, TOOLS, writeLockFile, writeWithConflict } from "../shared/utils.js";
+import { buildTagsStr, handleError, loadJsonCatalog, readLockFile, resolvePageSize, selectTargetTool, setupConsola, TOOLS, writeLockFile, writeWithConflict } from "../shared/utils.js";
 
 /**
  * @fileoverview Interactive installer for agent instruction and prompt templates.
@@ -95,12 +95,32 @@ const toClaudeRuleFilename = (instructionFilename) => instructionFilename.replac
 // ─── Claude content builders ─────────────────────────────────────────────────
 
 /**
+ * Strip a single layer of surrounding double quotes from a raw frontmatter value.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+const stripQuotes = (value) => value.replace(/^"|"$/g, "");
+
+/**
  * Whether a Copilot `applyTo` glob targets every file, e.g. `"**"` or `**`.
  *
  * @param {string} applyTo - Raw (possibly quoted) applyTo value.
  * @returns {boolean}
  */
-const appliesToAllFiles = (applyTo) => applyTo.replace(/^"|"$/g, "") === "**";
+const appliesToAllFiles = (applyTo) => stripQuotes(applyTo) === "**";
+
+/**
+ * Read a template file's own frontmatter `description` for display in the picker,
+ * so the picker never carries a second, driftable copy of it.
+ *
+ * @param {string} templateFile - Path relative to templates/, e.g. "instructions/bash.instructions.md".
+ * @returns {string}
+ */
+const readTemplateDescription = (templateFile) => {
+    const { raw } = parseFrontmatter(readFileSync(join(__dirname, "templates", templateFile), "utf8"));
+    return stripQuotes(raw.description ?? "");
+};
 
 /**
  * Build the content for a .claude/rules/ file from a Copilot instruction template.
@@ -298,7 +318,11 @@ const askUser = async () => {
                     ? chalk.gray(`(installed: v${installedVersion})`)
                     : chalk.gray(`(installed: v${installedVersion} → v${version})`)
                 : chalk.gray(`(v${version})`);
-            return { name: `${name} ${versionStr} ${buildTagsStr(tags)}`, value: { filename, version, name, tags, templateFile } };
+            return {
+                name: `${name} ${versionStr} ${buildTagsStr(tags)}`,
+                value: { filename, version, name, tags, templateFile },
+                description: readTemplateDescription(templateFile),
+            };
         });
 
         const promptChoices = prompts.map(({ filename, commandFilename, version, name, tags, templateFile }) => {
@@ -310,7 +334,11 @@ const askUser = async () => {
                     ? chalk.gray(`(installed: v${installedVersion})`)
                     : chalk.gray(`(installed: v${installedVersion} → v${version})`)
                 : chalk.gray(`(v${version})`);
-            return { name: `${name} ${versionStr} ${buildTagsStr(tags)}`, value: { filename, commandFilename, version, name, tags, templateFile } };
+            return {
+                name: `${name} ${versionStr} ${buildTagsStr(tags)}`,
+                value: { filename, commandFilename, version, name, tags, templateFile },
+                description: readTemplateDescription(templateFile),
+            };
         });
 
         const { selectedInstructions } = await inquirer.prompt([{
@@ -318,6 +346,7 @@ const askUser = async () => {
             name: "selectedInstructions",
             message: "Select instruction files to install:",
             choices: instructionChoices,
+            pageSize: resolvePageSize(instructionChoices.length),
         }]);
 
         const { selectedPrompts } = await inquirer.prompt([{
@@ -325,6 +354,7 @@ const askUser = async () => {
             name: "selectedPrompts",
             message: "Select prompt files to install:",
             choices: promptChoices,
+            pageSize: resolvePageSize(promptChoices.length),
         }]);
 
         if (selectedInstructions.length + selectedPrompts.length === 0) {

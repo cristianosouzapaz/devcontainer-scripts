@@ -2,6 +2,8 @@
     {
         "name": "Agent Browser",
         "skill": "agent-browser",
+        "category": "Automation",
+        "description": "Fast native CLI for controlling web browsers via simple commands, built for AI agents.",
         "tags": [
             "automation",
             "web"
@@ -11,6 +13,8 @@
     {
         "name": "Better Auth Best Practices",
         "skill": "better-auth-best-practices",
+        "category": "Security",
+        "description": "Configure Better Auth's server/client, database adapters, sessions, and plugins for TypeScript auth setups.",
         "tags": [
             "authentication",
             "security"
@@ -20,6 +24,8 @@
     {
         "name": "Brainstorming",
         "skill": "brainstorming",
+        "category": "Planning & Workflow",
+        "description": "Refines rough ideas into a validated design through structured questions before any code is written.",
         "tags": [
             "ideation",
             "planning"
@@ -29,6 +35,8 @@
     {
         "name": "Caveman",
         "skill": "caveman",
+        "category": "Productivity & Communication",
+        "description": "Ultra-compressed communication mode — cuts token usage ~75% while keeping full technical accuracy.",
         "tags": [
             "productivity",
             "communication"
@@ -38,6 +46,8 @@
     {
         "name": "Find Skills",
         "skill": "find-skills",
+        "category": "Discovery & Tooling",
+        "description": "CLI to discover, install, and manage reusable agent skills across 70+ coding agents.",
         "tags": [
             "discovery",
             "tools"
@@ -47,6 +57,8 @@
     {
         "name": "Frontend Design",
         "skill": "frontend-design",
+        "category": "Design & Frontend",
+        "description": "Guidance for distinctive visual design — aesthetic direction, typography, choices that don't look templated.",
         "tags": [
             "design",
             "frontend"
@@ -56,6 +68,8 @@
     {
         "name": "Next.js App Router Patterns",
         "skill": "nextjs-app-router-patterns",
+        "category": "Framework (Next.js/Vercel)",
+        "description": "Patterns for Next.js 14+ App Router: Server Components, streaming, parallel routes, data fetching.",
         "tags": [
             "nextjs",
             "routing"
@@ -65,6 +79,8 @@
     {
         "name": "Next.js Best Practices",
         "skill": "next-best-practices",
+        "category": "Framework (Next.js/Vercel)",
+        "description": "Next.js best-practices guidance — largely superseded by Next.js 16.3+'s built-in generated AGENTS.md/CLAUDE.md.",
         "tags": [
             "nextjs",
             "best-practices"
@@ -74,6 +90,8 @@
     {
         "name": "Reducing Entropy",
         "skill": "reducing-entropy",
+        "category": "Code Quality",
+        "description": "Keeps the codebase compact and low-entropy by minimizing unnecessary size and complexity.",
         "tags": [
             "code-quality",
             "refactoring"
@@ -83,6 +101,8 @@
     {
         "name": "Skill Creator",
         "skill": "skill-creator",
+        "category": "Discovery & Tooling",
+        "description": "Create, edit, and iteratively improve agent skills, including running evals and benchmarking performance.",
         "tags": [
             "development",
             "tools"
@@ -92,6 +112,8 @@
     {
         "name": "Vercel Composition Patterns",
         "skill": "vercel-composition-patterns",
+        "category": "Framework (Next.js/Vercel)",
+        "description": "Avoids boolean-prop proliferation via compound components, state lifting, and internal composition.",
         "tags": [
             "vercel",
             "patterns"
@@ -101,6 +123,8 @@
     {
         "name": "Vercel React Best Practices",
         "skill": "vercel-react-best-practices",
+        "category": "Design & Frontend",
+        "description": "Vercel Engineering's React/Next.js performance guidelines — 40+ rules across 8 categories.",
         "tags": [
             "vercel",
             "react",
@@ -111,6 +135,8 @@
     {
         "name": "Web Design Guidelines",
         "skill": "web-design-guidelines",
+        "category": "Design & Frontend",
+        "description": "Audits UI code against 100+ guidelines covering accessibility, performance, and UX.",
         "tags": [
             "design",
             "web"
@@ -120,6 +146,8 @@
     {
         "name": "Impeccable",
         "skill": "impeccable",
+        "category": "Design & Frontend",
+        "description": "Design guidance with 23 commands and 46 rules to push AI-generated UI away from generic template looks.",
         "tags": [
             "design",
             "frontend",
@@ -130,6 +158,8 @@
     {
         "name": "Grill Me",
         "skill": "grill-me",
+        "category": "Planning & Workflow",
+        "description": "Interviews you relentlessly about a plan or design, one question at a time, until reaching shared understanding.",
         "tags": [
             "planning",
             "design",
@@ -143,6 +173,8 @@
     {
         "name": "Grill With Docs",
         "skill": "grill-with-docs",
+        "category": "Planning & Workflow",
+        "description": "Interview that builds your project's domain model while updating CONTEXT.md and ADRs.",
         "tags": [
             "planning",
             "design",
@@ -158,6 +190,8 @@
     {
         "name": "Handoff",
         "skill": "handoff",
+        "category": "Planning & Workflow",
+        "description": "Compresses the current conversation into a document so another agent can seamlessly continue the work.",
         "tags": [
             "planning",
             "workflow",
@@ -166,8 +200,22 @@
         "url": "https://github.com/mattpocock/skills"
     },
     {
+        "name": "Wayfinder",
+        "skill": "wayfinder",
+        "category": "Planning & Workflow",
+        "description": "Maps complex efforts on the issue tracker via 'decision tickets' — resolves key decisions rather than executing work directly.",
+        "tags": [
+            "planning",
+            "project-management",
+            "decision-making"
+        ],
+        "url": "https://github.com/mattpocock/skills"
+    },
+    {
         "name": "Ponytail",
         "skill": "ponytail",
+        "category": "Productivity & Communication",
+        "description": "Makes agents write minimal necessary code via a 'laziness ladder' — reuse or stdlib before writing anything new.",
         "tags": [
             "productivity",
             "communication"
@@ -177,6 +225,8 @@
     {
         "name": "Agent Skills (All skills)",
         "skill": "*",
+        "category": "Bundles",
+        "description": "Bundle install of 24 production-grade engineering skills spanning spec, plan, build, test, review, and ship.",
         "tags": [
             "bundle",
             "workflow"
@@ -186,6 +236,8 @@
     {
         "name": "Superpowers (All skills)",
         "skill": "*",
+        "category": "Bundles",
+        "description": "Bundle install of a full software-development methodology built from composable skills.",
         "tags": [
             "bundle",
             "workflow"

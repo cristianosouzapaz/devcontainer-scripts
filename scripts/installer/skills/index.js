@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { checkbox, Separator } from "@inquirer/prompts";
 import consola from "consola";
-import inquirer from "inquirer";
-import { AGENTS, buildTagsStr, handleError, loadJsonCatalog, selectTargetTool, setupConsola, TOOLS } from "../shared/utils.js";
+import { AGENTS, handleError, loadJsonCatalog, resolvePageSize, selectTargetTool, setupConsola, TOOLS } from "../shared/utils.js";
 
 /**
  * @fileoverview Interactive installer for VS Code Skills.
@@ -15,6 +15,22 @@ setupConsola();
 
 const SKILLS_FILE_URL = new URL("./skills.json", import.meta.url);
 const PROMPT_MESSAGE = "Select skills to INSTALL:";
+
+/**
+ * Display order for skill categories. Categories not listed here are
+ * appended after these, in the order first encountered in the catalog.
+ */
+const CATEGORY_ORDER = [
+    "Planning & Workflow",
+    "Design & Frontend",
+    "Framework (Next.js/Vercel)",
+    "Code Quality",
+    "Security",
+    "Automation",
+    "Discovery & Tooling",
+    "Productivity & Communication",
+    "Bundles",
+];
 
 // ─── Functions ───────────────────────────────────────────────────────────────
 
@@ -30,6 +46,10 @@ const loadSkillsCatalog = () => {
         const isValidEntry =
             typeof entry?.name === "string"
             && typeof entry?.skill === "string"
+            && typeof entry?.category === "string"
+            && entry.category.length > 0
+            && typeof entry?.description === "string"
+            && entry.description.length > 0
             && typeof entry?.url === "string"
             && Array.isArray(entry?.tags)
             && entry.tags.every((tag) => typeof tag === "string")
@@ -40,6 +60,29 @@ const loadSkillsCatalog = () => {
     }
 
     return entries;
+};
+
+/**
+ * Group skill entries by category, in CATEGORY_ORDER (unlisted categories
+ * are appended in first-seen order), preserving each entry's relative
+ * position within its category.
+ * @param {object[]} entries - Skill catalog entries.
+ * @returns {Map<string, object[]>} Entries keyed by category.
+ */
+const groupByCategory = (entries) => {
+    const groups = new Map();
+    for (const entry of entries) {
+        if (!groups.has(entry.category)) groups.set(entry.category, []);
+        groups.get(entry.category).push(entry);
+    }
+
+    return new Map(
+        [...groups.entries()].sort(([a], [b]) => {
+            const rankA = CATEGORY_ORDER.includes(a) ? CATEGORY_ORDER.indexOf(a) : CATEGORY_ORDER.length;
+            const rankB = CATEGORY_ORDER.includes(b) ? CATEGORY_ORDER.indexOf(b) : CATEGORY_ORDER.length;
+            return rankA - rankB;
+        }),
+    );
 };
 
 /**
@@ -63,17 +106,20 @@ const askUser = async () => {
     try {
         const skills = loadSkillsCatalog();
 
-        const choices = skills.map((entry) => ({
-            name: `${entry.name} ${buildTagsStr(entry.tags)}`,
-            value: entry,
-        }));
+        const choices = [...groupByCategory(skills).entries()].flatMap(([category, entries]) => [
+            new Separator(`── ${category} ──`),
+            ...entries.map((entry) => ({
+                name: entry.name,
+                value: entry,
+                description: entry.description,
+            })),
+        ]);
 
-        const { selectedSkills } = await inquirer.prompt([{
+        const selectedSkills = await checkbox({
             choices,
             message: PROMPT_MESSAGE,
-            name: "selectedSkills",
-            type: "checkbox",
-        }]);
+            pageSize: resolvePageSize(choices.length),
+        });
 
         if (selectedSkills.length === 0) {
             consola.info("No skills selected.");

@@ -3,6 +3,7 @@
         "name": "Biome",
         "filename": "biome.json",
         "version": "1.0.1",
+        "description": "Biome linter/formatter config — organizes imports, sorts keys and attributes, Tailwind-aware CSS parsing.",
         "tags": [
             "linting",
             "formatting"
@@ -13,6 +14,7 @@
         "name": "Git Ignore",
         "filename": ".gitignore",
         "version": "1.0.2",
+        "description": "Standard .gitignore covering dependencies, build output, editor files, and local secrets.",
         "tags": [
             "git"
         ],
@@ -22,6 +24,7 @@
         "name": "Git Attributes",
         "filename": ".gitattributes",
         "version": "1.0.0",
+        "description": "Normalizes line endings to LF across text files and marks binaries to prevent content conversion.",
         "tags": [
             "git"
         ],
@@ -31,6 +34,7 @@
         "name": "Lefthook",
         "filename": "lefthook.yml",
         "version": "1.0.0",
+        "description": "Git hooks: runs Biome and TypeScript checks on staged files, enforces branch naming and commit message conventions, blocks pushes to main.",
         "tags": [
             "git-hooks"
         ],
@@ -40,6 +44,7 @@
         "name": "TypeScript (base)",
         "filename": "tsconfig.json",
         "version": "1.0.0",
+        "description": "Base tsconfig for non-framework TypeScript projects — strict compiler options, NodeNext modules.",
         "tags": [
             "typescript"
         ],
@@ -49,6 +54,7 @@
         "name": "TypeScript (Next.js)",
         "filename": "tsconfig.json",
         "version": "1.0.0",
+        "description": "tsconfig tailored for Next.js — adds JSX, DOM libs, and Next.js path/module resolution.",
         "tags": [
             "typescript",
             "nextjs"
@@ -59,6 +65,7 @@
         "name": "Claude Code Settings",
         "filename": ".claude/settings.json",
         "version": "1.0.2",
+        "description": "Default Claude Code permissions (allow/deny list) and project-wide MCP server settings.",
         "tags": [
             "claude"
         ],
@@ -68,6 +75,7 @@
         "name": "Claude Code MCP",
         "filename": ".mcp.json",
         "version": "1.0.0",
+        "description": "Registers the context7 MCP server (up-to-date library docs) for Claude Code.",
         "tags": [
             "claude",
             "tool"
@@ -78,6 +86,7 @@
         "name": "Graphify Ignore",
         "filename": ".graphifyignore",
         "version": "1.0.0",
+        "description": "Excludes dependencies and build output from Graphify's code graph analysis.",
         "tags": [
             "ai",
             "tool"
