@@ -2,6 +2,7 @@
     "enableAllProjectMcpServers": true,
     "permissions": {
         "allow": [
+            "Artifact",
             "Bash(*)",
             "Edit(*)",
             "mcp__context7__*",
