@@ -3,22 +3,22 @@
 # to keep local artifacts out of the repository history.
 
 # Package dependencies
-/node_modules
-/.pnp
+node_modules/
+.pnp/
 .pnp.js
-.pnpm-store
+.pnpm-store/
 
 # Build & framework output
-/build
-/dist
-/.next/
-/out/
-/.turbo/
-/.cache/
+build/
+dist/
+.next/
+out/
+.turbo/
+.cache/
 next-env.d.ts
 
 # Test output & coverage
-/coverage
+coverage/
 
 # Cache & temporary files
 .npm/
@@ -40,8 +40,8 @@ next-env.d.ts
 *.pem
 
 # Database & local state
-/prisma/db.sqlite
-/prisma/db.sqlite-journal
+prisma/db.sqlite
+prisma/db.sqlite-journal
 db.sqlite
 
 # Deployment config

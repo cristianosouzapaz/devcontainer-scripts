@@ -16,7 +16,7 @@
     {
         "name": "Git Ignore",
         "filename": ".gitignore",
-        "version": "1.0.2",
+        "version": "1.0.3",
         "description": "Standard .gitignore covering dependencies, build output, editor files, and local secrets.",
         "tags": [
             "git"
