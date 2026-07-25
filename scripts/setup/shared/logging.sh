@@ -45,39 +45,39 @@ readonly _SYMBOL_FATAL='✖'
 # log_debug: Logs debug messages if DEBUG_MODE is true
 log_debug() {
 	# Show debug when DEBUG_MODE true or LOG_LEVEL allows DEBUG
-	if [[ "${DEBUG_MODE}" == "true" ]] || _should_log "DEBUG"; then
-		_log_output "DEBUG" "$*" "stderr"
+	if [[ "${DEBUG_MODE}" == "true" ]] || should_log "DEBUG"; then
+		log_output "DEBUG" "$*" "stderr"
 	fi
 }
 
 # log_error: Logs error messages
 log_error() {
-	_log_output "ERROR" "$*" "stderr"
+	log_output "ERROR" "$*" "stderr"
 }
 
 # log_info: Logs informational messages
 log_info() {
-	_log_output "INFO" "$*" "stderr"
+	log_output "INFO" "$*" "stderr"
 }
 
 # log_success: Logs success messages
 log_success() {
-	_log_output "SUCCESS" "$*" "stderr"
+	log_output "SUCCESS" "$*" "stderr"
 }
 
 # log_warning: Logs warning messages
 log_warning() {
-	_log_output "WARNING" "$*" "stderr"
+	log_output "WARNING" "$*" "stderr"
 }
 
 # log_fatal: Logs fatal error messages and exits
 log_fatal() {
-	_log_output "FATAL" "$*" "stderr"
+	log_output "FATAL" "$*" "stderr"
 	exit 1
 }
 
 # Map log level names to numeric priorities
-_level_value() {
+level_value() {
 	case "$1" in
 	DEBUG) echo 10 ;;
 	INFO) echo 20 ;;
@@ -95,13 +95,13 @@ module_skip() {
 	_MODULE_SKIPPED="true"
 }
 
-# _should_log: determine if a message at given level should be logged
+# should_log: determine if a message at given level should be logged
 # Return 0 if given level should be logged according to LOG_LEVEL
-_should_log() {
+should_log() {
 	local min
 	local want
-	min=$(_level_value "${LOG_LEVEL^^}")
-	want=$(_level_value "$1")
+	min=$(level_value "${LOG_LEVEL^^}")
+	want=$(level_value "$1")
 	if ((want >= min)); then
 		return 0
 	else
@@ -109,8 +109,8 @@ _should_log() {
 	fi
 }
 
-# _rotate_log_if_needed: rotate log files when exceeding LOG_MAX_SIZE
-_rotate_log_if_needed() {
+# rotate_log_if_needed: rotate log files when exceeding LOG_MAX_SIZE
+rotate_log_if_needed() {
 	local size
 	local i
 	local maxp
@@ -146,8 +146,8 @@ _rotate_log_if_needed() {
 	fi
 }
 
-# _json_quote: helper to produce JSON-safe string via Python when available
-_json_quote() {
+# json_quote: helper to produce JSON-safe string via Python when available
+json_quote() {
 	local input="$1"
 	if command -v "$_PYTHON_BIN" >/dev/null 2>&1; then
 		local res
@@ -168,11 +168,11 @@ except Exception:
 	printf '"%s"' "$(printf "%s" "$input" | sed -e 's/\\/\\\\/g' -e 's/"/\\\"/g' -e ':a;N;s/\n/\\n/g;ta')"
 }
 
-# _write_log: outputs either structured JSON or legacy formatted text.
+# write_log: outputs either structured JSON or legacy formatted text.
 # Supports multi-line messages: each non-empty line is prefixed with the
 # level symbol and color; blank lines are skipped to suppress spurious
 # empty-prefix output from tools like npm or git.
-_write_log() {
+write_log() {
 	local level="$1"
 	local message
 	local dest
@@ -181,17 +181,18 @@ _write_log() {
 	local json
 	local _sym
 	local _color
+	local _line
 	shift
 	message="$1"
 	shift
 	dest="${1:-stdout}"
 	if [[ -n "$LOG_FILE" ]]; then
-		_rotate_log_if_needed
+		rotate_log_if_needed
 	fi
 
 	if [[ "$STRUCTURED_LOGS" == "true" ]]; then
 		ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-		msg_quoted=$(_json_quote "$message")
+		msg_quoted=$(json_quote "$message")
 		json="{\"timestamp\":\"$ts\",\"level\":\"$level\",\"message\":${msg_quoted}}"
 		if [[ -n "$LOG_FILE" ]]; then
 			printf '%s\n' "$json" >>"$LOG_FILE" 2>/dev/null || true
@@ -222,13 +223,16 @@ _write_log() {
 			done <<< "$message"
 		fi
 		if [[ -n "$LOG_FILE" ]]; then
-			printf '[%s] [%s] %s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$level" "$message" >>"$LOG_FILE" 2>/dev/null || true
+			while IFS= read -r _line; do
+				[[ -z "$_line" ]] && continue
+				printf '[%s] [%s] %s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$level" "$_line" >>"$LOG_FILE" 2>/dev/null || true
+			done <<< "$message"
 		fi
 	fi
 }
 
-# _log_output: public wrapper that checks level filtering
-_log_output() {
+# log_output: public wrapper that checks level filtering
+log_output() {
 	local level="$1"
 	local message="$2"
 	local dest="${3:-stdout}"
@@ -236,9 +240,11 @@ _log_output() {
 	if [[ "$level" == "DEBUG" && "${DEBUG_MODE}" == "true" ]]; then
 		:
 	else
-		if ! _should_log "$level"; then
+		if ! should_log "$level"; then
 			return 0
 		fi
 	fi
-	_write_log "$level" "$message" "$dest"
+	write_log "$level" "$message" "$dest"
 }
+
+export -f log_debug log_error log_info log_success log_warning log_fatal module_skip

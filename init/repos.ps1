@@ -39,6 +39,25 @@ function Add-RepoMountsToConfig {
     Write-LogEntry "Repo mounts injected ($($RepoList.Count) repos)" -Status Success
 }
 
+function Get-TokenVarName {
+    <#
+    .SYNOPSIS
+        Computes the GIT_CLONE_TOKEN_<HOST> variable name for a given repo host.
+    .DESCRIPTION
+        Normalises the host to uppercase, replacing every non-alphanumeric character
+        with "_". Mirrors token_env_var_name in public/scripts/setup/modules/01-git.sh —
+        keep both in sync, since 01-git.sh resolves the same variable name at runtime.
+        Example: gitlab.example.com -> GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM
+    .PARAMETER RepoHost
+        The repo's hostname (e.g. from ([Uri]$url).Host).
+    .OUTPUTS
+        System.String — the computed environment variable name.
+    #>
+    param([string]$RepoHost)
+    $normalized = ($RepoHost.ToUpperInvariant() -replace '[^A-Z0-9]', '_')
+    return "GIT_CLONE_TOKEN_$normalized"
+}
+
 function Get-RepoList {
     <#
     .SYNOPSIS
@@ -46,9 +65,12 @@ function Get-RepoList {
     .DESCRIPTION
         Prompts for the first repo (mandatory). Then loops asking for additional
         repos until the user submits a blank entry. Each entry is validated with
-        Test-RepoEntry, normalised with Resolve-RepoUrl, checked for host
-        consistency (inline warning + re-prompt on mismatch) and checked for
+        Test-RepoEntry, normalised with Resolve-RepoUrl, and checked for
         duplicate folder names (inline warning + re-prompt on collision).
+        Repos may span multiple hosts — each host resolves its own clone token
+        at runtime via GIT_CLONE_TOKEN_<HOST> (falling back to GIT_CLONE_TOKEN).
+        When an accepted repo's host isn't github.com, a hint with the exact
+        token variable name to add to .env is printed via Get-TokenVarName.
         For optional repos (repo 2+), a blank response at any point — including
         after a validation warning — terminates the loop and returns the accepted list.
     .OUTPUTS
@@ -61,11 +83,14 @@ function Get-RepoList {
     Write-Section "Repository Sources"
     Write-Host "  Accepted formats:" -ForegroundColor $Colors['Info']
     Write-Host "    owner/repo" -NoNewline -ForegroundColor $Colors['Highlight']
-    Write-Host "                    GitHub shorthand (https://github.com/owner/repo.git)" -ForegroundColor "DarkGray"
+    Write-Host "                    GitHub-only shorthand (https://github.com/owner/repo.git)" -ForegroundColor "DarkGray"
     Write-Host "    https://host/owner/repo" -NoNewline -ForegroundColor $Colors['Highlight']
-    Write-Host "       full URL without .git" -ForegroundColor "DarkGray"
+    Write-Host "       full URL without .git - required for any non-GitHub host" -ForegroundColor "DarkGray"
     Write-Host "    https://host/owner/repo.git" -NoNewline -ForegroundColor $Colors['Highlight']
-    Write-Host "   full URL with .git" -ForegroundColor "DarkGray"
+    Write-Host "   full URL with .git - required for any non-GitHub host" -ForegroundColor "DarkGray"
+    Write-Host ""
+    Write-Host "  Repos on different hosts are allowed; each host resolves its own" -ForegroundColor "DarkGray"
+    Write-Host "  GIT_CLONE_TOKEN_<HOST> in your .env (falls back to GIT_CLONE_TOKEN)." -ForegroundColor "DarkGray"
     Write-Host ""
 
     while ($true) {
@@ -91,17 +116,15 @@ function Get-RepoList {
             $url        = Resolve-RepoUrl -Entry $raw
             $folderName = _Get-RepoFolderName -Url $url
 
-            if ($acceptedUrls.Count -gt 0) {
-                $allUrls = @($acceptedUrls.ToArray()) + @($url)
-                if (-not (Test-SameHost -Urls $allUrls)) {
-                    Write-Message "[!] All repos must share the same host. Re-enter or leave blank to skip." -Level 'Warning'
-                    continue
-                }
-            }
-
             if ($acceptedFolders.Contains($folderName)) {
                 Write-Message "[!] Folder name '$folderName' is already in use. Re-enter or leave blank to skip." -Level 'Warning'
                 continue
+            }
+
+            $repoHost = ([Uri]$url).Host
+            if ($repoHost -ne 'github.com') {
+                $tokenVar = Get-TokenVarName -RepoHost $repoHost
+                Write-Message "Non-GitHub host detected ($repoHost) - add '$tokenVar' to your .env (falls back to GIT_CLONE_TOKEN if omitted)." -Level 'Highlight'
             }
 
             [void]$acceptedUrls.Add($url)

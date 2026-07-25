@@ -29,9 +29,9 @@ _WORKSPACE_DIR="${_WORKSPACE_DIR:-/workspace}"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# _build_workspace_json <folder_name...>: Writes a .code-workspace JSON document to stdout.
+# build_workspace_json <folder_name...>: Writes a .code-workspace JSON document to stdout.
 # Each argument is a folder name relative to the workspace root.
-_build_workspace_json() {
+build_workspace_json() {
 	local folders_json="" folder sep=""
 
 	for folder in "$@"; do
@@ -42,10 +42,10 @@ _build_workspace_json() {
 	printf '{\n    "folders": [\n%s\n    ],\n    "settings": {}\n}\n' "$folders_json"
 }
 
-# _collect_workspace_entries <nameref>: Populates an array with clone URLs from REPO_SOURCE_N env vars.
+# collect_workspace_entries <nameref>: Populates an array with clone URLs from REPO_SOURCE_N env vars.
 # Reads REPO_SOURCE_1, REPO_SOURCE_2, … until the first unset or empty variable.
 # Does not fall back to REPO_SOURCE — that variable signals single-repo mode, which this module skips.
-_collect_workspace_entries() {
+collect_workspace_entries() {
 	local -n _out_entries="$1"
 	local i=1 url var
 
@@ -68,9 +68,9 @@ workspaces_setup() {
 	local -a _entries=()
 	local url folder_name workspace_file
 	local -a _folders=()
-	setup_error_traps || true
+	setup_error_traps
 
-	_collect_workspace_entries _entries
+	collect_workspace_entries _entries
 
 	if [[ "${#_entries[@]}" -le 1 ]]; then
 		log_debug "Single-repo or no repos configured — skipping workspace file generation"
@@ -96,6 +96,6 @@ workspaces_setup() {
 	done
 
 	log_info "Generating workspace file: ${workspace_file}"
-	_build_workspace_json "${_folders[@]}" > "$workspace_file"
+	build_workspace_json "${_folders[@]}" > "$workspace_file"
 	log_success "Workspace file generated: ${workspace_file}"
 }

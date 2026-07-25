@@ -226,3 +226,5 @@ validate_env_var_format() {
 	esac
 	return 0
 }
+
+export -f check_command check_env_var repo_entry_folder_name sanitize_string sanitize_env_var validate validate_url validate_file validate_disk_space validate_json validate_env_var_format

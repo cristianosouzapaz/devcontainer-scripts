@@ -12,6 +12,7 @@ import { select } from "@inquirer/prompts";
  *   - Version read:  readConfigInstalledVersion (lock file)
  *   - Lock file:     readLockFile, writeLockFile  →  template-lock.json in the user's project root
  *   - UI helpers:    buildTagsStr, setupConsola, selectTargetTool, resolvePageSize
+ *   - Clipboard:     copyToClipboard, buildInstallCommand
  *   - Catalog:       loadJsonCatalog
  *   - Error:         handleError
  *   - Constants:     AGENTS, TOOLS, MAX_CATALOG_PAGE_SIZE
@@ -172,6 +173,30 @@ export const writeLockFile = (projectRoot, lockData) => {
  * @returns {string|null}
  */
 export const readConfigInstalledVersion = (projectRoot, filename) => readLockFile(projectRoot).configs[filename] ?? null;
+
+/**
+ * Request that the terminal emulator write the given text to the system clipboard
+ * via the OSC 52 escape sequence. This travels through the terminal protocol itself,
+ * so it also works over SSH and VS Code Remote / devcontainer sessions where the
+ * container has no display server (X11/Wayland) for tools like xclip to attach to.
+ * Support is terminal-dependent and cannot be confirmed programmatically: if the
+ * terminal ignores the sequence, this is a silent no-op.
+ * @param {string} text - The text to copy to the clipboard.
+ * @returns {boolean} Whether the escape sequence was written (not whether the copy succeeded).
+ */
+export const copyToClipboard = (text) => {
+    if (!process.stdout.isTTY) return false;
+    const base64 = Buffer.from(text, "utf8").toString("base64");
+    process.stdout.write(`\x1b]52;c;${base64}\x07`);
+    return true;
+};
+
+/**
+ * Build a "pnpm add -D" command string from a set of package names.
+ * @param {string[]} packages - Package names to install as dev dependencies.
+ * @returns {string} The formatted install command.
+ */
+export const buildInstallCommand = (packages) => `pnpm add -D ${packages.join(" ")}`;
 
 /**
  * Handle a top-level installer error.

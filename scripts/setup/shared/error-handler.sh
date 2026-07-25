@@ -100,8 +100,8 @@ dump_error_stack() {
 	done
 }
 
-# _handle_error: Main trap handler that captures error context.
-# Usage: _handle_error [exit_code] [lineno] [func] [cmd] [message]
+# handle_error: Main trap handler that captures error context.
+# Usage: handle_error [exit_code] [lineno] [func] [cmd] [message]
 # Args:
 #   exit_code: numeric exit status to record. If omitted, the current
 #              value of `$?` at handler invocation is used.
@@ -113,7 +113,7 @@ dump_error_stack() {
 #   When invoked with no arguments (typical trap usage), the function
 #   collects context from `BASH_LINENO`, `FUNCNAME` and `BASH_COMMAND`.
 #   It then calls `push_error` to record the error.
-_handle_error() {
+handle_error() {
 	local exit_code lineno func cmd msg
 	exit_code=$?
 	if [[ "$#" -ge 1 ]]; then
@@ -135,30 +135,30 @@ _handle_error() {
 	push_error "$exit_code" "$lineno" "$func" "$cmd" "$msg"
 }
 
-# _on_sigint: Signal handler for SIGINT (Ctrl-C).
-# Usage: _on_sigint
+# on_sigint: Signal handler for SIGINT (Ctrl-C).
+# Usage: on_sigint
 # Args: none
 # Behavior: records a SIGINT entry on the `_ERROR_STACK` with code 130.
-_on_sigint() {
+on_sigint() {
 	push_error 130 "${LINENO}" "SIGINT" "SIGINT received"
 }
 
-# _on_sigterm: Signal handler for SIGTERM.
-# Usage: _on_sigterm
+# on_sigterm: Signal handler for SIGTERM.
+# Usage: on_sigterm
 # Args: none
 # Behavior: records a SIGTERM entry on the `_ERROR_STACK` with code 143.
-_on_sigterm() {
+on_sigterm() {
 	push_error 143 "${LINENO}" "SIGTERM" "SIGTERM received"
 }
 
-# _on_exit: EXIT trap handler invoked when the script exits.
-# Usage: _on_exit
+# on_exit: EXIT trap handler invoked when the script exits.
+# Usage: on_exit
 # Args: none
 # Behavior: runs all registered cleanup handlers in LIFO order, then
 #           prints the accumulated error stack if `DUMP_ERROR_STACK` is true
 #           and the stack is non-empty. Always returns 0 so it never
 #           blocks the EXIT trap chain.
-_on_exit() {
+on_exit() {
 	# Always attempt to run registered cleanup handlers first.
 	run_cleanup_handlers || true
 
@@ -171,15 +171,15 @@ _on_exit() {
 # setup_error_traps: Install standard error and signal traps.
 # Usage: setup_error_traps
 # Args: none
-# Behavior: wires `_handle_error` to `ERR`, `_on_exit` to `EXIT`, and
+# Behavior: wires `handle_error` to `ERR`, `on_exit` to `EXIT`, and
 #           signal handlers for `INT` and `TERM` to their respective
 #           handlers. Call this once during script initialization to
 #           enable the error handler system.
 setup_error_traps() {
-	trap '_handle_error' ERR
-	trap '_on_exit' EXIT
-	trap '_on_sigint' INT
-	trap '_on_sigterm' TERM
+	trap 'handle_error' ERR
+	trap 'on_exit' EXIT
+	trap 'on_sigint' INT
+	trap 'on_sigterm' TERM
 }
 
-export -f push_error dump_error_stack _handle_error setup_error_traps _on_sigint _on_sigterm _on_exit register_cleanup run_cleanup_handlers
+export -f push_error dump_error_stack handle_error setup_error_traps on_sigint on_sigterm on_exit register_cleanup run_cleanup_handlers

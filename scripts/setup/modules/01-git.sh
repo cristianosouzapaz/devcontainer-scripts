@@ -8,8 +8,9 @@ set -euo pipefail
 # Git repository setup module
 #
 # This module initializes or updates Git repositories in the container workspace.
-# It configures git credentials, validates token access on any HTTPS git host
-# (GitHub, GitLab, Gitea, Bitbucket, etc.),
+# It configures git credentials, validates token access on any HTTP(S) git host
+# (GitHub, GitLab, Gitea, Bitbucket, etc.), resolving one clone token per host so
+# repos from different hosts can be mixed in the same project (see GIT_CLONE_TOKEN_<HOST>),
 # clones or fetches repositories, and installs dependencies using the package manager
 # detected from the project (pnpm, npm, or yarn).
 # Shared utilities provide logging, error handling, and environment variable loading.
@@ -24,7 +25,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
 # - AUTO_UPDATE
 # - CLEAN_CREDENTIALS
 # - DEFAULT_BRANCH
-# - GIT_CLONE_TOKEN (from .config/.env)
+# - GIT_CLONE_TOKEN (from .config/.env) — global fallback token
+# - GIT_CLONE_TOKEN_<HOST> (from .config/.env) — per-host override, e.g. GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM
 # - GIT_EMAIL
 # - GIT_USER
 # - PROJECT_NAME
@@ -42,17 +44,64 @@ _WORKSPACE_DIR="${_WORKSPACE_DIR:-/workspace}"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# _cleanup_sensitive_data: Unsets GIT_CLONE_TOKEN; removes the credentials file when CLEAN_CREDENTIALS=true.
-_cleanup_sensitive_data() {
+# cleanup_sensitive_data: Unsets GIT_CLONE_TOKEN and any per-host GIT_CLONE_TOKEN_* vars;
+# removes the credentials file when CLEAN_CREDENTIALS=true.
+cleanup_sensitive_data() {
+	local var_name
 	unset GIT_CLONE_TOKEN
+	for var_name in "${!GIT_CLONE_TOKEN_@}"; do
+		unset "$var_name"
+	done
 	[[ "$CLEAN_CREDENTIALS" == "true" ]] && rm -f "$_GIT_CREDENTIALS_FILE"
 	return 0
 }
 
-# _collect_repo_entries <nameref>: Populates an array with clone URLs from numbered env vars.
+# url_host <url>: Extracts "host[:port]" from a URL of any scheme (https://, http://, ...).
+# Prints an empty string when the URL has no recognisable "scheme://" prefix.
+url_host() {
+	local url="${1:-}" host
+	[[ "$url" == *://* ]] || { echo ""; return 0; }
+	host="${url#*://}"
+	host="${host%%/*}"
+	echo "$host"
+}
+
+# url_scheme <url>: Extracts the scheme (e.g. "https") from a URL. Defaults to "https".
+url_scheme() {
+	local url="${1:-}"
+	if [[ "$url" == *://* ]]; then
+		echo "${url%%://*}"
+	else
+		echo "https"
+	fi
+}
+
+# token_env_var_name <host>: Computes the per-host token variable name.
+# Normalizes the host to uppercase, replacing every non-alphanumeric character with "_".
+# Example: gitlab.example.com -> GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM
+token_env_var_name() {
+	local host="${1:-}" normalized
+	normalized=$(printf '%s' "${host^^}" | tr -c 'A-Z0-9' '_')
+	echo "GIT_CLONE_TOKEN_${normalized}"
+}
+
+# resolve_token_for_host <host>: Resolves the clone token for a given host.
+# Priority: host-specific GIT_CLONE_TOKEN_<HOST> > global GIT_CLONE_TOKEN fallback.
+# Prints an empty string when neither is set.
+resolve_token_for_host() {
+	local host="${1:-}" var_name
+	var_name=$(token_env_var_name "$host")
+	if [[ -n "${!var_name:-}" ]]; then
+		echo "${!var_name}"
+	else
+		echo "${GIT_CLONE_TOKEN:-}"
+	fi
+}
+
+# collect_repo_entries <nameref>: Populates an array with clone URLs from numbered env vars.
 # Reads REPO_SOURCE_1, REPO_SOURCE_2, … until the first unset or empty variable.
 # Falls back to REPO_SOURCE when no numbered variables are set.
-_collect_repo_entries() {
+collect_repo_entries() {
 	local -n _out_entries="$1"
 	local i=1 url var
 
@@ -69,18 +118,20 @@ _collect_repo_entries() {
 	fi
 }
 
-# _configure_git_credentials <repo_url>: Writes the credential store entry for GIT_CLONE_TOKEN.
-# Derives the credential host from repo_url; falls back to github.com when repo_url is not HTTPS.
-_configure_git_credentials() {
-	local repo_url="${1:-}" credential_host
+# configure_git_credentials <repo_url...>: Writes one credential store entry per unique host
+# found among the given repo URLs, resolving each host's token via resolve_token_for_host.
+# Preserves each URL's actual scheme (http/https). Hosts with no resolvable token are skipped
+# with a warning. Called with a single URL for the credential.helper bootstrap even when no
+# repo URLs are known yet (repo_url may be empty in that case).
+configure_git_credentials() {
 	if ! check_env_var GIT_USER; then
-		push_error "$VALIDATION_ERROR" "${LINENO}" "_configure_git_credentials" "GIT_USER" "GIT_USER is not set"
+		push_error "$VALIDATION_ERROR" "${LINENO}" "configure_git_credentials" "GIT_USER" "GIT_USER is not set"
 		log_error "GIT_USER is required for git configuration"
 		return 1
 	fi
 
 	if ! validate_env_var_format GIT_EMAIL email; then
-		push_error "$VALIDATION_ERROR" "${LINENO}" "_configure_git_credentials" "GIT_EMAIL=${GIT_EMAIL}" "Invalid or missing GIT_EMAIL"
+		push_error "$VALIDATION_ERROR" "${LINENO}" "configure_git_credentials" "GIT_EMAIL=${GIT_EMAIL}" "Invalid or missing GIT_EMAIL"
 		log_error "GIT_EMAIL is not a valid email address: ${GIT_EMAIL}"
 		return 1
 	fi
@@ -90,24 +141,39 @@ _configure_git_credentials() {
 	git config --global user.email "${GIT_EMAIL}"
 	git config --global user.name "${GIT_USER}"
 
-	if [[ -n "${GIT_CLONE_TOKEN}" ]]; then
-		if [[ "$repo_url" == https://* ]]; then
-			credential_host="${repo_url#https://}"
-			credential_host="${credential_host%%/*}"
-		else
-			credential_host="github.com"
+	local -a repo_urls=("$@")
+	local -A _seen_hosts=()
+	local url host scheme token credential_lines=""
+
+	for url in "${repo_urls[@]}"; do
+		[[ -n "$url" ]] || continue
+		host=$(url_host "$url")
+		[[ -n "$host" ]] || continue
+		[[ -v "_seen_hosts[$host]" ]] && continue
+		_seen_hosts["$host"]=1
+
+		token=$(resolve_token_for_host "$host")
+		if [[ -z "$token" ]]; then
+			log_warning "No GIT_CLONE_TOKEN resolvable for host '${host}' — credentials not written for it"
+			continue
 		fi
-		echo "https://${GIT_USER}:${GIT_CLONE_TOKEN}@${credential_host}" >"$_GIT_CREDENTIALS_FILE"
+
+		scheme=$(url_scheme "$url")
+		credential_lines+="${scheme}://${GIT_USER}:${token}@${host}"$'\n'
+	done
+
+	if [[ -n "$credential_lines" ]]; then
+		printf '%s' "$credential_lines" >"$_GIT_CREDENTIALS_FILE"
 		chmod 600 "$_GIT_CREDENTIALS_FILE"
 	fi
 	log_success "Git credentials configured"
 }
 
-# _detect_package_manager: Prints the package manager to use for the current project.
+# detect_package_manager: Prints the package manager to use for the current project.
 # Priority: packageManager field in package.json >
 #           lock file presence (pnpm-lock.yaml > package-lock.json > yarn.lock) > npm default.
 # Logs a warning when multiple lock files are detected.
-_detect_package_manager() {
+detect_package_manager() {
 	# 1. packageManager field in package.json (Node.js standard)
 	local declared_pm
 	declared_pm=$(node -e "try{const p=JSON.parse(require('fs').readFileSync('package.json','utf8'));if(p.packageManager){const m=p.packageManager.match(/^(\w+)@/);if(m)console.log(m[1]);}}catch(e){}" 2>/dev/null || true)
@@ -136,19 +202,19 @@ _detect_package_manager() {
 	echo "npm"
 }
 
-# _install_dependencies: Skips when package.json is absent.
-# Detects the package manager via _detect_package_manager and runs the appropriate install.
+# install_dependencies: Skips when package.json is absent.
+# Detects the package manager via detect_package_manager and runs the appropriate install.
 # When pnpm is used, the store is set to an absolute path outside the workspace.
 # Each install attempt is bounded by _PKG_INSTALL_TIMEOUT seconds; for pnpm, the unfrozen
 # fallback is skipped when the frozen-lockfile attempt times out (exit code 124).
-_install_dependencies() {
+install_dependencies() {
 	[[ -f "package.json" ]] || {
 		log_debug "No package.json found, skipping dependency installation"
 		return 0
 	}
 
 	local pm install_output exit_code skip_fallback
-	pm="$(_detect_package_manager)"
+	pm="$(detect_package_manager)"
 	log_info "Installing dependencies with ${pm}"
 
 	case "$pm" in
@@ -197,15 +263,15 @@ _install_dependencies() {
 			;;
 	esac
 
-	push_error "$FATAL_ERROR" "${LINENO}" "_install_dependencies" "${pm} install" "Dependency installation failed"
+	push_error "$FATAL_ERROR" "${LINENO}" "install_dependencies" "${pm} install" "Dependency installation failed"
 	log_error "Dependency installation failed with ${pm}"
 	return 1
 }
 
-# _setup_repository <resolved_url>: Two cases: (1) .git exists → optionally fast-forward merge;
-# (2) GIT_CLONE_TOKEN absent → skip; otherwise clones from resolved_url.
+# setup_repository <resolved_url>: Two cases: (1) .git exists → optionally fast-forward merge;
+# (2) no token resolvable for resolved_url's host → skip; otherwise clones from resolved_url.
 # The caller must cd to the target directory before calling this function.
-_setup_repository() {
+setup_repository() {
 	local resolved_url="${1:-}"
 	local current_branch fetch_output merge_output init_output
 	log_info "Checking repository status in $(pwd)"
@@ -239,9 +305,12 @@ _setup_repository() {
 		return 0
 	fi
 
-	# CASE 2: Skip if no token — cannot clone without credentials
-	if [[ -z "${GIT_CLONE_TOKEN:-}" ]]; then
-		log_warning "GIT_CLONE_TOKEN not set — skipping repository initialization"
+	# CASE 2: Skip if no token resolvable for this host — cannot clone without credentials
+	local resolved_host resolved_token
+	resolved_host=$(url_host "$resolved_url")
+	resolved_token=$(resolve_token_for_host "$resolved_host")
+	if [[ -z "$resolved_token" ]]; then
+		log_warning "No GIT_CLONE_TOKEN resolvable for host '${resolved_host}' — skipping repository initialization"
 		return 0
 	fi
 
@@ -263,14 +332,14 @@ _setup_repository() {
 	fi
 }
 
-# _validate_same_host <url...>: Soft check — logs a warning if not all URLs share the same host.
-# Always returns 0; same-host enforcement is the responsibility of the PS1 input layer.
-_validate_same_host() {
+# validate_same_host <url...>: Informational only — logs when a multi-repo setup spans more
+# than one host. Multi-host setups are fully supported (each host resolves its own token via
+# resolve_token_for_host); this is not a constraint, just a heads-up for the log.
+validate_same_host() {
 	local first_host="" host url
 
 	for url in "$@"; do
-		host="${url#*://}"
-		host="${host%%/*}"
+		host=$(url_host "$url")
 		if [[ -z "$first_host" ]]; then
 			first_host="$host"
 		elif [[ "$host" != "$first_host" ]]; then
@@ -279,19 +348,21 @@ _validate_same_host() {
 	done
 }
 
-# _validate_token_access <repo_url>: Runs git ls-remote to confirm token access.
-# No-ops when GIT_CLONE_TOKEN is unset, VALIDATE_TOKEN != true, or url is empty.
-# Relies on the credential store written by _configure_git_credentials.
-_validate_token_access() {
-	local url="${1:-}"
-	check_env_var GIT_CLONE_TOKEN || { log_debug "GIT_CLONE_TOKEN not set"; return 0; }
+# validate_token_access <repo_url>: Runs git ls-remote to confirm token access.
+# No-ops when no token is resolvable for the URL's host, VALIDATE_TOKEN != true, or url is empty.
+# Relies on the credential store written by configure_git_credentials.
+validate_token_access() {
+	local url="${1:-}" host token
+	host=$(url_host "$url")
+	token=$(resolve_token_for_host "$host")
+	[[ -n "$token" ]] || { log_debug "No resolvable GIT_CLONE_TOKEN for validation"; return 0; }
 	[[ "${VALIDATE_TOKEN}" == "true" ]] || return 0
 	[[ -n "$url" ]] || { log_debug "No repo URL — skipping token validation"; return 0; }
 	log_debug "Validating token via git ls-remote $url"
 	if git ls-remote "$url" HEAD >/dev/null 2>&1; then
 		log_success "Token validated"
 	else
-		push_error "$AUTH_ERROR" "${LINENO}" "_validate_token_access" "git ls-remote $url" "Token validation failed"
+		push_error "$AUTH_ERROR" "${LINENO}" "validate_token_access" "git ls-remote $url" "Token validation failed"
 		log_error "Token validation failed"
 		return 1
 	fi
@@ -307,24 +378,24 @@ git_setup() {
 	local -a _trimmed_entries=()
 	local entry folder_name
 	local -A _seen_folders=()
-	setup_error_traps || true
-	register_cleanup _cleanup_sensitive_data
+	setup_error_traps
+	register_cleanup cleanup_sensitive_data
 
-	_collect_repo_entries _trimmed_entries
+	collect_repo_entries _trimmed_entries
 	if [[ "${#_trimmed_entries[@]}" -eq 0 ]]; then
 		log_info "No REPO_SOURCE set — skipping git setup"
 		return 0
 	fi
 
-	_configure_git_credentials "${_trimmed_entries[0]}" || return 1
-	_validate_token_access    "${_trimmed_entries[0]}" || return 1
+	configure_git_credentials "${_trimmed_entries[@]}" || return 1
 
 	if [[ "${#_trimmed_entries[@]}" -eq 1 ]]; then
+		validate_token_access "${_trimmed_entries[0]}" || return 1
 		cd "${_WORKSPACE_DIR}/${PROJECT_NAME}"
-		_setup_repository "${_trimmed_entries[0]}"
-		_install_dependencies
+		setup_repository "${_trimmed_entries[0]}"
+		install_dependencies
 	else
-		_validate_same_host "${_trimmed_entries[@]}" || true
+		validate_same_host "${_trimmed_entries[@]}" || true
 		for entry in "${_trimmed_entries[@]}"; do
 			folder_name="$(repo_entry_folder_name "$entry")"
 			if [[ -v "_seen_folders[$folder_name]" ]]; then
@@ -332,9 +403,10 @@ git_setup() {
 				continue
 			fi
 			_seen_folders["$folder_name"]=1
+			validate_token_access "$entry" || return 1
 			cd "${_WORKSPACE_DIR}/${folder_name}"
-			_setup_repository "$entry"
-			_install_dependencies
+			setup_repository "$entry"
+			install_dependencies
 		done
 	fi
 }

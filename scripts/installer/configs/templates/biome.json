@@ -19,8 +19,11 @@
         "includes": [
             "**",
             "!package.json",
-            "!src/generated",
-            "!graphify-out"
+            "!package-lock.json",
+            "!template-lock.json",
+            "!skills-lock.json",
+            "!.claude/skills",
+            "!.agents/skills"
         ]
     },
     "formatter": {
@@ -43,7 +46,7 @@
                     }
                 }
             },
-            "recommended": true,
+            "preset": "recommended",
             "suspicious": {
                 "noUnknownAtRules": "off"
             }

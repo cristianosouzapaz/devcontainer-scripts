@@ -29,9 +29,9 @@ _STATUSLINE_HASH_FILE="${_CLAUDE_CONFIG_DIR}/.statusline-hash"
 
 # ----- INTERNAL HELPERS -------------------------------------------------------
 
-# _install_claude_cli: Installs Claude CLI via npm if not already present.
+# install_claude_cli: Installs Claude CLI via npm if not already present.
 # Fails hard on install failure.
-_install_claude_cli() {
+install_claude_cli() {
 	local npm_output
 	check_command "${_CLAUDE_CLI_COMMAND}" && {
 		log_debug "Claude CLI already installed, skipping"
@@ -39,7 +39,7 @@ _install_claude_cli() {
 	}
 	log_info "Installing Claude CLI (${_CLAUDE_INSTALL_NAME})"
 	npm_output=$(npm install -g "${_CLAUDE_INSTALL_NAME}" 2>&1) || {
-		push_error "$FATAL_ERROR" "${LINENO}" "_install_claude_cli" \
+		push_error "$FATAL_ERROR" "${LINENO}" "install_claude_cli" \
 			"npm install -g ${_CLAUDE_INSTALL_NAME}" "Claude CLI installation failed"
 		log_error "Claude CLI installation failed"
 		log_debug "${npm_output}"
@@ -48,9 +48,9 @@ _install_claude_cli() {
 	log_debug "${npm_output}"
 }
 
-# _merge_statusline_settings: Merges the statusLine key into settings.json.
+# merge_statusline_settings: Merges the statusLine key into settings.json.
 # Skips with log_warning when the file exists but contains malformed JSON.
-_merge_statusline_settings() {
+merge_statusline_settings() {
 	local current_settings result tmp_file
 	if [[ -f "${_STATUSLINE_SETTINGS}" ]]; then
 		if ! jq -e . "${_STATUSLINE_SETTINGS}" > /dev/null 2>&1; then
@@ -73,10 +73,10 @@ _merge_statusline_settings() {
 	log_debug "Merged statusLine into ${_STATUSLINE_SETTINGS}"
 }
 
-# _configure_statusline: Deploys statusline-command.sh to the Claude config dir
+# configure_statusline: Deploys statusline-command.sh to the Claude config dir
 # and ensures settings.json contains the statusLine key.
 # Uses sha256sum hash to detect changes; re-applies only when needed.
-_configure_statusline() {
+configure_statusline() {
 	local sha_output source_hash stored_hash
 	local hash_differs=false settings_missing=false
 
@@ -119,7 +119,7 @@ _configure_statusline() {
 	fi
 
 	if [[ "${settings_missing}" == 'true' ]] || [[ "${hash_differs}" == 'true' ]]; then
-		_merge_statusline_settings
+		merge_statusline_settings
 	fi
 }
 
@@ -128,7 +128,7 @@ _configure_statusline() {
 # claude_ai_setup: Module entry point.
 # Installs the Claude CLI and configures the Code status line.
 claude_ai_setup() {
-	setup_error_traps || true
-	_install_claude_cli || return 1
-	_configure_statusline
+	setup_error_traps
+	install_claude_cli || return 1
+	configure_statusline
 }

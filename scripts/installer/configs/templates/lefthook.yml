@@ -25,8 +25,8 @@ pre-commit:
       run: |
         BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
         echo "🔗 Current branch: $BRANCH_NAME"
-        echo "$BRANCH_NAME" | grep -Eq '^(feature|fix|config|chore)/[a-zA-Z0-9_-]+$' || {
-          echo "❌ Invalid branch name. Must be: feature/, fix/, config/, chore/ followed by a valid name."
+        echo "$BRANCH_NAME" | grep -Eq '^(feature|fix|chore|config|docs|refactor|test)/[a-zA-Z0-9_-]+$' || {
+          echo "❌ Invalid branch name. Must be: feature/, fix/, chore/, config/, docs/, refactor/, test/ followed by a valid name."
           exit 1
         }
       fail_text: Invalid branch name

@@ -12,22 +12,22 @@ readonly _MODULE_REGISTRY_SH_LOADED=1
 
 # ----- INTERNAL HELPERS -------------------------------------------------------
 
-# _registry_read_meta <file> <key>
+# registry_read_meta <file> <key>
 # Read a MODULE_* metadata value from a file without sourcing it.
-_registry_read_meta() {
+registry_read_meta() {
 	local file="$1"
 	local key="$2"
 	grep "^# MODULE_${key}=" "$file" | head -1 | sed 's/^# MODULE_[^=]*="\(.*\)"/\1/'
 }
 
-# _registry_validate_meta <file>
+# registry_validate_meta <file>
 # Return 0 if all required MODULE_* keys are present, 1 otherwise.
-_registry_validate_meta() {
+registry_validate_meta() {
 	local file="$1"
 	local key
 	local val
 	for key in NAME DESCRIPTION ENTRY; do
-		val="$(_registry_read_meta "$file" "$key")"
+		val="$(registry_read_meta "$file" "$key")"
 		if [[ -z "$val" ]]; then
 			log_warning "Module $(basename "$file"): missing MODULE_${key} — skipping"
 			return 1
@@ -48,7 +48,7 @@ discover_modules() {
 	local file
 	for file in "$modules_dir"/[0-9][0-9]-*.sh; do
 		[[ -f "$file" ]] || continue
-		if _registry_validate_meta "$file"; then
+		if registry_validate_meta "$file"; then
 			DISCOVERED_MODULES+=("$file")
 		fi
 	done
@@ -61,8 +61,8 @@ run_module() {
 	local module_file="$1"
 
 	local name entry
-	name="$(_registry_read_meta "$module_file" "NAME")"
-	entry="$(_registry_read_meta "$module_file" "ENTRY")"
+	name="$(registry_read_meta "$module_file" "NAME")"
+	entry="$(registry_read_meta "$module_file" "ENTRY")"
 
 	log_info "Running module: ${name}"
 
@@ -117,3 +117,5 @@ run_all_modules() {
 	fi
 	return 0
 }
+
+export -f discover_modules run_module run_all_modules

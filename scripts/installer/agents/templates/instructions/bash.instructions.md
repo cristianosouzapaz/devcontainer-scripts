@@ -19,7 +19,6 @@ applyTo: "**/*.sh"
 - **File names:** MUST use `kebab-case`.
 - **Module file names:** MUST use a two-digit numeric prefix followed by a kebab-case name (e.g. `01-git.sh`).
 - **Function names:** MUST use `snake_case`.
-- **Internal functions:** MUST be prefixed with `_`.
 - **Global constants:** MUST use `SCREAMING_SNAKE_CASE`.
 - **Internal constants:** MUST be prefixed with `_` and use `SCREAMING_SNAKE_CASE`.
 - **Local variables:** MUST use `snake_case` within functions.
@@ -88,7 +87,7 @@ applyTo: "**/*.sh"
   2. Module metadata comments
   3. Source the project's shared loader
   4. Internal constants
-  5. Internal helper functions (prefixed with `_`)
+  5. Internal helper functions
   6. Public entry function (matching the entry-point metadata)
 - **No top-level logic:** MUST NOT execute any side-effecting code at the top level of a module; all logic MUST live inside functions.
 

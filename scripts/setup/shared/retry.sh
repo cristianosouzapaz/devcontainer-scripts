@@ -28,8 +28,8 @@ _RETRY_SUCCESS_CHECK_CMD=""
 
 # ----- FUNCTIONS --------------------------------------------------------------
 
-# _compute_sleep: compute sleep with optional jitter and cap
-_compute_sleep() {
+# compute_sleep: compute sleep with optional jitter and cap
+compute_sleep() {
 	local backoff=$1
 	local max_backoff=$2
 	local jitter_enabled=$3
@@ -82,7 +82,7 @@ retry_with_backoff() {
 		(( attempt++ )) || true
 		if ((attempt <= max_attempts)); then
 			local sleep_time
-			sleep_time=$(_compute_sleep "$backoff" "$max_backoff" "${_JITTER_ENABLED}")
+			sleep_time=$(compute_sleep "$backoff" "$max_backoff" "${_JITTER_ENABLED}")
 			log_debug "Sleeping $sleep_time seconds before retry"
 			sleep "$sleep_time"
 			# exponential increase
@@ -124,7 +124,7 @@ retry_curl() {
 	local -a curl_args=("$@")
 
 	# inner function to perform curl and return 0 on HTTP 200
-	_do_curl() {
+	do_curl() {
 		local response
 		local RETRY_HTTP_CODE
 		response=$(curl -s -w "%{http_code}" --max-time "$timeout" "${curl_args[@]}" 2>/dev/null)
@@ -145,7 +145,7 @@ retry_curl() {
 	}
 
 	# Use retry_with_backoff to drive retries
-	retry_with_backoff "$max_attempts" "$initial_backoff" "$_DEFAULT_MAX_BACKOFF" _do_curl
+	retry_with_backoff "$max_attempts" "$initial_backoff" "$_DEFAULT_MAX_BACKOFF" do_curl
 	local rc=$?
 	if [[ "$rc" -eq 2 ]]; then
 		# circuit breaker opened
@@ -153,3 +153,5 @@ retry_curl() {
 	fi
 	return $rc
 }
+
+export -f retry_with_backoff retry_command retry_curl

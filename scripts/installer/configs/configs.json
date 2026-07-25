@@ -2,13 +2,16 @@
     {
         "name": "Biome",
         "filename": "biome.json",
-        "version": "1.0.1",
+        "version": "1.1.0",
         "description": "Biome linter/formatter config — organizes imports, sorts keys and attributes, Tailwind-aware CSS parsing.",
         "tags": [
             "linting",
             "formatting"
         ],
-        "templateFile": "biome.json"
+        "templateFile": "biome.json",
+        "packages": [
+            "@biomejs/biome"
+        ]
     },
     {
         "name": "Git Ignore",
@@ -31,14 +34,31 @@
         "templateFile": ".gitattributes"
     },
     {
+        "name": "Commitlint",
+        "filename": "commitlint.config.js",
+        "version": "1.0.0",
+        "description": "Conventional Commits rules — restricts commit types and caps header/body/footer line lengths.",
+        "tags": [
+            "git-hooks"
+        ],
+        "templateFile": "commitlint.config.js",
+        "packages": [
+            "@commitlint/cli",
+            "@commitlint/config-conventional"
+        ]
+    },
+    {
         "name": "Lefthook",
         "filename": "lefthook.yml",
-        "version": "1.0.0",
+        "version": "1.0.1",
         "description": "Git hooks: runs Biome and TypeScript checks on staged files, enforces branch naming and commit message conventions, blocks pushes to main.",
         "tags": [
             "git-hooks"
         ],
-        "templateFile": "lefthook.yml"
+        "templateFile": "lefthook.yml",
+        "packages": [
+            "lefthook"
+        ]
     },
     {
         "name": "TypeScript (base)",
@@ -48,7 +68,10 @@
         "tags": [
             "typescript"
         ],
-        "templateFile": "tsconfig.base.json"
+        "templateFile": "tsconfig.base.json",
+        "packages": [
+            "typescript"
+        ]
     },
     {
         "name": "TypeScript (Next.js)",
@@ -59,7 +82,10 @@
             "typescript",
             "nextjs"
         ],
-        "templateFile": "tsconfig.nextjs.json"
+        "templateFile": "tsconfig.nextjs.json",
+        "packages": [
+            "typescript"
+        ]
     },
     {
         "name": "Claude Code Settings",

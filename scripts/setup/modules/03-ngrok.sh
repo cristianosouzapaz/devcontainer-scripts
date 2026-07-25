@@ -31,7 +31,7 @@ readonly _NGROK_CONFIG_COMMAND="config add-authtoken"
 # Applies the authtoken with retry/backoff; clears NGROK_AUTHTOKEN on exit.
 ngrok_setup() {
 	local ngrok_output
-	setup_error_traps || true
+	setup_error_traps
 	register_cleanup 'unset NGROK_AUTHTOKEN'
 
 	check_command ngrok || {

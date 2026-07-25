@@ -15,7 +15,8 @@ readonly _ENV_LOADER_SH_LOADED=1
 #
 # Usage in .env:
 #   PERSIST_CONTEXT7_API_KEY=your-key   # persisted as CONTEXT7_API_KEY
-#   GIT_CLONE_TOKEN=secret              # available during setup only
+#   GIT_CLONE_TOKEN=secret                          # available during setup only; global fallback
+#   GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM=secret       # per-host override, see 01-git.sh
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
@@ -80,3 +81,5 @@ persist_env_vars() {
 
 	log_success "Persisted ${#persist_keys[@]} variable(s) to /etc/environment"
 }
+
+export -f load_env_file persist_env_vars

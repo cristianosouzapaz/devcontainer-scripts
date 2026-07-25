@@ -27,9 +27,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# _is_signing_configured <ssh_keygen_path>
+# is_signing_configured <ssh_keygen_path>
 # Returns 0 if git is already configured for SSH signing with the expected values.
-_is_signing_configured() {
+is_signing_configured() {
 	local ssh_keygen_path="$1"
 
 	[[ "$(git config --global gpg.format 2>/dev/null || true)" == "ssh" ]] || return 1
@@ -43,9 +43,9 @@ _is_signing_configured() {
 	return 0
 }
 
-# _configure_git_signing <ssh_keygen_path>
+# configure_git_signing <ssh_keygen_path>
 # Writes SSH signing settings to the global git config.
-_configure_git_signing() {
+configure_git_signing() {
 	local ssh_keygen_path="$1"
 
 	log_debug "Configuring git for SSH commit signing"
@@ -62,10 +62,10 @@ _configure_git_signing() {
 # ----- CORE SETUP -------------------------------------------------------------
 
 # ssh_signing_setup: Module entry point.
-# Fails if ssh-keygen is unavailable. Delegates to _configure_git_signing
+# Fails if ssh-keygen is unavailable. Delegates to configure_git_signing
 # only when not already correctly set; clears GIT_SIGNING_KEY on exit.
 ssh_signing_setup() {
-	setup_error_traps || true
+	setup_error_traps
 	register_cleanup 'unset GIT_SIGNING_KEY'
 
 	if [[ "${SSH_SIGNING:-}" != "true" ]]; then
@@ -89,13 +89,13 @@ ssh_signing_setup() {
 	ssh_keygen_path="$(command -v ssh-keygen)"
 	log_debug "ssh-keygen found at: ${ssh_keygen_path}"
 
-	if _is_signing_configured "${ssh_keygen_path}"; then
+	if is_signing_configured "${ssh_keygen_path}"; then
 		log_debug "SSH commit signing already configured, skipping"
 	else
 		if [[ -z "${GIT_SIGNING_KEY:-}" ]]; then
 			log_warning "GIT_SIGNING_KEY is not set; user.signingkey will not be configured"
 		fi
-		_configure_git_signing "${ssh_keygen_path}"
+		configure_git_signing "${ssh_keygen_path}"
 	fi
 
 	return 0

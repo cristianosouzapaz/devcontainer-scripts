@@ -4,14 +4,16 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import consola from "consola";
 import inquirer from "inquirer";
-import { buildTagsStr, handleError, loadJsonCatalog, readConfigInstalledVersion, readLockFile, resolvePageSize, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
+import { buildInstallCommand, buildTagsStr, copyToClipboard, handleError, loadJsonCatalog, readConfigInstalledVersion, readLockFile, resolvePageSize, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
 
 /**
  * @fileoverview Interactive installer for project config file templates.
  *
- * Reads available templates from configs.json (each entry carries a version field).
- * On install, writes files to the user's project root and records installed versions
- * in template-lock.json so subsequent runs can show version hints in the UI.
+ * Reads available templates from configs.json (each entry carries a version field and,
+ * where applicable, a list of npm packages required for the config to function).
+ * On install, writes files to the user's project root, records installed versions
+ * in template-lock.json so subsequent runs can show version hints in the UI, and
+ * prints a consolidated dependency installation command for the written configs.
  *
  * Installed at /opt/devcontainer/installer/configs/ inside the container.
  */
@@ -44,12 +46,33 @@ const loadConfigsCatalog = () => {
             && entry.description.length > 0
             && typeof entry?.templateFile === "string"
             && Array.isArray(entry?.tags)
-            && entry.tags.every((tag) => typeof tag === "string");
+            && entry.tags.every((tag) => typeof tag === "string")
+            && (entry.packages === undefined || (Array.isArray(entry.packages) && entry.packages.every((pkg) => typeof pkg === "string")));
 
         if (!isValidEntry) throw new Error(`Invalid configs catalog entry at index ${index}.`);
     }
 
     return entries;
+};
+
+/**
+ * Print a consolidated installation command for the npm packages required by the
+ * given set of written configs, and attempt to copy it to the clipboard.
+ * Configs without a "packages" entry are silently excluded. No-op if none require packages.
+ * @param {object[]} writtenConfigs - Catalog entries that were actually written to disk.
+ */
+const announceRequiredPackages = (writtenConfigs) => {
+    const packages = [...new Set(writtenConfigs.flatMap((c) => c.packages ?? []))];
+    if (packages.length === 0) return;
+
+    const installCommand = buildInstallCommand(packages);
+    const copied = copyToClipboard(installCommand);
+
+    consola.box({
+        title: "Next Steps",
+        message: `The following packages are required for the installed configuration files to take effect:\n\n  ${installCommand}\n\n${copied ? "This command has been copied to your clipboard, provided your terminal supports it." : "Please run this command to complete the setup."}`,
+        style: { borderColor: "cyan" },
+    });
 };
 
 /**
@@ -86,18 +109,22 @@ const askUser = async () => {
         }
 
         const lock = readLockFile(destDir);
-        const writtenFlags = [];
+        const writtenConfigs = [];
 
         for (const config of selectedConfigs) {
             const destPath = join(destDir, config.filename);
             mkdirSync(dirname(destPath), { recursive: true });
             const content = readFileSync(join(__dirname, "templates", config.templateFile), "utf8");
             const written = await writeWithConflict(destPath, content, config.filename, config.version, lock.configs[config.filename] ?? null);
-            if (written) lock.configs[config.filename] = config.version;
-            writtenFlags.push(written);
+            if (written) {
+                lock.configs[config.filename] = config.version;
+                writtenConfigs.push(config);
+            }
         }
 
-        if (writtenFlags.some(Boolean)) writeLockFile(destDir, lock);
+        if (writtenConfigs.length > 0) writeLockFile(destDir, lock);
+
+        announceRequiredPackages(writtenConfigs);
     } catch (e) {
         handleError(e);
     }
