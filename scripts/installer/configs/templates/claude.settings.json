@@ -14,8 +14,6 @@
         ],
         "deny": [
             "Bash(gh pr close *)",
-            "Bash(gh pr create *)",
-            "Bash(gh pr edit *)",
             "Bash(gh pr merge *)",
             "Bash(gh pr review *)",
             "Bash(git commit*)",

@@ -20,6 +20,16 @@
         "templateFile": "prompts/generate-pr.prompt.md"
     },
     {
+        "name": "Create PR",
+        "filename": "create-pr.prompt.md",
+        "commandFilename": "create-pr.md",
+        "version": "1.0.0",
+        "tags": [
+            "git"
+        ],
+        "templateFile": "prompts/create-pr.prompt.md"
+    },
+    {
         "name": "Index Components",
         "filename": "index-components.prompt.md",
         "commandFilename": "index-components.md",
