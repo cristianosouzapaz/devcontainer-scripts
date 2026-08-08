@@ -1,0 +1,32 @@
+[
+    {
+        "key": "component-index",
+        "name": "Component Index Maintenance",
+        "version": "1.0.0",
+        "description": "Requires the component index prompt to be updated before closing out any task that touches components.",
+        "tags": [
+            "react",
+            "docs"
+        ],
+        "templateFile": "component-index.md",
+        "targets": [
+            "CLAUDE.md",
+            "AGENTS.md"
+        ]
+    },
+    {
+        "key": "base-ui",
+        "name": "Base UI Project Rules",
+        "version": "1.0.0",
+        "description": "Placeholder section declaring the use of @base-ui/react, ready for project-specific customization.",
+        "tags": [
+            "ui",
+            "react"
+        ],
+        "templateFile": "base-ui.md",
+        "targets": [
+            "CLAUDE.md",
+            "AGENTS.md"
+        ]
+    }
+]

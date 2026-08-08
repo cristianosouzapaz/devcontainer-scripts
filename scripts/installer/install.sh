@@ -51,6 +51,17 @@ main() {
 	curl -fsSL "${base_url}/skills/index.js"   -o "${installer_dir}/skills/index.js"
 	curl -fsSL "${base_url}/skills/skills.json" -o "${installer_dir}/skills/skills.json"
 
+	mkdir -p "${installer_dir}/agent-md/templates"
+	curl -fsSL "${base_url}/agent-md/index.js"       -o "${installer_dir}/agent-md/index.js"
+	curl -fsSL "${base_url}/agent-md/agent-md.json"  -o "${installer_dir}/agent-md/agent-md.json"
+
+	declare -a _agent_md_templates
+	mapfile -t _agent_md_templates < <(grep '"templateFile"' "${installer_dir}/agent-md/agent-md.json" | sed -n 's/.*"templateFile":\s*"\([^"]*\)".*/\1/p')
+
+	for _name in "${_agent_md_templates[@]}"; do
+		curl -fsSL "${base_url}/agent-md/templates/${_name}" -o "${installer_dir}/agent-md/templates/${_name}"
+	done
+
 	cd "${installer_dir}"
 	npm i >/dev/null 2>&1
 }

@@ -39,6 +39,19 @@
                 "clear": true,
                 "focus": true
             }
+        },
+        {
+            "label": "Framework: Install Agent MD Blocks",
+            "detail": "Installs CLAUDE.md/AGENTS.md instruction blocks provided by the custom devcontainer framework when available.",
+            "type": "shell",
+            "command": "bash -lc 'if [ -f /opt/devcontainer/installer/install.sh ]; then bash /opt/devcontainer/installer/install.sh && node /opt/devcontainer/installer/agent-md/index.js; else echo \"[Framework] Installer is not available in this devcontainer. Task skipped.\"; fi'",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true,
+                "focus": true
+            }
         }
     ]
 }
