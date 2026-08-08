@@ -1,9 +1,41 @@
 #!/bin/bash
 set -euo pipefail
 
+# ----- HELPER FUNCTIONS -------------------------------------------------------
+
+# fetch_templated_component: downloads a sub-installer's index.js and JSON manifest(s) from the
+# remote installer repo, then fetches every templateFile referenced inside those manifests.
+# Args: $1 base_url, $2 installer_dir, $3 component name (e.g. "agents"), $4... manifest filenames
+# Returns: 0 on success.
+fetch_templated_component() {
+	local base_url="$1" installer_dir="$2" name="$3"
+	shift 3
+	local -a manifests=("$@")
+	local manifest template
+	local -a templates
+
+	mkdir -p "${installer_dir}/${name}/templates"
+	curl -fsSL "${base_url}/${name}/index.js" -o "${installer_dir}/${name}/index.js"
+	for manifest in "${manifests[@]}"; do
+		curl -fsSL "${base_url}/${name}/${manifest}" -o "${installer_dir}/${name}/${manifest}"
+	done
+
+	mapfile -t templates < <(
+		grep -h '"templateFile"' "${manifests[@]/#/${installer_dir}/${name}/}" \
+			| sed -n 's/.*"templateFile":\s*"\([^"]*\)".*/\1/p' \
+			| sort -u
+	)
+
+	for template in "${templates[@]}"; do
+		curl -fsSL "${base_url}/${name}/templates/${template}" -o "${installer_dir}/${name}/templates/${template}"
+	done
+}
+
+# ----- CORE SETUP -------------------------------------------------------------
+
 # main: Downloads all installer assets from the public repository and installs dependencies.
-# Fetches package.json, shared/utils.js, and each sub-installer (agents, configs, skills)
-# including their index.js files, template files, and data files, then runs a single
+# Fetches package.json, shared/utils.js, and each sub-installer (agents, configs, skills,
+# agent-md) including their index.js files, template files, and data files, then runs a single
 # `npm install` for the entire installer package.
 # Returns: 0 on success.
 main() {
@@ -12,58 +44,24 @@ main() {
 	scripts_ref="${SCRIPTS_REF:-main}"
 	base_url="https://raw.githubusercontent.com/cristianosouzapaz/devcontainer-scripts/${scripts_ref}/scripts/installer"
 
-	curl -fsSL "${base_url}/package.json" -o "${installer_dir}/package.json"
-
 	mkdir -p "${installer_dir}/shared"
-	curl -fsSL "${base_url}/shared/utils.js" -o "${installer_dir}/shared/utils.js"
-
 	mkdir -p "${installer_dir}/agents/templates/instructions"
 	mkdir -p "${installer_dir}/agents/templates/prompts"
-	curl -fsSL "${base_url}/agents/index.js"          -o "${installer_dir}/agents/index.js"
-	curl -fsSL "${base_url}/agents/instructions.json" -o "${installer_dir}/agents/instructions.json"
-	curl -fsSL "${base_url}/agents/prompts.json"      -o "${installer_dir}/agents/prompts.json"
-
-	declare -a _agent_templates
-	mapfile -t _agent_templates < <(
-		grep -h '"templateFile"' \
-			"${installer_dir}/agents/instructions.json" \
-			"${installer_dir}/agents/prompts.json" \
-		| sed -n 's/.*"templateFile":\s*"\([^"]*\)".*/\1/p' \
-		| sort -u
-	)
-
-	for _name in "${_agent_templates[@]}"; do
-		curl -fsSL "${base_url}/agents/templates/${_name}" -o "${installer_dir}/agents/templates/${_name}"
-	done
-
-	mkdir -p "${installer_dir}/configs/templates"
-	curl -fsSL "${base_url}/configs/index.js"    -o "${installer_dir}/configs/index.js"
-	curl -fsSL "${base_url}/configs/configs.json" -o "${installer_dir}/configs/configs.json"
-
-	declare -a _config_templates
-	mapfile -t _config_templates < <(grep '"templateFile"' "${installer_dir}/configs/configs.json" | sed -n 's/.*"templateFile":\s*"\([^"]*\)".*/\1/p')
-
-	for _name in "${_config_templates[@]}"; do
-		curl -fsSL "${base_url}/configs/templates/${_name}" -o "${installer_dir}/configs/templates/${_name}"
-	done
-
 	mkdir -p "${installer_dir}/skills"
-	curl -fsSL "${base_url}/skills/index.js"   -o "${installer_dir}/skills/index.js"
+
+	curl -fsSL "${base_url}/package.json"       -o "${installer_dir}/package.json"
+	curl -fsSL "${base_url}/shared/utils.js"    -o "${installer_dir}/shared/utils.js"
+	curl -fsSL "${base_url}/skills/index.js"    -o "${installer_dir}/skills/index.js"
 	curl -fsSL "${base_url}/skills/skills.json" -o "${installer_dir}/skills/skills.json"
 
-	mkdir -p "${installer_dir}/agent-md/templates"
-	curl -fsSL "${base_url}/agent-md/index.js"       -o "${installer_dir}/agent-md/index.js"
-	curl -fsSL "${base_url}/agent-md/agent-md.json"  -o "${installer_dir}/agent-md/agent-md.json"
-
-	declare -a _agent_md_templates
-	mapfile -t _agent_md_templates < <(grep '"templateFile"' "${installer_dir}/agent-md/agent-md.json" | sed -n 's/.*"templateFile":\s*"\([^"]*\)".*/\1/p')
-
-	for _name in "${_agent_md_templates[@]}"; do
-		curl -fsSL "${base_url}/agent-md/templates/${_name}" -o "${installer_dir}/agent-md/templates/${_name}"
-	done
+	fetch_templated_component "${base_url}" "${installer_dir}" agents instructions.json prompts.json
+	fetch_templated_component "${base_url}" "${installer_dir}" configs configs.json
+	fetch_templated_component "${base_url}" "${installer_dir}" agent-md agent-md.json
 
 	cd "${installer_dir}"
 	npm i >/dev/null 2>&1
 }
+
+# ----- ENTRY POINT ------------------------------------------------------------
 
 main "$@"
