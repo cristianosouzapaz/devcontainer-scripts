@@ -232,5 +232,17 @@
             "workflow"
         ],
         "url": "https://github.com/obra/superpowers"
+    },
+    {
+        "name": "Obsidian Markdown",
+        "skill": "obsidian-markdown",
+        "category": "Productivity & Communication",
+        "description": "Obsidian-flavored Markdown: wikilinks, callouts, frontmatter, tags, and Dataview queries for knowledge vaults.",
+        "tags": [
+            "obsidian",
+            "markdown",
+            "knowledge-base"
+        ],
+        "url": "https://github.com/kepano/obsidian-skills"
     }
 ]
