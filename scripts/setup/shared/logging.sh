@@ -149,8 +149,8 @@ rotate_log_if_needed() {
 # json_quote: helper to produce JSON-safe string via Python when available
 json_quote() {
 	local input="$1"
+	local res
 	if command -v "$_PYTHON_BIN" >/dev/null 2>&1; then
-		local res
 		res=$(printf "%s" "$input" | "$_PYTHON_BIN" -c 'import json,sys
 data=sys.stdin.read()
 try:
@@ -247,4 +247,4 @@ log_output() {
 	write_log "$level" "$message" "$dest"
 }
 
-export -f log_debug log_error log_info log_success log_warning log_fatal module_skip
+export -f level_value should_log rotate_log_if_needed json_quote write_log log_output log_debug log_error log_info log_success log_warning log_fatal module_skip

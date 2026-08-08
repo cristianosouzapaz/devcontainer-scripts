@@ -70,7 +70,7 @@ run_module() {
 	source "$module_file"
 
 	if ! "$entry"; then
-		push_error $FATAL_ERROR "${LINENO}" "run_module" "$entry" "${name} failed"
+		push_error "$FATAL_ERROR" "${LINENO}" "run_module" "$entry" "${name} failed"
 		return 1
 	fi
 
@@ -118,4 +118,4 @@ run_all_modules() {
 	return 0
 }
 
-export -f discover_modules run_module run_all_modules
+export -f registry_read_meta registry_validate_meta discover_modules run_module run_all_modules

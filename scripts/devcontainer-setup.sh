@@ -8,8 +8,8 @@ set -euo pipefail
 
 # ----- PATH AND STRUCTURE VARIABLES -------------------------------------------
 
-_SETUP_MODULES_DIR="setup/modules"
-_SETUP_SHARED_DIR="setup/shared"
+readonly _SETUP_MODULES_DIR="setup/modules"
+readonly _SETUP_SHARED_DIR="setup/shared"
 
 # ----- INITIALIZATION ---------------------------------------------------------
 
@@ -40,7 +40,7 @@ cleanup_temp_files() {
 # Exits fatally if any module fails.
 # Returns: 0 on success (does not return on fatal module failure).
 main() {
-	setup_error_traps || true
+	setup_error_traps
 	register_cleanup cleanup_temp_files
 
 	log_info "Starting setup in $(pwd)"
@@ -59,6 +59,8 @@ main() {
 
 	log_success "Setup completed"
 }
+
+export -f cleanup_temp_files main
 
 # ----- ENTRY POINT ------------------------------------------------------------
 

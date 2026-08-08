@@ -6,7 +6,7 @@ readonly _LOADER_SH_LOADED=1
 # Shared utilities loader - Sources all shared utility scripts
 
 # Get the directory of this script
-SHARED_DIR="$(dirname "${BASH_SOURCE[0]}")"
+readonly SHARED_DIR="$(dirname "${BASH_SOURCE[0]}")"
 
 # Source all shared utilities
 source "$SHARED_DIR/env-loader.sh"

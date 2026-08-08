@@ -383,7 +383,8 @@ git_setup() {
 
 	collect_repo_entries _trimmed_entries
 	if [[ "${#_trimmed_entries[@]}" -eq 0 ]]; then
-		log_info "No REPO_SOURCE set — skipping git setup"
+		log_debug "No REPO_SOURCE set — skipping git setup"
+		module_skip
 		return 0
 	fi
 
@@ -410,3 +411,5 @@ git_setup() {
 		done
 	fi
 }
+
+export -f cleanup_sensitive_data url_host url_scheme token_env_var_name resolve_token_for_host collect_repo_entries configure_git_credentials detect_package_manager install_dependencies setup_repository validate_same_host validate_token_access git_setup

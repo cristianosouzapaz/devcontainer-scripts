@@ -100,3 +100,5 @@ ssh_signing_setup() {
 
 	return 0
 }
+
+export -f is_signing_configured configure_git_signing ssh_signing_setup

@@ -154,4 +154,4 @@ retry_curl() {
 	return $rc
 }
 
-export -f retry_with_backoff retry_command retry_curl
+export -f compute_sleep retry_with_backoff retry_command retry_curl

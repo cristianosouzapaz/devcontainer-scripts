@@ -99,3 +99,5 @@ workspaces_setup() {
 	build_workspace_json "${_folders[@]}" > "$workspace_file"
 	log_success "Workspace file generated: ${workspace_file}"
 }
+
+export -f build_workspace_json collect_workspace_entries workspaces_setup

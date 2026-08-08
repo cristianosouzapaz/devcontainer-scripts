@@ -132,3 +132,5 @@ claude_ai_setup() {
 	install_claude_cli || return 1
 	configure_statusline
 }
+
+export -f install_claude_cli merge_statusline_settings configure_statusline claude_ai_setup

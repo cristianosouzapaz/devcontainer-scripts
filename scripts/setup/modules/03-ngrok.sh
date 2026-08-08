@@ -54,3 +54,5 @@ ngrok_setup() {
 	}
 	log_debug "${ngrok_output}"
 }
+
+export -f ngrok_setup

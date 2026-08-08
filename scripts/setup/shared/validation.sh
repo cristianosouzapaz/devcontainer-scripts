@@ -125,7 +125,7 @@ validate_url() {
 # validate_file: check existence, readability, writability, executability
 # Usage: validate_file <path> [--readable] [--writable] [--executable]
 validate_file() {
-	local path="$1"
+	local path="$1" opt
 	shift || true
 	if [[ ! -e "$path" ]]; then
 		log_debug "File does not exist: $path"
@@ -159,10 +159,8 @@ validate_file() {
 # validate_disk_space: ensure at least <min_mb> free on filesystem containing <path>
 # Usage: validate_disk_space <path> <min_mb>
 validate_disk_space() {
-	local path="${1:-/}"
-	local min_mb="${2:-1}"
+	local path="${1:-/}" min_mb="${2:-1}" avail_mb
 	if [[ -z "$path" ]]; then path="/"; fi
-	local avail_mb
 	avail_mb=$(df -P -m "$path" 2>/dev/null | awk 'END{print $4}') || avail_mb=0
 	if [[ -z "$avail_mb" ]]; then avail_mb=0; fi
 	if ((avail_mb < min_mb)); then
