@@ -19,6 +19,9 @@ applyTo: "**/*.sh"
 - **File names:** MUST use `kebab-case`.
 - **Module file names:** MUST use a two-digit numeric prefix followed by a kebab-case name (e.g. `01-git.sh`).
 - **Function names:** MUST use `snake_case`.
+- **Internal functions:** MUST NOT be prefixed with `_`. Public vs internal is signaled by the comment convention (block vs single-line), not by a name prefix.
+  - ✓ `validate_token`
+  - ✗ `_validate_token`
 - **Global constants:** MUST use `SCREAMING_SNAKE_CASE`.
 - **Internal constants:** MUST be prefixed with `_` and use `SCREAMING_SNAKE_CASE`.
 - **Local variables:** MUST use `snake_case` within functions.
