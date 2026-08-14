@@ -57,6 +57,8 @@ main() {
 		log_fatal "One or more setup modules failed"
 	fi
 
+	print_volumes_summary
+
 	log_success "Setup completed"
 }
 

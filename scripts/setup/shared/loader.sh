@@ -15,6 +15,7 @@ source "$SHARED_DIR/logging.sh"
 source "$SHARED_DIR/module-registry.sh"
 source "$SHARED_DIR/retry.sh"
 source "$SHARED_DIR/validation.sh"
+source "$SHARED_DIR/volumes-summary.sh"
 
 # ----- ENVIRONMENT VARIABLES --------------------------------------------------
 
