@@ -1,10 +1,12 @@
 ---
-name: "Documentation Rules"
 description: "Use when writing JSDoc, module headers, or inline comments in TypeScript or TSX files. Covers summaries, placement, tag usage, cross-references, and documentation anti-patterns."
-applyTo: "**/*.{ts,tsx}"
+paths:
+  - "**/*.{ts,tsx}"
 ---
 
 # Documentation Rules
+
+These rules apply to hand-written project files only. Generated code is exempt.
 
 ## Language And Style
 
@@ -45,20 +47,60 @@ TSX files (React components) have a lighter documentation surface than pure Type
 - **No module header:** MUST NOT add a module header block comment (`/* */`) to `.tsx` files.
 - **No JSDoc:** MUST NOT add JSDoc blocks to functions in `.tsx` files.
 - **Section comments:** MUST follow the same Section Comments rules as `.ts` files.
+- **Inline why-comments:** MAY use an inline `//` comment above the relevant line(s) inside a
+  function body to document a non-obvious constraint or cross-file interaction, since `.tsx`
+  files have no JSDoc or module header to hold it. MUST NOT use it to paraphrase what the code
+  already makes obvious — the Anti Patterns rules still apply.
+  - ✓ `// Retry uses the stale closure's id on purpose: the mutation started before the newer`
+    `// props arrived, and it must resolve against the item it was actually called for.`
+  - ✗ `// Loop over matches and render a badge for each`
 
 ## Functions
 
 Applies to `.ts` files only.
 
-- **Coverage:** MUST add a JSDoc block to every exported function and every internal function.
-- **Required tags:** MUST include one summary line, one `@param` tag for each parameter, and one `@returns` tag.
+- **Coverage:** MUST add a JSDoc block to every top-level function in the module — exported or
+  not — and to every method of a class. "Top-level" means declared directly at module scope, not
+  nested inside another function's body.
+  - ✓ `export const parseQuery = (...) => {...}` declared at module scope
+  - ✓ `const isExactOperator = (...) => {...}` declared at module scope, not exported
+  - ✓ a method declared on a class, public or private
+  - ✗ `const helper = (...) => {...}` declared inside another function's body — see **Nested
+    functions** below instead
+- **Required tags:** MUST include one summary line, one `@param` tag for each parameter, and one
+  `@returns` tag — except a function that always throws, which omits `@returns` and uses
+  `@throws` instead (see **Always-throws**).
+- **Param format:** MUST separate a `@param` tag's name from its description with a hyphen.
+  - ✓ `@param userId - The ID of the user to fetch.`
+  - ✗ `@param userId The ID of the user to fetch.` _(missing hyphen)_
 - **No types in tags:** MUST NOT include parameter or return types inside JSDoc tags (TypeScript types are the source of truth).
-  - ✓ `@param userId The ID of the user to fetch.`
-  - ✗ `@param {string} userId The ID of the user to fetch.`
-- **Always-throws return:** MUST use `@returns Never returns; the function always throws.` for functions that always throw.
+  - ✓ `@param userId - The ID of the user to fetch.`
+  - ✗ `@param {string} userId - The ID of the user to fetch.`
+- **Extended context:** MUST move any explanation beyond the one-sentence summary into a
+  `@remarks` block rather than lengthening the summary — the summary stays one sentence even
+  when the "why" needs several.
+  - ✓ a one-sentence summary followed by a `@remarks` block for multi-sentence rationale
+  - ✗ a five-sentence run-on summary with no `@remarks`
+- **Always-throws:** MUST use `@throws` (not `@returns`) to document a function that always
+  throws instead of returning.
+  - ✓ `@throws Always throws when the input fails schema validation.`
+  - ✗ `@returns Never returns; the function always throws.`
 - **Example tag:** SHOULD use `@example` only when the call syntax is not obvious from the signature.
-- **Forbidden tags:** MUST NOT use `@author`, `@since`, `@version`, `@description`, or `@deprecated`.
-- **Hook internals:** MUST NOT add JSDoc to functions declared inside the body of a `use*` hook. Put the why in the module header or in the hook's own JSDoc instead.
+- **Forbidden tags:** MUST NOT use `@author`, `@since`, `@version`, `@description`, or
+  `@deprecated` — this is an application, not a published library with external consumers who
+  need a deprecation window, so superseded code is deleted, not marked.
+- **Nested functions:** MUST NOT add JSDoc to a function declared inside the body of another
+  function, regardless of whether the enclosing function is a `use*` hook. Put the why in the
+  enclosing top-level function's own JSDoc instead.
+  - ✓ a helper closure inside `promoteMergeableFacetsFromQuery` documented via that function's own JSDoc
+  - ✗ a JSDoc block above a `const` arrow function declared inside another function's body
+- **Inline why-comments:** MAY use an inline `//` comment above a specific non-obvious line or
+  statement inside a function body, alongside the function's own JSDoc — the JSDoc documents the
+  function as a whole, an inline comment documents one line JSDoc can't attach to. MUST NOT use it
+  to paraphrase what the code already makes obvious — the Anti Patterns rules still apply.
+  - ✓ `// onLostPointerCapture reuses onPointerUp: the browser can release capture without ever`
+    `// firing pointerup/pointercancel, which would otherwise leave isDragging stuck at true.`
+  - ✗ `// Loop over matches and render a badge for each`
 
 ## Types, Interfaces, and Constants
 
@@ -78,7 +120,8 @@ Applies to `.ts` files only.
 - **No paraphrase:** MUST NOT describe what the code already makes obvious.
   - ✗ `// Increments the counter` above `counter++`
   - ✓ omit entirely; rename the variable if intent is unclear
-- **Document the why:** SHOULD document constraints, edge cases, and non-obvious reasons — not the what.
+- **Document the why:** SHOULD document constraints, edge cases, and non-obvious reasons — not
+  the what — using `@remarks` in `.ts` files when it takes more than the one-sentence summary.
 - **No task references:** MUST NOT mention the current task, PR number, issue, or caller in comments.
   - ✗ `// Added for the auth refactor (PR #42)`
 - **No stale JSDoc:** MUST update or remove JSDoc during refactors; stale docs are worse than no docs.
