@@ -34,8 +34,10 @@ function Add-MountsToConfig {
     .SYNOPSIS
         Injects the required bind mounts into devcontainer.json.
     .DESCRIPTION
-        Always prepends the host ~/.config/.env secret mount, then appends any
-        per-feature mounts declared in the selected entries.
+        Always prepends the host ~/.config/.env secret mount and the persistent
+        Claude Code auth volume, then appends any per-feature mounts declared
+        in the selected entries (e.g. the GitHub CLI auth volume, when that
+        feature is selected).
         Because ConvertTo-Json serialises arrays of plain strings as JSON arrays of
         strings (which is correct), but the mounts property in devcontainer.json must
         be a JSON array of strings rather than an array of objects, a placeholder
@@ -148,7 +150,7 @@ function Copy-ConfigurationFiles {
         if ($UseCompose) {
             $templateFile = Join-Path -Path $Source -ChildPath $DockerComposeYml
             New-ComposeWithRepoVolumes -TemplateFile $templateFile -ProjectName $ProjectName `
-                -RepoList $RepoList -Destination $destDevContainerPath
+                -RepoList $RepoList -Destination $destDevContainerPath -SelectedEntries $SelectedEntries
         }
     } else {
         Write-LogEntry "Template not found: $srcConfig" -Status Error

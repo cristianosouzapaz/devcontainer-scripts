@@ -150,6 +150,12 @@ function New-ComposeWithRepoVolumes {
         - Multi-repo: preserves the workspace root volume and injects per-repo
           service volume entries and top-level volume declarations for each repo
           immediately after their respective anchor lines.
+        Finally, for every selected entry that declares a named-volume mount
+        (source=X,target=Y,type=volume — e.g. the GitHub CLI auth volume), appends
+        a matching top-level volume declaration if one isn't already present in the
+        template. This keeps docker-compose.yml's declared volumes in sync with
+        whichever optional features were actually selected, instead of requiring
+        every such feature to hardcode its volume into the static template.
         Uses text manipulation (no YAML parser) against the known fixed template
         structure.
     .PARAMETER TemplateFile
@@ -161,8 +167,11 @@ function New-ComposeWithRepoVolumes {
     .PARAMETER Destination
         Absolute path to the destination folder (the .devcontainer directory).
         The output file is written as docker-compose.yml inside this folder.
+    .PARAMETER SelectedEntries
+        Array of selected entry objects; entries without a .mount value, or whose
+        mount isn't a named volume (type=volume), are ignored.
     #>
-    param([string]$TemplateFile, [string]$ProjectName, [string[]]$RepoList, [string]$Destination)
+    param([string]$TemplateFile, [string]$ProjectName, [string[]]$RepoList, [string]$Destination, [array]$SelectedEntries = @())
 
     $content = (Get-Content -Path $TemplateFile -Raw) -replace '\r\n', "`n"
     $content = $content.Replace('project-name', $ProjectName)
@@ -213,6 +222,21 @@ function New-ComposeWithRepoVolumes {
         }
 
         $content = $lines -join "`n"
+    }
+
+    $featureVolumeLines = [System.Collections.ArrayList]@()
+    foreach ($e in $SelectedEntries) {
+        if ([string]::IsNullOrWhiteSpace($e.mount)) { continue }
+        if ($e.mount -notmatch '^source=(?<name>[^,]+),target=[^,]+,type=volume$') { continue }
+
+        $volumeName = $Matches['name']
+        if ($content -notmatch "(?m)^  $([regex]::Escape($volumeName)):") {
+            [void]$featureVolumeLines.Add("  ${volumeName}:")
+            [void]$featureVolumeLines.Add("    name: $volumeName")
+        }
+    }
+    if ($featureVolumeLines.Count -gt 0) {
+        $content = $content.TrimEnd("`n") + "`n" + ($featureVolumeLines -join "`n") + "`n"
     }
 
     $outputPath = Join-Path -Path $Destination -ChildPath 'docker-compose.yml'
