@@ -6,11 +6,6 @@ set -euo pipefail
 # MODULE_ENTRY="workspaces_setup"
 
 # VS Code workspace generation module
-#
-# This module generates a .code-workspace file at /workspace/<PROJECT_NAME>.code-workspace
-# when two or more repositories are configured via REPO_SOURCE_N environment variables.
-# Single-repo containers are skipped silently — no workspace file is needed.
-# The file is idempotent: if it already exists it is left unchanged.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -22,7 +17,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
 # - PROJECT_NAME    Container workspace project name (set in remoteEnv); used for the workspace filename.
 # - REPO_SOURCE_N   Numbered clone URLs (REPO_SOURCE_1, REPO_SOURCE_2, …); determines multi-repo mode.
 
-# ----- PATH AND STRUCTURE VARIABLES -------------------------------------------
+# ----- CONSTANTS --------------------------------------------------------------
 
 # Test seam — not readonly so tests can override it
 _WORKSPACE_DIR="${_WORKSPACE_DIR:-/workspace}"
@@ -32,48 +27,34 @@ _WORKSPACE_DIR="${_WORKSPACE_DIR:-/workspace}"
 # build_workspace_json <folder_name...>: Writes a .code-workspace JSON document to stdout.
 # Each argument is a folder name relative to the workspace root.
 build_workspace_json() {
-	local folders_json="" folder sep=""
-
-	for folder in "$@"; do
-		folders_json+="${sep}        { \"name\": \"${folder}\", \"path\": \"${folder}\" }"
-		sep=$',\n'
-	done
-
-	printf '{\n    "folders": [\n%s\n    ],\n    "settings": {}\n}\n' "$folders_json"
-}
-
-# collect_workspace_entries <nameref>: Populates an array with clone URLs from REPO_SOURCE_N env vars.
-# Reads REPO_SOURCE_1, REPO_SOURCE_2, … until the first unset or empty variable.
-# Does not fall back to REPO_SOURCE — that variable signals single-repo mode, which this module skips.
-collect_workspace_entries() {
-	local -n _out_entries="$1"
-	local i=1 url var
-
-	while true; do
-		var="REPO_SOURCE_${i}"
-		url="${!var:-}"
-		[[ -z "$url" ]] && break
-		_out_entries+=("$url")
-		i=$(( i + 1 ))
-	done
+	jq -n --raw-input '{
+		folders: [ inputs | { name: ., path: . } ],
+		settings: {}
+	}' <(printf '%s\n' "$@")
 }
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# workspaces_setup: Module entry point.
-# Skips silently when fewer than two repos are configured via REPO_SOURCE_N.
-# Otherwise generates /workspace/<PROJECT_NAME>.code-workspace listing each repo as a root folder.
-# Idempotent: an existing workspace file is never overwritten.
+# workspaces_setup: Module entry point. Skips silently when fewer than two
+# repos are configured via REPO_SOURCE_N. Otherwise generates
+# /workspace/<PROJECT_NAME>.code-workspace listing each repo as a root
+# folder. Idempotent: an existing workspace file is never overwritten.
 workspaces_setup() {
 	local -a _entries=()
 	local url folder_name workspace_file
 	local -a _folders=()
 	setup_error_traps
 
-	collect_workspace_entries _entries
+	collect_numbered_repo_entries _entries
 
 	if [[ "${#_entries[@]}" -le 1 ]]; then
 		log_debug "Single-repo or no repos configured — skipping workspace file generation"
+		module_skip
+		return 0
+	fi
+
+	if ! check_command "jq"; then
+		log_debug "jq not available, skipping workspace file generation"
 		module_skip
 		return 0
 	fi
@@ -95,9 +76,9 @@ workspaces_setup() {
 		_folders+=("$folder_name")
 	done
 
-	log_info "Generating workspace file: ${workspace_file}"
+	log_detail "Generating workspace file: ${workspace_file}"
 	build_workspace_json "${_folders[@]}" > "$workspace_file"
-	log_success "Workspace file generated: ${workspace_file}"
+	log_item_success "Workspace file generated: ${workspace_file}"
 }
 
-export -f build_workspace_json collect_workspace_entries workspaces_setup
+export -f build_workspace_json workspaces_setup

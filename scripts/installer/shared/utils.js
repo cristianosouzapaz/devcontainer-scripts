@@ -74,6 +74,20 @@ export const buildTagsStr = (tags) =>
     tags.map((tag) => chalk.bgWhite.black(` ${tag} `)).join(" ");
 
 /**
+ * Format the "(installed: vX)" / "(installed: vX → vY)" / "(vY)" hint shown
+ * next to a catalog entry's name in a selection prompt.
+ * @param {string|null} installedVersion - Currently installed version, or null if not installed.
+ * @param {string} version - The catalog entry's current version.
+ * @returns {string}
+ */
+export const formatVersionHint = (installedVersion, version) =>
+    installedVersion
+        ? installedVersion === version
+            ? chalk.gray(`(installed: v${installedVersion})`)
+            : chalk.gray(`(installed: v${installedVersion} → v${version})`)
+        : chalk.gray(`(v${version})`);
+
+/**
  * Resolve a checkbox prompt's pageSize so the full choice list (including any
  * Separator rows) renders on one screen, capped at MAX_CATALOG_PAGE_SIZE.
  * @param {number} choiceCount - Total number of rendered rows (choices + separators).

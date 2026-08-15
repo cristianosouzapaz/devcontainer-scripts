@@ -7,9 +7,7 @@ readonly _VALIDATION_SH_LOADED=1
 
 # ----- VALIDATION FUNCTIONS ---------------------------------------------------
 
-# check_command: Checks if a command is available
-# Usage: check_command <command_name>
-# Returns: 0 if available, 1 if not
+# check_command: Usage: check_command <command_name>. Returns 0 if available, 1 if not.
 check_command() {
 	local cmd="$1"
 	if command -v "$cmd" >/dev/null 2>&1; then
@@ -21,9 +19,7 @@ check_command() {
 	fi
 }
 
-# check_env_var: Checks if an environment variable is set and non-empty
-# Usage: check_env_var <var_name>
-# Returns: 0 if set, 1 if not
+# check_env_var: Usage: check_env_var <var_name>. Returns 0 if set and non-empty, 1 if not.
 check_env_var() {
 	local var_name="$1"
 	if [[ -n "${!var_name:-}" ]]; then
@@ -35,6 +31,28 @@ check_env_var() {
 	fi
 }
 
+# collect_numbered_repo_entries <nameref> [fallback_var]: Populates an array with clone
+# URLs from REPO_SOURCE_1, REPO_SOURCE_2, … until the first unset or empty variable.
+# If none are set and fallback_var is given and non-empty, appends that single value instead.
+# Used by both 01-git.sh (fallback: REPO_SOURCE) and 05-workspaces.sh (no fallback).
+collect_numbered_repo_entries() {
+	local -n _out_entries="$1"
+	local fallback_var="${2:-}"
+	local i=1 url var
+
+	while true; do
+		var="REPO_SOURCE_${i}"
+		url="${!var:-}"
+		[[ -z "$url" ]] && break
+		_out_entries+=("$url")
+		i=$(( i + 1 ))
+	done
+
+	if [[ "${#_out_entries[@]}" -eq 0 && -n "$fallback_var" && -n "${!fallback_var:-}" ]]; then
+		_out_entries+=("${!fallback_var}")
+	fi
+}
+
 # repo_entry_folder_name <url>: Extracts the last path segment without the .git extension.
 # Used by both 01-git.sh and 05-workspaces.sh to derive the workspace folder name from a clone URL.
 # Examples: https://github.com/org/repo.git → repo
@@ -42,25 +60,6 @@ check_env_var() {
 repo_entry_folder_name() {
 	local url="${1##*/}"
 	echo "${url%.git}"
-}
-
-# sanitize_string: remove control characters and trim
-sanitize_string() {
-	local s="$1"
-	# remove non-printable characters
-	s=$(echo -n "$s" | tr -cd '\11\12\15\40-\176')
-	# trim
-	s=$(echo -n "$s" | sed -e 's/^\s\+//' -e 's/\s\+$//')
-	printf '%s' "$s"
-}
-
-# sanitize_env_var: sanitize and export a variable safely
-sanitize_env_var() {
-	local var_name="$1"
-	local val="${!var_name:-}"
-	local clean
-	clean=$(sanitize_string "$val")
-	export "$var_name"="$clean"
 }
 
 # validate: Dispatcher for different validation types
@@ -190,7 +189,6 @@ validate_json() {
 		jq -e . "$target" >/dev/null 2>&1 || return 1
 	else
 		python -c "import json,sys
-import io
 f=open('$target')
 json.load(f)" >/dev/null 2>&1 || return 1
 	fi
@@ -225,4 +223,4 @@ validate_env_var_format() {
 	return 0
 }
 
-export -f check_command check_env_var repo_entry_folder_name sanitize_string sanitize_env_var validate validate_url validate_file validate_disk_space validate_json validate_env_var_format
+export -f check_command check_env_var collect_numbered_repo_entries repo_entry_folder_name validate validate_url validate_file validate_disk_space validate_json validate_env_var_format

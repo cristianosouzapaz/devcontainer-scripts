@@ -5,11 +5,7 @@ set -euo pipefail
 # MODULE_DESCRIPTION="Configures ngrok authentication token if NGROK_AUTHTOKEN is set"
 # MODULE_ENTRY="ngrok_setup"
 
-# Ngrok setup module - Configures ngrok with provided authtoken for tunneling
-#
-# This module sets up ngrok by adding the authentication token if provided
-# via the `NGROK_AUTHTOKEN` environment variable. It uses shared utilities for
-# logging, error handling, and command retries.
+# Ngrok setup module
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -30,7 +26,7 @@ readonly _NGROK_CONFIG_COMMAND="config add-authtoken"
 # Skips when ngrok is not installed or NGROK_AUTHTOKEN is unset.
 # Applies the authtoken with retry/backoff; clears NGROK_AUTHTOKEN on exit.
 ngrok_setup() {
-	local ngrok_output
+	local exit_code
 	setup_error_traps
 	register_cleanup 'unset NGROK_AUTHTOKEN'
 
@@ -46,13 +42,15 @@ ngrok_setup() {
 		return 0
 	}
 
-	log_debug "Configuring ngrok with authtoken"
-	ngrok_output=$(retry_command 3 1 "$(command -v ngrok || echo 'ngrok')" ${_NGROK_CONFIG_COMMAND} "${NGROK_AUTHTOKEN}" 2>&1) || {
+	start_spinner "Configuring ngrok with authtoken"
+	exit_code=0
+	spinner_stream log_debug retry_command 3 1 "$(command -v ngrok || echo 'ngrok')" ${_NGROK_CONFIG_COMMAND} "${NGROK_AUTHTOKEN}" || exit_code=$?
+	if [[ $exit_code -ne 0 ]]; then
 		push_error "$NETWORK_ERROR" "${LINENO}" "ngrok_setup" "ngrok $_NGROK_CONFIG_COMMAND" "ngrok configuration failed after retries"
-		log_error "ngrok configuration failed after retries: check authtoken or network"
+		stop_spinner 1
 		return 1
-	}
-	log_debug "${ngrok_output}"
+	fi
+	stop_spinner 0
 }
 
 export -f ngrok_setup

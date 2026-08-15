@@ -12,6 +12,23 @@ readonly _RETRY_SH_LOADED=1
 #
 # NOTE: This module does not use configuration variables from devcontainer-setup.sh.
 # Internal retry logic is controlled via internal constants and runtime state.
+#
+# Never calls anything from spinner.sh that starts a spinner (e.g.
+# start_spinner), even though callers may wrap this in one: retry_command/
+# retry_with_backoff are commonly invoked from inside a subshell — a `$(...)`
+# capture, or spinner_stream's internal process substitution (see
+# spinner.sh). Starting a spinner from inside a subshell forks its
+# background draw loop as a child of that subshell, not of the caller, so it
+# becomes an orphaned, undetected, unkillable background process the moment
+# the subshell exits.
+#
+# Also logs nothing itself beyond push_error (which only records to the
+# error stack, no output) — retry_with_backoff's own log_warning/log_error
+# calls used to fire for circuit-breaker/final-failure conclusions, but any
+# caller capturing this function's output (to re-log it themselves, e.g. via
+# spinner_stream) would then re-log that already-formatted text a second
+# time, doubling the prefix. Callers log their own conclusion by inspecting
+# the return code instead.
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
@@ -48,6 +65,7 @@ compute_sleep() {
 # retry_with_backoff: flexible retry driver
 # Usage: retry_with_backoff <max_attempts> <initial_backoff> <max_backoff> <command...>
 # Honors env vars: _JITTER_ENABLED, _CIRCUIT_BREAKER_THRESHOLD
+# Logs nothing itself — see file header. Caller inspects the return code.
 # Returns: 0 on success, 1 on failure after retries, 2 if circuit breaker open
 retry_with_backoff() {
 	local max_attempts=${1:-${_MAX_RETRY_ATTEMPTS}}
@@ -57,13 +75,11 @@ retry_with_backoff() {
 	local -a cmd=("$@")
 
 	if [[ "${_CIRCUIT_BREAKER_OPEN}" == "true" ]]; then
-		log_warning "Circuit breaker open; failing fast"
 		return 2
 	fi
 
 	local attempt=1
 	while ((attempt <= max_attempts)); do
-		log_debug "Attempt $attempt/$max_attempts: ${cmd[*]}"
 		if "${cmd[@]}"; then
 			# success -> reset circuit breaker failure counter
 			_CIRCUIT_BREAKER_FAILURES=0
@@ -83,7 +99,6 @@ retry_with_backoff() {
 		if ((attempt <= max_attempts)); then
 			local sleep_time
 			sleep_time=$(compute_sleep "$backoff" "$max_backoff" "${_JITTER_ENABLED}")
-			log_debug "Sleeping $sleep_time seconds before retry"
 			sleep "$sleep_time"
 			# exponential increase
 			backoff=$((backoff * 2))
@@ -94,12 +109,10 @@ retry_with_backoff() {
 	(( _CIRCUIT_BREAKER_FAILURES++ )) || true
 	if ((_CIRCUIT_BREAKER_FAILURES >= ${_CIRCUIT_BREAKER_THRESHOLD})); then
 		_CIRCUIT_BREAKER_OPEN="true"
-		log_error "Circuit breaker opened after $_CIRCUIT_BREAKER_FAILURES failures"
 		push_error 1 "${LINENO}" "retry_with_backoff" "${cmd[*]}" "Circuit breaker opened after repeated failures"
 		return 2
 	fi
 
-	log_error "Failed after $max_attempts attempts"
 	push_error 1 "${LINENO}" "retry_with_backoff" "${cmd[*]}" "Command failed after $max_attempts attempts"
 	return 1
 }
@@ -114,44 +127,4 @@ retry_command() {
 	retry_with_backoff "$max_attempts" "$initial_backoff" "$_DEFAULT_MAX_BACKOFF" "${command[@]}"
 }
 
-# retry_curl: retains behavior but uses retry_with_backoff for retrying
-# Usage: retry_curl [max_attempts] [initial_backoff] [timeout] [curl_args...]
-retry_curl() {
-	local max_attempts=${1:-$_MAX_RETRY_ATTEMPTS}
-	local initial_backoff=${2:-$_DEFAULT_INITIAL_BACKOFF}
-	local timeout=${3:-10}
-	shift 3
-	local -a curl_args=("$@")
-
-	# inner function to perform curl and return 0 on HTTP 200
-	do_curl() {
-		local response
-		local RETRY_HTTP_CODE
-		response=$(curl -s -w "%{http_code}" --max-time "$timeout" "${curl_args[@]}" 2>/dev/null)
-		RETRY_HTTP_CODE=${response: -3}
-
-		if [[ "$RETRY_HTTP_CODE" == "200" ]]; then
-			return 0
-		elif [[ "$RETRY_HTTP_CODE" =~ ^(401|403)$ ]]; then
-			log_error "Authentication error (HTTP $RETRY_HTTP_CODE)"
-			return 1
-		elif [[ "$RETRY_HTTP_CODE" =~ ^(5[0-9][0-9])$ ]]; then
-			log_warning "Server error (HTTP $RETRY_HTTP_CODE)"
-			return 1
-		else
-			log_warning "Network error (HTTP $RETRY_HTTP_CODE)"
-			return 1
-		fi
-	}
-
-	# Use retry_with_backoff to drive retries
-	retry_with_backoff "$max_attempts" "$initial_backoff" "$_DEFAULT_MAX_BACKOFF" do_curl
-	local rc=$?
-	if [[ "$rc" -eq 2 ]]; then
-		# circuit breaker opened
-		return 1
-	fi
-	return $rc
-}
-
-export -f compute_sleep retry_with_backoff retry_command retry_curl
+export -f compute_sleep retry_with_backoff retry_command

@@ -5,14 +5,6 @@ readonly _ENV_LOADER_SH_LOADED=1
 
 # Environment file loader - Loads and persists variables from mounted .env file
 #
-# Provides two public functions:
-#   load_env_file    - Reads key=value pairs from $_ENV_FILE_PATH and exports
-#                      them into the current shell for use during setup.
-#   persist_env_vars - Writes variables prefixed with PERSIST_ to
-#                      $_ETC_ENVIRONMENT_PATH (default /etc/environment),
-#                      stripping the prefix so they are available to all
-#                      container processes (including Claude Code) after setup.
-#
 # Usage in .env:
 #   PERSIST_CONTEXT7_API_KEY=your-key   # persisted as CONTEXT7_API_KEY
 #   GIT_CLONE_TOKEN=secret                          # available during setup only; global fallback
@@ -25,9 +17,9 @@ _ETC_ENVIRONMENT_PATH="${_ETC_ENVIRONMENT_PATH:-/etc/environment}"
 
 # ----- FUNCTIONS --------------------------------------------------------------
 
-# load_env_file: Load environment variables from a file into the current shell.
-# Args: none
-# Returns: 0 on success (including when file is absent).
+# load_env_file: Reads key=value pairs from $_ENV_FILE_PATH and exports them
+# into the current shell for use during setup.
+# Args: none. Returns: 0 on success (including when file is absent).
 load_env_file() {
 	[[ -f "$_ENV_FILE_PATH" ]] || {
 		log_info "No .env file found"
@@ -51,12 +43,12 @@ load_env_file() {
 	done <"$_ENV_FILE_PATH"
 }
 
-# persist_env_vars: Write PERSIST_* variables from the current environment to
-# $_ETC_ENVIRONMENT_PATH, stripping the PERSIST_ prefix.
-# Existing entries for the same key are replaced (idempotent).
+# persist_env_vars: Writes variables prefixed with PERSIST_ to
+# $_ETC_ENVIRONMENT_PATH (default /etc/environment), stripping the prefix so
+# they are available to all container processes (including Claude Code)
+# after setup. Existing entries for the same key are replaced (idempotent).
 # Must be called after load_env_file so PERSIST_* vars are in the environment.
-# Args: none
-# Returns: 0 always
+# Args: none. Returns: 0 always.
 persist_env_vars() {
 	local line key stripped value
 	local -a persist_keys=()

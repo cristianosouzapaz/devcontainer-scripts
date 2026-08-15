@@ -65,6 +65,7 @@ applyTo: "**/*.sh"
 - **Fatal level:** MUST call the fatal log-level function only for unrecoverable errors; it exits the process.
 - **Error level:** MUST use the error log-level function for recoverable errors; the caller decides whether to return or continue.
 - **Debug level:** MUST use the debug log-level function for any trace-level detail useful during development or troubleshooting.
+- **No re-logging formatted output:** MUST NOT capture output that already passed through the logging library and pass it through the logger again. Only raw, unformatted output (e.g. third-party command output) should be captured and logged; re-logging already-formatted lines duplicates their prefix/formatting.
 
 ## Idempotency
 
@@ -80,6 +81,9 @@ applyTo: "**/*.sh"
 - **Capture before use:** MUST capture command substitution into a named variable before use. MUST NOT use the output of a command substitution directly in a condition without first capturing it; this obscures errors.
   - ✓ `local result; result=$(get_value); [[ -n "$result" ]]`
   - ✗ `[[ -n "$(get_value)" ]]`
+- **Exit code capture under `set -e`:** MUST capture a command's exit code with `cmd || var=$?` as a single statement, never as a bare command followed by a separate `var=$?` line. Under `set -e` (inherited by subshells), a bare failing command aborts execution before the following line ever runs, silently skipping the capture.
+  - ✓ `exit_code=0; cmd || exit_code=$?`
+  - ✗ `cmd` then `exit_code=$?` on the next line
 
 ## Module Structure
 
@@ -109,6 +113,7 @@ applyTo: "**/*.sh"
   - ✗ `` result=`get_value` ``
 - **Input redirection:** MUST prefer input redirection (`< file`) over piping `cat file |` to avoid unnecessary subshells.
 - **Pipeline exit status:** SHOULD avoid pipelines where the exit status of intermediate commands must be checked; capture output into variables instead.
+- **Background processes:** MUST NOT launch a background process (`cmd &`) from inside a command substitution, process substitution, or pipeline stage. The forked process becomes a child of that subshell, not of the calling shell, and is orphaned — untracked and unkillable by the caller — the moment the subshell exits.
 
 ## String and Path Handling
 

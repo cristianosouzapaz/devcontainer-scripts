@@ -5,14 +5,12 @@ set -euo pipefail
 # MODULE_DESCRIPTION="Configures git SSH commit signing via SSH agent"
 # MODULE_ENTRY="ssh_signing_setup"
 
-# SSH signing setup module - Configures git to sign commits using the SSH key
-# available via the SSH agent (SSH_AUTH_SOCK).
+# SSH signing setup module
 #
-# This module is opt-in: it activates only when SSH_SIGNING=true and
-# SSH_AUTH_SOCK points to a valid socket. VS Code forwards the host SSH agent
-# automatically, so any agent on the host (1Password, OpenSSH, Keychain, etc.)
-# is transparently available inside the container.
-# The private key never leaves the agent.
+# Opt-in: activates only when SSH_SIGNING=true and SSH_AUTH_SOCK points to a
+# valid socket. VS Code forwards the host SSH agent automatically, so any
+# agent on the host (1Password, OpenSSH, Keychain, etc.) is transparently
+# available inside the container. The private key never leaves the agent.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -44,7 +42,8 @@ is_signing_configured() {
 }
 
 # configure_git_signing <ssh_keygen_path>
-# Writes SSH signing settings to the global git config.
+# Writes the same 3-4 settings is_signing_configured checks (signingkey only
+# when GIT_SIGNING_KEY is set), so the two stay in lockstep by construction.
 configure_git_signing() {
 	local ssh_keygen_path="$1"
 
@@ -56,7 +55,7 @@ configure_git_signing() {
 	if [[ -n "${GIT_SIGNING_KEY:-}" ]]; then
 		git config --global user.signingkey "${GIT_SIGNING_KEY}"
 	fi
-	log_success "SSH commit signing configured"
+	log_item_success "SSH commit signing configured"
 }
 
 # ----- CORE SETUP -------------------------------------------------------------
@@ -93,7 +92,7 @@ ssh_signing_setup() {
 		log_debug "SSH commit signing already configured, skipping"
 	else
 		if [[ -z "${GIT_SIGNING_KEY:-}" ]]; then
-			log_warning "GIT_SIGNING_KEY is not set; user.signingkey will not be configured"
+			log_item_warning "GIT_SIGNING_KEY is not set; user.signingkey will not be configured"
 		fi
 		configure_git_signing "${ssh_keygen_path}"
 	fi

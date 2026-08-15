@@ -6,14 +6,15 @@ set -euo pipefail
 # MODULE_ENTRY="claude_ai_setup"
 
 # Claude AI CLI installer and status-line configurator module
-#
-# Ensures the Claude CLI is installed and that the status-line script is
-# deployed to the Claude config dir with its settings.json entry merged in.
-# Both steps are idempotent and safe to re-run on every container rebuild.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
 source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
+
+# ----- CONFIGURATION VARIABLES ------------------------------------------------
+
+# This module uses the following configuration variables:
+# - CLAUDE_CONFIG_DIR (optional, defaults to /root/.claude)
 
 # ----- CONSTANTS --------------------------------------------------------------
 
@@ -27,25 +28,26 @@ _STATUSLINE_DEST="${_CLAUDE_CONFIG_DIR}/statusline-command.sh"
 _STATUSLINE_SETTINGS="${_CLAUDE_CONFIG_DIR}/settings.json"
 _STATUSLINE_HASH_FILE="${_CLAUDE_CONFIG_DIR}/.statusline-hash"
 
-# ----- INTERNAL HELPERS -------------------------------------------------------
+# ----- HELPER FUNCTIONS -------------------------------------------------------
 
 # install_claude_cli: Installs Claude CLI via npm if not already present.
 # Fails hard on install failure.
 install_claude_cli() {
-	local npm_output
+	local exit_code
 	check_command "${_CLAUDE_CLI_COMMAND}" && {
 		log_debug "Claude CLI already installed, skipping"
 		return 0
 	}
-	log_info "Installing Claude CLI (${_CLAUDE_INSTALL_NAME})"
-	npm_output=$(npm install -g "${_CLAUDE_INSTALL_NAME}" 2>&1) || {
+	start_spinner "Installing Claude CLI (${_CLAUDE_INSTALL_NAME})"
+	exit_code=0
+	spinner_stream log_debug npm install -g "${_CLAUDE_INSTALL_NAME}" || exit_code=$?
+	if [[ $exit_code -ne 0 ]]; then
 		push_error "$FATAL_ERROR" "${LINENO}" "install_claude_cli" \
 			"npm install -g ${_CLAUDE_INSTALL_NAME}" "Claude CLI installation failed"
-		log_error "Claude CLI installation failed"
-		log_debug "${npm_output}"
+		stop_spinner 1
 		return 1
-	}
-	log_debug "${npm_output}"
+	fi
+	stop_spinner 0
 }
 
 # merge_statusline_settings: Merges the statusLine key into settings.json.
@@ -54,7 +56,7 @@ merge_statusline_settings() {
 	local current_settings result tmp_file
 	if [[ -f "${_STATUSLINE_SETTINGS}" ]]; then
 		if ! jq -e . "${_STATUSLINE_SETTINGS}" > /dev/null 2>&1; then
-			log_warning "settings.json is malformed — skipping statusline settings merge"
+			log_item_warning "settings.json is malformed — skipping statusline settings merge"
 			return 0
 		fi
 		current_settings=$(< "${_STATUSLINE_SETTINGS}")
@@ -64,7 +66,7 @@ merge_statusline_settings() {
 	result=$(jq --arg cmd "bash ${_STATUSLINE_DEST}" \
 		'. + {"statusLine": {"type": "command", "command": $cmd}}' \
 		<<< "${current_settings}") || {
-		log_warning "jq failed to generate statusLine settings — skipping"
+		log_item_warning "jq failed to generate statusLine settings — skipping"
 		return 0
 	}
 	tmp_file=$(mktemp)
@@ -110,7 +112,7 @@ configure_statusline() {
 		return 0
 	fi
 
-	log_info "Configuring Claude Code status line"
+	log_detail "Configuring Claude Code status line"
 
 	if [[ "${hash_differs}" == 'true' ]]; then
 		cp "${_STATUSLINE_SOURCE}" "${_STATUSLINE_DEST}"
@@ -123,10 +125,12 @@ configure_statusline() {
 	fi
 }
 
-# ----- ENTRY POINT ------------------------------------------------------------
+# ----- CORE SETUP -------------------------------------------------------------
 
-# claude_ai_setup: Module entry point.
-# Installs the Claude CLI and configures the Code status line.
+# claude_ai_setup: Module entry point. Ensures the Claude CLI is installed
+# and that the status-line script is deployed to the Claude config dir with
+# its settings.json entry merged in. Both steps are idempotent and safe to
+# re-run on every container rebuild.
 claude_ai_setup() {
 	setup_error_traps
 	install_claude_cli || return 1

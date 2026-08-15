@@ -10,6 +10,8 @@ set -euo pipefail
 
 readonly _SETUP_MODULES_DIR="setup/modules"
 readonly _SETUP_SHARED_DIR="setup/shared"
+# Test seam — not readonly so tests can point this at a fixture file
+_VERSION_FILE="VERSION"
 
 # ----- INITIALIZATION ---------------------------------------------------------
 
@@ -43,7 +45,9 @@ main() {
 	setup_error_traps
 	register_cleanup cleanup_temp_files
 
-	log_info "Starting setup in $(pwd)"
+	local script_version="unknown"
+	[[ -f "$SCRIPT_DIR/$_VERSION_FILE" ]] && script_version="$(<"$SCRIPT_DIR/$_VERSION_FILE")"
+	log_info "Starting setup in $(pwd) - version ${script_version}"
 
 	load_env_file
 	persist_env_vars

@@ -1,10 +1,9 @@
 import { readFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import chalk from "chalk";
 import consola from "consola";
 import inquirer from "inquirer";
-import { buildTagsStr, handleError, loadJsonCatalog, readLockFile, resolvePageSize, selectTargetTool, setupConsola, TOOLS, writeLockFile, writeWithConflict } from "../shared/utils.js";
+import { buildTagsStr, formatVersionHint, handleError, loadJsonCatalog, readLockFile, resolvePageSize, selectTargetTool, setupConsola, TOOLS, writeLockFile, writeWithConflict } from "../shared/utils.js";
 
 /**
  * @fileoverview Interactive installer for agent instruction and prompt templates.
@@ -313,11 +312,7 @@ const askUser = async () => {
             const claudeRelPath = join(".claude", "rules", toClaudeRuleFilename(filename));
             const copilotRelPath = join(".github", "instructions", filename);
             const installedVersion = lock.instructions[claudeRelPath] ?? lock.instructions[copilotRelPath] ?? null;
-            const versionStr = installedVersion
-                ? installedVersion === version
-                    ? chalk.gray(`(installed: v${installedVersion})`)
-                    : chalk.gray(`(installed: v${installedVersion} → v${version})`)
-                : chalk.gray(`(v${version})`);
+            const versionStr = formatVersionHint(installedVersion, version);
             return {
                 name: `${name} ${versionStr} ${buildTagsStr(tags)}`,
                 value: { filename, version, name, tags, templateFile },
@@ -329,11 +324,7 @@ const askUser = async () => {
             const copilotRelPath = join(".github", "prompts", filename);
             const claudeRelPath = join(".claude", "commands", commandFilename);
             const installedVersion = lock.prompts[copilotRelPath] ?? lock.prompts[claudeRelPath] ?? null;
-            const versionStr = installedVersion
-                ? installedVersion === version
-                    ? chalk.gray(`(installed: v${installedVersion})`)
-                    : chalk.gray(`(installed: v${installedVersion} → v${version})`)
-                : chalk.gray(`(v${version})`);
+            const versionStr = formatVersionHint(installedVersion, version);
             return {
                 name: `${name} ${versionStr} ${buildTagsStr(tags)}`,
                 value: { filename, commandFilename, version, name, tags, templateFile },

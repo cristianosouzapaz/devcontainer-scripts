@@ -4,11 +4,6 @@
 readonly _MODULE_REGISTRY_SH_LOADED=1
 
 # Module Registry - Dynamic discovery and execution of setup modules
-#
-# Provides three public functions:
-#   discover_modules <dir>  - Populate DISCOVERED_MODULES array from numbered *.sh files
-#   run_module <file>       - Source and execute a single module
-#   run_all_modules <dir>   - Discover and run all modules in order
 
 # ----- INTERNAL HELPERS -------------------------------------------------------
 
@@ -38,9 +33,8 @@ registry_validate_meta() {
 
 # ----- PUBLIC FUNCTIONS -------------------------------------------------------
 
-# discover_modules <modules_dir>
-# Finds all [0-9][0-9]-*.sh files, validates their metadata, and populates
-# the global DISCOVERED_MODULES array in sorted order.
+# discover_modules <modules_dir>: Populates the global DISCOVERED_MODULES
+# array from numbered *.sh files, validated and in sorted order.
 discover_modules() {
 	local modules_dir="$1"
 	declare -ga DISCOVERED_MODULES=()
@@ -54,9 +48,8 @@ discover_modules() {
 	done
 }
 
-# run_module <module_file>
-# Sources the module file and calls its declared entry function.
-# Returns the entry function's exit code on failure, 0 on success.
+# run_module <module_file>: Sources the module file and calls its declared
+# entry function. Returns the entry function's exit code on failure, 0 on success.
 run_module() {
 	local module_file="$1"
 
@@ -82,9 +75,8 @@ run_module() {
 	return 0
 }
 
-# run_all_modules <modules_dir>
-# Discovers and runs all modules in sorted order.
-# Fails fast on the first module error.
+# run_all_modules <modules_dir>: Discovers and runs all modules in sorted
+# order. Fails fast on the first module error.
 run_all_modules() {
 	local modules_dir="$1"
 

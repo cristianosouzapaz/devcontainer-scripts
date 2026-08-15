@@ -13,7 +13,6 @@ set -euo pipefail
 # repos from different hosts can be mixed in the same project (see GIT_CLONE_TOKEN_<HOST>),
 # clones or fetches repositories, and installs dependencies using the package manager
 # detected from the project (pnpm, npm, or yarn).
-# Shared utilities provide logging, error handling, and environment variable loading.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -34,7 +33,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
 # - REPO_SOURCE_N
 # - VALIDATE_TOKEN
 
-# ----- PATH AND STRUCTURE VARIABLES -------------------------------------------
+# ----- CONSTANTS --------------------------------------------------------------
 
 readonly _GIT_CREDENTIALS_FILE="$HOME/.git-credentials"
 readonly _PKG_INSTALL_TIMEOUT=180
@@ -98,26 +97,6 @@ resolve_token_for_host() {
 	fi
 }
 
-# collect_repo_entries <nameref>: Populates an array with clone URLs from numbered env vars.
-# Reads REPO_SOURCE_1, REPO_SOURCE_2, … until the first unset or empty variable.
-# Falls back to REPO_SOURCE when no numbered variables are set.
-collect_repo_entries() {
-	local -n _out_entries="$1"
-	local i=1 url var
-
-	while true; do
-		var="REPO_SOURCE_${i}"
-		url="${!var:-}"
-		[[ -z "$url" ]] && break
-		_out_entries+=("$url")
-		i=$(( i + 1 ))
-	done
-
-	if [[ "${#_out_entries[@]}" -eq 0 ]] && [[ -n "${REPO_SOURCE:-}" ]]; then
-		_out_entries+=("${REPO_SOURCE}")
-	fi
-}
-
 # configure_git_credentials <repo_url...>: Writes one credential store entry per unique host
 # found among the given repo URLs, resolving each host's token via resolve_token_for_host.
 # Preserves each URL's actual scheme (http/https). Hosts with no resolvable token are skipped
@@ -154,7 +133,7 @@ configure_git_credentials() {
 
 		token=$(resolve_token_for_host "$host")
 		if [[ -z "$token" ]]; then
-			log_warning "No GIT_CLONE_TOKEN resolvable for host '${host}' — credentials not written for it"
+			log_item_warning "No GIT_CLONE_TOKEN resolvable for host '${host}' — credentials not written for it"
 			continue
 		fi
 
@@ -166,7 +145,7 @@ configure_git_credentials() {
 		printf '%s' "$credential_lines" >"$_GIT_CREDENTIALS_FILE"
 		chmod 600 "$_GIT_CREDENTIALS_FILE"
 	fi
-	log_success "Git credentials configured"
+	log_item_success "Git credentials configured"
 }
 
 # detect_package_manager: Prints the package manager to use for the current project.
@@ -190,7 +169,7 @@ detect_package_manager() {
 	[[ -f "yarn.lock" ]]         && found_locks+=("yarn.lock")
 
 	if [[ "${#found_locks[@]}" -gt 1 ]]; then
-		log_warning "Multiple lock files found: ${found_locks[*]} — using pnpm > npm > yarn priority"
+		log_item_warning "Multiple lock files found: ${found_locks[*]} — using pnpm > npm > yarn priority"
 	fi
 
 	[[ -f "pnpm-lock.yaml" ]]    && echo "pnpm" && return 0
@@ -213,9 +192,9 @@ install_dependencies() {
 		return 0
 	}
 
-	local pm install_output exit_code skip_fallback
+	local pm exit_code skip_fallback
 	pm="$(detect_package_manager)"
-	log_info "Installing dependencies with ${pm}"
+	start_spinner "Installing dependencies with ${pm}"
 
 	case "$pm" in
 		pnpm)
@@ -223,10 +202,10 @@ install_dependencies() {
 			pnpm config set store-dir /root/.local/share/pnpm/store >/dev/null 2>&1
 			if [[ -f "pnpm-lock.yaml" ]]; then
 				exit_code=0
-				install_output=$(timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --frozen-lockfile 2>&1) || exit_code=$?
-				log_debug "${install_output}"
+				spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --frozen-lockfile || exit_code=$?
 				if [[ $exit_code -eq 0 ]]; then
-					log_success "Dependencies installed with pnpm (frozen-lockfile)"
+					spinner_cleanup
+					log_item_success "Dependencies installed with pnpm (frozen-lockfile)"
 					return 0
 				fi
 				if [[ $exit_code -eq 124 ]]; then
@@ -235,34 +214,35 @@ install_dependencies() {
 			fi
 			if [[ "$skip_fallback" == false ]]; then
 				exit_code=0
-				install_output=$(timeout "$_PKG_INSTALL_TIMEOUT" pnpm install 2>&1) || exit_code=$?
-				log_debug "${install_output}"
+				spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" pnpm install || exit_code=$?
 				if [[ $exit_code -eq 0 ]]; then
-					log_success "Dependencies installed with pnpm"
+					spinner_cleanup
+					log_item_success "Dependencies installed with pnpm"
 					return 0
 				fi
 			fi
 			;;
 		yarn)
 			exit_code=0
-			install_output=$(timeout "$_PKG_INSTALL_TIMEOUT" yarn install --frozen-lockfile --non-interactive 2>&1) || exit_code=$?
-			log_debug "${install_output}"
+			spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" yarn install --frozen-lockfile --non-interactive || exit_code=$?
 			if [[ $exit_code -eq 0 ]]; then
-				log_success "Dependencies installed with yarn"
+				spinner_cleanup
+				log_item_success "Dependencies installed with yarn"
 				return 0
 			fi
 			;;
 		npm)
 			exit_code=0
-			install_output=$(timeout "$_PKG_INSTALL_TIMEOUT" npm install 2>&1) || exit_code=$?
-			log_debug "${install_output}"
+			spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" npm install || exit_code=$?
 			if [[ $exit_code -eq 0 ]]; then
-				log_success "Dependencies installed with npm"
+				spinner_cleanup
+				log_item_success "Dependencies installed with npm"
 				return 0
 			fi
 			;;
 	esac
 
+	spinner_cleanup
 	push_error "$FATAL_ERROR" "${LINENO}" "install_dependencies" "${pm} install" "Dependency installation failed"
 	log_error "Dependency installation failed with ${pm}"
 	return 1
@@ -273,33 +253,33 @@ install_dependencies() {
 # The caller must cd to the target directory before calling this function.
 setup_repository() {
 	local resolved_url="${1:-}"
-	local current_branch fetch_output merge_output init_output
-	log_info "Checking repository status in $(pwd)"
+	local current_branch fetch_output merge_output
+	log_detail "Checking repository status in $(pwd)"
 
 	# CASE 1: Repo exists (volume with previous clone)
 	if [[ -d ".git" ]]; then
-		log_info "Existing repository detected"
+		log_detail "Existing repository detected"
 		if [[ "${AUTO_UPDATE}" == "true" ]]; then
 			current_branch=$(git symbolic-ref --short HEAD 2>/dev/null) || true
 			if [[ -n "${current_branch}" ]]; then
 				log_debug "Fetching origin/${current_branch}"
 				fetch_output=$(git fetch origin "${current_branch}" 2>&1) || {
-					log_warning "Could not auto-update repository"
+					log_item_warning "Could not auto-update repository"
 					return 0
 				}
 				log_debug "${fetch_output}"
 				merge_output=$(git merge --ff-only "origin/${current_branch}" 2>&1) || {
-					log_warning "Could not auto-update repository"
+					log_item_warning "Could not auto-update repository"
 					return 0
 				}
 				log_debug "${merge_output}"
 				if [[ "${merge_output}" == *"Already up to date"* ]]; then
-					log_info "Repository already up to date"
+					log_item_success "Repository already up to date"
 				else
-					log_success "Repository auto-updated"
+					log_item_success "Repository auto-updated"
 				fi
 			else
-				log_warning "Detached HEAD — skipping auto-update"
+				log_item_warning "Detached HEAD — skipping auto-update"
 			fi
 		fi
 		return 0
@@ -310,25 +290,24 @@ setup_repository() {
 	resolved_host=$(url_host "$resolved_url")
 	resolved_token=$(resolve_token_for_host "$resolved_host")
 	if [[ -z "$resolved_token" ]]; then
-		log_warning "No GIT_CLONE_TOKEN resolvable for host '${resolved_host}' — skipping repository initialization"
+		log_item_warning "No GIT_CLONE_TOKEN resolvable for host '${resolved_host}' — skipping repository initialization"
 		return 0
 	fi
 
-	log_info "Initializing repository from $resolved_url"
-	init_output=$(git init -b "$DEFAULT_BRANCH" 2>&1)
-	log_debug "${init_output}"
+	start_spinner "Cloning repository from $resolved_url"
+	spinner_stream log_debug git init -b "$DEFAULT_BRANCH"
 	git remote add origin "$resolved_url"
-	fetch_output=$(git fetch origin 2>&1)
-	log_debug "${fetch_output}"
+	spinner_stream log_debug git fetch origin
+	spinner_cleanup
 
 	# Try to checkout without overwriting existing local config files
 	local checkout_output
 	if checkout_output=$(git checkout "$DEFAULT_BRANCH" 2>&1); then
 		log_debug "${checkout_output}"
-		log_success "Repository initialized"
+		log_item_success "Repository initialized"
 	else
 		log_debug "${checkout_output}"
-		log_warning "Repository initialized but checkout skipped (conflicts likely). Please check manually"
+		log_item_warning "Repository initialized but checkout skipped (conflicts likely). Please check manually"
 	fi
 }
 
@@ -343,7 +322,7 @@ validate_same_host() {
 		if [[ -z "$first_host" ]]; then
 			first_host="$host"
 		elif [[ "$host" != "$first_host" ]]; then
-			log_warning "Multi-repo: host '${host}' differs from '${first_host}' — same-host constraint may be violated"
+			log_item_warning "Multi-repo: host '${host}' differs from '${first_host}' — same-host constraint may be violated"
 		fi
 	done
 }
@@ -360,7 +339,7 @@ validate_token_access() {
 	[[ -n "$url" ]] || { log_debug "No repo URL — skipping token validation"; return 0; }
 	log_debug "Validating token via git ls-remote $url"
 	if git ls-remote "$url" HEAD >/dev/null 2>&1; then
-		log_success "Token validated"
+		log_item_success "Token validated"
 	else
 		push_error "$AUTH_ERROR" "${LINENO}" "validate_token_access" "git ls-remote $url" "Token validation failed"
 		log_error "Token validation failed"
@@ -381,7 +360,7 @@ git_setup() {
 	setup_error_traps
 	register_cleanup cleanup_sensitive_data
 
-	collect_repo_entries _trimmed_entries
+	collect_numbered_repo_entries _trimmed_entries REPO_SOURCE
 	if [[ "${#_trimmed_entries[@]}" -eq 0 ]]; then
 		log_debug "No REPO_SOURCE set — skipping git setup"
 		module_skip
@@ -400,7 +379,7 @@ git_setup() {
 		for entry in "${_trimmed_entries[@]}"; do
 			folder_name="$(repo_entry_folder_name "$entry")"
 			if [[ -v "_seen_folders[$folder_name]" ]]; then
-				log_warning "Skipping '${entry}': folder '${folder_name}' already processed"
+				log_item_warning "Skipping '${entry}': folder '${folder_name}' already processed"
 				continue
 			fi
 			_seen_folders["$folder_name"]=1
@@ -412,4 +391,4 @@ git_setup() {
 	fi
 }
 
-export -f cleanup_sensitive_data url_host url_scheme token_env_var_name resolve_token_for_host collect_repo_entries configure_git_credentials detect_package_manager install_dependencies setup_repository validate_same_host validate_token_access git_setup
+export -f cleanup_sensitive_data url_host url_scheme token_env_var_name resolve_token_for_host configure_git_credentials detect_package_manager install_dependencies setup_repository validate_same_host validate_token_access git_setup

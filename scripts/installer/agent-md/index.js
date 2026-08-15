@@ -1,10 +1,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import chalk from "chalk";
 import consola from "consola";
 import { checkbox } from "@inquirer/prompts";
-import { handleError, loadJsonCatalog, readLockFile, resolvePageSize, selectTargetTool, setupConsola, TOOLS, writeLockFile } from "../shared/utils.js";
+import { formatVersionHint, handleError, loadJsonCatalog, readLockFile, resolvePageSize, selectTargetTool, setupConsola, TOOLS, writeLockFile } from "../shared/utils.js";
 
 /**
  * @fileoverview Interactive installer for CLAUDE.md / AGENTS.md instruction blocks.
@@ -230,11 +229,7 @@ const askUser = async () => {
             const claudeVersion = lock.mdBlocks["CLAUDE.md"]?.[entry.key] ?? null;
             const agentsVersion = lock.mdBlocks["AGENTS.md"]?.[entry.key] ?? null;
             const installedVersion = claudeVersion ?? agentsVersion;
-            const versionStr = installedVersion
-                ? installedVersion === entry.version
-                    ? chalk.gray(`(installed: v${installedVersion})`)
-                    : chalk.gray(`(installed: v${installedVersion} → v${entry.version})`)
-                : chalk.gray(`(v${entry.version})`);
+            const versionStr = formatVersionHint(installedVersion, entry.version);
             return {
                 name: `${entry.name} ${versionStr}`,
                 value: entry,

@@ -1,10 +1,9 @@
 import { readFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import chalk from "chalk";
 import consola from "consola";
 import inquirer from "inquirer";
-import { buildInstallCommand, buildTagsStr, copyToClipboard, handleError, loadJsonCatalog, readConfigInstalledVersion, readLockFile, resolvePageSize, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
+import { buildInstallCommand, buildTagsStr, copyToClipboard, formatVersionHint, handleError, loadJsonCatalog, readConfigInstalledVersion, readLockFile, resolvePageSize, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
 
 /**
  * @fileoverview Interactive installer for project config file templates.
@@ -87,11 +86,7 @@ const askUser = async () => {
 
         const choices = configs.map((c) => {
             const installedVersion = readConfigInstalledVersion(destDir, c.filename);
-            const versionStr = installedVersion
-                ? installedVersion === c.version
-                    ? chalk.gray(`(installed: v${installedVersion})`)
-                    : chalk.gray(`(installed: v${installedVersion} → v${c.version})`)
-                : chalk.gray(`(v${c.version})`);
+            const versionStr = formatVersionHint(installedVersion, c.version);
             return { name: `${c.name} ${versionStr} ${buildTagsStr(c.tags)}`, value: c, description: c.description };
         });
 

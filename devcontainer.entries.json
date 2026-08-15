@@ -17,8 +17,7 @@
     {
         "label": "Docker (outside-of-docker)",
         "key": "docker",
-        "default": true,
-        "mandatory": false,
+        "mandatory": true,
         "feature": {
             "url": "ghcr.io/devcontainers/features/docker-outside-of-docker:1",
             "options": {

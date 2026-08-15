@@ -85,16 +85,24 @@ volumes_summary_identity() {
 # ----- PUBLIC FUNCTIONS -------------------------------------------------------
 
 # print_volumes_summary: Logs the mount and auth status of the Claude Code and
-# GitHub CLI persistent auth volumes. Silently does nothing if docker or the
-# container's own inspect data isn't available (e.g. Docker feature disabled).
-# A volume's row is skipped entirely — not shown as "not mounted" — when its
-# CLI binary isn't installed, since that means the feature was never selected
-# rather than a broken mount.
+# GitHub CLI persistent auth volumes as a group — one primary line announcing
+# the count, followed by one status-carrying line per volume (indented, each
+# with its own success/warning symbol since each row is its own conclusion).
+# In plain-text mode a column header and aligned columns are shown; in
+# STRUCTURED_LOGS mode the header is omitted and each row is a clean sentence
+# instead, so JSON output never carries terminal-only alignment padding.
+# Silently does nothing if docker or the container's own inspect data isn't
+# available (e.g. Docker feature disabled). A volume's row is skipped
+# entirely — not shown as "not mounted" — when its CLI binary isn't
+# installed, since that means the feature was never selected rather than a
+# broken mount.
 # Args: none
 # Returns: 0 always
 print_volumes_summary() {
 	local mounts line name destination label identity hint binary
-	local header_shown=false
+	local col_tool=4 col_volume=6 col_mount=5
+	local -a row_names=() row_labels=() row_mounts=() row_ok=() row_details=()
+	local i header row mount_val ok_val detail_val
 
 	mounts="$(volumes_summary_list_mounts)"
 	if [[ -z "$mounts" ]]; then
@@ -106,11 +114,6 @@ print_volumes_summary() {
 		binary="${_VOLUMES_BINARY[$name]}"
 		command -v "$binary" >/dev/null 2>&1 || continue
 
-		if [[ "$header_shown" == false ]]; then
-			log_info "Persistent volumes:"
-			header_shown=true
-		fi
-
 		label="${_VOLUMES_OF_INTEREST[$name]}"
 		hint="${_VOLUMES_LOGIN_HINT[$name]}"
 		destination=""
@@ -120,14 +123,46 @@ print_volumes_summary() {
 		done <<<"$mounts"
 
 		if [[ -z "$destination" ]]; then
-			log_warning "  ${label} (${name}) -> not mounted"
-			continue
-		fi
-
-		if identity="$(volumes_summary_identity "$name")" && [[ -n "$identity" ]]; then
-			log_success "  ${label} (${name}) -> ${destination} — authenticated (${identity})"
+			mount_val="-"; ok_val="false"; detail_val="not mounted"
+		elif identity="$(volumes_summary_identity "$name")" && [[ -n "$identity" ]]; then
+			mount_val="$destination"; ok_val="true"; detail_val="authenticated (${identity})"
 		else
-			log_warning "  ${label} (${name}) -> ${destination} — not authenticated, run: ${hint}"
+			mount_val="$destination"; ok_val="false"; detail_val="not authenticated, run: ${hint}"
+		fi
+		row_names+=("$name"); row_labels+=("$label")
+		row_mounts+=("$mount_val"); row_ok+=("$ok_val"); row_details+=("$detail_val")
+
+		((${#label} > col_tool)) && col_tool=${#label}
+		((${#name} > col_volume)) && col_volume=${#name}
+		((${#destination} > col_mount)) && col_mount=${#destination}
+	done
+
+	((${#row_names[@]} == 0)) && return 0
+
+	log_info "Persistent volumes: ${#row_names[@]}"
+
+	if [[ "$STRUCTURED_LOGS" != "true" ]]; then
+		printf -v header '%-*s  %-*s  %-*s  %s' "$col_tool" "TOOL" "$col_volume" "VOLUME" "$col_mount" "MOUNT" "STATUS"
+		# 3 leading spaces, not 2: the "detail" style's tree-bar prefix renders one
+		# column narrower than the "item" style's tree-bar + symbol prefix used for
+		# the rows below, so the header needs the extra space to line up under them.
+		log_detail "   ${header}"
+	fi
+
+	for i in "${!row_names[@]}"; do
+		if [[ "$STRUCTURED_LOGS" == "true" ]]; then
+			if [[ "${row_mounts[$i]}" == "-" ]]; then
+				row="${row_labels[$i]} (${row_names[$i]}) — ${row_details[$i]}"
+			else
+				row="${row_labels[$i]} (${row_names[$i]}) -> ${row_mounts[$i]} — ${row_details[$i]}"
+			fi
+		else
+			printf -v row '%-*s  %-*s  %-*s  %s' "$col_tool" "${row_labels[$i]}" "$col_volume" "${row_names[$i]}" "$col_mount" "${row_mounts[$i]}" "${row_details[$i]}"
+		fi
+		if [[ "${row_ok[$i]}" == "true" ]]; then
+			log_item_success "$row"
+		else
+			log_item_warning "$row"
 		fi
 	done
 
