@@ -150,12 +150,16 @@ function New-ComposeWithRepoVolumes {
         - Multi-repo: preserves the workspace root volume and injects per-repo
           service volume entries and top-level volume declarations for each repo
           immediately after their respective anchor lines.
-        Finally, for every selected entry that declares a named-volume mount
+        For every selected entry that declares a named-volume mount
         (source=X,target=Y,type=volume — e.g. the GitHub CLI auth volume), appends
         a matching top-level volume declaration if one isn't already present in the
         template. This keeps docker-compose.yml's declared volumes in sync with
         whichever optional features were actually selected, instead of requiring
         every such feature to hardcode its volume into the static template.
+        For every selected entry that declares a bind mount (source=X,target=Y,type=bind
+        — e.g. the Docker socket), appends a matching entry to the primary service's
+        volumes list, so the mount is explicit in the generated docker-compose.yml
+        instead of relying solely on the devcontainer.json mounts/override mechanism.
         Uses text manipulation (no YAML parser) against the known fixed template
         structure.
     .PARAMETER TemplateFile
@@ -237,6 +241,38 @@ function New-ComposeWithRepoVolumes {
     }
     if ($featureVolumeLines.Count -gt 0) {
         $content = $content.TrimEnd("`n") + "`n" + ($featureVolumeLines -join "`n") + "`n"
+    }
+
+    $bindMounts = [System.Collections.ArrayList]@()
+    foreach ($e in $SelectedEntries) {
+        if ([string]::IsNullOrWhiteSpace($e.mount)) { continue }
+        if ($e.mount -notmatch '^source=(?<source>[^,]+),target=(?<target>[^,]+),type=bind') { continue }
+
+        $bindLine = "      - $($Matches['source']):$($Matches['target'])"
+        if ($content -notmatch [regex]::Escape($bindLine)) {
+            [void]$bindMounts.Add($bindLine)
+        }
+    }
+    if ($bindMounts.Count -gt 0) {
+        $lines = [System.Collections.ArrayList]@($content -split "`n")
+
+        $match = $lines | Select-String -Pattern "^    container_name: $([regex]::Escape($ProjectName))$" | Select-Object -First 1
+        $serviceIdx = if ($match) { $match.LineNumber - 1 } else { $null }
+        if ($null -ne $serviceIdx) {
+            $volumesIdx = -1
+            for ($i = $serviceIdx; $i -lt $lines.Count; $i++) {
+                if ($lines[$i] -match '^    volumes:$') { $volumesIdx = $i; break }
+                if ($lines[$i] -match '^  \S') { break }
+            }
+            if ($volumesIdx -ge 0) {
+                $lastVolumeLineIdx = $volumesIdx
+                for ($i = $volumesIdx + 1; $i -lt $lines.Count; $i++) {
+                    if ($lines[$i] -match '^      - ') { $lastVolumeLineIdx = $i } else { break }
+                }
+                $lines.InsertRange($lastVolumeLineIdx + 1, $bindMounts)
+                $content = $lines -join "`n"
+            }
+        }
     }
 
     $outputPath = Join-Path -Path $Destination -ChildPath 'docker-compose.yml'
