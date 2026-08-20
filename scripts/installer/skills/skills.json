@@ -234,6 +234,17 @@
         "url": "https://github.com/obra/superpowers"
     },
     {
+        "name": "Matt Pocock Skills (All skills)",
+        "skill": "*",
+        "category": "Bundles",
+        "description": "Bundle install of Matt Pocock's 29 skills spanning specs, planning, TDD, code review, and codebase architecture.",
+        "tags": [
+            "bundle",
+            "workflow"
+        ],
+        "url": "https://github.com/mattpocock/skills"
+    },
+    {
         "name": "Obsidian Markdown",
         "skill": "obsidian-markdown",
         "category": "Productivity & Communication",
