@@ -35,8 +35,8 @@ fetch_templated_component() {
 
 # main: Downloads all installer assets from the public repository and installs dependencies.
 # Fetches package.json, shared/utils.js, and each sub-installer (agents, configs, skills,
-# agent-md) including their index.js files, template files, and data files, then runs a single
-# `npm install` for the entire installer package.
+# skills/local, agent-md) including their index.js files, template files, and data files,
+# then runs a single `npm install` for the entire installer package.
 # Returns: 0 on success.
 main() {
 	local installer_dir base_url scripts_ref
@@ -48,6 +48,8 @@ main() {
 	mkdir -p "${installer_dir}/agents/templates/instructions"
 	mkdir -p "${installer_dir}/agents/templates/prompts"
 	mkdir -p "${installer_dir}/skills"
+	mkdir -p "${installer_dir}/skills/local/templates/documentation-sync"
+	mkdir -p "${installer_dir}/skills/local/templates/index-components"
 
 	curl -fsSL "${base_url}/package.json"       -o "${installer_dir}/package.json"
 	curl -fsSL "${base_url}/shared/utils.js"    -o "${installer_dir}/shared/utils.js"
@@ -57,6 +59,7 @@ main() {
 	fetch_templated_component "${base_url}" "${installer_dir}" agents instructions.json prompts.json
 	fetch_templated_component "${base_url}" "${installer_dir}" configs configs.json
 	fetch_templated_component "${base_url}" "${installer_dir}" agent-md agent-md.json
+	fetch_templated_component "${base_url}" "${installer_dir}" skills/local skills.json
 
 	cd "${installer_dir}"
 	npm i >/dev/null 2>&1

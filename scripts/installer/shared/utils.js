@@ -157,7 +157,7 @@ export const writeWithConflict = async (destPath, content, filename, templateVer
  * Read and parse template-lock.json from the user's project root.
  * Returns a default empty structure if the file does not exist or cannot be parsed.
  * @param {string} projectRoot - Absolute path to the user's project root.
- * @returns {{ version: string, updatedAt: string, configs: object, instructions: object, prompts: object, mdBlocks?: object }}
+ * @returns {{ version: string, updatedAt: string, configs: object, instructions: object, prompts: object, mdBlocks?: object, skills?: object }}
  */
 export const readLockFile = (projectRoot) => {
     const empty = { version: "1", updatedAt: "", configs: {}, instructions: {}, prompts: {} };
@@ -172,7 +172,7 @@ export const readLockFile = (projectRoot) => {
  * Write lock data to template-lock.json in the user's project root.
  * Always sets updatedAt to the current UTC timestamp.
  * @param {string} projectRoot - Absolute path to the user's project root.
- * @param {{ version: string, configs: object, instructions: object, prompts: object, mdBlocks?: object }} lockData
+ * @param {{ version: string, configs: object, instructions: object, prompts: object, mdBlocks?: object, skills?: object }} lockData
  */
 export const writeLockFile = (projectRoot, lockData) => {
     const data = { ...lockData, updatedAt: new Date().toISOString() };

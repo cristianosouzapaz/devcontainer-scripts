@@ -1,0 +1,24 @@
+[
+    {
+        "key": "documentation-sync",
+        "name": "Documentation Sync",
+        "version": "1.0.0",
+        "description": "Use when a change affects documented behavior (API, package, toolchain, structure): checks docs/wiki/ and README.md and keeps them from contradicting the codebase.",
+        "tags": [
+            "docs",
+            "workflow"
+        ],
+        "templateFile": "documentation-sync/SKILL.md"
+    },
+    {
+        "key": "index-components",
+        "name": "Index Components",
+        "version": "1.0.0",
+        "description": "Index React components in one or more folders by reading local component files and summarizing each component's UI role. Use when documenting component folders anywhere in a workspace.",
+        "tags": [
+            "react",
+            "docs"
+        ],
+        "templateFile": "index-components/SKILL.md"
+    }
+]

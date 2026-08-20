@@ -3,7 +3,7 @@
         "key": "component-index",
         "name": "Component Index Maintenance",
         "version": "1.0.0",
-        "description": "Requires the component index prompt to be updated before closing out any task that touches components.",
+        "description": "Requires the Index Components skill to be run before closing out any task that touches components.",
         "tags": [
             "react",
             "docs"
@@ -12,6 +12,9 @@
         "targets": [
             "CLAUDE.md",
             "AGENTS.md"
+        ],
+        "skills": [
+            "index-components"
         ]
     },
     {
@@ -42,6 +45,9 @@
         "targets": [
             "CLAUDE.md",
             "AGENTS.md"
+        ],
+        "skills": [
+            "documentation-sync"
         ]
     }
 ]

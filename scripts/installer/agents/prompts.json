@@ -28,16 +28,5 @@
             "git"
         ],
         "templateFile": "prompts/create-pr.prompt.md"
-    },
-    {
-        "name": "Index Components",
-        "filename": "index-components.prompt.md",
-        "commandFilename": "index-components.md",
-        "version": "1.0.1",
-        "tags": [
-            "react",
-            "docs"
-        ],
-        "templateFile": "prompts/index-components.prompt.md"
     }
 ]

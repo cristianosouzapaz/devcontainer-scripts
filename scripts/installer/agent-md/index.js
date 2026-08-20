@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import consola from "consola";
 import { checkbox } from "@inquirer/prompts";
 import { formatVersionHint, handleError, loadJsonCatalog, readLockFile, resolvePageSize, selectTargetTool, setupConsola, TOOLS, writeLockFile } from "../shared/utils.js";
+import { installLocalSkills } from "../skills/local/index.js";
 
 /**
  * @fileoverview Interactive installer for CLAUDE.md / AGENTS.md instruction blocks.
@@ -36,29 +37,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGENT_MD_FILE_URL = new URL("./agent-md.json", import.meta.url);
 const POINTER_LINE = "@AGENTS.md";
 
-const COMPONENT_INDEX_REF_PATH = {
-    "CLAUDE.md": ".claude/commands/index-components.md",
-    "AGENTS.md": ".github/prompts/index-components.prompt.md",
-};
-
-/**
- * Render a reference path as a link in the destination file's native convention.
- * CLAUDE.md: Claude Code's own `@path` import syntax (auto-loads the file as context).
- * AGENTS.md: standard markdown link, since AGENTS.md is a generic, tool-agnostic spec
- * with no special reference syntax of its own.
- * @param {string} destFilename - "CLAUDE.md" or "AGENTS.md".
- * @param {string} refPath - Path relative to the project root.
- * @returns {string}
- */
-const buildRefLink = (destFilename, refPath) =>
-    destFilename === "CLAUDE.md" ? `@${refPath}` : `[Index Components prompt](${refPath})`;
-
 // ─── Catalog ─────────────────────────────────────────────────────────────────
 
 /**
  * Load and validate the agent-md catalog from agent-md.json.
  * Each entry must have: key, name, version, description, tags (array of strings),
- * templateFile, targets (array of strings).
+ * templateFile, targets (array of strings), and an optional skills array (skill catalog
+ * keys, from skills/local/skills.json, that the block links to).
  * @returns {object[]} An array of validated agent-md block entries.
  * @throws Will throw an error if the catalog is invalid or cannot be read.
  */
@@ -76,7 +61,9 @@ export const loadAgentMdCatalog = () => {
             && Array.isArray(entry?.tags)
             && entry.tags.every((tag) => typeof tag === "string")
             && Array.isArray(entry?.targets)
-            && entry.targets.every((target) => typeof target === "string");
+            && entry.targets.every((target) => typeof target === "string")
+            && (entry?.skills === undefined
+                || (Array.isArray(entry.skills) && entry.skills.every((skill) => typeof skill === "string")));
 
         if (!isValidEntry) throw new Error(`Invalid agent-md catalog entry at index ${index}.`);
     }
@@ -151,40 +138,6 @@ export const ensureClaudePointer = (claudeMdPath) => {
     return updated;
 };
 
-// ─── Component index reference resolution ───────────────────────────────────
-
-/**
- * Resolve the {{COMPONENT_INDEX_REF}} placeholder for the given destination file, warning
- * if the referenced file does not exist in the current working directory.
- * @param {string} destFilename - "CLAUDE.md" or "AGENTS.md".
- * @param {string} destRoot - Project root directory.
- * @returns {string} The resolved reference string.
- */
-export const resolveComponentIndexRef = (destFilename, destRoot) => {
-    const refPath = COMPONENT_INDEX_REF_PATH[destFilename];
-
-    if (!existsSync(join(destRoot, refPath))) {
-        consola.warn(`${refPath} not found — install the agent templates first so the component index reference resolves.`);
-    }
-
-    return buildRefLink(destFilename, refPath);
-};
-
-/**
- * Render a block's template content, substituting {{COMPONENT_INDEX_REF}}.
- * @param {string} templateFile - Path relative to templates/.
- * @param {string} destFilename - "CLAUDE.md" or "AGENTS.md".
- * @param {string} destRoot - Project root directory.
- * @returns {string}
- */
-const renderBlockBody = (templateFile, destFilename, destRoot) => {
-    const template = readFileSync(join(__dirname, "templates", templateFile), "utf8");
-    if (!template.includes("{{COMPONENT_INDEX_REF}}")) return template;
-
-    const ref = resolveComponentIndexRef(destFilename, destRoot);
-    return template.replaceAll("{{COMPONENT_INDEX_REF}}", ref);
-};
-
 // ─── Installer ───────────────────────────────────────────────────────────────
 
 /**
@@ -193,15 +146,14 @@ const renderBlockBody = (templateFile, destFilename, destRoot) => {
  * @param {object[]} blocks - Selected catalog entries, in catalog order.
  * @param {string} destPath - Absolute path to the destination file.
  * @param {string} destFilename - "CLAUDE.md" or "AGENTS.md".
- * @param {string} destRoot - Project root directory.
  * @returns {Record<string, string>} Map of block key to installed version.
  */
-export const installBlocks = (blocks, destPath, destFilename, destRoot) => {
+export const installBlocks = (blocks, destPath, destFilename) => {
     let content = existsSync(destPath) ? readFileSync(destPath, "utf8") : "";
     const written = {};
 
     for (const { key, version, templateFile } of blocks) {
-        const body = renderBlockBody(templateFile, destFilename, destRoot);
+        const body = readFileSync(join(__dirname, "templates", templateFile), "utf8");
         content = upsertBlock(content, key, version, body);
         written[key] = version;
     }
@@ -253,19 +205,26 @@ const askUser = async () => {
         const agentsMdPath = join(destRoot, "AGENTS.md");
 
         if (selectedTool === TOOLS.claude) {
-            const written = installBlocks(selectedBlocks, claudeMdPath, "CLAUDE.md", destRoot);
+            const written = installBlocks(selectedBlocks, claudeMdPath, "CLAUDE.md");
             lock.mdBlocks["CLAUDE.md"] = { ...lock.mdBlocks["CLAUDE.md"], ...written };
         }
 
         if (selectedTool === TOOLS.copilot) {
-            const written = installBlocks(selectedBlocks, agentsMdPath, "AGENTS.md", destRoot);
+            const written = installBlocks(selectedBlocks, agentsMdPath, "AGENTS.md");
             lock.mdBlocks["AGENTS.md"] = { ...lock.mdBlocks["AGENTS.md"], ...written };
         }
 
         if (selectedTool === TOOLS.all) {
-            const written = installBlocks(selectedBlocks, agentsMdPath, "AGENTS.md", destRoot);
+            const written = installBlocks(selectedBlocks, agentsMdPath, "AGENTS.md");
             lock.mdBlocks["AGENTS.md"] = { ...lock.mdBlocks["AGENTS.md"], ...written };
             ensureClaudePointer(claudeMdPath);
+        }
+
+        const skillKeys = [...new Set(selectedBlocks.flatMap((block) => block.skills ?? []))];
+        if (skillKeys.length > 0) {
+            if (!lock.skills) lock.skills = {};
+            const written = await installLocalSkills(skillKeys, destRoot, lock);
+            lock.skills = { ...lock.skills, ...written };
         }
 
         writeLockFile(destRoot, lock);
