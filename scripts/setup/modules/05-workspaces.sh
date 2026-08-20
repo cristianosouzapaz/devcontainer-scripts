@@ -72,7 +72,7 @@ workspaces_setup() {
 	workspace_file="${_WORKSPACE_DIR}/${PROJECT_NAME}.code-workspace"
 
 	if [[ -f "$workspace_file" ]]; then
-		log_debug "Workspace file already exists — skipping: ${workspace_file}"
+		log_item_success "Workspace file already exists: ${workspace_file}"
 		return 0
 	fi
 
