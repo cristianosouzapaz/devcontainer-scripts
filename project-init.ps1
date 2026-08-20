@@ -16,7 +16,7 @@
 
 .EXAMPLE
     .\project-init.ps1
-    .\project-init.ps1 -DestinationPath "G:\My Drive\docker\project-app" -ProjectName "project-app"
+    .\project-init.ps1 -DestinationPath "X:\workspaces\docker\project-app" -ProjectName "project-app"
 #>
 
 param(
@@ -46,6 +46,7 @@ $EntryManifestPath       = Join-Path -Path $PSScriptRoot -ChildPath "devcontaine
 . "$PSScriptRoot/init/manifest.ps1"
 . "$PSScriptRoot/init/config.ps1"
 . "$PSScriptRoot/init/repos.ps1"
+. "$PSScriptRoot/init/extra-folders.ps1"
 
 if ($MyInvocation.InvocationName -ne '.') {
 
@@ -59,7 +60,7 @@ Write-Section "DevContainer Setup"
 
 if (-not $DestinationPath) {
     Write-Message "Enter absolute path for destination folder" -Level "Highlight"
-    Write-Host "Example: G:\My Drive\docker\project-app" -ForegroundColor "DarkGray"
+    Write-Host "Example: X:\workspaces\docker\project-app" -ForegroundColor "DarkGray"
     Write-Host ""
     $DestinationPath = Read-Host "Destination path"
     if ([string]::IsNullOrWhiteSpace($DestinationPath)) {
@@ -77,7 +78,8 @@ if (-not $ProjectName) {
     }
 }
 
-$repoList = @(Get-RepoList)
+$repoList     = @(Get-RepoList)
+$extraFolders = @(Get-ExtraFolderList -ProjectName $ProjectName -RepoList $repoList)
 
 # ----- VALIDATION -------------------------------------------------------------
 
@@ -93,7 +95,7 @@ Write-Section "DevContainer Configuration"
 try {
     Copy-ConfigurationFiles -Source $SourceDevContainerPath -Destination $DestinationPath `
         -ProjectName $ProjectName -UseCompose $useCompose -SelectedEntries $selectedEntries `
-        -RepoList $repoList
+        -RepoList $repoList -ExtraFolders $extraFolders
 
     Write-Section "Setup Completed"
     Write-Message "Destination : $DestinationPath" -Level "Info"

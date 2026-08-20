@@ -4,7 +4,6 @@
             "extensions": [
                 "Anthropic.claude-code",
                 "bierner.markdown-mermaid",
-                "GitHub.copilot-chat",
                 "GitHub.vscode-pull-request-github",
                 "redhat.vscode-yaml",
                 "yzhang.markdown-all-in-one"

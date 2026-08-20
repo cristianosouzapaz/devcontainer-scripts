@@ -64,7 +64,7 @@
         "key": "node",
         "mandatory": true,
         "feature": {
-            "url": "ghcr.io/devcontainers/features/node:1",
+            "url": "ghcr.io/devcontainers/features/node:2",
             "options": {
                 "version": "lts",
                 "pnpmVersion": "latest"

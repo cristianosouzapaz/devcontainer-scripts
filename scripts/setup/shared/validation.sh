@@ -31,26 +31,40 @@ check_env_var() {
 	fi
 }
 
-# collect_numbered_repo_entries <nameref> [fallback_var]: Populates an array with clone
-# URLs from REPO_SOURCE_1, REPO_SOURCE_2, … until the first unset or empty variable.
-# If none are set and fallback_var is given and non-empty, appends that single value instead.
-# Used by both 01-git.sh (fallback: REPO_SOURCE) and 05-workspaces.sh (no fallback).
-collect_numbered_repo_entries() {
-	local -n _out_entries="$1"
-	local fallback_var="${2:-}"
-	local i=1 url var
+# collect_numbered_vars <nameref> <prefix> [fallback_var]: Populates an array with values
+# read from <prefix>_1, <prefix>_2, … until the first unset or empty variable. If none are
+# set and fallback_var is given and non-empty, appends that single value instead.
+# Shared implementation behind collect_numbered_repo_entries and collect_numbered_extra_folders.
+collect_numbered_vars() {
+	local -n _out_vals="$1"
+	local prefix="$2" fallback_var="${3:-}"
+	local i=1 val var
 
 	while true; do
-		var="REPO_SOURCE_${i}"
-		url="${!var:-}"
-		[[ -z "$url" ]] && break
-		_out_entries+=("$url")
+		var="${prefix}_${i}"
+		val="${!var:-}"
+		[[ -z "$val" ]] && break
+		_out_vals+=("$val")
 		i=$(( i + 1 ))
 	done
 
-	if [[ "${#_out_entries[@]}" -eq 0 && -n "$fallback_var" && -n "${!fallback_var:-}" ]]; then
-		_out_entries+=("${!fallback_var}")
+	if [[ "${#_out_vals[@]}" -eq 0 && -n "$fallback_var" && -n "${!fallback_var:-}" ]]; then
+		_out_vals+=("${!fallback_var}")
 	fi
+}
+
+# collect_numbered_repo_entries <nameref> [fallback_var]: Populates an array with clone
+# URLs from REPO_SOURCE_1, REPO_SOURCE_2, … Used by both 01-git.sh (fallback: REPO_SOURCE)
+# and 05-workspaces.sh (no fallback).
+collect_numbered_repo_entries() {
+	collect_numbered_vars "$1" "REPO_SOURCE" "${2:-}"
+}
+
+# collect_numbered_extra_folders <nameref>: Populates an array with extra workspace folder
+# names from EXTRA_FOLDER_1, EXTRA_FOLDER_2, … Used by 05-workspaces.sh to add extra
+# bind-mounted roots to the .code-workspace file.
+collect_numbered_extra_folders() {
+	collect_numbered_vars "$1" "EXTRA_FOLDER"
 }
 
 # repo_entry_folder_name <url>: Extracts the last path segment without the .git extension.
@@ -223,4 +237,4 @@ validate_env_var_format() {
 	return 0
 }
 
-export -f check_command check_env_var collect_numbered_repo_entries repo_entry_folder_name validate validate_url validate_file validate_disk_space validate_json validate_env_var_format
+export -f check_command check_env_var collect_numbered_vars collect_numbered_repo_entries collect_numbered_extra_folders repo_entry_folder_name validate validate_url validate_file validate_disk_space validate_json validate_env_var_format

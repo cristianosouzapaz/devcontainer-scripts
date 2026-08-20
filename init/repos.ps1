@@ -32,11 +32,7 @@ function Add-RepoMountsToConfig {
         [void]$mounts.Add("source=$ProjectName-$folder-data,target=/workspace/$folder,type=volume")
     }
 
-    $placeholder  = '__REPO_MOUNTS_ARRAY_PLACEHOLDER__'
-    $mountsJson   = ConvertTo-JsonStringArray -Items $mounts.ToArray()
-    $sortedConfig = Set-ConfigProperty -Config $config -Key 'mounts' -Value $placeholder
-    Write-JsonFile -FilePath $FilePath -Config $sortedConfig -Replacements @{ $placeholder = $mountsJson }
-    Write-LogEntry "Repo mounts injected ($($RepoList.Count) repos)" -Status Success
+    Write-MountsArray -FilePath $FilePath -Mounts $mounts.ToArray() -LogMessage "Repo mounts injected ($($RepoList.Count) repos)"
 }
 
 function Get-TokenVarName {
@@ -143,13 +139,27 @@ function New-ComposeWithRepoVolumes {
         writes the result to the destination .devcontainer folder.
     .DESCRIPTION
         Performs placeholder substitution (project-name → ProjectName), then
-        handles two distinct layouts depending on repo count:
-        - Single-repo: replaces the workspace root volume line with the single
-          repo volume (<project>-<folder>-data:/workspace/<folder>), keeping
-          the output consistent with standard (non-compose) mode.
-        - Multi-repo: preserves the workspace root volume and injects per-repo
-          service volume entries and top-level volume declarations for each repo
-          immediately after their respective anchor lines.
+        handles two distinct layouts depending on repo count and extra folders:
+        - Single-repo, no extra folders: replaces the workspace root volume line
+          with the single repo volume (<project>-data:/workspace/<project>).
+          Deliberately keyed by ProjectName rather than the repo's URL-derived
+          folder name — 01-git.sh's single-entry REPO_SOURCE path always clones
+          into $_WORKSPACE_DIR/$PROJECT_NAME regardless of the repo's own name,
+          so this must match that target, not the repo folder, to actually be
+          persisted. Mirrors standard (non-compose) mode's project-name-data
+          convention. Safe here because workspaceFolder stays
+          /workspace/<project> — /workspace itself is never opened, so it
+          doesn't need to persist.
+        - Multi-repo, or single-repo with extra folders: preserves the
+          workspace root volume and injects per-repo service volume entries and
+          top-level volume declarations for each repo immediately after their
+          respective anchor lines. Required whenever workspaceFolder is
+          promoted to the shared /workspace root (Set-WorkspaceMountInConfig) —
+          extra folders make /workspace itself the thing VS Code opens, and the
+          generated .code-workspace file (see workspaces_setup in
+          05-workspaces.sh) lives directly under /workspace, so that root must
+          persist or the file — and everything else at that level — is wiped on
+          every container rebuild.
         For every selected entry that declares a named-volume mount
         (source=X,target=Y,type=volume — e.g. the GitHub CLI auth volume), appends
         a matching top-level volume declaration if one isn't already present in the
@@ -160,6 +170,10 @@ function New-ComposeWithRepoVolumes {
         — e.g. the Docker socket), appends a matching entry to the primary service's
         volumes list, so the mount is explicit in the generated docker-compose.yml
         instead of relying solely on the devcontainer.json mounts/override mechanism.
+        Extra workspace folders are intentionally NOT mounted here — they are only
+        added to devcontainer.json's mounts array (see Add-ExtraFolderMountsToConfig),
+        so a compose-mode project doesn't get a duplicate bind mount for the same
+        host path.
         Uses text manipulation (no YAML parser) against the known fixed template
         structure.
     .PARAMETER TemplateFile
@@ -174,18 +188,21 @@ function New-ComposeWithRepoVolumes {
     .PARAMETER SelectedEntries
         Array of selected entry objects; entries without a .mount value, or whose
         mount isn't a named volume (type=volume), are ignored.
+    .PARAMETER ExtraFolders
+        Array of extra workspace folder objects (as returned by Get-ExtraFolderList).
+        Only their presence matters here — see .DESCRIPTION for why. Optional —
+        when empty, single-repo behaves as before.
     #>
-    param([string]$TemplateFile, [string]$ProjectName, [string[]]$RepoList, [string]$Destination, [array]$SelectedEntries = @())
+    param([string]$TemplateFile, [string]$ProjectName, [string[]]$RepoList, [string]$Destination, [array]$SelectedEntries = @(), [array]$ExtraFolders = @())
 
     $content = (Get-Content -Path $TemplateFile -Raw) -replace '\r\n', "`n"
     $content = $content.Replace('project-name', $ProjectName)
 
-    if ($RepoList.Count -eq 1) {
-        $folder     = _Get-RepoFolderName -Url $RepoList[0]
-        $volumeName = "$ProjectName-$folder-data"
+    if ($RepoList.Count -eq 1 -and $ExtraFolders.Count -eq 0) {
+        $volumeName = "$ProjectName-data"
         $content    = $content.Replace(
             "      - $ProjectName-workspace:/workspace",
-            "      - ${volumeName}:/workspace/$folder"
+            "      - ${volumeName}:/workspace/$ProjectName"
         )
         $content    = $content.Replace(
             "  $ProjectName-workspace:",
@@ -204,10 +221,19 @@ function New-ComposeWithRepoVolumes {
             if ($lines[$i].Contains($volumeMarker))  { $volumeInsertIdx  = $i }
         }
 
+        # Keying: see .DESCRIPTION above.
+        $repoVolumes = if ($RepoList.Count -eq 1) {
+            @([PSCustomObject]@{ Folder = $ProjectName; VolumeName = "$ProjectName-data" })
+        } else {
+            $RepoList | ForEach-Object {
+                $folder = _Get-RepoFolderName -Url $_
+                [PSCustomObject]@{ Folder = $folder; VolumeName = "$ProjectName-$folder-data" }
+            }
+        }
+
         $serviceLines = [System.Collections.ArrayList]@()
-        foreach ($url in $RepoList) {
-            $folder = _Get-RepoFolderName -Url $url
-            [void]$serviceLines.Add("      - $ProjectName-$folder-data:/workspace/$folder")
+        foreach ($repoVolume in $repoVolumes) {
+            [void]$serviceLines.Add("      - $($repoVolume.VolumeName):/workspace/$($repoVolume.Folder)")
         }
         if ($serviceInsertIdx -ge 0) {
             $lines.InsertRange($serviceInsertIdx + 1, $serviceLines)
@@ -217,9 +243,8 @@ function New-ComposeWithRepoVolumes {
         $volumeInsertIdx += $serviceLines.Count
 
         $volumeLines = [System.Collections.ArrayList]@()
-        foreach ($url in $RepoList) {
-            $folder = _Get-RepoFolderName -Url $url
-            [void]$volumeLines.Add("  $ProjectName-$folder-data:")
+        foreach ($repoVolume in $repoVolumes) {
+            [void]$volumeLines.Add("  $($repoVolume.VolumeName):")
         }
         if ($volumeInsertIdx -ge 0) {
             $lines.InsertRange($volumeInsertIdx + 1, $volumeLines)
@@ -316,8 +341,6 @@ function Set-RepoSourcesInConfig {
         Removes the template placeholder key REPO_SOURCE from remoteEnv and writes:
         - Single-repo: one "REPO_SOURCE" key with the full URL.
         - Multi-repo:  "REPO_SOURCE_1", "REPO_SOURCE_2", ... (no bare REPO_SOURCE key).
-        All remoteEnv keys are sorted alphabetically. The rest of the config is
-        preserved and rewritten via Write-JsonFile.
     .PARAMETER FilePath
         Absolute path to the devcontainer.json file to update.
     .PARAMETER RepoList
@@ -325,27 +348,17 @@ function Set-RepoSourcesInConfig {
     #>
     param([string]$FilePath, [string[]]$RepoList)
 
-    $config = Read-JsonFile -FilePath $FilePath
-
-    $remoteEnv = [ordered]@{}
-    foreach ($key in ($config.remoteEnv.PSObject.Properties.Name | Where-Object { $_ -ne 'REPO_SOURCE' } | Sort-Object)) {
-        $remoteEnv[$key] = $config.remoteEnv.$key
-    }
-
+    $updates = @{}
     if ($RepoList.Count -eq 1) {
-        $remoteEnv['REPO_SOURCE'] = $RepoList[0]
+        $updates['REPO_SOURCE'] = $RepoList[0]
     } else {
         for ($i = 0; $i -lt $RepoList.Count; $i++) {
-            $remoteEnv["REPO_SOURCE_$($i + 1)"] = $RepoList[$i]
+            $updates["REPO_SOURCE_$($i + 1)"] = $RepoList[$i]
         }
     }
 
-    $sortedRemoteEnv = [ordered]@{}
-    foreach ($key in ($remoteEnv.Keys | Sort-Object)) {
-        $sortedRemoteEnv[$key] = $remoteEnv[$key]
-    }
-
-    Write-JsonFile -FilePath $FilePath -Config (Set-ConfigProperty -Config $config -Key 'remoteEnv' -Value $sortedRemoteEnv)
+    $config = Read-JsonFile -FilePath $FilePath
+    Write-JsonFile -FilePath $FilePath -Config (Update-RemoteEnvInConfig -Config $config -Updates $updates -RemoveKeys @('REPO_SOURCE'))
     Write-LogEntry "REPO_SOURCE set ($($RepoList.Count) repos)" -Status Success
 }
 
@@ -359,20 +372,4 @@ function Test-RepoEntry {
     param([string]$Entry)
     if ([string]::IsNullOrWhiteSpace($Entry)) { return $false }
     return $null -ne (Resolve-RepoUrl -Entry $Entry)
-}
-
-function Test-SameHost {
-    <#
-    .SYNOPSIS
-        Returns $true if all URLs in the list share the same hostname.
-    .PARAMETER Urls
-        Array of fully normalised repository URLs.
-    #>
-    param([string[]]$Urls)
-    if ($Urls.Count -le 1) { return $true }
-    $firstHost = ([Uri]$Urls[0]).Host
-    foreach ($url in $Urls[1..($Urls.Count - 1)]) {
-        if (([Uri]$url).Host -ne $firstHost) { return $false }
-    }
-    return $true
 }

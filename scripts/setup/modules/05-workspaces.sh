@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # MODULE_NAME="workspaces"
-# MODULE_DESCRIPTION="Generates the VS Code .code-workspace file for multi-repo containers"
+# MODULE_DESCRIPTION="Generates the VS Code .code-workspace file for multi-repo and/or extra-folder containers"
 # MODULE_ENTRY="workspaces_setup"
 
 # VS Code workspace generation module
@@ -14,8 +14,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 
 # This module uses the following configuration variables:
-# - PROJECT_NAME    Container workspace project name (set in remoteEnv); used for the workspace filename.
-# - REPO_SOURCE_N   Numbered clone URLs (REPO_SOURCE_1, REPO_SOURCE_2, …); determines multi-repo mode.
+# - PROJECT_NAME     Container workspace project name (set in remoteEnv); used for the workspace filename.
+# - REPO_SOURCE_N    Numbered clone URLs (REPO_SOURCE_1, REPO_SOURCE_2, …); determines multi-repo mode.
+# - EXTRA_FOLDER_N   Numbered extra folder names (EXTRA_FOLDER_1, EXTRA_FOLDER_2, …); already bind-mounted
+#                    at /workspace/<name> by devcontainer.json.
 
 # ----- CONSTANTS --------------------------------------------------------------
 
@@ -36,19 +38,22 @@ build_workspace_json() {
 # ----- CORE SETUP -------------------------------------------------------------
 
 # workspaces_setup: Module entry point. Skips silently when fewer than two
-# repos are configured via REPO_SOURCE_N. Otherwise generates
-# /workspace/<PROJECT_NAME>.code-workspace listing each repo as a root
-# folder. Idempotent: an existing workspace file is never overwritten.
+# repos and no extra folders are configured via REPO_SOURCE_N / EXTRA_FOLDER_N.
+# Otherwise generates /workspace/<PROJECT_NAME>.code-workspace listing each
+# repo and each extra folder as a root folder. Idempotent: an existing
+# workspace file is never overwritten.
 workspaces_setup() {
 	local -a _entries=()
+	local -a _extra_folders=()
 	local url folder_name workspace_file
 	local -a _folders=()
 	setup_error_traps
 
 	collect_numbered_repo_entries _entries
+	collect_numbered_extra_folders _extra_folders
 
-	if [[ "${#_entries[@]}" -le 1 ]]; then
-		log_debug "Single-repo or no repos configured — skipping workspace file generation"
+	if [[ "${#_entries[@]}" -le 1 && "${#_extra_folders[@]}" -eq 0 ]]; then
+		log_debug "Single-repo or no repos, and no extra folders — skipping workspace file generation"
 		module_skip
 		return 0
 	fi
@@ -71,10 +76,18 @@ workspaces_setup() {
 		return 0
 	fi
 
-	for url in "${_entries[@]}"; do
-		folder_name="$(repo_entry_folder_name "$url")"
-		_folders+=("$folder_name")
-	done
+	# Mirrors 01-git.sh's git_setup: exactly one repo (whichever REPO_SOURCE
+	# variant it came from) clones into $PROJECT_NAME; only 2+ repos use
+	# repo_entry_folder_name per entry.
+	if [[ "${#_entries[@]}" -ge 2 ]]; then
+		for url in "${_entries[@]}"; do
+			folder_name="$(repo_entry_folder_name "$url")"
+			_folders+=("$folder_name")
+		done
+	else
+		_folders+=("$PROJECT_NAME")
+	fi
+	_folders+=("${_extra_folders[@]}")
 
 	log_detail "Generating workspace file: ${workspace_file}"
 	build_workspace_json "${_folders[@]}" > "$workspace_file"

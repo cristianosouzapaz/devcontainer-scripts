@@ -12,12 +12,12 @@ readonly _COLOR_YELLOW=$'\033[0;33m'
 readonly _COLOR_RED=$'\033[0;31m'
 readonly _COLOR_GREY=$'\033[0;37m'
 
-# ── Project name ───────────────────────────────────────────────────────────────
+# ----- Project name -----------------------------------------------------------
 project_dir=$(printf '%s' "${input}" | jq -r '.workspace.project_dir // .cwd // empty')
 project_name=$(basename "${project_dir}")
 project_segment="${_COLOR_DIM}${project_name}${_COLOR_RESET}"
 
-# ── Git branch ─────────────────────────────────────────────────────────────────
+# ----- Git branch -------------------------------------------------------------
 branch=$(git --no-optional-locks -C "${project_dir}" symbolic-ref --short HEAD 2>/dev/null \
          || git --no-optional-locks -C "${project_dir}" rev-parse --short HEAD 2>/dev/null)
 if [[ -n "${branch}" ]]; then
@@ -26,7 +26,7 @@ else
     branch_segment=""
 fi
 
-# ── Model (abbreviated display name) ──────────────────────────────────────────
+# ----- Model (abbreviated display name) ---------------------------------------
 raw_model=$(printf '%s' "${input}" | jq -r '.model.display_name // empty')
 model_label=$(printf '%s' "${raw_model}" | sed 's/^Claude //')
 if [[ -n "${model_label}" ]]; then
@@ -35,7 +35,7 @@ else
     model_segment=""
 fi
 
-# ── Effort (hidden when not configured) ────────────────────────────────────────
+# ----- Effort (hidden when not configured) ------------------------------------
 effort_level=$(printf '%s' "${input}" | jq -r '.effort.level // empty')
 if [[ -n "${effort_level}" ]]; then
     effort_segment="${_COLOR_ORANGE}${effort_level}${_COLOR_RESET}"
@@ -43,7 +43,7 @@ else
     effort_segment=""
 fi
 
-# ── Model + effort combined ────────────────────────────────────────────────────
+# ----- Model + effort combined ------------------------------------------------
 model_effort_segment=""
 if [[ -n "${model_segment}" ]] && [[ -n "${effort_segment}" ]]; then
     model_effort_segment="${model_segment}${_COLOR_DIM} · ${_COLOR_RESET}${effort_segment}"
@@ -51,7 +51,7 @@ elif [[ -n "${model_segment}" ]]; then
     model_effort_segment="${model_segment}"
 fi
 
-# ── Context window ─────────────────────────────────────────────────────────────
+# ----- Context window ---------------------------------------------------------
 used_pct=$(printf '%s' "${input}" | jq -r '.context_window.used_percentage // empty')
 sep="${_COLOR_DIM} | ${_COLOR_RESET}"
 
@@ -97,7 +97,7 @@ fi
 
 ctx_segment="${bar_color}▕${bar_str}▏${_COLOR_RESET} ${bar_color}${_COLOR_BOLD}${pct_int}%${_COLOR_RESET}${token_label}"
 
-# ── Rate limits ────────────────────────────────────────────────────────────────
+# ----- Rate limits ------------------------------------------------------------
 five_pct=$(printf '%s' "${input}" | jq -r '.rate_limits.five_hour.used_percentage // empty')
 week_pct=$(printf '%s' "${input}" | jq -r '.rate_limits.seven_day.used_percentage // empty')
 
@@ -115,7 +115,7 @@ if [[ -n "${rate_segment}" ]]; then
     rate_segment="${_COLOR_GREY}${rate_segment}${_COLOR_RESET}"
 fi
 
-# ── Assemble ───────────────────────────────────────────────────────────────────
+# ----- Assemble ---------------------------------------------------------------
 line="${ctx_segment}${sep}${project_segment}"
 [[ -n "${branch_segment}"       ]] && line="${line}  ${branch_segment}"
 [[ -n "${model_effort_segment}" ]] && line="${line}${sep}${model_effort_segment}"

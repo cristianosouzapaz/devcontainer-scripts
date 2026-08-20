@@ -17,7 +17,7 @@ function Test-DestinationPath {
     param([string]$Path)
     Write-Message "Validating destination path" -Level "Info"
     if (-not [System.IO.Path]::IsPathRooted($Path)) {
-        Write-Message "Path must be absolute (e.g. G:\My Drive\docker\project-app)" -Level "Error"
+        Write-Message "Path must be absolute (e.g. X:\workspaces\docker\project-app)" -Level "Error"
         return $false
     }
     $parentPath = Split-Path -Parent $Path

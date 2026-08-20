@@ -35,6 +35,11 @@ source "$SHARED_DIR/volumes-summary.sh"
 # DUMP_ERROR_STACK        Print error stack trace when exiting (true/false)
 #                         Default: true
 #
+# EXTRA_FOLDER_N          Numbered extra workspace folder names (EXTRA_FOLDER_1, EXTRA_FOLDER_2, …),
+#                         each already bind-mounted by devcontainer.json at /workspace/<name>.
+#                         Read by 05-workspaces.sh to add extra roots to the .code-workspace file.
+#                         Default: (none)
+#
 # GIT_SIGNING_KEY         SSH public key used for commit signing (e.g. "ssh-ed25519 AAAA...")
 #                         Set in ~/.config/.env on the host. Required for SSH commit signing
 #                         via the forwarded 1Password SSH agent socket.
