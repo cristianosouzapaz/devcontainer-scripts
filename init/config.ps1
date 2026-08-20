@@ -40,12 +40,14 @@ function Write-MountsArray {
         be a JSON array of strings rather than an array of objects, a placeholder
         string is inserted first and then replaced in the raw JSON to preserve the
         correct array-of-strings structure after pretty-printing.
-        Shared write path behind Add-MountsToConfig, Add-RepoMountsToConfig, and
-        Add-ExtraFolderMountsToConfig.
+        Mounts are alphabetically sorted before writing, purely for a stable, readable
+        diff in devcontainer.json — mount order has no functional effect on the
+        container. Shared write path behind Add-MountsToConfig, Add-RepoMountsToConfig,
+        and Add-ExtraFolderMountsToConfig.
     .PARAMETER FilePath
         Absolute path to the devcontainer.json file to update.
     .PARAMETER Mounts
-        Ordered list of mount strings to write as the new "mounts" array.
+        List of mount strings to write as the new "mounts" array (sorted before writing).
     .PARAMETER LogMessage
         Message passed to Write-LogEntry once the write succeeds.
     #>
@@ -53,7 +55,7 @@ function Write-MountsArray {
 
     $config       = Read-JsonFile -FilePath $FilePath
     $placeholder  = '__MOUNTS_ARRAY_PLACEHOLDER__'
-    $mountsJson   = ConvertTo-JsonStringArray -Items $Mounts
+    $mountsJson   = ConvertTo-JsonStringArray -Items ($Mounts | Sort-Object)
     $sortedConfig = Set-ConfigProperty -Config $config -Key 'mounts' -Value $placeholder
     Write-JsonFile -FilePath $FilePath -Config $sortedConfig -Replacements @{ $placeholder = $mountsJson }
     Write-LogEntry $LogMessage -Status Success
