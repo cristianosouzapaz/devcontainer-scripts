@@ -18,6 +18,25 @@ These rules apply to hand-written project files only. Generated code is exempt.
 - **Forbidden summary openers:** MUST NOT start summaries with `This function`, `This method`, or similar subject phrases.
 - **Line length:** SHOULD wrap lines at about 100 columns.
 
+## Inline Comments
+
+Applies to both `.ts` and `.tsx` files. Governs every inline `//` why-comment referenced
+elsewhere in this document.
+
+- **Surprise Test:** MUST pass this test before adding an inline comment: would a competent
+  developer editing this line, without the comment, make a *different and wrong* choice? If
+  they'd naturally arrive at the same code anyway, omit the comment.
+- **No justifying reversible choices:** MUST NOT add a comment to justify a reversible,
+  no-correctness-impact choice — visual/stylistic preference, naming, variant selection between
+  equally-valid options. Comments are reserved for behavioral or logic invariants: constraints
+  where getting it wrong breaks something, not where it just looks or reads differently.
+  - ✗ `// Use bg-card here to match the pill style elsewhere` _(preference, not a constraint)_
+  - ✓ `// Retry uses the stale closure's id on purpose: the mutation started before the newer`
+    `// props arrived, and it must resolve against the item it was actually called for.`
+- **No comment-per-edit:** MUST NOT add a new inline comment to justify each incremental edit
+  to the same block. Consolidate: one comment per invariant, not one per change — update or
+  remove the existing comment instead of stacking another one beside it.
+
 ## Section Comments
 
 Applies to both `.ts` and `.tsx` files.
@@ -49,10 +68,9 @@ TSX files (React components) have a lighter documentation surface than pure Type
 - **Section comments:** MUST follow the same Section Comments rules as `.ts` files.
 - **Inline why-comments:** MAY use an inline `//` comment above the relevant line(s) inside a
   function body to document a non-obvious constraint or cross-file interaction, since `.tsx`
-  files have no JSDoc or module header to hold it. MUST NOT use it to paraphrase what the code
-  already makes obvious — the Anti Patterns rules still apply.
-  - ✓ `// Retry uses the stale closure's id on purpose: the mutation started before the newer`
-    `// props arrived, and it must resolve against the item it was actually called for.`
+  files have no JSDoc or module header to hold it, subject to the Inline Comments section above.
+  MUST NOT use it to paraphrase what the code already makes obvious — the Anti Patterns rules
+  still apply.
   - ✗ `// Loop over matches and render a badge for each`
 
 ## Functions
@@ -96,8 +114,9 @@ Applies to `.ts` files only.
   - ✗ a JSDoc block above a `const` arrow function declared inside another function's body
 - **Inline why-comments:** MAY use an inline `//` comment above a specific non-obvious line or
   statement inside a function body, alongside the function's own JSDoc — the JSDoc documents the
-  function as a whole, an inline comment documents one line JSDoc can't attach to. MUST NOT use it
-  to paraphrase what the code already makes obvious — the Anti Patterns rules still apply.
+  function as a whole, an inline comment documents one line JSDoc can't attach to, subject to the
+  Inline Comments section above. MUST NOT use it to paraphrase what the code already makes
+  obvious — the Anti Patterns rules still apply.
   - ✓ `// onLostPointerCapture reuses onPointerUp: the browser can release capture without ever`
     `// firing pointerup/pointercancel, which would otherwise leave isDragging stuck at true.`
   - ✗ `// Loop over matches and render a badge for each`
@@ -125,3 +144,7 @@ Applies to `.ts` files only.
 - **No task references:** MUST NOT mention the current task, PR number, issue, or caller in comments.
   - ✗ `// Added for the auth refactor (PR #42)`
 - **No stale JSDoc:** MUST update or remove JSDoc during refactors; stale docs are worse than no docs.
+- **No comment-per-edit:** MUST NOT leave a trail of separate comments, one per past edit, on
+  the same block — see the Inline Comments section's No comment-per-edit rule.
+  - ✗ three stacked `//` comments above one class list, each explaining a different past change
+  - ✓ one comment stating the current invariant, updated in place as the code changes
