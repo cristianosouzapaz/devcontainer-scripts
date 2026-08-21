@@ -50,7 +50,7 @@
     {
         "name": "Lefthook",
         "filename": "lefthook.yml",
-        "version": "1.0.1",
+        "version": "1.0.2",
         "description": "Git hooks: runs Biome and TypeScript checks on staged files, enforces branch naming and commit message conventions, blocks pushes to main.",
         "tags": [
             "git-hooks"

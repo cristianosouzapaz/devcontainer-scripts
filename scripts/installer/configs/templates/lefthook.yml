@@ -16,10 +16,13 @@ pre-commit:
         FILES=$(git diff --cached --name-only --diff-filter=d)
         if [ -n "$FILES" ]; then
           npx biome check --fix --unsafe --no-errors-on-unmatched --files-ignore-unknown=true $FILES
+          STATUS=$?
           git update-index --again
+          exit $STATUS
         fi
+      fail_text: Biome check failed
     ts:
-      run: npx tsc --noEmit
+      run: npx tsc -b
       fail_text: TypeScript errors
     branch:
       run: |
