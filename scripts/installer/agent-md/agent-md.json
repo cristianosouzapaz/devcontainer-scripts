@@ -35,7 +35,7 @@
     {
         "key": "documentation-sync",
         "name": "Documentation Sync",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "description": "Requires docs/wiki/ and README.md to be checked and kept in sync whenever a change affects documented behavior.",
         "tags": [
             "docs",
