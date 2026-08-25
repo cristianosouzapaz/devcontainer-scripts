@@ -14,10 +14,9 @@ fetch_templated_component() {
 	local manifest template
 	local -a templates
 
-	mkdir -p "${installer_dir}/${name}/templates"
-	curl -fsSL "${base_url}/${name}/index.js" -o "${installer_dir}/${name}/index.js"
+	curl --create-dirs -fsSL "${base_url}/${name}/index.js" -o "${installer_dir}/${name}/index.js"
 	for manifest in "${manifests[@]}"; do
-		curl -fsSL "${base_url}/${name}/${manifest}" -o "${installer_dir}/${name}/${manifest}"
+		curl --create-dirs -fsSL "${base_url}/${name}/${manifest}" -o "${installer_dir}/${name}/${manifest}"
 	done
 
 	mapfile -t templates < <(
@@ -44,13 +43,10 @@ main() {
 	scripts_ref="${SCRIPTS_REF:-main}"
 	base_url="https://raw.githubusercontent.com/cristianosouzapaz/devcontainer-scripts/${scripts_ref}/scripts/installer"
 
-	mkdir -p "${installer_dir}/shared"
-	mkdir -p "${installer_dir}/skills"
-
-	curl -fsSL "${base_url}/package.json"       -o "${installer_dir}/package.json"
-	curl -fsSL "${base_url}/shared/utils.js"    -o "${installer_dir}/shared/utils.js"
-	curl -fsSL "${base_url}/skills/index.js"    -o "${installer_dir}/skills/index.js"
-	curl -fsSL "${base_url}/skills/skills.json" -o "${installer_dir}/skills/skills.json"
+	curl --create-dirs -fsSL "${base_url}/package.json"       -o "${installer_dir}/package.json"
+	curl --create-dirs -fsSL "${base_url}/shared/utils.js"    -o "${installer_dir}/shared/utils.js"
+	curl --create-dirs -fsSL "${base_url}/skills/index.js"    -o "${installer_dir}/skills/index.js"
+	curl --create-dirs -fsSL "${base_url}/skills/skills.json" -o "${installer_dir}/skills/skills.json"
 
 	fetch_templated_component "${base_url}" "${installer_dir}" agents instructions.json prompts.json
 	fetch_templated_component "${base_url}" "${installer_dir}" configs configs.json
