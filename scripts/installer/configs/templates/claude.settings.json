@@ -1,6 +1,7 @@
 {
     "enableAllProjectMcpServers": true,
     "permissions": {
+        "defaultMode": "default",
         "allow": [
             "Artifact",
             "Bash(*)",
