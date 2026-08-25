@@ -62,7 +62,7 @@ main() {
 	fetch_templated_component "${base_url}" "${installer_dir}" skills/local skills.json
 
 	cd "${installer_dir}"
-	npm i >/dev/null 2>&1
+	npm i --omit=dev >/dev/null 2>&1
 }
 
 # ----- ENTRY POINT ------------------------------------------------------------

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "agent-md/index.js",
+    "agents/index.js",
+    "configs/index.js",
+    "skills/index.js",
+    "skills/local/index.js"
+  ],
+  "project": ["**/*.js"],
+  "ignore": ["**/templates/**"]
+}
