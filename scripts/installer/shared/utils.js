@@ -15,7 +15,7 @@ import { select } from "@inquirer/prompts";
  *   - Clipboard:     copyToClipboard, buildInstallCommand
  *   - Catalog:       loadJsonCatalog
  *   - Error:         handleError
- *   - Constants:     AGENTS, TOOLS, MAX_CATALOG_PAGE_SIZE
+ *   - Constants:     AGENTS, TOOLS
  */
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -41,7 +41,7 @@ export const TOOLS = {
  * Upper bound on checkbox pageSize, so a catalog stays on one screen without
  * an unbounded prompt height if it grows very large.
  */
-export const MAX_CATALOG_PAGE_SIZE = 30;
+const MAX_CATALOG_PAGE_SIZE = 30;
 
 // ─── Functions ───────────────────────────────────────────────────────────────
 
