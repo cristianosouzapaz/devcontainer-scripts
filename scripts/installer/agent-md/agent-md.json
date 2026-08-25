@@ -49,5 +49,23 @@
         "skills": [
             "documentation-sync"
         ]
+    },
+    {
+        "key": "vscode-tasks",
+        "name": "VS Code Tasks",
+        "version": "1.0.0",
+        "description": "Points to the VS Code Tasks skill for creating or editing .vscode/tasks.json.",
+        "tags": [
+            "vscode",
+            "workflow"
+        ],
+        "templateFile": "vscode-tasks.md",
+        "targets": [
+            "CLAUDE.md",
+            "AGENTS.md"
+        ],
+        "skills": [
+            "vscode-tasks"
+        ]
     }
 ]
