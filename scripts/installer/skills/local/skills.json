@@ -2,7 +2,7 @@
     {
         "key": "documentation-sync",
         "name": "Documentation Sync",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "description": "Use when a change affects documented behavior (API, package, toolchain, structure): checks docs/wiki/ and README.md and keeps them from contradicting the codebase.",
         "tags": [
             "docs",
