@@ -27,7 +27,7 @@ fetch_templated_component() {
 	)
 
 	for template in "${templates[@]}"; do
-		curl -fsSL "${base_url}/${name}/templates/${template}" -o "${installer_dir}/${name}/templates/${template}"
+		curl --create-dirs -fsSL "${base_url}/${name}/templates/${template}" -o "${installer_dir}/${name}/templates/${template}"
 	done
 }
 
@@ -45,11 +45,7 @@ main() {
 	base_url="https://raw.githubusercontent.com/cristianosouzapaz/devcontainer-scripts/${scripts_ref}/scripts/installer"
 
 	mkdir -p "${installer_dir}/shared"
-	mkdir -p "${installer_dir}/agents/templates/instructions"
-	mkdir -p "${installer_dir}/agents/templates/prompts"
 	mkdir -p "${installer_dir}/skills"
-	mkdir -p "${installer_dir}/skills/local/templates/documentation-sync"
-	mkdir -p "${installer_dir}/skills/local/templates/index-components"
 
 	curl -fsSL "${base_url}/package.json"       -o "${installer_dir}/package.json"
 	curl -fsSL "${base_url}/shared/utils.js"    -o "${installer_dir}/shared/utils.js"
