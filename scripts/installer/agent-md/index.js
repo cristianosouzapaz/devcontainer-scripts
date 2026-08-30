@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
 import { checkbox } from "@inquirer/prompts";
-import { formatVersionHint, handleError, loadJsonCatalog, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, selectTargetTools, setupConsola, TOOLS, writeLockFile } from "../shared/utils.js";
+import { CLEAR_ON_DONE, formatVersionHint, handleError, loadJsonCatalog, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, selectTargetTools, selectUntilConfirmed, setupConsola, TOOLS, writeLockFile } from "../shared/utils.js";
 import { ensureClaudeSkillSymlink, installLocalSkills } from "../skills/local/index.js";
 
 /**
@@ -185,16 +185,26 @@ const askUser = async () => {
             };
         });
 
-        const selectedBlocks = await checkbox({
-            message: "Select blocks to install:",
-            choices,
-            pageSize: resolvePageSize(choices.length),
-        });
-
-        if (selectedBlocks.length === 0) {
+        const selectedBlocks = await selectUntilConfirmed(
+            () => checkbox({
+                message: "Select blocks to install:",
+                choices,
+                pageSize: resolvePageSize(choices.length),
+            }, CLEAR_ON_DONE),
+            (selected) => {
+                const skillKeys = [...new Set(selected.flatMap((block) => block.skills ?? []))];
+                return [
+                    { title: "Agent MD blocks", items: selected.map(({ name }) => name) },
+                    { title: "Included skills", items: skillKeys },
+                ];
+            },
+            "Install selected blocks",
+        );
+        if (selectedBlocks === undefined) {
             consola.info("No blocks selected.");
             return;
         }
+        if (selectedBlocks === null) return;
 
         const selectedTools = await selectTargetTools();
         const claudeMdPath = join(destRoot, "CLAUDE.md");

@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { checkbox, Separator } from "@inquirer/prompts";
+import { checkbox, select } from "@inquirer/prompts";
 import consola from "consola";
-import { AGENTS, handleError, loadJsonCatalog, resolvePageSize, selectTargetTools, setupConsola, TOOLS } from "../shared/utils.js";
+import { AGENTS, CLEAR_ON_DONE, confirmSelection, handleError, loadJsonCatalog, selectTargetTools, setupConsola, TOOLS } from "../shared/utils.js";
+import { groupByCategory } from "./catalog.js";
 import { ensureClaudeSkillSymlink } from "./local/index.js";
 
 /**
@@ -20,23 +21,8 @@ setupConsola();
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const SKILLS_FILE_URL = new URL("./skills.json", import.meta.url);
-const PROMPT_MESSAGE = "Select skills to INSTALL:";
 
-/**
- * Display order for skill categories. Categories not listed here are
- * appended after these, in the order first encountered in the catalog.
- */
-const CATEGORY_ORDER = [
-    "Planning & Workflow",
-    "Design & Frontend",
-    "Framework (Next.js/Vercel)",
-    "Code Quality",
-    "Security",
-    "Automation",
-    "Discovery & Tooling",
-    "Productivity & Communication",
-    "Bundles",
-];
+const FINISH_SELECTION = "finish-selection";
 
 // ─── Functions ───────────────────────────────────────────────────────────────
 
@@ -68,27 +54,80 @@ const loadSkillsCatalog = () => {
     return entries;
 };
 
-/**
- * Group skill entries by category, in CATEGORY_ORDER (unlisted categories
- * are appended in first-seen order), preserving each entry's relative
- * position within its category.
- * @param {object[]} entries - Skill catalog entries.
- * @returns {Map<string, object[]>} Entries keyed by category.
- */
-const groupByCategory = (entries) => {
-    const groups = new Map();
-    for (const entry of entries) {
-        if (!groups.has(entry.category)) groups.set(entry.category, []);
-        groups.get(entry.category).push(entry);
-    }
+const formatCategory = (category) => `── ${category} ──`;
 
-    return new Map(
-        [...groups.entries()].sort(([a], [b]) => {
-            const rankA = CATEGORY_ORDER.includes(a) ? CATEGORY_ORDER.indexOf(a) : CATEGORY_ORDER.length;
-            const rankB = CATEGORY_ORDER.includes(b) ? CATEGORY_ORDER.indexOf(b) : CATEGORY_ORDER.length;
-            return rankA - rankB;
-        }),
-    );
+/**
+ * Interactively select skills one compact category at a time. This keeps every checkbox
+ * prompt visible without relying on an internal scrolling list as the catalog grows.
+ * @param {Map<string, object[]>} groups - Validated catalog entries grouped by category.
+ * @returns {Promise<object[]|null>} Selected entries, or null when the user cancels.
+ */
+const selectSkillsByCategory = async (groups) => {
+    const selectedSkills = new Set();
+    const categories = [...groups.entries()];
+
+    while (true) {
+        const category = await select({
+            message: "Choose a skill category:",
+            choices: [
+                ...categories.map(([name, entries]) => {
+                    const selectedCount = entries.filter((entry) => selectedSkills.has(entry)).length;
+                    return {
+                        name: `${formatCategory(name)} (${selectedCount}/${entries.length} selected)`,
+                        value: name,
+                    };
+                }),
+                {
+                    name: selectedSkills.size === 0
+                        ? "Finish without selecting skills"
+                        : `Review ${selectedSkills.size} selected skill${selectedSkills.size === 1 ? "" : "s"}`,
+                    value: FINISH_SELECTION,
+                },
+            ],
+            pageSize: categories.length + 1,
+        }, CLEAR_ON_DONE);
+
+        if (category === FINISH_SELECTION) {
+            if (selectedSkills.size === 0) return [];
+
+            const automaticDependencies = new Map();
+            for (const entry of selectedSkills) {
+                for (const dependency of entry.requires ?? []) {
+                    if ([...selectedSkills].some(({ skill }) => skill === dependency)) continue;
+                    const requiredBy = automaticDependencies.get(dependency) ?? [];
+                    requiredBy.push(entry.name);
+                    automaticDependencies.set(dependency, requiredBy);
+                }
+            }
+            const action = await confirmSelection([
+                { title: "Skills", items: [...selectedSkills].map(({ name }) => name) },
+                {
+                    title: "Automatically included",
+                    items: [...automaticDependencies].map(([dependency, requiredBy]) =>
+                        `${dependency} (required by ${requiredBy.join(", ")})`),
+                },
+            ], "Install selected skills");
+
+            if (action === "install") return [...selectedSkills];
+            if (action === "cancel") return null;
+            continue;
+        }
+
+        const entries = groups.get(category);
+        const selectedInCategory = await checkbox({
+            message: formatCategory(category),
+            choices: entries.map((entry) => ({
+                name: entry.name,
+                value: entry,
+                description: entry.description,
+            })),
+            default: entries.filter((entry) => selectedSkills.has(entry)),
+            pageSize: entries.length,
+        }, CLEAR_ON_DONE);
+
+        for (const entry of entries) selectedSkills.delete(entry);
+        for (const entry of selectedInCategory) selectedSkills.add(entry);
+    }
 };
 
 /**
@@ -109,22 +148,9 @@ const askUser = async () => {
     try {
         const skills = loadSkillsCatalog();
 
-        const choices = [...groupByCategory(skills).entries()].flatMap(([category, entries]) => [
-            new Separator(`── ${category} ──`),
-            ...entries.map((entry) => ({
-                name: entry.name,
-                value: entry,
-                description: entry.description,
-            })),
-        ]);
+        const selectedSkills = await selectSkillsByCategory(groupByCategory(skills));
 
-        const selectedSkills = await checkbox({
-            choices,
-            message: PROMPT_MESSAGE,
-            pageSize: resolvePageSize(choices.length),
-        });
-
-        if (selectedSkills.length === 0) {
+        if (!selectedSkills || selectedSkills.length === 0) {
             consola.info("No skills selected.");
             return;
         }

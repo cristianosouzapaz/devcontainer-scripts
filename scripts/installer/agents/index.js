@@ -2,8 +2,8 @@ import { readFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
-import inquirer from "inquirer";
-import { buildTagsStr, formatVersionHint, getArtifactVersion, handleError, loadJsonCatalog, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, selectTargetTools, setupConsola, TOOLS, writeLockFile, writeWithConflict } from "../shared/utils.js";
+import { checkbox } from "@inquirer/prompts";
+import { buildTagsStr, CLEAR_ON_DONE, formatVersionHint, getArtifactVersion, handleError, loadJsonCatalog, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, selectTargetTools, selectUntilConfirmed, setupConsola, TOOLS, writeLockFile, writeWithConflict } from "../shared/utils.js";
 import { ensureClaudeRuleSymlink, ensureClaudeSkillSymlink } from "../skills/local/index.js";
 
 /**
@@ -208,69 +208,64 @@ const loadCatalog = (url, extraKeys, catalogName) => {
 // ─── Installers ──────────────────────────────────────────────────────────────
 
 /**
- * Write canonical instruction skills and the selected agents' native instruction adapters.
- * Records the canonical assets and any native adapters that were materialized.
- *
- * Every selected instruction has a canonical `.agents/skills/<name>/SKILL.md`.
- * Claude receives a path-aware `.claude/rules/` adapter; Copilot receives its
- * `.github/instructions/` adapter. Codex reads the canonical skill directly.
- *
- * @param {object[]} instructions - Selected instruction entries.
+ * Install canonical Agent Skills and the native adapters for one catalog type.
+ * The type-specific descriptor contains only the naming and adapter differences.
+ * @param {object[]} entries - Selected catalog entries.
  * @param {string} destRoot - Project root directory.
  * @param {Set<string>} tools - Selected values from TOOLS.
- * @param {object} lock - Parsed template-lock.json used to resolve the currently installed version.
- * @param {{ writer?: typeof writeWithConflict }} [options] - File writer override for tests.
+ * @param {object} lock - Parsed template-lock.json.
+ * @param {{ writer?: typeof writeWithConflict }} options - File writer override for tests.
+ * @param {object} spec - Type-specific skill and adapter operations.
  * @returns {Promise<boolean>} Whether the lock manifest changed.
  */
-export const installInstructions = async (instructions, destRoot, tools, lock, options = {}) => {
+const installAgentAssets = async (entries, destRoot, tools, lock, options, spec) => {
     const changedPaths = new Set();
     const writer = options.writer ?? writeWithConflict;
-    const managedPaths = new Set(instructions
-        .map((item) => join(".agents", "skills", toSkillName(item.filename), "SKILL.md"))
+    const templates = new Map(entries.map((entry) => [
+        entry.templateFile,
+        readFileSync(join(__dirname, "templates", entry.templateFile), "utf8"),
+    ]));
+    const managedPaths = new Set(entries
+        .map((entry) => join(".agents", "skills", spec.skillName(entry), "SKILL.md"))
         .filter((path) => lock.artifacts[path]));
 
-    for (const item of instructions) {
-        const template = readFileSync(join(__dirname, "templates", item.templateFile), "utf8");
-        const skillName = toSkillName(item.filename);
+    for (const entry of entries) {
+        const skillName = spec.skillName(entry);
         const canonicalPath = join(".agents", "skills", skillName, "SKILL.md");
-        const { written: canonicalWritten } = await installCanonicalSkill(
+        const { written } = await installCanonicalSkill(
             destRoot,
             skillName,
-            buildCanonicalSkillContent(template, skillName, true),
-            item.version,
+            spec.buildCanonicalContent(templates.get(entry.templateFile), skillName),
+            entry.version,
             getArtifactVersion(lock, canonicalPath),
-            writer
+            writer,
         );
-        if (canonicalWritten) {
-            recordArtifact(lock, canonicalPath, { kind: "instruction", version: item.version });
+        if (written) {
+            recordArtifact(lock, canonicalPath, { kind: spec.kind, version: entry.version });
             managedPaths.add(canonicalPath);
             changedPaths.add(canonicalPath);
         }
     }
 
-    if (tools.has(TOOLS.claude)) {
-        for (const item of instructions) {
-            const skillName = toSkillName(item.filename);
+    for (const adapter of spec.adapters) {
+        if (!tools.has(adapter.tool)) continue;
+        adapter.prepare?.(destRoot);
+        for (const entry of entries) {
+            const skillName = spec.skillName(entry);
             const canonicalPath = join(".agents", "skills", skillName, "SKILL.md");
             if (!managedPaths.has(canonicalPath)) continue;
-            const adapter = claudeRuleAdapter(skillName, toClaudeRuleFilename(item.filename));
-            ensureClaudeRuleSymlink(destRoot, skillName, toClaudeRuleFilename(item.filename));
-            recordArtifact(lock, canonicalPath, { kind: "instruction", adapters: { claude: [adapter] } });
-            changedPaths.add(canonicalPath);
-        }
-    }
-
-    if (tools.has(TOOLS.copilot)) {
-        const instructionsDir = join(destRoot, ".github", "instructions");
-        mkdirSync(instructionsDir, { recursive: true });
-        for (const item of instructions) {
-            const content = readFileSync(join(__dirname, "templates", item.templateFile), "utf8");
-            const relPath = join(".github", "instructions", item.filename);
-            const canonicalPath = join(".agents", "skills", toSkillName(item.filename), "SKILL.md");
-            if (!managedPaths.has(canonicalPath)) continue;
-            const ok = await writer(join(instructionsDir, item.filename), content, item.filename, item.version, getArtifactVersion(lock, canonicalPath));
-            if (ok) {
-                recordArtifact(lock, canonicalPath, { kind: "instruction", version: item.version, adapters: { copilot: [{ path: relPath, type: "file" }] } });
+            const materialized = await adapter.install({
+                destRoot,
+                entry,
+                skillName,
+                canonicalPath,
+                template: templates.get(entry.templateFile),
+                writer,
+                version: entry.version,
+                installedVersion: getArtifactVersion(lock, canonicalPath),
+            });
+            if (materialized) {
+                recordArtifact(lock, canonicalPath, { kind: spec.kind, adapters: { [adapter.name]: [materialized] } });
                 changedPaths.add(canonicalPath);
             }
         }
@@ -279,88 +274,60 @@ export const installInstructions = async (instructions, destRoot, tools, lock, o
     for (const path of managedPaths) {
         if (reconcileArtifactAdapters(lock, destRoot, path)) changedPaths.add(path);
     }
-
     return changedPaths.size > 0;
 };
 
-/**
- * Write canonical command skills and Copilot's native prompt adapters.
- * Records the canonical assets and any native adapters that were materialized.
- *
- * Every selected command has a canonical `.agents/skills/<name>/SKILL.md`.
- * Claude receives a selective symlink in `.claude/skills/` and Copilot receives its
- * `.github/prompts/` adapter. Codex reads the canonical skill directly.
- *
- * @param {object[]} prompts - Selected prompt entries.
- * @param {string} destRoot - Project root directory.
- * @param {Set<string>} tools - Selected values from TOOLS.
- * @param {object} lock - Parsed template-lock.json used to resolve the currently installed version.
- * @param {{ writer?: typeof writeWithConflict }} [options] - File writer override for tests.
- * @returns {Promise<boolean>} Whether the lock manifest changed.
- */
-export const installPrompts = async (prompts, destRoot, tools, lock, options = {}) => {
-    const changedPaths = new Set();
-    const writer = options.writer ?? writeWithConflict;
-    const managedPaths = new Set(prompts
-        .map((item) => join(".agents", "skills", toSkillName(item.commandFilename), "SKILL.md"))
-        .filter((path) => lock.artifacts[path]));
-    const templateCache = new Map(
-        prompts.map((item) => [item.templateFile, readFileSync(join(__dirname, "templates", item.templateFile), "utf8")])
-    );
+const createCopilotAdapter = (directory) => ({
+    name: "copilot",
+    tool: TOOLS.copilot,
+    prepare: (destRoot) => mkdirSync(join(destRoot, directory), { recursive: true }),
+    install: async ({ destRoot, entry, template, writer, version, installedVersion }) => {
+        const relPath = join(directory, entry.filename);
+        const written = await writer(join(destRoot, relPath), template, entry.filename, version, installedVersion);
+        return written ? { path: relPath, type: "file" } : null;
+    },
+});
 
-    for (const item of prompts) {
-        const template = templateCache.get(item.templateFile);
-        const skillName = toSkillName(item.commandFilename);
-        const canonicalPath = join(".agents", "skills", skillName, "SKILL.md");
-        const { written: canonicalWritten } = await installCanonicalSkill(
-            destRoot,
-            skillName,
-            buildCanonicalSkillContent(template, skillName),
-            item.version,
-            getArtifactVersion(lock, canonicalPath),
-            writer
-        );
-        if (canonicalWritten) {
-            recordArtifact(lock, canonicalPath, { kind: "prompt", version: item.version });
-            managedPaths.add(canonicalPath);
-            changedPaths.add(canonicalPath);
-        }
-    }
-
-    if (tools.has(TOOLS.copilot)) {
-        const promptsDir = join(destRoot, ".github", "prompts");
-        mkdirSync(promptsDir, { recursive: true });
-        for (const item of prompts) {
-            const content = templateCache.get(item.templateFile);
-            const relPath = join(".github", "prompts", item.filename);
-            const canonicalPath = join(".agents", "skills", toSkillName(item.commandFilename), "SKILL.md");
-            if (!managedPaths.has(canonicalPath)) continue;
-            const ok = await writer(join(promptsDir, item.filename), content, item.filename, item.version, getArtifactVersion(lock, canonicalPath));
-            if (ok) {
-                recordArtifact(lock, canonicalPath, { kind: "prompt", version: item.version, adapters: { copilot: [{ path: relPath, type: "file" }] } });
-                changedPaths.add(canonicalPath);
-            }
-        }
-    }
-
-    if (tools.has(TOOLS.claude)) {
-        for (const item of prompts) {
-            const skillName = toSkillName(item.commandFilename);
-            const canonicalPath = join(".agents", "skills", skillName, "SKILL.md");
-            if (!managedPaths.has(canonicalPath)) continue;
-            const adapter = claudeSkillAdapter(skillName);
-            ensureClaudeSkillSymlink(destRoot, skillName);
-            recordArtifact(lock, canonicalPath, { kind: "prompt", adapters: { claude: [adapter] } });
-            changedPaths.add(canonicalPath);
-        }
-    }
-
-    for (const path of managedPaths) {
-        if (reconcileArtifactAdapters(lock, destRoot, path)) changedPaths.add(path);
-    }
-
-    return changedPaths.size > 0;
+const instructionSpec = {
+    kind: "instruction",
+    skillName: (entry) => toSkillName(entry.filename),
+    buildCanonicalContent: (template, skillName) => buildCanonicalSkillContent(template, skillName, true),
+    adapters: [
+        {
+            name: "claude",
+            tool: TOOLS.claude,
+            install: ({ destRoot, entry, skillName }) => {
+                const filename = toClaudeRuleFilename(entry.filename);
+                ensureClaudeRuleSymlink(destRoot, skillName, filename);
+                return claudeRuleAdapter(skillName, filename);
+            },
+        },
+        createCopilotAdapter(join(".github", "instructions")),
+    ],
 };
+
+const promptSpec = {
+    kind: "prompt",
+    skillName: (entry) => toSkillName(entry.commandFilename),
+    buildCanonicalContent: (template, skillName) => buildCanonicalSkillContent(template, skillName),
+    adapters: [
+        createCopilotAdapter(join(".github", "prompts")),
+        {
+            name: "claude",
+            tool: TOOLS.claude,
+            install: ({ destRoot, skillName }) => {
+                ensureClaudeSkillSymlink(destRoot, skillName);
+                return claudeSkillAdapter(skillName);
+            },
+        },
+    ],
+};
+
+export const installInstructions = (instructions, destRoot, tools, lock, options = {}) =>
+    installAgentAssets(instructions, destRoot, tools, lock, options, instructionSpec);
+
+export const installPrompts = (prompts, destRoot, tools, lock, options = {}) =>
+    installAgentAssets(prompts, destRoot, tools, lock, options, promptSpec);
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -397,26 +364,32 @@ const askUser = async () => {
             };
         });
 
-        const { selectedInstructions } = await inquirer.prompt([{
-            type: "checkbox",
-            name: "selectedInstructions",
-            message: "Select instruction files to install:",
-            choices: instructionChoices,
-            pageSize: resolvePageSize(instructionChoices.length),
-        }]);
-
-        const { selectedPrompts } = await inquirer.prompt([{
-            type: "checkbox",
-            name: "selectedPrompts",
-            message: "Select prompt files to install:",
-            choices: promptChoices,
-            pageSize: resolvePageSize(promptChoices.length),
-        }]);
-
-        if (selectedInstructions.length + selectedPrompts.length === 0) {
+        const selectedAssets = await selectUntilConfirmed(
+            async () => ({
+                selectedInstructions: await checkbox({
+                    message: "Select instruction files to install:",
+                    choices: instructionChoices,
+                    pageSize: resolvePageSize(instructionChoices.length),
+                }, CLEAR_ON_DONE),
+                selectedPrompts: await checkbox({
+                    message: "Select prompt files to install:",
+                    choices: promptChoices,
+                    pageSize: resolvePageSize(promptChoices.length),
+                }, CLEAR_ON_DONE),
+            }),
+            ({ selectedInstructions, selectedPrompts }) => [
+                { title: "Instruction files", items: selectedInstructions.map(({ name }) => name) },
+                { title: "Prompt files", items: selectedPrompts.map(({ name }) => name) },
+            ],
+            "Install selected files",
+            ({ selectedInstructions, selectedPrompts }) => selectedInstructions.length + selectedPrompts.length === 0,
+        );
+        if (selectedAssets === undefined) {
             consola.info("No files selected.");
             return;
         }
+        if (selectedAssets === null) return;
+        const { selectedInstructions, selectedPrompts } = selectedAssets;
 
         const selectedTools = new Set(await selectTargetTools());
         const writtenFlags = [];

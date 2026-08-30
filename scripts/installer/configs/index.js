@@ -2,8 +2,8 @@ import { readFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
-import inquirer from "inquirer";
-import { buildInstallCommand, buildTagsStr, copyToClipboard, formatVersionHint, handleError, loadJsonCatalog, readConfigInstalledVersion, readLockFile, resolvePageSize, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
+import { checkbox } from "@inquirer/prompts";
+import { buildInstallCommand, buildTagsStr, CLEAR_ON_DONE, copyToClipboard, formatVersionHint, handleError, loadJsonCatalog, readConfigInstalledVersion, readLockFile, resolvePageSize, selectUntilConfirmed, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
 
 /**
  * @fileoverview Interactive installer for project config file templates.
@@ -90,18 +90,26 @@ const askUser = async () => {
             return { name: `${c.name} ${versionStr} ${buildTagsStr(c.tags)}`, value: c, description: c.description };
         });
 
-        const { selectedConfigs } = await inquirer.prompt([{
-            choices,
-            message: "Select config files to copy:",
-            name: "selectedConfigs",
-            pageSize: resolvePageSize(choices.length),
-            type: "checkbox",
-        }]);
-
-        if (selectedConfigs.length === 0) {
+        const selectedConfigs = await selectUntilConfirmed(
+            () => checkbox({
+                choices,
+                message: "Select config files to copy:",
+                pageSize: resolvePageSize(choices.length),
+            }, CLEAR_ON_DONE),
+            (selected) => {
+                const packages = [...new Set(selected.flatMap((config) => config.packages ?? []))];
+                return [
+                    { title: "Config files", items: selected.map(({ name }) => name) },
+                    { title: "Required packages (run separately)", items: packages },
+                ];
+            },
+            "Install selected files",
+        );
+        if (selectedConfigs === undefined) {
             consola.info("No files selected.");
             return;
         }
+        if (selectedConfigs === null) return;
 
         const lock = readLockFile(destDir);
         const writtenConfigs = [];

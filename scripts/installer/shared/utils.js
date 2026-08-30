@@ -13,7 +13,8 @@ import { checkbox, select } from "@inquirer/prompts";
  *   - Lock file:     readLockFile, writeLockFile, getArtifactVersion, recordArtifact,
  *                    reconcileArtifactAdapters
  *                    → template-lock.json in the user's project root
- *   - UI helpers:    buildTagsStr, setupConsola, selectTargetTools, resolvePageSize, formatVersionHint
+ *   - UI helpers:    buildTagsStr, setupConsola, selectTargetTools, resolvePageSize, formatVersionHint,
+ *                    formatSelectionSummary, confirmSelection, CLEAR_ON_DONE
  *   - Clipboard:     copyToClipboard, buildInstallCommand
  *   - Catalog:       loadJsonCatalog
  *   - Error:         handleError
@@ -41,6 +42,9 @@ export const TOOLS = {
 };
 
 const LOCK_VERSION = "2";
+
+/** Context shared by interactive prompts so completed screens do not accumulate in the terminal. */
+export const CLEAR_ON_DONE = { clearPromptOnDone: true };
 
 const emptyLock = () => ({ version: LOCK_VERSION, updatedAt: "", configs: {}, artifacts: {}, mdBlocks: {} });
 
@@ -79,6 +83,67 @@ export const loadJsonCatalog = (fileUrl) => {
  */
 export const setupConsola = () => {
     consola.options = { ...consola.options, formatOptions: { ...consola.options.formatOptions, date: false } };
+};
+
+/**
+ * Format the common, deliberately plain-text summary shown before an installer proceeds.
+ * @param {{title: string, items: string[]}[]} sections - Non-empty summary sections.
+ * @returns {string}
+ */
+export const formatSelectionSummary = (sections) => {
+    const visibleSections = sections.filter(({ items }) => items.length > 0);
+    const contentLines = visibleSections.flatMap(({ title, items }) => [
+        `${title} (${items.length})`,
+        ...items.map((item) => `  • ${item}`),
+        "",
+    ]);
+    const width = Math.max(44, ...contentLines.map((line) => line.length));
+    const top = `┌─ Selection summary ${"─".repeat(width - 18)}┐`;
+    const bottom = `└${"─".repeat(width + 2)}┘`;
+    return [
+        top,
+        ...contentLines.map((line) => `│ ${line.padEnd(width)} │`),
+        bottom,
+    ].join("\n");
+};
+
+/**
+ * Print a selection summary and ask whether to install, edit, or cancel it.
+ * @param {{title: string, items: string[]}[]} sections - Summary sections.
+ * @param {string} installLabel - Action label for the install choice.
+ * @returns {Promise<"install"|"edit"|"cancel">}
+ */
+export const confirmSelection = async (sections, installLabel = "Install selected assets") => {
+    consola.log("");
+    consola.log(formatSelectionSummary(sections));
+    consola.log("");
+    return select({
+        message: "What would you like to do?",
+        choices: [
+            { name: installLabel, value: "install" },
+            { name: "Continue editing selection", value: "edit" },
+            { name: "Cancel", value: "cancel" },
+        ],
+    }, CLEAR_ON_DONE);
+};
+
+/**
+ * Repeat a selection and confirmation until the user installs or cancels.
+ * Returns undefined for an empty selection and null for an explicit cancellation.
+ * @param {() => Promise<unknown>} selectSelection - Function that opens the asset picker.
+ * @param {(selection: unknown) => {title: string, items: string[]}[]} buildSections - Summary builder.
+ * @param {string} installLabel - Action label for the install choice.
+ * @param {(selection: unknown) => boolean} [isEmpty] - Selection emptiness test.
+ * @returns {Promise<unknown|null|undefined>}
+ */
+export const selectUntilConfirmed = async (selectSelection, buildSections, installLabel, isEmpty = (selection) => selection.length === 0) => {
+    const selection = await selectSelection();
+    if (isEmpty(selection)) return undefined;
+
+    const action = await confirmSelection(buildSections(selection), installLabel);
+    if (action === "install") return selection;
+    if (action === "cancel") return null;
+    return selectUntilConfirmed(selectSelection, buildSections, installLabel, isEmpty);
 };
 
 /**
@@ -126,7 +191,7 @@ export const selectTargetTools = () => checkbox({
         { name: "Codex", value: TOOLS.codex },
     ],
     validate: (selected) => selected.length > 0 || "Select at least one coding agent.",
-});
+}, CLEAR_ON_DONE);
 
 /**
  * Write content to destPath, prompting the user to resolve conflicts.
@@ -153,7 +218,7 @@ export const writeWithConflict = async (destPath, content, filename, templateVer
                 { name: "Backup and replace", value: "backup and replace" },
             ],
             default: "skip",
-        });
+        }, CLEAR_ON_DONE);
 
         if (action === "skip") {
             consola.info(`Skipped ${filename}`);
