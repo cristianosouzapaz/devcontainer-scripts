@@ -184,8 +184,9 @@ detect_package_manager() {
 # install_dependencies: Skips when package.json is absent.
 # Detects the package manager via detect_package_manager and runs the appropriate install.
 # When pnpm is used, the store is set to an absolute path outside the workspace.
-# Each install attempt is bounded by _PKG_INSTALL_TIMEOUT seconds; for pnpm, the unfrozen
-# fallback is skipped when the frozen-lockfile attempt times out (exit code 124).
+# Each install attempt is bounded by _PKG_INSTALL_TIMEOUT seconds. Pnpm receives --force so
+# a persisted, incompatible node_modules directory is recreated without an interactive prompt;
+# its unfrozen fallback is skipped when the frozen-lockfile attempt times out (exit code 124).
 install_dependencies() {
 	[[ -f "package.json" ]] || {
 		log_debug "No package.json found, skipping dependency installation"
@@ -202,7 +203,7 @@ install_dependencies() {
 			pnpm config set store-dir /root/.local/share/pnpm/store >/dev/null 2>&1
 			if [[ -f "pnpm-lock.yaml" ]]; then
 				exit_code=0
-				spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --frozen-lockfile || exit_code=$?
+				spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --frozen-lockfile --force || exit_code=$?
 				if [[ $exit_code -eq 0 ]]; then
 					spinner_cleanup
 					log_item_success "Dependencies installed with pnpm (frozen-lockfile)"
@@ -214,7 +215,7 @@ install_dependencies() {
 			fi
 			if [[ "$skip_fallback" == false ]]; then
 				exit_code=0
-				spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" pnpm install || exit_code=$?
+				spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --force || exit_code=$?
 				if [[ $exit_code -eq 0 ]]; then
 					spinner_cleanup
 					log_item_success "Dependencies installed with pnpm"
