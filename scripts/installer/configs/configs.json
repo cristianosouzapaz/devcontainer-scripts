@@ -2,7 +2,7 @@
     {
         "name": "Biome",
         "filename": "biome.json",
-        "version": "1.1.0",
+        "version": "1.1.1",
         "description": "Biome linter/formatter config — organizes imports, sorts keys and attributes, Tailwind-aware CSS parsing.",
         "tags": [
             "linting",

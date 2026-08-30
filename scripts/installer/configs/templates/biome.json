@@ -23,7 +23,8 @@
             "!template-lock.json",
             "!skills-lock.json",
             "!.claude/skills",
-            "!.agents/skills"
+            "!.agents/skills",
+            "!.vscode"
         ]
     },
     "formatter": {
