@@ -1,8 +1,8 @@
-import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, readFileSync, readlinkSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import chalk from "chalk";
 import consola from "consola";
-import { select } from "@inquirer/prompts";
+import { checkbox, select } from "@inquirer/prompts";
 
 /**
  * @fileoverview Shared utilities for all framework installer scripts.
@@ -10,8 +10,10 @@ import { select } from "@inquirer/prompts";
  * Exports:
  *   - File writing:  writeWithConflict
  *   - Version read:  readConfigInstalledVersion (lock file)
- *   - Lock file:     readLockFile, writeLockFile  →  template-lock.json in the user's project root
- *   - UI helpers:    buildTagsStr, setupConsola, selectTargetTool, resolvePageSize, formatVersionHint
+ *   - Lock file:     readLockFile, writeLockFile, getArtifactVersion, recordArtifact,
+ *                    reconcileArtifactAdapters
+ *                    → template-lock.json in the user's project root
+ *   - UI helpers:    buildTagsStr, setupConsola, selectTargetTools, resolvePageSize, formatVersionHint
  *   - Clipboard:     copyToClipboard, buildInstallCommand
  *   - Catalog:       loadJsonCatalog
  *   - Error:         handleError
@@ -21,20 +23,34 @@ import { select } from "@inquirer/prompts";
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 /**
- * Supported agent identifiers for GitHub Copilot and Claude Code.
+ * Supported agent identifiers for external skill installers.
  */
 export const AGENTS = {
     copilot: "github-copilot",
     claude: "claude-code",
+    codex: "codex",
 };
 
 /**
- * Logical tool targets used across installers for routing installation output.
+ * Logical coding-agent targets used across installers for routing installation output.
  */
 export const TOOLS = {
-    all: "all",
     copilot: "copilot",
     claude: "claude",
+    codex: "codex",
+};
+
+const LOCK_VERSION = "2";
+
+const emptyLock = () => ({ version: LOCK_VERSION, updatedAt: "", configs: {}, artifacts: {}, mdBlocks: {} });
+
+const addAdapter = (adapters, agent, adapter) => {
+    if (!agent || !adapter) return;
+    const entries = adapters[agent] ?? [];
+    const existing = entries.find((entry) => entry.path === adapter.path && entry.type === adapter.type);
+    if (existing) Object.assign(existing, adapter);
+    else entries.push(adapter);
+    adapters[agent] = entries;
 };
 
 /**
@@ -96,16 +112,20 @@ export const formatVersionHint = (installedVersion, version) =>
 export const resolvePageSize = (choiceCount) => Math.min(choiceCount, MAX_CATALOG_PAGE_SIZE);
 
 /**
- * Prompt the user to select a target tool via a single-choice radio.
- * @returns {Promise<"all"|"copilot"|"claude">}
+ * Prompt the user to select one or more coding agents.
+ *
+ * Callers should route outputs from the returned set instead of branching on every
+ * possible combination. This keeps the installer extensible as new agents are added.
+ * @returns {Promise<string[]>} Selected values from TOOLS.
  */
-export const selectTargetTool = () => select({
+export const selectTargetTools = () => checkbox({
     message: "Select target tool(s):",
     choices: [
-        { name: "All supported tools", value: TOOLS.all },
-        { name: "GitHub Copilot",      value: TOOLS.copilot },
-        { name: "Claude Code",         value: TOOLS.claude },
+        { name: "GitHub Copilot", value: TOOLS.copilot },
+        { name: "Claude Code", value: TOOLS.claude },
+        { name: "Codex", value: TOOLS.codex },
     ],
+    validate: (selected) => selected.length > 0 || "Select at least one coding agent.",
 });
 
 /**
@@ -155,16 +175,23 @@ export const writeWithConflict = async (destPath, content, filename, templateVer
 
 /**
  * Read and parse template-lock.json from the user's project root.
- * Returns a default empty structure if the file does not exist or cannot be parsed.
+ * Returns a default empty structure if the file does not exist, is invalid, or uses another schema.
  * @param {string} projectRoot - Absolute path to the user's project root.
- * @returns {{ version: string, updatedAt: string, configs: object, instructions: object, prompts: object, mdBlocks?: object, skills?: object }}
+ * @returns {{ version: "2", updatedAt: string, configs: object, artifacts: object, mdBlocks: object }}
  */
 export const readLockFile = (projectRoot) => {
-    const empty = { version: "1", updatedAt: "", configs: {}, instructions: {}, prompts: {} };
     try {
-        return { ...empty, ...JSON.parse(readFileSync(join(projectRoot, "template-lock.json"), "utf8")) };
+        const parsed = JSON.parse(readFileSync(join(projectRoot, "template-lock.json"), "utf8"));
+        if (parsed.version !== LOCK_VERSION) return emptyLock();
+        return {
+            ...emptyLock(),
+            ...parsed,
+            configs: { ...(parsed.configs ?? {}) },
+            artifacts: { ...(parsed.artifacts ?? {}) },
+            mdBlocks: { ...(parsed.mdBlocks ?? {}) },
+        };
     } catch {
-        return empty;
+        return emptyLock();
     }
 };
 
@@ -172,11 +199,58 @@ export const readLockFile = (projectRoot) => {
  * Write lock data to template-lock.json in the user's project root.
  * Always sets updatedAt to the current UTC timestamp.
  * @param {string} projectRoot - Absolute path to the user's project root.
- * @param {{ version: string, configs: object, instructions: object, prompts: object, mdBlocks?: object, skills?: object }} lockData
+ * @param {{ version: "2", configs: object, artifacts: object, mdBlocks: object }} lockData
  */
 export const writeLockFile = (projectRoot, lockData) => {
-    const data = { ...lockData, updatedAt: new Date().toISOString() };
+    const data = { ...lockData, version: LOCK_VERSION, updatedAt: new Date().toISOString() };
     writeFileSync(join(projectRoot, "template-lock.json"), JSON.stringify(data, null, 4) + "\n", "utf8");
+};
+
+/** Return an artifact's installed version, if tracked. */
+export const getArtifactVersion = (lock, path) => lock.artifacts?.[path]?.version ?? null;
+
+/** Record a canonical artifact and merge its materialized native adapters. */
+export const recordArtifact = (lock, path, { kind, version, adapters = {}, source }) => {
+    const existing = lock.artifacts[path] ?? { kind, adapters: {} };
+    const mergedAdapters = { ...(existing.adapters ?? {}) };
+    for (const [agent, entries] of Object.entries(adapters)) {
+        for (const entry of entries) addAdapter(mergedAdapters, agent, entry);
+    }
+    lock.artifacts[path] = {
+        ...existing,
+        kind,
+        ...(version === undefined ? {} : { version }),
+        ...(source === undefined ? {} : { source }),
+        adapters: mergedAdapters,
+    };
+};
+
+/** Remove adapter records that no longer match their materialized filesystem entry. */
+export const reconcileArtifactAdapters = (lock, root, path) => {
+    const artifact = lock.artifacts?.[path];
+    if (!artifact) return false;
+
+    const before = JSON.stringify(artifact.adapters ?? {});
+    const adapters = {};
+    for (const [agent, entries] of Object.entries(artifact.adapters ?? {})) {
+        const present = entries.filter((adapter) => {
+            try {
+                const stats = lstatSync(join(root, adapter.path));
+                if (adapter.type === "symlink") {
+                    const linkPath = join(root, adapter.path);
+                    return stats.isSymbolicLink()
+                        && typeof adapter.target === "string"
+                        && resolve(dirname(linkPath), readlinkSync(linkPath)) === resolve(root, adapter.target);
+                }
+                return adapter.type === "file" && stats.isFile();
+            } catch {
+                return false;
+            }
+        });
+        if (present.length > 0) adapters[agent] = present;
+    }
+    artifact.adapters = adapters;
+    return before !== JSON.stringify(adapters);
 };
 
 /**

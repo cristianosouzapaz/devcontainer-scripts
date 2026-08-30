@@ -6,14 +6,14 @@ readonly _VOLUMES_SUMMARY_SH_LOADED=1
 # Volumes summary - Prints the mount and auth status of the persistent auth volumes
 #
 # Provides one public function:
-#   print_volumes_summary - Logs, for the Claude Code and GitHub CLI auth
-#                            volumes, whether each is mounted and whether the
-#                            tool is actually authenticated (not just whether
-#                            credential files are present). Mount data comes
-#                            from `docker inspect` against the container's own
-#                            ID (read from /etc/hostname); auth data comes from
-#                            each tool's own status command, never by parsing
-#                            credential files directly.
+#   print_volumes_summary - Logs, for the Claude Code, Codex CLI, and GitHub
+#                            CLI auth volumes, whether each is mounted and
+#                            whether the tool is actually authenticated (not
+#                            just whether credential files are present). Mount
+#                            data comes from `docker inspect` against the
+#                            container's own ID (read from /etc/hostname); auth
+#                            data comes from each tool's own status command,
+#                            never by parsing credential files directly.
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
@@ -21,16 +21,19 @@ _HOSTNAME_PATH="${_HOSTNAME_PATH:-/etc/hostname}"
 
 declare -gA _VOLUMES_OF_INTEREST=(
 	[claude-auth-data]="Claude Code"
+	[codex-auth-data]="Codex CLI"
 	[gh-cli-auth-data]="GitHub CLI"
 )
 
 declare -gA _VOLUMES_LOGIN_HINT=(
 	[claude-auth-data]="claude auth login"
+	[codex-auth-data]="codex login"
 	[gh-cli-auth-data]="gh auth login"
 )
 
 declare -gA _VOLUMES_BINARY=(
 	[claude-auth-data]="claude"
+	[codex-auth-data]="codex"
 	[gh-cli-auth-data]="gh"
 )
 
@@ -60,6 +63,16 @@ volumes_summary_claude_identity() {
 	sed -n 's/^Email: //p' <<<"$output"
 }
 
+# volumes_summary_codex_identity: Confirms Codex has an active stored login
+# via `codex login status`. The CLI does not expose a stable account identifier,
+# so this deliberately returns a neutral description rather than parsing output.
+# Returns: 0 and prints a status description if authenticated, 1 otherwise.
+volumes_summary_codex_identity() {
+	command -v codex >/dev/null 2>&1 || return 1
+	codex login status > /dev/null 2>&1 || return 1
+	printf '%s\n' "active session"
+}
+
 # volumes_summary_gh_identity: echoes the authenticated account name via
 # `gh auth status` (never by reading hosts.yml directly).
 # Returns: 0 and prints the account name if authenticated, 1 otherwise.
@@ -77,6 +90,7 @@ volumes_summary_identity() {
 	local name="$1"
 	case "$name" in
 	claude-auth-data) volumes_summary_claude_identity ;;
+	codex-auth-data) volumes_summary_codex_identity ;;
 	gh-cli-auth-data) volumes_summary_gh_identity ;;
 	*) return 1 ;;
 	esac
@@ -84,18 +98,20 @@ volumes_summary_identity() {
 
 # ----- PUBLIC FUNCTIONS -------------------------------------------------------
 
-# print_volumes_summary: Logs the mount and auth status of the Claude Code and
-# GitHub CLI persistent auth volumes as a group — one primary line announcing
-# the count, followed by one status-carrying line per volume (indented, each
-# with its own success/warning symbol since each row is its own conclusion).
+# print_volumes_summary: Logs the mount and auth status of the Claude Code,
+# Codex CLI, and GitHub CLI persistent auth volumes as a group — one primary
+# line announcing the count, followed by one status-carrying line per volume
+# (indented, each with its own success/warning symbol since each row is its own
+# conclusion).
 # In plain-text mode a column header and aligned columns are shown; in
 # STRUCTURED_LOGS mode the header is omitted and each row is a clean sentence
 # instead, so JSON output never carries terminal-only alignment padding.
 # Silently does nothing if docker or the container's own inspect data isn't
 # available (e.g. Docker feature disabled). A volume's row is skipped
 # entirely — not shown as "not mounted" — when its CLI binary isn't
-# installed, since that means the feature was never selected rather than a
-# broken mount.
+# installed. This keeps optional tools that were not selected out of the
+# summary and avoids reporting a misleading mount status when a CLI is
+# unavailable.
 # Args: none
 # Returns: 0 always
 print_volumes_summary() {
@@ -170,4 +186,5 @@ print_volumes_summary() {
 }
 
 export -f volumes_summary_list_mounts volumes_summary_claude_identity \
-	volumes_summary_gh_identity volumes_summary_identity print_volumes_summary
+	volumes_summary_codex_identity volumes_summary_gh_identity \
+	volumes_summary_identity print_volumes_summary

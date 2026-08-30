@@ -67,9 +67,9 @@ function Add-MountsToConfig {
         Injects the required bind mounts into devcontainer.json.
     .DESCRIPTION
         Always prepends the host %USERPROFILE%\.config\.env secret mount and the
-        persistent Claude Code auth volume, then appends any per-feature mounts declared
-        in the selected entries (e.g. the GitHub CLI auth volume, when that
-        feature is selected).
+        persistent Claude Code and Codex CLI auth volumes, then appends any per-feature
+        mounts declared in the selected entries (e.g. the GitHub CLI auth volume, when
+        that feature is selected).
     .PARAMETER FilePath
         Absolute path to the devcontainer.json file to update.
     .PARAMETER SelectedEntries
@@ -80,6 +80,7 @@ function Add-MountsToConfig {
     $mounts = [System.Collections.ArrayList]@()
     [void]$mounts.Add('source=${localEnv:USERPROFILE}\.config\.env,target=/tmp/.env,type=bind,consistency=cached,readonly')
     [void]$mounts.Add('source=claude-auth-data,target=/root/.claude,type=volume')
+    [void]$mounts.Add('source=codex-auth-data,target=/root/.codex,type=volume')
     foreach ($e in ($SelectedEntries | Where-Object { -not [string]::IsNullOrWhiteSpace($_.mount) })) {
         [void]$mounts.Add($e.mount)
     }

@@ -66,6 +66,19 @@
         "url": "https://github.com/anthropics/skills"
     },
     {
+        "name": "Diagram Design",
+        "skill": "diagram-design",
+        "category": "Design & Frontend",
+        "description": "Creates editorial-quality, accessible HTML and SVG diagrams from 39 layout types, with optional brand matching.",
+        "tags": [
+            "design",
+            "diagrams",
+            "svg",
+            "visualization"
+        ],
+        "url": "https://github.com/cathrynlavery/diagram-design"
+    },
+    {
         "name": "Next.js App Router Patterns",
         "skill": "nextjs-app-router-patterns",
         "category": "Framework (Next.js/Vercel)",

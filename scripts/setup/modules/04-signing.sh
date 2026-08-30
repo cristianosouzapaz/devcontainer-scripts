@@ -25,17 +25,29 @@ source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
+# is_valid_socket: Checks whether the configured SSH agent endpoint is a Unix socket.
+# Arguments: none; reads SSH_AUTH_SOCK.
+# Returns: 0 when SSH_AUTH_SOCK points to a socket, 1 otherwise.
+is_valid_socket() {
+	[[ -S "${SSH_AUTH_SOCK:-}" ]]
+}
+
 # is_signing_configured <ssh_keygen_path>
 # Returns 0 if git is already configured for SSH signing with the expected values.
 is_signing_configured() {
 	local ssh_keygen_path="$1"
+	local configured_format configured_program configured_commit_signing configured_signing_key
 
-	[[ "$(git config --global gpg.format 2>/dev/null || true)" == "ssh" ]] || return 1
-	[[ "$(git config --global gpg.ssh.program 2>/dev/null || true)" == "${ssh_keygen_path}" ]] || return 1
-	[[ "$(git config --global commit.gpgsign 2>/dev/null || true)" == "true" ]] || return 1
+	configured_format="$(git config --global gpg.format 2>/dev/null || true)"
+	configured_program="$(git config --global gpg.ssh.program 2>/dev/null || true)"
+	configured_commit_signing="$(git config --global commit.gpgsign 2>/dev/null || true)"
+	[[ "${configured_format}" == "ssh" ]] || return 1
+	[[ "${configured_program}" == "${ssh_keygen_path}" ]] || return 1
+	[[ "${configured_commit_signing}" == "true" ]] || return 1
 
 	if [[ -n "${GIT_SIGNING_KEY:-}" ]]; then
-		[[ "$(git config --global user.signingkey 2>/dev/null || true)" == "${GIT_SIGNING_KEY}" ]] || return 1
+		configured_signing_key="$(git config --global user.signingkey 2>/dev/null || true)"
+		[[ "${configured_signing_key}" == "${GIT_SIGNING_KEY}" ]] || return 1
 	fi
 
 	return 0
@@ -63,7 +75,11 @@ configure_git_signing() {
 # ssh_signing_setup: Module entry point.
 # Fails if ssh-keygen is unavailable. Delegates to configure_git_signing
 # only when not already correctly set; clears GIT_SIGNING_KEY on exit.
+# Arguments: none.
+# Returns: 0 on success or skip; 1 when ssh-keygen is unavailable.
 ssh_signing_setup() {
+	local ssh_keygen_path
+
 	setup_error_traps
 	register_cleanup 'unset GIT_SIGNING_KEY'
 
@@ -73,7 +89,7 @@ ssh_signing_setup() {
 		return 0
 	fi
 
-	if [[ ! -S "${SSH_AUTH_SOCK:-}" ]]; then
+	if ! is_valid_socket; then
 		log_debug "SSH_AUTH_SOCK is not set or is not a valid socket; ensure the SSH agent is running and forwarded"
 		module_skip
 		return 0
@@ -84,7 +100,6 @@ ssh_signing_setup() {
 		return 1
 	}
 
-	local ssh_keygen_path
 	ssh_keygen_path="$(command -v ssh-keygen)"
 	log_debug "ssh-keygen found at: ${ssh_keygen_path}"
 
@@ -100,4 +115,4 @@ ssh_signing_setup() {
 	return 0
 }
 
-export -f is_signing_configured configure_git_signing ssh_signing_setup
+export -f is_valid_socket is_signing_configured configure_git_signing ssh_signing_setup

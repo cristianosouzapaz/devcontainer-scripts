@@ -1,10 +1,16 @@
 import { execFileSync } from "node:child_process";
 import { checkbox, Separator } from "@inquirer/prompts";
 import consola from "consola";
-import { AGENTS, handleError, loadJsonCatalog, resolvePageSize, selectTargetTool, setupConsola, TOOLS } from "../shared/utils.js";
+import { AGENTS, handleError, loadJsonCatalog, resolvePageSize, selectTargetTools, setupConsola, TOOLS } from "../shared/utils.js";
+import { ensureClaudeSkillSymlink } from "./local/index.js";
 
 /**
- * @fileoverview Interactive installer for VS Code Skills.
+ * @fileoverview Interactive installer for third-party Agent Skills.
+ *
+ * Third-party skills are always installed once into the canonical `.agents/skills`
+ * directory through the Codex target. GitHub Copilot discovers that directory directly.
+ * Claude Code receives selective symlinks under `.claude/skills` when selected. The external
+ * skills CLI owns source and integrity tracking in skills-lock.json.
  *
  * Installed at /opt/devcontainer/installer/skills/ inside the container.
  */
@@ -86,17 +92,14 @@ const groupByCategory = (entries) => {
 };
 
 /**
- * Install a skill for the specified agents.
+ * Install a skill into the canonical Agent Skills location.
  * @param {string} url - The URL of the skill repository.
  * @param {string} skill - The skill identifier.
- * @param {string[]} agents - Agent identifiers to install the skill for.
  * @throws Will throw an error if the installation fails.
  */
-const installSkillForAgents = (url, skill, agents) => {
-    for (const agent of agents) execFileSync("npx", ["skills", "add", url, "--skill", skill, "--agent", agent, "--yes"], {
-            stdio: "pipe",
-        });
-};
+const installCanonicalSkill = (url, skill) => execFileSync("npx", ["skills", "add", url, "--skill", skill, "--agent", AGENTS.codex, "--yes"], {
+    stdio: "pipe",
+});
 
 /**
  * Prompt the user to select skills to install.
@@ -126,19 +129,16 @@ const askUser = async () => {
             return;
         }
 
-        const selectedTool = await selectTargetTool();
-
-        const agentsByTool = {
-            [TOOLS.all]:     [AGENTS.copilot, AGENTS.claude],
-            [TOOLS.copilot]: [AGENTS.copilot],
-            [TOOLS.claude]:  [AGENTS.claude],
-        };
-
+        const selectedTools = await selectTargetTools();
         for (const { url, skill, requires = [] } of selectedSkills) {
             consola.start(`Installing ${skill}`);
             try {
-                installSkillForAgents(url, skill, agentsByTool[selectedTool]);
-                for (const dependency of requires) installSkillForAgents(url, dependency, agentsByTool[selectedTool]);
+                installCanonicalSkill(url, skill);
+                for (const dependency of requires) installCanonicalSkill(url, dependency);
+                if (selectedTools.includes(TOOLS.claude)) {
+                    ensureClaudeSkillSymlink(process.cwd(), skill);
+                    for (const dependency of requires) ensureClaudeSkillSymlink(process.cwd(), dependency);
+                }
                 consola.success(`${skill} installed`);
             } catch (e) {
                 consola.error(`Failed to install ${skill}: ${e instanceof Error ? e.message : String(e)}`);

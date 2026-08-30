@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# MODULE_NAME="claude-ai"
-# MODULE_DESCRIPTION="Installs the Claude CLI and configures the Code status line"
-# MODULE_ENTRY="claude_ai_setup"
+# MODULE_NAME="coding-agents"
+# MODULE_DESCRIPTION="Installs and configures the supported coding agent CLIs"
+# MODULE_ENTRY="coding_agents_setup"
 
-# Claude AI CLI installer and status-line configurator module
+# Coding agent CLI installer and configurator module
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -15,11 +15,14 @@ source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
 
 # This module uses the following configuration variables:
 # - CLAUDE_CONFIG_DIR (optional, defaults to /root/.claude)
+# - CODEX_HOME (optional, defaults to /root/.codex)
 
 # ----- CONSTANTS --------------------------------------------------------------
 
 readonly _CLAUDE_CLI_COMMAND="claude"
 readonly _CLAUDE_INSTALL_NAME="@anthropic-ai/claude-code"
+readonly _CODEX_CLI_COMMAND="codex"
+readonly _CODEX_INSTALL_NAME="@openai/codex"
 
 # Path constants: NOT readonly — test seams per bash rules.
 _CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/root/.claude}"
@@ -27,6 +30,8 @@ _STATUSLINE_SOURCE="/opt/devcontainer/setup/assets/statusline-command.sh"
 _STATUSLINE_DEST="${_CLAUDE_CONFIG_DIR}/statusline-command.sh"
 _STATUSLINE_SETTINGS="${_CLAUDE_CONFIG_DIR}/settings.json"
 _STATUSLINE_HASH_FILE="${_CLAUDE_CONFIG_DIR}/.statusline-hash"
+_CODEX_CONFIG_DIR="${CODEX_HOME:-/root/.codex}"
+_CODEX_SETTINGS="${_CODEX_CONFIG_DIR}/config.toml"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
@@ -48,6 +53,51 @@ install_claude_cli() {
 		return 1
 	fi
 	stop_spinner 0
+}
+
+# install_codex_cli: Installs Codex CLI via npm if not already present.
+# Fails hard on install failure.
+install_codex_cli() {
+	local exit_code
+	check_command "${_CODEX_CLI_COMMAND}" && {
+		log_debug "Codex CLI already installed, skipping"
+		return 0
+	}
+	start_spinner "Installing Codex CLI (${_CODEX_INSTALL_NAME})"
+	exit_code=0
+	spinner_stream log_debug npm install -g "${_CODEX_INSTALL_NAME}" || exit_code=$?
+	if [[ $exit_code -ne 0 ]]; then
+		push_error "$FATAL_ERROR" "${LINENO}" "install_codex_cli" \
+			"npm install -g ${_CODEX_INSTALL_NAME}" "Codex CLI installation failed"
+		stop_spinner 1
+		return 1
+	fi
+	stop_spinner 0
+}
+
+# configure_codex_auth_storage: Ensures Codex stores credentials in auth.json
+# under CODEX_HOME, which is mounted on a persistent Docker volume. Rewrites only
+# the top-level cli_auth_credentials_store setting and preserves all other config.
+configure_codex_auth_storage() {
+	local tmp_file
+
+	mkdir -p "${_CODEX_CONFIG_DIR}"
+	if [[ -f "${_CODEX_SETTINGS}" ]] \
+		&& grep -Eq '^cli_auth_credentials_store[[:space:]]*=[[:space:]]*"file"[[:space:]]*(#.*)?$' "${_CODEX_SETTINGS}"; then
+		log_debug "Codex credential storage already configured for file persistence, skipping"
+		return 0
+	fi
+
+	tmp_file=$(mktemp)
+	# TOML keys after a table header belong to that table. Keep this setting at the
+	# start of the file so it is always a root-level Codex configuration key.
+	printf '%s\n' 'cli_auth_credentials_store = "file"' > "${tmp_file}"
+	if [[ -f "${_CODEX_SETTINGS}" ]]; then
+		printf '\n' >> "${tmp_file}"
+		grep -Ev '^cli_auth_credentials_store[[:space:]]*=' "${_CODEX_SETTINGS}" >> "${tmp_file}" || true
+	fi
+	mv "${tmp_file}" "${_CODEX_SETTINGS}"
+	log_detail "Configured Codex credentials for persistent file storage"
 }
 
 # merge_statusline_settings: Merges the statusLine key into settings.json.
@@ -127,14 +177,16 @@ configure_statusline() {
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# claude_ai_setup: Module entry point. Ensures the Claude CLI is installed
-# and that the status-line script is deployed to the Claude config dir with
-# its settings.json entry merged in. Both steps are idempotent and safe to
-# re-run on every container rebuild.
-claude_ai_setup() {
+# coding_agents_setup: Module entry point. Ensures Claude Code and Codex CLI
+# are installed and configured. Every step is idempotent and safe to re-run on
+# container rebuilds.
+coding_agents_setup() {
 	setup_error_traps
 	install_claude_cli || return 1
 	configure_statusline
+	install_codex_cli || return 1
+	configure_codex_auth_storage
 }
 
-export -f install_claude_cli merge_statusline_settings configure_statusline claude_ai_setup
+export -f install_claude_cli install_codex_cli configure_codex_auth_storage \
+	merge_statusline_settings configure_statusline coding_agents_setup

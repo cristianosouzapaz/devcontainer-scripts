@@ -3,25 +3,29 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
 import inquirer from "inquirer";
-import { buildTagsStr, formatVersionHint, handleError, loadJsonCatalog, readLockFile, resolvePageSize, selectTargetTool, setupConsola, TOOLS, writeLockFile, writeWithConflict } from "../shared/utils.js";
+import { buildTagsStr, formatVersionHint, getArtifactVersion, handleError, loadJsonCatalog, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, selectTargetTools, setupConsola, TOOLS, writeLockFile, writeWithConflict } from "../shared/utils.js";
+import { ensureClaudeRuleSymlink, ensureClaudeSkillSymlink } from "../skills/local/index.js";
 
 /**
  * @fileoverview Interactive installer for agent instruction and prompt templates.
  *
- * Source-of-truth strategy:
+ * Canonical source and adapter strategy:
  *
- *   Instructions:
- *     Claude / All  → .claude/rules/<name>.md                        (Copilot and Claude Code both read this natively)
- *     Copilot only  → .github/instructions/<name>.instructions.md
+ *   Canonical skills (always):
+ *     Instructions → .agents/skills/<instruction>/SKILL.md
+ *     Commands     → .agents/skills/<command>/SKILL.md
  *
- *   Prompts:
- *     Copilot / All → .github/prompts/<name>.prompt.md               (canonical)
- *     All           → .claude/commands/<name>.md                     (wrapper referencing .github/prompts/, no version)
- *     Claude only   → .claude/commands/<name>.md                     (full content, self-contained)
+ *   Native adapters (only for selected agents):
+ *     Claude Code    → selective symlinks in .claude/rules/ and .claude/skills/
+ *     GitHub Copilot → .github/instructions/ and .github/prompts/
+ *     Codex          → no adapter; reads AGENTS.md and .agents/skills directly
  *
- * On install, updates template-lock.json in the project root with the written paths and versions.
- * Wrapper files (.claude/commands/ under tool=all) are not tracked since they carry no version.
- * Version display in the UI is read from template-lock.json (single source of truth for installed versions).
+ * Claude adapters are symlinks to the canonical skill, so there is never a second editable
+ * copy. Copilot still receives materialized native adapters because its path-specific
+ * instruction and prompt formats are not Agent Skills.
+ *
+ * On install, updates template-lock.json with each canonical asset's version and the
+ * native adapters materialized for it. Version display in the UI reads that manifest.
  *
  * Installed at /opt/devcontainer/installer/agents/ inside the container.
  */
@@ -33,7 +37,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const BASE_CATALOG_KEYS = ["name", "filename", "version", "templateFile"];
-const COPILOT_INSTRUCTION_KEYS = ["applyTo", "name"];
 const COPILOT_PROMPT_KEYS = ["agent", "name"];
 const INSTRUCTIONS_FILE_URL = new URL("./instructions.json", import.meta.url);
 const PROMPTS_FILE_URL = new URL("./prompts.json", import.meta.url);
@@ -91,6 +94,28 @@ const buildFrontmatter = (fields, body) => {
  */
 const toClaudeRuleFilename = (instructionFilename) => instructionFilename.replace(".instructions.md", ".md");
 
+/**
+ * Derive a portable Agent Skill directory name from a catalog filename.
+ * @param {string} filename - A catalog filename such as "bash.instructions.md".
+ * @returns {string}
+ */
+const toSkillName = (filename) => filename
+    .replace(/\.instructions\.md$/, "")
+    .replace(/\.prompt\.md$/, "")
+    .replace(/\.md$/, "");
+
+const claudeRuleAdapter = (skillName, filename) => ({
+    path: join(".claude", "rules", filename),
+    type: "symlink",
+    target: join(".agents", "skills", skillName, "SKILL.md"),
+});
+
+const claudeSkillAdapter = (skillName) => ({
+    path: join(".claude", "skills", skillName),
+    type: "symlink",
+    target: join(".agents", "skills", skillName),
+});
+
 // ─── Claude content builders ─────────────────────────────────────────────────
 
 /**
@@ -122,57 +147,38 @@ const readTemplateDescription = (templateFile) => {
 };
 
 /**
- * Build the content for a .claude/rules/ file from a Copilot instruction template.
- * Strips Copilot-specific frontmatter keys (name), preserving description and body.
- * Translates `applyTo` into Claude Code's `paths:` field, the only field Claude Code
- * reads for conditional rule loading. When `applyTo` targets every file (`**`), `paths`
- * is omitted so the rule loads unconditionally at session start, matching Claude Code's
- * own convention for rules without `paths:`.
+ * Build the portable SKILL.md representation of an instruction or command template.
+ * Instruction skills retain Claude's optional `paths` metadata so the same physical file
+ * can be loaded through a `.claude/rules` symlink. Codex requires `name` and `description`
+ * and ignores additional frontmatter fields.
  *
  * @param {string} templateContent
+ * @param {string} skillName
+ * @param {boolean} isInstruction
  * @returns {string}
  */
-const buildClaudeRuleContent = (templateContent) => {
+const buildCanonicalSkillContent = (templateContent, skillName, isInstruction = false) => {
     const { raw, body } = parseFrontmatter(templateContent);
-    const filtered = Object.fromEntries(Object.entries(raw).filter(([k]) => !COPILOT_INSTRUCTION_KEYS.includes(k)));
-
-    if (raw.applyTo && !appliesToAllFiles(raw.applyTo)) {
-        filtered.paths = [raw.applyTo];
-    }
-
-    return buildFrontmatter(filtered, body);
+    const fields = { name: skillName, description: raw.description ?? `Use the ${skillName} workflow.` };
+    if (isInstruction && raw.applyTo && !appliesToAllFiles(raw.applyTo)) fields.paths = [raw.applyTo];
+    return buildFrontmatter(fields, body);
 };
 
 /**
- * Build a .claude/commands/ wrapper that delegates to the canonical .github/prompts/ file.
- * Used in the All scenario. Has no version since .github/prompts/ tracks it.
- * 
- * @param {object} item - Prompt catalog entry.
- * @param {Record<string, string>} raw - Parsed frontmatter from the template.
- * @returns {string}
+ * Install an Agent Skill source in the layout shared by Codex, Copilot, and Claude Code.
+ * @param {string} destRoot - Project root directory.
+ * @param {string} skillName - Portable Agent Skill name.
+ * @param {string} content - Canonical SKILL.md content.
+ * @param {string} version - Catalog version.
+ * @param {string|null} installedVersion - Version recorded for this skill in the lock file.
+ * @returns {Promise<{ path: string, written: boolean }>}
  */
-const buildClaudeCommandWrapper = (item, raw) => {
-    const lines = ["---"];
-    if (raw.description) lines.push(`description: ${raw.description}`);
-    if (raw["argument-hint"]) lines.push(`argument-hint: ${raw["argument-hint"]}`);
-    lines.push("---", "", `Follow @../../.github/prompts/${item.filename}.`);
-
-    return lines.join("\n") + "\n";
-};
-
-/**
- * Build a self-contained .claude/commands/ file for Claude-only installs.
- * Strips Copilot-specific frontmatter keys. Claude Code automatically appends
- * the user's argument when $ARGUMENTS is absent from the content.
- *
- * @param {string} templateContent
- * @returns {string}
- */
-const buildClaudeCommandFull = (templateContent) => {
-    const { raw, body } = parseFrontmatter(templateContent);
-    const filtered = Object.fromEntries(Object.entries(raw).filter(([k]) => !COPILOT_PROMPT_KEYS.includes(k)));
-
-    return buildFrontmatter(filtered, body);
+const installCanonicalSkill = async (destRoot, skillName, content, version, installedVersion, writer = writeWithConflict) => {
+    const skillDir = join(destRoot, ".agents", "skills", skillName);
+    const relPath = join(".agents", "skills", skillName, "SKILL.md");
+    mkdirSync(skillDir, { recursive: true });
+    const written = await writer(join(skillDir, "SKILL.md"), content, `${skillName}/SKILL.md`, version, installedVersion);
+    return { path: relPath, written };
 };
 
 // ─── Catalog loaders ─────────────────────────────────────────────────────────
@@ -202,97 +208,158 @@ const loadCatalog = (url, extraKeys, catalogName) => {
 // ─── Installers ──────────────────────────────────────────────────────────────
 
 /**
- * Write instruction files to the appropriate directory based on the selected tool.
- * Returns a map of written relative paths to their installed versions.
+ * Write canonical instruction skills and the selected agents' native instruction adapters.
+ * Records the canonical assets and any native adapters that were materialized.
  *
- * Claude / All  → .claude/rules/<basename>.md
- * Copilot only  → .github/instructions/<filename>
+ * Every selected instruction has a canonical `.agents/skills/<name>/SKILL.md`.
+ * Claude receives a path-aware `.claude/rules/` adapter; Copilot receives its
+ * `.github/instructions/` adapter. Codex reads the canonical skill directly.
  *
  * @param {object[]} instructions - Selected instruction entries.
  * @param {string} destRoot - Project root directory.
- * @param {string} tool - One of TOOLS.copilot | TOOLS.claude | TOOLS.all.
+ * @param {Set<string>} tools - Selected values from TOOLS.
  * @param {object} lock - Parsed template-lock.json used to resolve the currently installed version.
- * @returns {Promise<Record<string, string>>}
+ * @param {{ writer?: typeof writeWithConflict }} [options] - File writer override for tests.
+ * @returns {Promise<boolean>} Whether the lock manifest changed.
  */
-const installInstructions = async (instructions, destRoot, tool, lock) => {
-    const written = {};
+export const installInstructions = async (instructions, destRoot, tools, lock, options = {}) => {
+    const changedPaths = new Set();
+    const writer = options.writer ?? writeWithConflict;
+    const managedPaths = new Set(instructions
+        .map((item) => join(".agents", "skills", toSkillName(item.filename), "SKILL.md"))
+        .filter((path) => lock.artifacts[path]));
 
-    if (tool === TOOLS.claude || tool === TOOLS.all) {
-        const rulesDir = join(destRoot, ".claude", "rules");
-        mkdirSync(rulesDir, { recursive: true });
-        for (const item of instructions) {
-            const template = readFileSync(join(__dirname, "templates", item.templateFile), "utf8");
-            const content = buildClaudeRuleContent(template);
-            const filename = toClaudeRuleFilename(item.filename);
-            const relPath = join(".claude", "rules", filename);
-            const ok = await writeWithConflict(join(rulesDir, filename), content, filename, item.version, lock.instructions[relPath] ?? null);
-            if (ok) written[relPath] = item.version;
+    for (const item of instructions) {
+        const template = readFileSync(join(__dirname, "templates", item.templateFile), "utf8");
+        const skillName = toSkillName(item.filename);
+        const canonicalPath = join(".agents", "skills", skillName, "SKILL.md");
+        const { written: canonicalWritten } = await installCanonicalSkill(
+            destRoot,
+            skillName,
+            buildCanonicalSkillContent(template, skillName, true),
+            item.version,
+            getArtifactVersion(lock, canonicalPath),
+            writer
+        );
+        if (canonicalWritten) {
+            recordArtifact(lock, canonicalPath, { kind: "instruction", version: item.version });
+            managedPaths.add(canonicalPath);
+            changedPaths.add(canonicalPath);
         }
     }
 
-    if (tool === TOOLS.copilot) {
+    if (tools.has(TOOLS.claude)) {
+        for (const item of instructions) {
+            const skillName = toSkillName(item.filename);
+            const canonicalPath = join(".agents", "skills", skillName, "SKILL.md");
+            if (!managedPaths.has(canonicalPath)) continue;
+            const adapter = claudeRuleAdapter(skillName, toClaudeRuleFilename(item.filename));
+            ensureClaudeRuleSymlink(destRoot, skillName, toClaudeRuleFilename(item.filename));
+            recordArtifact(lock, canonicalPath, { kind: "instruction", adapters: { claude: [adapter] } });
+            changedPaths.add(canonicalPath);
+        }
+    }
+
+    if (tools.has(TOOLS.copilot)) {
         const instructionsDir = join(destRoot, ".github", "instructions");
         mkdirSync(instructionsDir, { recursive: true });
         for (const item of instructions) {
             const content = readFileSync(join(__dirname, "templates", item.templateFile), "utf8");
             const relPath = join(".github", "instructions", item.filename);
-            const ok = await writeWithConflict(join(instructionsDir, item.filename), content, item.filename, item.version, lock.instructions[relPath] ?? null);
-            if (ok) written[relPath] = item.version;
+            const canonicalPath = join(".agents", "skills", toSkillName(item.filename), "SKILL.md");
+            if (!managedPaths.has(canonicalPath)) continue;
+            const ok = await writer(join(instructionsDir, item.filename), content, item.filename, item.version, getArtifactVersion(lock, canonicalPath));
+            if (ok) {
+                recordArtifact(lock, canonicalPath, { kind: "instruction", version: item.version, adapters: { copilot: [{ path: relPath, type: "file" }] } });
+                changedPaths.add(canonicalPath);
+            }
         }
     }
 
-    return written;
+    for (const path of managedPaths) {
+        if (reconcileArtifactAdapters(lock, destRoot, path)) changedPaths.add(path);
+    }
+
+    return changedPaths.size > 0;
 };
 
 /**
- * Write prompt files to the appropriate directories based on the selected tool.
- * Returns a map of written relative paths to their installed versions.
- * Wrapper files (tool = all) are not tracked since they carry no version.
+ * Write canonical command skills and Copilot's native prompt adapters.
+ * Records the canonical assets and any native adapters that were materialized.
  *
- * Copilot / All  → .github/prompts/<filename>              (canonical, Copilot-native format)
- * All            → .claude/commands/<commandFilename>      (wrapper referencing .github/prompts/)
- * Claude only    → .claude/commands/<commandFilename>      (full content, self-contained)
+ * Every selected command has a canonical `.agents/skills/<name>/SKILL.md`.
+ * Claude receives a selective symlink in `.claude/skills/` and Copilot receives its
+ * `.github/prompts/` adapter. Codex reads the canonical skill directly.
  *
  * @param {object[]} prompts - Selected prompt entries.
  * @param {string} destRoot - Project root directory.
- * @param {string} tool - One of TOOLS.copilot | TOOLS.claude | TOOLS.all.
+ * @param {Set<string>} tools - Selected values from TOOLS.
  * @param {object} lock - Parsed template-lock.json used to resolve the currently installed version.
- * @returns {Promise<Record<string, string>>}
+ * @param {{ writer?: typeof writeWithConflict }} [options] - File writer override for tests.
+ * @returns {Promise<boolean>} Whether the lock manifest changed.
  */
-const installPrompts = async (prompts, destRoot, tool, lock) => {
-    const written = {};
+export const installPrompts = async (prompts, destRoot, tools, lock, options = {}) => {
+    const changedPaths = new Set();
+    const writer = options.writer ?? writeWithConflict;
+    const managedPaths = new Set(prompts
+        .map((item) => join(".agents", "skills", toSkillName(item.commandFilename), "SKILL.md"))
+        .filter((path) => lock.artifacts[path]));
     const templateCache = new Map(
         prompts.map((item) => [item.templateFile, readFileSync(join(__dirname, "templates", item.templateFile), "utf8")])
     );
 
-    if (tool === TOOLS.copilot || tool === TOOLS.all) {
+    for (const item of prompts) {
+        const template = templateCache.get(item.templateFile);
+        const skillName = toSkillName(item.commandFilename);
+        const canonicalPath = join(".agents", "skills", skillName, "SKILL.md");
+        const { written: canonicalWritten } = await installCanonicalSkill(
+            destRoot,
+            skillName,
+            buildCanonicalSkillContent(template, skillName),
+            item.version,
+            getArtifactVersion(lock, canonicalPath),
+            writer
+        );
+        if (canonicalWritten) {
+            recordArtifact(lock, canonicalPath, { kind: "prompt", version: item.version });
+            managedPaths.add(canonicalPath);
+            changedPaths.add(canonicalPath);
+        }
+    }
+
+    if (tools.has(TOOLS.copilot)) {
         const promptsDir = join(destRoot, ".github", "prompts");
         mkdirSync(promptsDir, { recursive: true });
         for (const item of prompts) {
             const content = templateCache.get(item.templateFile);
             const relPath = join(".github", "prompts", item.filename);
-            const ok = await writeWithConflict(join(promptsDir, item.filename), content, item.filename, item.version, lock.prompts[relPath] ?? null);
-            if (ok) written[relPath] = item.version;
+            const canonicalPath = join(".agents", "skills", toSkillName(item.commandFilename), "SKILL.md");
+            if (!managedPaths.has(canonicalPath)) continue;
+            const ok = await writer(join(promptsDir, item.filename), content, item.filename, item.version, getArtifactVersion(lock, canonicalPath));
+            if (ok) {
+                recordArtifact(lock, canonicalPath, { kind: "prompt", version: item.version, adapters: { copilot: [{ path: relPath, type: "file" }] } });
+                changedPaths.add(canonicalPath);
+            }
         }
     }
 
-    if (tool === TOOLS.claude || tool === TOOLS.all) {
-        const commandsDir = join(destRoot, ".claude", "commands");
-        mkdirSync(commandsDir, { recursive: true });
+    if (tools.has(TOOLS.claude)) {
         for (const item of prompts) {
-            const template = templateCache.get(item.templateFile);
-            const { raw } = parseFrontmatter(template);
-            const content = tool === TOOLS.all
-                ? buildClaudeCommandWrapper(item, raw)
-                : buildClaudeCommandFull(template);
-            const version = tool === TOOLS.all ? null : item.version;
-            const relPath = join(".claude", "commands", item.commandFilename);
-            const ok = await writeWithConflict(join(commandsDir, item.commandFilename), content, item.commandFilename, version, version ? (lock.prompts[relPath] ?? null) : null);
-            if (ok && version) written[relPath] = version;
+            const skillName = toSkillName(item.commandFilename);
+            const canonicalPath = join(".agents", "skills", skillName, "SKILL.md");
+            if (!managedPaths.has(canonicalPath)) continue;
+            const adapter = claudeSkillAdapter(skillName);
+            ensureClaudeSkillSymlink(destRoot, skillName);
+            recordArtifact(lock, canonicalPath, { kind: "prompt", adapters: { claude: [adapter] } });
+            changedPaths.add(canonicalPath);
         }
     }
 
-    return written;
+    for (const path of managedPaths) {
+        if (reconcileArtifactAdapters(lock, destRoot, path)) changedPaths.add(path);
+    }
+
+    return changedPaths.size > 0;
 };
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -309,9 +376,8 @@ const askUser = async () => {
         const lock = readLockFile(destRoot);
 
         const instructionChoices = instructions.map(({ filename, version, name, tags, templateFile }) => {
-            const claudeRelPath = join(".claude", "rules", toClaudeRuleFilename(filename));
-            const copilotRelPath = join(".github", "instructions", filename);
-            const installedVersion = lock.instructions[claudeRelPath] ?? lock.instructions[copilotRelPath] ?? null;
+            const canonicalRelPath = join(".agents", "skills", toSkillName(filename), "SKILL.md");
+            const installedVersion = getArtifactVersion(lock, canonicalRelPath);
             const versionStr = formatVersionHint(installedVersion, version);
             return {
                 name: `${name} ${versionStr} ${buildTagsStr(tags)}`,
@@ -321,9 +387,8 @@ const askUser = async () => {
         });
 
         const promptChoices = prompts.map(({ filename, commandFilename, version, name, tags, templateFile }) => {
-            const copilotRelPath = join(".github", "prompts", filename);
-            const claudeRelPath = join(".claude", "commands", commandFilename);
-            const installedVersion = lock.prompts[copilotRelPath] ?? lock.prompts[claudeRelPath] ?? null;
+            const canonicalRelPath = join(".agents", "skills", toSkillName(commandFilename), "SKILL.md");
+            const installedVersion = getArtifactVersion(lock, canonicalRelPath);
             const versionStr = formatVersionHint(installedVersion, version);
             return {
                 name: `${name} ${versionStr} ${buildTagsStr(tags)}`,
@@ -353,24 +418,22 @@ const askUser = async () => {
             return;
         }
 
-        const selectedTool = await selectTargetTool();
+        const selectedTools = new Set(await selectTargetTools());
         const writtenFlags = [];
 
         if (selectedInstructions.length > 0) {
-            const writtenInstructions = await installInstructions(selectedInstructions, destRoot, selectedTool, lock);
-            Object.assign(lock.instructions, writtenInstructions);
-            writtenFlags.push(Object.keys(writtenInstructions).length > 0);
+            writtenFlags.push(await installInstructions(selectedInstructions, destRoot, selectedTools, lock));
         }
         if (selectedPrompts.length > 0) {
-            const writtenPrompts = await installPrompts(selectedPrompts, destRoot, selectedTool, lock);
-            Object.assign(lock.prompts, writtenPrompts);
-            writtenFlags.push(Object.keys(writtenPrompts).length > 0);
+            writtenFlags.push(await installPrompts(selectedPrompts, destRoot, selectedTools, lock));
         }
 
-        if (writtenFlags.some(Boolean)) writeLockFile(destRoot, lock);
+        if (writtenFlags.some(Boolean)) {
+            writeLockFile(destRoot, lock);
+        }
     } catch (e) {
         handleError(e);
     }
 };
 
-await askUser();
+if (import.meta.url === `file://${process.argv[1]}`) await askUser();

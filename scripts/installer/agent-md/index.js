@@ -3,27 +3,25 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
 import { checkbox } from "@inquirer/prompts";
-import { formatVersionHint, handleError, loadJsonCatalog, readLockFile, resolvePageSize, selectTargetTool, setupConsola, TOOLS, writeLockFile } from "../shared/utils.js";
-import { installLocalSkills } from "../skills/local/index.js";
+import { formatVersionHint, handleError, loadJsonCatalog, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, selectTargetTools, setupConsola, TOOLS, writeLockFile } from "../shared/utils.js";
+import { ensureClaudeSkillSymlink, installLocalSkills } from "../skills/local/index.js";
 
 /**
- * @fileoverview Interactive installer for CLAUDE.md / AGENTS.md instruction blocks.
+ * @fileoverview Interactive installer for canonical AGENTS.md instruction blocks.
  *
  * Each catalog entry is a self-contained markdown block, wrapped in an HTML marker on
  * install so subsequent runs can find and update it in place instead of duplicating it.
  *
- * Routing (no manual file choice — determined entirely by the selected tool):
- *   claude  → blocks are upserted into CLAUDE.md (created if missing). AGENTS.md untouched.
- *   copilot → blocks are upserted into AGENTS.md (created if missing). CLAUDE.md untouched.
- *   all     → blocks are upserted into AGENTS.md (created if missing). CLAUDE.md becomes a
- *             pointer file: created with a single "@AGENTS.md" line if missing, or that line
- *             is prepended if the file exists without it.
+ * All blocks are upserted into AGENTS.md, the canonical project instruction file, regardless
+ * of the selected coding agent. When Claude Code is selected, CLAUDE.md is a small adapter
+ * that imports AGENTS.md. This leaves Codex, GitHub Copilot, and future coding agents with
+ * one shared source of truth.
  *
  * The catalog's "targets" field is declarative metadata only (documents which files a block
  * is valid in) — it does not filter the picker or affect routing.
  *
- * On install, updates template-lock.json's "mdBlocks" section (nested by destination file)
- * with the installed block versions. The pointer line in CLAUDE.md (all mode) is not versioned.
+ * On install, updates template-lock.json's "mdBlocks.AGENTS.md" section and records local
+ * skills with the native adapters materialized for them. The CLAUDE.md pointer is unversioned.
  *
  * Installed at /opt/devcontainer/installer/agent-md/ inside the container.
  */
@@ -116,7 +114,7 @@ export const upsertBlock = (content, key, version, body) => {
 // ─── Pointer file helpers ────────────────────────────────────────────────────
 
 /**
- * Ensure CLAUDE.md exists and starts with the "@AGENTS.md" pointer line, in "all" mode.
+ * Ensure CLAUDE.md exists and starts with the "@AGENTS.md" pointer line.
  * Creates the file with just the pointer line if missing; prepends the line if the file
  * exists without it. Logs every action taken via consola.info.
  * @param {string} claudeMdPath - Absolute path to CLAUDE.md.
@@ -145,18 +143,18 @@ export const ensureClaudePointer = (claudeMdPath) => {
  * Creates the file if it does not exist.
  * @param {object[]} blocks - Selected catalog entries, in catalog order.
  * @param {string} destPath - Absolute path to the destination file.
- * @param {string} destFilename - "CLAUDE.md" or "AGENTS.md".
+ * @param {string} destFilename - Destination file name for logging.
  * @returns {Record<string, string>} Map of block key to installed version.
  */
 export const installBlocks = (blocks, destPath, destFilename) => {
-    let content = existsSync(destPath) ? readFileSync(destPath, "utf8") : "";
-    const written = {};
-
-    for (const { key, version, templateFile } of blocks) {
+    const initialContent = existsSync(destPath) ? readFileSync(destPath, "utf8") : "";
+    const { content, written } = blocks.reduce((result, { key, version, templateFile }) => {
         const body = readFileSync(join(__dirname, "templates", templateFile), "utf8");
-        content = upsertBlock(content, key, version, body);
-        written[key] = version;
-    }
+        return {
+            content: upsertBlock(result.content, key, version, body),
+            written: { ...result.written, [key]: version },
+        };
+    }, { content: initialContent, written: {} });
 
     writeFileSync(destPath, content, "utf8");
     consola.success(`${destFilename} updated`);
@@ -166,9 +164,9 @@ export const installBlocks = (blocks, destPath, destFilename) => {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 /**
- * Prompt the user to select agent-md blocks, then install them into CLAUDE.md and/or
- * AGENTS.md depending on the selected target tool. Updates template-lock.json's mdBlocks
- * section on completion.
+ * Prompt the user to select agent-md blocks, then install them into canonical AGENTS.md.
+ * A Claude Code selection additionally creates the CLAUDE.md pointer and skills adapter.
+ * Updates template-lock.json's mdBlocks section on completion.
  */
 const askUser = async () => {
     try {
@@ -178,10 +176,8 @@ const askUser = async () => {
         if (!lock.mdBlocks) lock.mdBlocks = {};
 
         const choices = catalog.map((entry) => {
-            const claudeVersion = lock.mdBlocks["CLAUDE.md"]?.[entry.key] ?? null;
             const agentsVersion = lock.mdBlocks["AGENTS.md"]?.[entry.key] ?? null;
-            const installedVersion = claudeVersion ?? agentsVersion;
-            const versionStr = formatVersionHint(installedVersion, entry.version);
+            const versionStr = formatVersionHint(agentsVersion, entry.version);
             return {
                 name: `${entry.name} ${versionStr}`,
                 value: entry,
@@ -200,31 +196,39 @@ const askUser = async () => {
             return;
         }
 
-        const selectedTool = await selectTargetTool();
+        const selectedTools = await selectTargetTools();
         const claudeMdPath = join(destRoot, "CLAUDE.md");
         const agentsMdPath = join(destRoot, "AGENTS.md");
+        const written = installBlocks(selectedBlocks, agentsMdPath, "AGENTS.md");
+        lock.mdBlocks["AGENTS.md"] = { ...lock.mdBlocks["AGENTS.md"], ...written };
 
-        if (selectedTool === TOOLS.claude) {
-            const written = installBlocks(selectedBlocks, claudeMdPath, "CLAUDE.md");
-            lock.mdBlocks["CLAUDE.md"] = { ...lock.mdBlocks["CLAUDE.md"], ...written };
-        }
-
-        if (selectedTool === TOOLS.copilot) {
-            const written = installBlocks(selectedBlocks, agentsMdPath, "AGENTS.md");
-            lock.mdBlocks["AGENTS.md"] = { ...lock.mdBlocks["AGENTS.md"], ...written };
-        }
-
-        if (selectedTool === TOOLS.all) {
-            const written = installBlocks(selectedBlocks, agentsMdPath, "AGENTS.md");
-            lock.mdBlocks["AGENTS.md"] = { ...lock.mdBlocks["AGENTS.md"], ...written };
-            ensureClaudePointer(claudeMdPath);
-        }
+        if (selectedTools.includes(TOOLS.claude)) ensureClaudePointer(claudeMdPath);
 
         const skillKeys = [...new Set(selectedBlocks.flatMap((block) => block.skills ?? []))];
         if (skillKeys.length > 0) {
-            if (!lock.skills) lock.skills = {};
             const written = await installLocalSkills(skillKeys, destRoot, lock);
-            lock.skills = { ...lock.skills, ...written };
+            for (const [key, version] of Object.entries(written)) {
+                recordArtifact(lock, join(".agents", "skills", key, "SKILL.md"), { kind: "skill", version });
+            }
+        }
+
+        if (selectedTools.includes(TOOLS.claude)) {
+            for (const key of skillKeys) {
+                const path = join(".agents", "skills", key, "SKILL.md");
+                if (!lock.artifacts[path]) continue;
+                ensureClaudeSkillSymlink(destRoot, key);
+                recordArtifact(lock, path, {
+                    kind: "skill",
+                    adapters: {
+                        claude: [{
+                            path: join(".claude", "skills", key),
+                            type: "symlink",
+                            target: join(".agents", "skills", key),
+                        }],
+                    },
+                });
+                reconcileArtifactAdapters(lock, destRoot, path);
+            }
         }
 
         writeLockFile(destRoot, lock);

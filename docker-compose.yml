@@ -11,3 +11,5 @@ volumes:
   project-name-workspace:
   claude-auth-data:
     name: claude-auth-data
+  codex-auth-data:
+    name: codex-auth-data
