@@ -3,12 +3,11 @@
 [[ -n "${_LOADER_SH_LOADED:-}" ]] && return 0
 readonly _LOADER_SH_LOADED=1
 
-# Shared utilities loader - Sources all shared utility scripts
+# Single entry point for the shared utility layer: modules source this, never an
+# individual shared file. Also sets the container's environment-variable defaults.
 
-# Get the directory of this script
 readonly SHARED_DIR="$(dirname "${BASH_SOURCE[0]}")"
 
-# Source all shared utilities
 source "$SHARED_DIR/env-loader.sh"
 source "$SHARED_DIR/error-handler.sh"
 source "$SHARED_DIR/logging.sh"
@@ -20,6 +19,11 @@ source "$SHARED_DIR/volumes-summary.sh"
 
 # ----- ENVIRONMENT VARIABLES --------------------------------------------------
 
+# AGENT_ASSETS_REF       devcontainer-scripts git ref that sync-agent-assets.sh fetches the
+#                         machine-wide first-party agent assets from. Falls back to SCRIPTS_REF,
+#                         then "main". Not used by the setup modules.
+#                         Default: (empty -> SCRIPTS_REF -> main)
+#
 # AUTO_UPDATE             Automatically fetch and pull updates from remote repository (true/false)
 #                         Default: false
 #
@@ -76,6 +80,7 @@ source "$SHARED_DIR/volumes-summary.sh"
 #                         setup, making <NAME> available to all container processes at runtime.
 #                         Example: PERSIST_CONTEXT7_API_KEY=xxx → CONTEXT7_API_KEY in /etc/environment
 
+AGENT_ASSETS_REF="${AGENT_ASSETS_REF:-}"
 AUTO_UPDATE="${AUTO_UPDATE:-false}"
 CLEAN_CREDENTIALS="${CLEAN_CREDENTIALS:-false}"
 DEBUG_MODE="${DEBUG_MODE:-false}"

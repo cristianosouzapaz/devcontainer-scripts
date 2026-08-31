@@ -37,6 +37,15 @@ declare -gA _VOLUMES_BINARY=(
 	[gh-cli-auth-data]="gh"
 )
 
+# Alphabetical iteration order — associative-array key order is hash-dependent,
+# and every place volumes are listed (docker-compose.yml, devcontainer.json
+# mounts) is kept sorted. Keep this list sorted when adding a volume.
+declare -ga _VOLUMES_ORDER=(
+	claude-auth-data
+	codex-auth-data
+	gh-cli-auth-data
+)
+
 # ----- INTERNAL HELPERS -------------------------------------------------------
 
 # Print "<volume-name>|<destination>" for every named volume mounted on the
@@ -126,7 +135,7 @@ print_volumes_summary() {
 		return 0
 	fi
 
-	for name in "${!_VOLUMES_OF_INTEREST[@]}"; do
+	for name in "${_VOLUMES_ORDER[@]}"; do
 		binary="${_VOLUMES_BINARY[$name]}"
 		command -v "$binary" >/dev/null 2>&1 || continue
 

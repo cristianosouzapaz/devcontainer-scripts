@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
 import { checkbox } from "@inquirer/prompts";
-import { buildInstallCommand, buildTagsStr, CLEAR_ON_DONE, copyToClipboard, formatVersionHint, handleError, loadJsonCatalog, readConfigInstalledVersion, readLockFile, resolvePageSize, selectUntilConfirmed, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
+import { buildInstallCommand, buildTagsStr, CLEAR_ON_DONE, copyToClipboard, formatVersionHint, handleError, loadValidatedCatalog, readConfigInstalledVersion, readLockFile, resolvePageSize, selectUntilConfirmed, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
 
 /**
  * @fileoverview Interactive installer for project config file templates.
@@ -29,30 +29,15 @@ const CONFIGS_FILE_URL = new URL("./configs.json", import.meta.url);
 
 /**
  * Load and validate the config templates catalog from configs.json.
- * Each entry must have: name, filename, version (semver), description, templateFile, tags.
- * @returns {object[]} An array of validated config template entries.
- * @throws Will throw an error if the catalog is invalid or cannot be read.
+ * @returns {object[]} Validated config template entries.
+ * @throws If the catalog file or any entry is invalid.
  */
-const loadConfigsCatalog = () => {
-    const entries = loadJsonCatalog(CONFIGS_FILE_URL);
-
-    for (const [index, entry] of entries.entries()) {
-        const isValidEntry =
-            typeof entry?.name === "string"
-            && typeof entry?.filename === "string"
-            && typeof entry?.version === "string"
-            && typeof entry?.description === "string"
-            && entry.description.length > 0
-            && typeof entry?.templateFile === "string"
-            && Array.isArray(entry?.tags)
-            && entry.tags.every((tag) => typeof tag === "string")
-            && (entry.packages === undefined || (Array.isArray(entry.packages) && entry.packages.every((pkg) => typeof pkg === "string")));
-
-        if (!isValidEntry) throw new Error(`Invalid configs catalog entry at index ${index}.`);
-    }
-
-    return entries;
-};
+const loadConfigsCatalog = () => loadValidatedCatalog(CONFIGS_FILE_URL, "configs", {
+    strings: ["name", "filename", "version", "templateFile"],
+    nonEmptyStrings: ["description"],
+    stringArrays: ["tags"],
+    optionalStringArrays: ["packages"],
+});
 
 /**
  * Print a consolidated installation command for the npm packages required by the

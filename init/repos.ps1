@@ -132,6 +132,57 @@ function Get-RepoList {
     }
 }
 
+function Sort-ComposeVolumeBlock {
+    <#
+    .SYNOPSIS
+        Returns the compose YAML with the entries under the top-level `volumes:` block
+        sorted alphabetically by volume name.
+    .DESCRIPTION
+        The block is the final section of the file: a `volumes:` line at column 0 followed
+        by one 2-space-indented `<name>:` line per volume, each optionally followed by
+        deeper-indented continuation lines (e.g. `    name: <name>`). Ordering is cosmetic
+        (compose ignores it) but kept stable so generated docker-compose.yml diffs stay
+        readable and match the alphabetically-sorted mounts array in devcontainer.json.
+        Any trailing blank lines are preserved after the sorted block.
+    .PARAMETER Content
+        The full docker-compose.yml text (LF line endings).
+    #>
+    param([string]$Content)
+
+    $lines     = [System.Collections.ArrayList]@($Content -split "`n")
+    $headerIdx = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -eq 'volumes:') { $headerIdx = $i; break }
+    }
+    if ($headerIdx -lt 0) { return $Content }
+
+    $head = $lines[0..$headerIdx]
+    $rest = if ($headerIdx + 1 -le $lines.Count - 1) { @($lines[($headerIdx + 1)..($lines.Count - 1)]) } else { @() }
+
+    $trailing = [System.Collections.ArrayList]@()
+    while ($rest.Count -gt 0 -and $rest[-1] -eq '') {
+        [void]$trailing.Insert(0, $rest[-1])
+        $rest = if ($rest.Count -gt 1) { @($rest[0..($rest.Count - 2)]) } else { @() }
+    }
+
+    $groups  = [System.Collections.ArrayList]@()
+    $current = $null
+    foreach ($line in $rest) {
+        if ($line -match '^  (\S[^:]*):') {
+            if ($null -ne $current) { [void]$groups.Add($current) }
+            $current = [PSCustomObject]@{ Name = $Matches[1]; Lines = [System.Collections.ArrayList]@($line) }
+        } elseif ($null -ne $current) {
+            [void]$current.Lines.Add($line)
+        }
+    }
+    if ($null -ne $current) { [void]$groups.Add($current) }
+    if ($groups.Count -eq 0) { return $Content }
+
+    $blockLines = foreach ($g in ($groups | Sort-Object { $_.Name })) { $g.Lines }
+
+    return (@($head) + @($blockLines) + @($trailing)) -join "`n"
+}
+
 function New-ComposeWithRepoVolumes {
     <#
     .SYNOPSIS
@@ -299,6 +350,8 @@ function New-ComposeWithRepoVolumes {
             }
         }
     }
+
+    $content = Sort-ComposeVolumeBlock -Content $content
 
     $outputPath = Join-Path -Path $Destination -ChildPath 'docker-compose.yml'
     [System.IO.File]::WriteAllText($outputPath, $content)

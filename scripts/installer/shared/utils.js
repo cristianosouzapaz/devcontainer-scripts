@@ -1,4 +1,5 @@
-import { existsSync, lstatSync, readFileSync, readlinkSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import chalk from "chalk";
 import consola from "consola";
@@ -8,15 +9,18 @@ import { checkbox, select } from "@inquirer/prompts";
  * @fileoverview Shared utilities for all framework installer scripts.
  *
  * Exports:
- *   - File writing:  writeWithConflict
+ *   - File writing:  writeWithConflict (interactive), writeOverwrite (non-interactive --global sync)
  *   - Version read:  readConfigInstalledVersion (lock file)
  *   - Lock file:     readLockFile, writeLockFile, getArtifactVersion, recordArtifact,
  *                    reconcileArtifactAdapters
- *                    → template-lock.json in the user's project root
+ *                    → template-lock.json in the user's project root, or in ~/.agents for --global
+ *   - Adapters:      claudeSkillAdapter, claudeRuleAdapter (lock-file symlink records)
  *   - UI helpers:    buildTagsStr, setupConsola, selectTargetTools, resolvePageSize, formatVersionHint,
  *                    formatSelectionSummary, confirmSelection, CLEAR_ON_DONE
+ *   - Global dedup:  readGlobalSkillSet, disableGlobalChoices
+ *                    → grey out per-project picker entries already installed machine-wide
  *   - Clipboard:     copyToClipboard, buildInstallCommand
- *   - Catalog:       loadJsonCatalog
+ *   - Catalog:       loadJsonCatalog, loadValidatedCatalog
  *   - Error:         handleError
  *   - Constants:     AGENTS, TOOLS
  */
@@ -46,8 +50,26 @@ const LOCK_VERSION = "2";
 /** Context shared by interactive prompts so completed screens do not accumulate in the terminal. */
 export const CLEAR_ON_DONE = { clearPromptOnDone: true };
 
+/**
+ * Upper bound on checkbox pageSize, so a catalog stays on one screen without
+ * an unbounded prompt height if it grows very large.
+ */
+const MAX_CATALOG_PAGE_SIZE = 30;
+
+/**
+ * Build a fresh, empty lock structure for the current schema version.
+ * @returns {{ version: string, updatedAt: string, configs: object, artifacts: object, mdBlocks: object }}
+ */
 const emptyLock = () => ({ version: LOCK_VERSION, updatedAt: "", configs: {}, artifacts: {}, mdBlocks: {} });
 
+/**
+ * Merge a native adapter record into an agent's adapter list in place.
+ * Updates an existing entry with the same path and type, otherwise appends it.
+ * @param {Record<string, object[]>} adapters - Map of agent name to adapter entries.
+ * @param {string} agent - Agent name key.
+ * @param {{ path: string, type: string }} adapter - Adapter record to merge.
+ * @returns {void} Nothing; does nothing when agent or adapter is missing.
+ */
 const addAdapter = (adapters, agent, adapter) => {
     if (!agent || !adapter) return;
     const entries = adapters[agent] ?? [];
@@ -56,12 +78,6 @@ const addAdapter = (adapters, agent, adapter) => {
     else entries.push(adapter);
     adapters[agent] = entries;
 };
-
-/**
- * Upper bound on checkbox pageSize, so a catalog stays on one screen without
- * an unbounded prompt height if it grows very large.
- */
-const MAX_CATALOG_PAGE_SIZE = 30;
 
 // ─── Functions ───────────────────────────────────────────────────────────────
 
@@ -76,6 +92,37 @@ export const loadJsonCatalog = (fileUrl) => {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) throw new Error(`Invalid catalog: expected an array in ${fileUrl}.`);
     return parsed;
+};
+
+/**
+ * Load a JSON catalog and validate every entry against a field schema.
+ * @param {URL|string} fileUrl - URL or path of the JSON catalog to load.
+ * @param {string} catalogName - Name used in the "Invalid <name> catalog entry" error.
+ * @param {{
+ *   strings?: string[],
+ *   nonEmptyStrings?: string[],
+ *   stringArrays?: string[],
+ *   optionalStringArrays?: string[],
+ * }} [schema] - Required string fields, non-empty string fields, string-array fields, and
+ *   string-array fields that may also be absent.
+ * @returns {object[]} The validated entries.
+ * @throws If the file is not an array or any entry violates the schema.
+ */
+export const loadValidatedCatalog = (fileUrl, catalogName, schema = {}) => {
+    const { strings = [], nonEmptyStrings = [], stringArrays = [], optionalStringArrays = [] } = schema;
+    const isStringArray = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
+    const entries = loadJsonCatalog(fileUrl);
+
+    entries.forEach((entry, index) => {
+        const valid =
+            strings.every((key) => typeof entry?.[key] === "string")
+            && nonEmptyStrings.every((key) => typeof entry?.[key] === "string" && entry[key].length > 0)
+            && stringArrays.every((key) => isStringArray(entry?.[key]))
+            && optionalStringArrays.every((key) => entry?.[key] === undefined || isStringArray(entry[key]));
+        if (!valid) throw new Error(`Invalid ${catalogName} catalog entry at index ${index}.`);
+    });
+
+    return entries;
 };
 
 /**
@@ -236,6 +283,24 @@ export const writeWithConflict = async (destPath, content, filename, templateVer
     return true;
 };
 
+/**
+ * Non-interactive writer for the `--global` sync path. Overwrites unconditionally
+ * (the template is the source of truth for a globally-installed asset), but reports
+ * "not written" when the on-disk content already matches, so the lock file and its
+ * `updatedAt` stamp only move on a real change. Same signature as `writeWithConflict`.
+ * @param {string} destPath - Absolute destination path.
+ * @param {string} content - File content to write.
+ * @param {string} filename - Display name for the log line.
+ * @returns {Promise<boolean>} Whether the file was (re)written.
+ */
+export const writeOverwrite = async (destPath, content, filename) => {
+    if (existsSync(destPath) && readFileSync(destPath, "utf8") === content) return false;
+    mkdirSync(dirname(destPath), { recursive: true });
+    writeFileSync(destPath, content, "utf8");
+    consola.success(`${filename} written`);
+    return true;
+};
+
 // ─── Lock file ───────────────────────────────────────────────────────────────
 
 /**
@@ -326,6 +391,93 @@ export const reconcileArtifactAdapters = (lock, root, path) => {
  * @returns {string|null}
  */
 export const readConfigInstalledVersion = (projectRoot, filename) => readLockFile(projectRoot).configs[filename] ?? null;
+
+// ─── Claude adapter records ──────────────────────────────────────────────────
+
+/**
+ * Lock-file adapter record for a `.claude/skills/<skillName>` symlink that points at
+ * the canonical skill directory.
+ * @param {string} skillName - Portable Agent Skill name.
+ * @returns {{ path: string, type: "symlink", target: string }}
+ */
+export const claudeSkillAdapter = (skillName) => ({
+    path: join(".claude", "skills", skillName),
+    type: "symlink",
+    target: join(".agents", "skills", skillName),
+});
+
+/**
+ * Lock-file adapter record for a `.claude/rules/<filename>` symlink that points at a
+ * canonical skill's SKILL.md.
+ * @param {string} skillName - Portable Agent Skill name.
+ * @param {string} filename - Rule filename under .claude/rules/.
+ * @returns {{ path: string, type: "symlink", target: string }}
+ */
+export const claudeRuleAdapter = (skillName, filename) => ({
+    path: join(".claude", "rules", filename),
+    type: "symlink",
+    target: join(".agents", "skills", skillName, "SKILL.md"),
+});
+
+// ─── Global asset dedup ──────────────────────────────────────────────────────
+
+/**
+ * Names of Agent Skills and commands already installed machine-wide by the
+ * "Sync Global Agent Assets" task, so an interactive per-project picker can render them as a
+ * non-selectable `disabled` row instead of offering a redundant reinstall.
+ *
+ * Three optional sources are unioned, so a name counts as global no matter which path
+ * installed it: `~/.agents/template-lock.json` (first-party instruction / prompt / local-skill
+ * artifacts — the recorded version is kept), plus the directory listings of `~/.agents/skills`
+ * and `<CLAUDE_CONFIG_DIR|~/.claude>/skills` (any skill the external `skills` CLI materialized
+ * with `-g`). A missing file or directory contributes nothing and never throws.
+ *
+ * @returns {Map<string, string|null>} skill / command name → recorded version, or null when
+ *   the name is only known from a directory listing.
+ */
+export const readGlobalSkillSet = () => {
+    const agentsRoot = join(homedir(), ".agents");
+    const claudeRoot = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+    const found = new Map();
+
+    for (const dir of [join(agentsRoot, "skills"), join(claudeRoot, "skills")]) {
+        try {
+            for (const entry of readdirSync(dir, { withFileTypes: true })) {
+                if (!entry.name.startsWith(".") && (entry.isDirectory() || entry.isSymbolicLink()) && !found.has(entry.name)) {
+                    found.set(entry.name, null);
+                }
+            }
+        } catch { /* directory absent — contributes nothing */ }
+    }
+
+    try {
+        const lock = JSON.parse(readFileSync(join(agentsRoot, "template-lock.json"), "utf8"));
+        for (const [path, artifact] of Object.entries(lock?.artifacts ?? {})) {
+            const match = /^\.agents\/skills\/(.+)\/SKILL\.md$/.exec(path);
+            if (match) found.set(match[1], artifact?.version ?? null);
+        }
+    } catch { /* lock absent or invalid — directory listings still stand */ }
+
+    return found;
+};
+
+/** Non-selectable annotation for a catalog entry already installed machine-wide. */
+const globalInstallLabel = (version) => `installed globally${version ? ` (v${version})` : ""}`;
+
+/**
+ * Return a copy of `@inquirer` checkbox `choices` with every entry whose key is already
+ * installed machine-wide marked `disabled`, so a per-project picker never re-offers a global
+ * asset. Input choices are not mutated.
+ * @param {object[]} choices - Checkbox choice objects.
+ * @param {(choice: object) => string} keyOf - Extracts the global-set key for a choice.
+ * @param {Map<string, string|null>} globalSet - Output of `readGlobalSkillSet`.
+ * @returns {object[]}
+ */
+export const disableGlobalChoices = (choices, keyOf, globalSet) =>
+    choices.map((choice) => {
+        const key = keyOf(choice);
+        return globalSet.has(key) ? { ...choice, disabled: globalInstallLabel(globalSet.get(key)) } : choice;
+    });
 
 /**
  * Request that the terminal emulator write the given text to the system clipboard

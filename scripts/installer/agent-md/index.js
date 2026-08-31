@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
 import { checkbox } from "@inquirer/prompts";
-import { CLEAR_ON_DONE, formatVersionHint, handleError, loadJsonCatalog, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, selectTargetTools, selectUntilConfirmed, setupConsola, TOOLS, writeLockFile } from "../shared/utils.js";
+import { claudeSkillAdapter, CLEAR_ON_DONE, formatVersionHint, handleError, loadValidatedCatalog, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, selectTargetTools, selectUntilConfirmed, setupConsola, TOOLS, writeLockFile } from "../shared/utils.js";
 import { ensureClaudeSkillSymlink, installLocalSkills } from "../skills/local/index.js";
 
 /**
@@ -38,36 +38,17 @@ const POINTER_LINE = "@AGENTS.md";
 // ─── Catalog ─────────────────────────────────────────────────────────────────
 
 /**
- * Load and validate the agent-md catalog from agent-md.json.
- * Each entry must have: key, name, version, description, tags (array of strings),
- * templateFile, targets (array of strings), and an optional skills array (skill catalog
- * keys, from skills/local/skills.json, that the block links to).
- * @returns {object[]} An array of validated agent-md block entries.
- * @throws Will throw an error if the catalog is invalid or cannot be read.
+ * Load and validate the agent-md catalog. An entry's optional `skills` array holds skill
+ * catalog keys (from skills/local/skills.json) that the block links to.
+ * @returns {object[]} Validated agent-md block entries.
+ * @throws If the catalog file or any entry is invalid.
  */
-export const loadAgentMdCatalog = () => {
-    const entries = loadJsonCatalog(AGENT_MD_FILE_URL);
-
-    for (const [index, entry] of entries.entries()) {
-        const isValidEntry =
-            typeof entry?.key === "string"
-            && typeof entry?.name === "string"
-            && typeof entry?.version === "string"
-            && typeof entry?.description === "string"
-            && entry.description.length > 0
-            && typeof entry?.templateFile === "string"
-            && Array.isArray(entry?.tags)
-            && entry.tags.every((tag) => typeof tag === "string")
-            && Array.isArray(entry?.targets)
-            && entry.targets.every((target) => typeof target === "string")
-            && (entry?.skills === undefined
-                || (Array.isArray(entry.skills) && entry.skills.every((skill) => typeof skill === "string")));
-
-        if (!isValidEntry) throw new Error(`Invalid agent-md catalog entry at index ${index}.`);
-    }
-
-    return entries;
-};
+const loadAgentMdCatalog = () => loadValidatedCatalog(AGENT_MD_FILE_URL, "agent-md", {
+    strings: ["key", "name", "version", "templateFile"],
+    nonEmptyStrings: ["description"],
+    stringArrays: ["tags", "targets"],
+    optionalStringArrays: ["skills"],
+});
 
 // ─── Block marker helpers ────────────────────────────────────────────────────
 
@@ -100,7 +81,7 @@ const buildBlockRegex = (key) =>
  * @param {string} body - Rendered block body (markdown, without markers).
  * @returns {string} Updated file content.
  */
-export const upsertBlock = (content, key, version, body) => {
+const upsertBlock = (content, key, version, body) => {
     const { open, close } = buildMarkers(key, version);
     const block = `${open}\n${body.trimEnd()}\n${close}\n`;
     const regex = buildBlockRegex(key);
@@ -120,7 +101,7 @@ export const upsertBlock = (content, key, version, body) => {
  * @param {string} claudeMdPath - Absolute path to CLAUDE.md.
  * @returns {string} The (possibly updated) CLAUDE.md content, for further block upserts.
  */
-export const ensureClaudePointer = (claudeMdPath) => {
+const ensureClaudePointer = (claudeMdPath) => {
     if (!existsSync(claudeMdPath)) {
         consola.info("CLAUDE.md not found — creating it as a pointer to AGENTS.md");
         writeFileSync(claudeMdPath, `${POINTER_LINE}\n`, "utf8");
@@ -146,7 +127,7 @@ export const ensureClaudePointer = (claudeMdPath) => {
  * @param {string} destFilename - Destination file name for logging.
  * @returns {Record<string, string>} Map of block key to installed version.
  */
-export const installBlocks = (blocks, destPath, destFilename) => {
+const installBlocks = (blocks, destPath, destFilename) => {
     const initialContent = existsSync(destPath) ? readFileSync(destPath, "utf8") : "";
     const { content, written } = blocks.reduce((result, { key, version, templateFile }) => {
         const body = readFileSync(join(__dirname, "templates", templateFile), "utf8");
@@ -229,13 +210,7 @@ const askUser = async () => {
                 ensureClaudeSkillSymlink(destRoot, key);
                 recordArtifact(lock, path, {
                     kind: "skill",
-                    adapters: {
-                        claude: [{
-                            path: join(".claude", "skills", key),
-                            type: "symlink",
-                            target: join(".agents", "skills", key),
-                        }],
-                    },
+                    adapters: { claude: [claudeSkillAdapter(key)] },
                 });
                 reconcileArtifactAdapters(lock, destRoot, path);
             }

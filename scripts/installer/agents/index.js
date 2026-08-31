@@ -1,9 +1,10 @@
 import { readFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
 import { checkbox } from "@inquirer/prompts";
-import { buildTagsStr, CLEAR_ON_DONE, formatVersionHint, getArtifactVersion, handleError, loadJsonCatalog, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, selectTargetTools, selectUntilConfirmed, setupConsola, TOOLS, writeLockFile, writeWithConflict } from "../shared/utils.js";
+import { buildTagsStr, claudeRuleAdapter, claudeSkillAdapter, CLEAR_ON_DONE, disableGlobalChoices, formatVersionHint, getArtifactVersion, handleError, loadValidatedCatalog, readGlobalSkillSet, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, selectTargetTools, selectUntilConfirmed, setupConsola, TOOLS, writeLockFile, writeOverwrite, writeWithConflict } from "../shared/utils.js";
 import { ensureClaudeRuleSymlink, ensureClaudeSkillSymlink } from "../skills/local/index.js";
 
 /**
@@ -27,6 +28,13 @@ import { ensureClaudeRuleSymlink, ensureClaudeSkillSymlink } from "../skills/loc
  * On install, updates template-lock.json with each canonical asset's version and the
  * native adapters materialized for it. Version display in the UI reads that manifest.
  *
+ * Two entry points:
+ *   - default: interactive project install into the current working directory.
+ *   - `--global`: non-interactive machine-wide install of the instruction and prompt names
+ *     listed in this installer's own `agents.global.json`, into `~/.agents` + `~/.claude`
+ *     (Claude adapter only), tracked in `~/.agents/template-lock.json`. See `installGlobal`.
+ *     Local first-party skills have their own `--global` path in `skills/local/index.js`.
+ *
  * Installed at /opt/devcontainer/installer/agents/ inside the container.
  */
 
@@ -37,9 +45,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const BASE_CATALOG_KEYS = ["name", "filename", "version", "templateFile"];
-const COPILOT_PROMPT_KEYS = ["agent", "name"];
 const INSTRUCTIONS_FILE_URL = new URL("./instructions.json", import.meta.url);
 const PROMPTS_FILE_URL = new URL("./prompts.json", import.meta.url);
+const GLOBAL_MANIFEST_URL = new URL("./agents.global.json", import.meta.url);
+const TEMPLATES_DIR = join(__dirname, "templates");
 
 // ─── Frontmatter helpers ─────────────────────────────────────────────────────
 
@@ -103,18 +112,6 @@ const toSkillName = (filename) => filename
     .replace(/\.instructions\.md$/, "")
     .replace(/\.prompt\.md$/, "")
     .replace(/\.md$/, "");
-
-const claudeRuleAdapter = (skillName, filename) => ({
-    path: join(".claude", "rules", filename),
-    type: "symlink",
-    target: join(".agents", "skills", skillName, "SKILL.md"),
-});
-
-const claudeSkillAdapter = (skillName) => ({
-    path: join(".claude", "skills", skillName),
-    type: "symlink",
-    target: join(".agents", "skills", skillName),
-});
 
 // ─── Claude content builders ─────────────────────────────────────────────────
 
@@ -192,18 +189,10 @@ const installCanonicalSkill = async (destRoot, skillName, content, version, inst
  * @returns {object[]}
  * @throws Will throw an error if the catalog is invalid or cannot be read.
  */
-const loadCatalog = (url, extraKeys, catalogName) => {
-    const entries = loadJsonCatalog(url);
-    const requiredKeys = [...BASE_CATALOG_KEYS, ...extraKeys];
-    for (const [index, entry] of entries.entries()) {
-        const isValid =
-            requiredKeys.every((key) => typeof entry?.[key] === "string")
-            && Array.isArray(entry?.tags)
-            && entry.tags.every((tag) => typeof tag === "string");
-        if (!isValid) throw new Error(`Invalid ${catalogName} catalog entry at index ${index}.`);
-    }
-    return entries;
-};
+const loadCatalog = (url, extraKeys, catalogName) => loadValidatedCatalog(url, catalogName, {
+    strings: [...BASE_CATALOG_KEYS, ...extraKeys],
+    stringArrays: ["tags"],
+});
 
 // ─── Installers ──────────────────────────────────────────────────────────────
 
@@ -223,7 +212,7 @@ const installAgentAssets = async (entries, destRoot, tools, lock, options, spec)
     const writer = options.writer ?? writeWithConflict;
     const templates = new Map(entries.map((entry) => [
         entry.templateFile,
-        readFileSync(join(__dirname, "templates", entry.templateFile), "utf8"),
+        readFileSync(join(spec.templatesDir, entry.templateFile), "utf8"),
     ]));
     const managedPaths = new Set(entries
         .map((entry) => join(".agents", "skills", spec.skillName(entry), "SKILL.md"))
@@ -277,6 +266,12 @@ const installAgentAssets = async (entries, destRoot, tools, lock, options, spec)
     return changedPaths.size > 0;
 };
 
+/**
+ * Create a Copilot native adapter that materializes a template as a path-specific
+ * file under the given project directory (e.g. .github/instructions or .github/prompts).
+ * @param {string} directory - Project-relative directory for the materialized files.
+ * @returns {{ name: string, tool: string, prepare: (destRoot: string) => void, install: (ctx: object) => Promise<{ path: string, type: "file" }|null> }}
+ */
 const createCopilotAdapter = (directory) => ({
     name: "copilot",
     tool: TOOLS.copilot,
@@ -288,8 +283,28 @@ const createCopilotAdapter = (directory) => ({
     },
 });
 
-const instructionSpec = {
+/**
+ * Build the Claude adapter that exposes a canonical skill as a `.claude/skills/` symlink.
+ * @returns {{ name: string, tool: string, install: (ctx: object) => object }}
+ */
+const claudeSkillSymlinkAdapter = () => ({
+    name: "claude",
+    tool: TOOLS.claude,
+    install: ({ destRoot, skillName }) => {
+        ensureClaudeSkillSymlink(destRoot, skillName);
+        return claudeSkillAdapter(skillName);
+    },
+});
+
+/**
+ * Build the instruction-type skill and adapter spec consumed by `installAgentAssets`.
+ * A factory so it can sit after the helpers it references while keeping all module
+ * constants ahead of every function.
+ * @returns {object}
+ */
+const instructionSpec = () => ({
     kind: "instruction",
+    templatesDir: TEMPLATES_DIR,
     skillName: (entry) => toSkillName(entry.filename),
     buildCanonicalContent: (template, skillName) => buildCanonicalSkillContent(template, skillName, true),
     adapters: [
@@ -304,30 +319,110 @@ const instructionSpec = {
         },
         createCopilotAdapter(join(".github", "instructions")),
     ],
-};
+});
 
-const promptSpec = {
+/**
+ * Build the prompt-type skill and adapter spec consumed by `installAgentAssets`.
+ * A factory for the same reason as `instructionSpec`.
+ * @returns {object}
+ */
+const promptSpec = () => ({
     kind: "prompt",
+    templatesDir: TEMPLATES_DIR,
     skillName: (entry) => toSkillName(entry.commandFilename),
     buildCanonicalContent: (template, skillName) => buildCanonicalSkillContent(template, skillName),
     adapters: [
         createCopilotAdapter(join(".github", "prompts")),
-        {
-            name: "claude",
-            tool: TOOLS.claude,
-            install: ({ destRoot, skillName }) => {
-                ensureClaudeSkillSymlink(destRoot, skillName);
-                return claudeSkillAdapter(skillName);
-            },
-        },
+        claudeSkillSymlinkAdapter(),
     ],
+});
+
+/**
+ * Install selected instruction skills and their native adapters, updating the lock manifest.
+ * @param {object[]} instructions - Selected instruction catalog entries.
+ * @param {string} destRoot - Project root directory.
+ * @param {Set<string>} tools - Selected values from TOOLS.
+ * @param {object} lock - Parsed template-lock.json.
+ * @param {{ writer?: typeof writeWithConflict }} [options] - File writer override for tests.
+ * @returns {Promise<boolean>} Whether the lock manifest changed.
+ */
+export const installInstructions = (instructions, destRoot, tools, lock, options = {}) =>
+    installAgentAssets(instructions, destRoot, tools, lock, options, instructionSpec());
+
+/**
+ * Install selected prompt (command) skills and their native adapters, updating the lock manifest.
+ * @param {object[]} prompts - Selected prompt catalog entries.
+ * @param {string} destRoot - Project root directory.
+ * @param {Set<string>} tools - Selected values from TOOLS.
+ * @param {object} lock - Parsed template-lock.json.
+ * @param {{ writer?: typeof writeWithConflict }} [options] - File writer override for tests.
+ * @returns {Promise<boolean>} Whether the lock manifest changed.
+ */
+export const installPrompts = (prompts, destRoot, tools, lock, options = {}) =>
+    installAgentAssets(prompts, destRoot, tools, lock, options, promptSpec());
+
+// ─── Global (non-interactive) scope ──────────────────────────────────────────
+
+/**
+ * Load and validate this installer's machine-wide manifest (`agents.global.json`): the
+ * instruction and prompt skill names materialized into the shared `~/.agents` tree.
+ * @returns {{ instructions: string[], prompts: string[] }}
+ * @throws If a section is missing or is not an array of non-empty strings.
+ */
+const loadGlobalAgentManifest = () => {
+    const manifest = JSON.parse(readFileSync(GLOBAL_MANIFEST_URL, "utf8"));
+    for (const key of ["instructions", "prompts"]) {
+        const list = manifest?.[key];
+        if (!Array.isArray(list) || !list.every((name) => typeof name === "string" && name.length > 0)) {
+            throw new Error(`Invalid agents.global.json: "${key}" must be an array of names.`);
+        }
+    }
+    return manifest;
 };
 
-export const installInstructions = (instructions, destRoot, tools, lock, options = {}) =>
-    installAgentAssets(instructions, destRoot, tools, lock, options, instructionSpec);
+/**
+ * Materialize the instruction and prompt skills named in `agents.global.json` into the
+ * shared machine-wide `~/.agents` tree (canonical `~/.agents/skills/<name>/SKILL.md`) plus
+ * `~/.claude` adapters, tracked in `~/.agents/template-lock.json`. Non-interactive:
+ * conflicts are resolved by overwrite (the template is the source of truth for a global
+ * asset), and only the Claude adapter is materialized — Codex reads `~/.agents/skills`
+ * directly. Assumes `CLAUDE_CONFIG_DIR` is `~/.claude`, as the devcontainer image sets it.
+ *
+ * @param {{ writer?: typeof writeOverwrite }} [options] - Writer override for tests.
+ * @returns {Promise<void>}
+ */
+export const installGlobal = async (options = {}) => {
+    const manifest = loadGlobalAgentManifest();
+    const wantInstructions = new Set(manifest.instructions);
+    const wantPrompts = new Set(manifest.prompts);
 
-export const installPrompts = (prompts, destRoot, tools, lock, options = {}) =>
-    installAgentAssets(prompts, destRoot, tools, lock, options, promptSpec);
+    const instructions = loadCatalog(INSTRUCTIONS_FILE_URL, [], "instructions")
+        .filter((entry) => wantInstructions.has(toSkillName(entry.filename)));
+    const prompts = loadCatalog(PROMPTS_FILE_URL, ["commandFilename"], "prompts")
+        .filter((entry) => wantPrompts.has(toSkillName(entry.commandFilename)));
+
+    const resolvedInstructions = instructions.map((entry) => toSkillName(entry.filename));
+    const resolvedPrompts = prompts.map((entry) => toSkillName(entry.commandFilename));
+    const missing = [
+        ...manifest.instructions.filter((name) => !resolvedInstructions.includes(name)),
+        ...manifest.prompts.filter((name) => !resolvedPrompts.includes(name)),
+    ];
+    if (missing.length > 0) throw new Error(`agents.global.json names absent from the catalog: ${missing.join(", ")}`);
+
+    const destRoot = homedir();
+    const lockRoot = join(destRoot, ".agents");
+    const lock = readLockFile(lockRoot);
+    const tools = new Set([TOOLS.claude]);
+    const opts = { writer: options.writer ?? writeOverwrite };
+
+    const changed = [];
+    if (instructions.length > 0) changed.push(await installAgentAssets(instructions, destRoot, tools, lock, opts, instructionSpec()));
+    if (prompts.length > 0) changed.push(await installAgentAssets(prompts, destRoot, tools, lock, opts, promptSpec()));
+
+    if (changed.some(Boolean)) writeLockFile(lockRoot, lock);
+    const synced = [...resolvedInstructions, ...resolvedPrompts].sort().join(", ");
+    consola.success(`Global agent assets synced: ${synced || "(agents.global.json is empty)"}`);
+};
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -341,28 +436,42 @@ const askUser = async () => {
         const prompts = loadCatalog(PROMPTS_FILE_URL, ["commandFilename"], "prompts");
         const destRoot = process.cwd();
         const lock = readLockFile(destRoot);
+        const globalSet = readGlobalSkillSet();
 
-        const instructionChoices = instructions.map(({ filename, version, name, tags, templateFile }) => {
-            const canonicalRelPath = join(".agents", "skills", toSkillName(filename), "SKILL.md");
-            const installedVersion = getArtifactVersion(lock, canonicalRelPath);
-            const versionStr = formatVersionHint(installedVersion, version);
-            return {
-                name: `${name} ${versionStr} ${buildTagsStr(tags)}`,
-                value: { filename, version, name, tags, templateFile },
-                description: readTemplateDescription(templateFile),
-            };
-        });
+        const instructionChoices = disableGlobalChoices(
+            instructions.map(({ filename, version, name, tags, templateFile }) => {
+                const canonicalRelPath = join(".agents", "skills", toSkillName(filename), "SKILL.md");
+                const installedVersion = getArtifactVersion(lock, canonicalRelPath);
+                const versionStr = formatVersionHint(installedVersion, version);
+                return {
+                    name: `${name} ${versionStr} ${buildTagsStr(tags)}`,
+                    value: { filename, version, name, tags, templateFile },
+                    description: readTemplateDescription(templateFile),
+                };
+            }),
+            (choice) => toSkillName(choice.value.filename),
+            globalSet,
+        );
 
-        const promptChoices = prompts.map(({ filename, commandFilename, version, name, tags, templateFile }) => {
-            const canonicalRelPath = join(".agents", "skills", toSkillName(commandFilename), "SKILL.md");
-            const installedVersion = getArtifactVersion(lock, canonicalRelPath);
-            const versionStr = formatVersionHint(installedVersion, version);
-            return {
-                name: `${name} ${versionStr} ${buildTagsStr(tags)}`,
-                value: { filename, commandFilename, version, name, tags, templateFile },
-                description: readTemplateDescription(templateFile),
-            };
-        });
+        const promptChoices = disableGlobalChoices(
+            prompts.map(({ filename, commandFilename, version, name, tags, templateFile }) => {
+                const canonicalRelPath = join(".agents", "skills", toSkillName(commandFilename), "SKILL.md");
+                const installedVersion = getArtifactVersion(lock, canonicalRelPath);
+                const versionStr = formatVersionHint(installedVersion, version);
+                return {
+                    name: `${name} ${versionStr} ${buildTagsStr(tags)}`,
+                    value: { filename, commandFilename, version, name, tags, templateFile },
+                    description: readTemplateDescription(templateFile),
+                };
+            }),
+            (choice) => toSkillName(choice.value.commandFilename),
+            globalSet,
+        );
+
+        const skippedGlobal = [
+            ...instructions.filter((entry) => globalSet.has(toSkillName(entry.filename))),
+            ...prompts.filter((entry) => globalSet.has(toSkillName(entry.commandFilename))),
+        ].map((entry) => entry.name);
 
         const selectedAssets = await selectUntilConfirmed(
             async () => ({
@@ -380,6 +489,7 @@ const askUser = async () => {
             ({ selectedInstructions, selectedPrompts }) => [
                 { title: "Instruction files", items: selectedInstructions.map(({ name }) => name) },
                 { title: "Prompt files", items: selectedPrompts.map(({ name }) => name) },
+                { title: "Skipped (already global)", items: skippedGlobal },
             ],
             "Install selected files",
             ({ selectedInstructions, selectedPrompts }) => selectedInstructions.length + selectedPrompts.length === 0,
@@ -409,4 +519,14 @@ const askUser = async () => {
     }
 };
 
-if (import.meta.url === `file://${process.argv[1]}`) await askUser();
+if (import.meta.url === `file://${process.argv[1]}`) {
+    if (process.argv[2] === "--global") {
+        try {
+            await installGlobal();
+        } catch (e) {
+            handleError(e);
+        }
+    } else {
+        await askUser();
+    }
+}

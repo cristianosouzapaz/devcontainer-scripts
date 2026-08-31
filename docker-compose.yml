@@ -8,8 +8,10 @@ services:
       - project-name-workspace:/workspace
 
 volumes:
-  project-name-workspace:
+  agents-data:
+    name: agents-data
   claude-auth-data:
     name: claude-auth-data
   codex-auth-data:
     name: codex-auth-data
+  project-name-workspace:

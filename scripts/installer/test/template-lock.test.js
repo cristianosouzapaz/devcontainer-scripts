@@ -1,19 +1,10 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { installInstructions, installPrompts } from "../agents/index.js";
 import { readLockFile, reconcileArtifactAdapters, TOOLS, writeLockFile } from "../shared/utils.js";
-
-const withTemporaryProject = async (run) => {
-    const root = mkdtempSync(join(tmpdir(), "devcontainer-installer-"));
-    try {
-        await run(root);
-    } finally {
-        rmSync(root, { recursive: true, force: true });
-    }
-};
+import { withTemporaryProject } from "./helpers.js";
 
 test("records Claude and Copilot adapters for every generated agent artifact", async () => {
     await withTemporaryProject(async (root) => {

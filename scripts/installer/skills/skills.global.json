@@ -1,0 +1,67 @@
+[
+    {
+        "name": "brainstorming",
+        "url": "https://github.com/obra/superpowers",
+        "skill": "brainstorming"
+    },
+    {
+        "name": "caveman",
+        "url": "https://github.com/juliusbrussee/caveman",
+        "skill": "caveman"
+    },
+    {
+        "name": "domain-modeling",
+        "url": "https://github.com/mattpocock/skills",
+        "skill": "domain-modeling"
+    },
+    {
+        "name": "find-skills",
+        "url": "https://github.com/vercel-labs/skills",
+        "skill": "find-skills"
+    },
+    {
+        "name": "grill-me",
+        "url": "https://github.com/mattpocock/skills",
+        "skill": "grill-me"
+    },
+    {
+        "name": "grill-with-docs",
+        "url": "https://github.com/mattpocock/skills",
+        "skill": "grill-with-docs"
+    },
+    {
+        "name": "grilling",
+        "url": "https://github.com/mattpocock/skills",
+        "skill": "grilling"
+    },
+    {
+        "name": "handoff",
+        "url": "https://github.com/mattpocock/skills",
+        "skill": "handoff"
+    },
+    {
+        "name": "ponytail",
+        "url": "https://github.com/dietrichgebert/ponytail",
+        "skill": "ponytail"
+    },
+    {
+        "name": "prototype",
+        "url": "https://github.com/mattpocock/skills",
+        "skill": "prototype"
+    },
+    {
+        "name": "research",
+        "url": "https://github.com/mattpocock/skills",
+        "skill": "research"
+    },
+    {
+        "name": "skill-creator",
+        "url": "https://github.com/anthropics/skills",
+        "skill": "skill-creator"
+    },
+    {
+        "name": "wayfinder",
+        "url": "https://github.com/mattpocock/skills",
+        "skill": "wayfinder"
+    }
+]

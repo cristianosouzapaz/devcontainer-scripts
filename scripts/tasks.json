@@ -68,6 +68,23 @@
                 "id": "note",
                 "color": "terminal.ansiYellow"
             }
+        },
+        {
+            "label": "Framework: Sync Global Agent Assets",
+            "detail": "Refreshes the machine-wide agent skills and commands shared by every devcontainer on this host; fails if the sync itself fails, skips silently when the framework is absent.",
+            "type": "shell",
+            "command": "bash -lc 'if [ -f /opt/devcontainer/sync-agent-assets.sh ]; then bash /opt/devcontainer/sync-agent-assets.sh; else echo \"[Framework] Installer is not available in this devcontainer. Task skipped.\"; fi'",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true,
+                "focus": true
+            },
+            "icon": {
+                "id": "sync",
+                "color": "terminal.ansiGreen"
+            }
         }
     ]
 }

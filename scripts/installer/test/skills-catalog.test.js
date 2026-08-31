@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { groupByCategory } from "../skills/catalog.js";
+import { readText } from "./helpers.js";
 
 test("groups known categories in the picker order and retains catalog order within each category", () => {
     const planningFirst = { name: "Plan first", category: "Planning & Workflow" };
@@ -21,4 +22,10 @@ test("places uncategorized additions after known categories in their first-seen 
     const groups = groupByCategory([experimental, planning, platform]);
 
     assert.deepEqual([...groups.keys()], ["Planning & Workflow", "Experimental", "Platform"]);
+});
+
+test("the skills picker imports the catalog helper, so the bootstrap graph walk fetches it", () => {
+    // install.sh discovers files by resolving the entry scripts' imports; this reference
+    // is what pulls skills/catalog.js into the download set.
+    assert.match(readText("skills/index.js"), /from "\.\/catalog\.js"/);
 });
