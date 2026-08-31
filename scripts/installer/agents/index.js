@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
 import { checkbox } from "@inquirer/prompts";
-import { buildTagsStr, claudeRuleAdapter, claudeSkillAdapter, CLEAR_ON_DONE, disableGlobalChoices, formatVersionHint, getArtifactVersion, handleError, loadValidatedCatalog, readGlobalSkillSet, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, selectTargetTools, selectUntilConfirmed, setupConsola, TOOLS, writeLockFile, writeOverwrite, writeWithConflict } from "../shared/utils.js";
+import { buildTagsStr, claudeRuleAdapter, claudeSkillAdapter, CLEAR_ON_DONE, disableGlobalChoices, formatVersionHint, getArtifactVersion, handleError, loadValidatedCatalog, readGlobalSkillSet, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, restoreChecked, selectTargetTools, selectUntilConfirmed, setupConsola, TOOLS, writeLockFile, writeOverwrite, writeWithConflict } from "../shared/utils.js";
 import { ensureClaudeRuleSymlink, ensureClaudeSkillSymlink } from "../skills/local/index.js";
 
 /**
@@ -438,13 +438,19 @@ const askUser = async () => {
         const lock = readLockFile(destRoot);
         const globalSet = readGlobalSkillSet();
 
+        // Global rows are non-actionable: no version hint / tag badges — they'd only
+        // duplicate the version already in the `(installed globally · vX)` label.
+        const choiceName = (skillName, { name, version, tags }, canonicalRelPath) =>
+            globalSet.has(skillName)
+                ? name
+                : `${name} ${formatVersionHint(getArtifactVersion(lock, canonicalRelPath), version)} ${buildTagsStr(tags)}`;
+
         const instructionChoices = disableGlobalChoices(
             instructions.map(({ filename, version, name, tags, templateFile }) => {
-                const canonicalRelPath = join(".agents", "skills", toSkillName(filename), "SKILL.md");
-                const installedVersion = getArtifactVersion(lock, canonicalRelPath);
-                const versionStr = formatVersionHint(installedVersion, version);
+                const skillName = toSkillName(filename);
+                const canonicalRelPath = join(".agents", "skills", skillName, "SKILL.md");
                 return {
-                    name: `${name} ${versionStr} ${buildTagsStr(tags)}`,
+                    name: choiceName(skillName, { name, version, tags }, canonicalRelPath),
                     value: { filename, version, name, tags, templateFile },
                     description: readTemplateDescription(templateFile),
                 };
@@ -455,11 +461,10 @@ const askUser = async () => {
 
         const promptChoices = disableGlobalChoices(
             prompts.map(({ filename, commandFilename, version, name, tags, templateFile }) => {
-                const canonicalRelPath = join(".agents", "skills", toSkillName(commandFilename), "SKILL.md");
-                const installedVersion = getArtifactVersion(lock, canonicalRelPath);
-                const versionStr = formatVersionHint(installedVersion, version);
+                const skillName = toSkillName(commandFilename);
+                const canonicalRelPath = join(".agents", "skills", skillName, "SKILL.md");
                 return {
-                    name: `${name} ${versionStr} ${buildTagsStr(tags)}`,
+                    name: choiceName(skillName, { name, version, tags }, canonicalRelPath),
                     value: { filename, commandFilename, version, name, tags, templateFile },
                     description: readTemplateDescription(templateFile),
                 };
@@ -468,28 +473,28 @@ const askUser = async () => {
             globalSet,
         );
 
-        const skippedGlobal = [
+        const alreadyGlobal = [
             ...instructions.filter((entry) => globalSet.has(toSkillName(entry.filename))),
             ...prompts.filter((entry) => globalSet.has(toSkillName(entry.commandFilename))),
         ].map((entry) => entry.name);
 
         const selectedAssets = await selectUntilConfirmed(
-            async () => ({
+            async (previous = {}) => ({
                 selectedInstructions: await checkbox({
                     message: "Select instruction files to install:",
-                    choices: instructionChoices,
+                    choices: restoreChecked(instructionChoices, previous.selectedInstructions),
                     pageSize: resolvePageSize(instructionChoices.length),
                 }, CLEAR_ON_DONE),
                 selectedPrompts: await checkbox({
                     message: "Select prompt files to install:",
-                    choices: promptChoices,
+                    choices: restoreChecked(promptChoices, previous.selectedPrompts),
                     pageSize: resolvePageSize(promptChoices.length),
                 }, CLEAR_ON_DONE),
             }),
             ({ selectedInstructions, selectedPrompts }) => [
                 { title: "Instruction files", items: selectedInstructions.map(({ name }) => name) },
                 { title: "Prompt files", items: selectedPrompts.map(({ name }) => name) },
-                { title: "Skipped (already global)", items: skippedGlobal },
+                { title: "Already installed globally", items: alreadyGlobal },
             ],
             "Install selected files",
             ({ selectedInstructions, selectedPrompts }) => selectedInstructions.length + selectedPrompts.length === 0,

@@ -155,42 +155,61 @@ export const formatSelectionSummary = (sections) => {
 };
 
 /**
- * Print a selection summary and ask whether to install, edit, or cancel it.
+ * Show a selection summary and ask whether to install, edit, or cancel it. The summary
+ * lives in the prompt `message` (not a `consola.log`) so `clearPromptOnDone` clears it
+ * and the edit loop never stacks boxes in the scrollback.
  * @param {{title: string, items: string[]}[]} sections - Summary sections.
  * @param {string} installLabel - Action label for the install choice.
  * @returns {Promise<"install"|"edit"|"cancel">}
  */
-export const confirmSelection = async (sections, installLabel = "Install selected assets") => {
-    consola.log("");
-    consola.log(formatSelectionSummary(sections));
-    consola.log("");
-    return select({
-        message: "What would you like to do?",
+export const confirmSelection = async (sections, installLabel = "Install selected assets") =>
+    select({
+        message: `${formatSelectionSummary(sections)}\n\nWhat would you like to do?`,
         choices: [
             { name: installLabel, value: "install" },
             { name: "Continue editing selection", value: "edit" },
             { name: "Cancel", value: "cancel" },
         ],
+        // Empty prefix + plain message style: inquirer prepends `?` to (and bolds) only
+        // the first line, which would misalign the summary box's top border.
+        theme: { prefix: "", style: { message: (text) => text } },
     }, CLEAR_ON_DONE);
-};
 
 /**
  * Repeat a selection and confirmation until the user installs or cancels.
  * Returns undefined for an empty selection and null for an explicit cancellation.
- * @param {() => Promise<unknown>} selectSelection - Function that opens the asset picker.
+ * On "Continue editing", the previous selection is handed back to `selectSelection`
+ * so the picker can re-check it (see `restoreChecked`) instead of reopening blank.
+ * @param {(previous: unknown) => Promise<unknown>} selectSelection - Function that opens
+ *   the asset picker; receives the prior round's selection, or undefined on the first pass.
  * @param {(selection: unknown) => {title: string, items: string[]}[]} buildSections - Summary builder.
  * @param {string} installLabel - Action label for the install choice.
  * @param {(selection: unknown) => boolean} [isEmpty] - Selection emptiness test.
  * @returns {Promise<unknown|null|undefined>}
  */
-export const selectUntilConfirmed = async (selectSelection, buildSections, installLabel, isEmpty = (selection) => selection.length === 0) => {
-    const selection = await selectSelection();
+export const selectUntilConfirmed = async (selectSelection, buildSections, installLabel, isEmpty = (selection) => selection.length === 0, previous = undefined) => {
+    const selection = await selectSelection(previous);
     if (isEmpty(selection)) return undefined;
 
     const action = await confirmSelection(buildSections(selection), installLabel);
     if (action === "install") return selection;
     if (action === "cancel") return null;
-    return selectUntilConfirmed(selectSelection, buildSections, installLabel, isEmpty);
+    return selectUntilConfirmed(selectSelection, buildSections, installLabel, isEmpty, selection);
+};
+
+/**
+ * Return a copy of `@inquirer` checkbox `choices` with `checked: true` on every entry
+ * whose `value` is in `selectedValues` (by reference), leaving disabled rows untouched.
+ * `@inquirer/checkbox` has no top-level `default`, so per-choice `checked` is the only
+ * way to restore prior picks when a picker is reopened.
+ * @param {object[]} choices - Checkbox choice objects.
+ * @param {Iterable<unknown>} selectedValues - `value`s that should come back checked.
+ * @returns {object[]}
+ */
+export const restoreChecked = (choices, selectedValues = []) => {
+    const chosen = new Set(selectedValues);
+    return choices.map((choice) =>
+        choice.disabled ? choice : { ...choice, checked: chosen.has(choice.value) });
 };
 
 /**
@@ -461,8 +480,11 @@ export const readGlobalSkillSet = () => {
     return found;
 };
 
-/** Non-selectable annotation for a catalog entry already installed machine-wide. */
-const globalInstallLabel = (version) => `installed globally${version ? ` (v${version})` : ""}`;
+/**
+ * Non-selectable annotation for a catalog entry already installed machine-wide.
+ * Parenthesised so it reads as an aside rather than a suffix of the skill name.
+ */
+const globalInstallLabel = (version) => `(installed globally${version ? ` · v${version}` : ""})`;
 
 /**
  * Return a copy of `@inquirer` checkbox `choices` with every entry whose key is already

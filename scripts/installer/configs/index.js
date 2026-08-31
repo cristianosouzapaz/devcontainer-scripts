@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
 import { checkbox } from "@inquirer/prompts";
-import { buildInstallCommand, buildTagsStr, CLEAR_ON_DONE, copyToClipboard, formatVersionHint, handleError, loadValidatedCatalog, readConfigInstalledVersion, readLockFile, resolvePageSize, selectUntilConfirmed, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
+import { buildInstallCommand, buildTagsStr, CLEAR_ON_DONE, copyToClipboard, formatVersionHint, handleError, loadValidatedCatalog, readConfigInstalledVersion, readLockFile, resolvePageSize, restoreChecked, selectUntilConfirmed, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
 
 /**
  * @fileoverview Interactive installer for project config file templates.
@@ -76,8 +76,8 @@ const askUser = async () => {
         });
 
         const selectedConfigs = await selectUntilConfirmed(
-            () => checkbox({
-                choices,
+            (previous) => checkbox({
+                choices: restoreChecked(choices, previous),
                 message: "Select config files to copy:",
                 pageSize: resolvePageSize(choices.length),
             }, CLEAR_ON_DONE),

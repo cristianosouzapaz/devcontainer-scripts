@@ -9,7 +9,9 @@
 | adds directory entries under ~/.agents/skills and ~/.claude/skills with a null version | A skill known only from a directory (real or symlink) listing is included with a `null` version |
 | the lock version wins over a bare directory listing for the same name | A name present in both the lock and a directory listing keeps its recorded version |
 | ignores dotfiles and plain files, and tolerates an unreadable lock file | Dotfiles and non-directory entries are skipped; a malformed `template-lock.json` degrades to the directory listings |
-| disableGlobalChoices marks only the choices whose key is global, without mutating input | Global keys get a `disabled: "installed globally[ (vX)]"` copy; other choices and the input array are untouched |
+| disableGlobalChoices marks only the choices whose key is global, without mutating input | Global keys get a `disabled` copy annotated with the global-install label; other choices and the input array are untouched |
+| restoreChecked re-checks prior picks by value reference and leaves disabled rows alone | Choices whose `value` is in the selection get `checked: true`, disabled rows keep their `disabled` label and stay unchecked, and the input array is not mutated |
+| restoreChecked treats a missing selection as nothing checked | Called with no selection argument, every choice comes back `checked: false` |
 
 ## `global-scope.test.js`
 

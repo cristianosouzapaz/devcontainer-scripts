@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
 import { checkbox } from "@inquirer/prompts";
-import { claudeSkillAdapter, CLEAR_ON_DONE, formatVersionHint, handleError, loadValidatedCatalog, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, selectTargetTools, selectUntilConfirmed, setupConsola, TOOLS, writeLockFile } from "../shared/utils.js";
+import { claudeSkillAdapter, CLEAR_ON_DONE, formatVersionHint, handleError, loadValidatedCatalog, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, restoreChecked, selectTargetTools, selectUntilConfirmed, setupConsola, TOOLS, writeLockFile } from "../shared/utils.js";
 import { ensureClaudeSkillSymlink, installLocalSkills } from "../skills/local/index.js";
 
 /**
@@ -167,9 +167,9 @@ const askUser = async () => {
         });
 
         const selectedBlocks = await selectUntilConfirmed(
-            () => checkbox({
+            (previous) => checkbox({
                 message: "Select blocks to install:",
-                choices,
+                choices: restoreChecked(choices, previous),
                 pageSize: resolvePageSize(choices.length),
             }, CLEAR_ON_DONE),
             (selected) => {

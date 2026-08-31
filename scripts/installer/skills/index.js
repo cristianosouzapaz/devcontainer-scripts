@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { checkbox, select } from "@inquirer/prompts";
 import consola from "consola";
-import { AGENTS, CLEAR_ON_DONE, confirmSelection, disableGlobalChoices, handleError, loadJsonCatalog, loadValidatedCatalog, readGlobalSkillSet, selectTargetTools, setupConsola, TOOLS } from "../shared/utils.js";
+import { AGENTS, CLEAR_ON_DONE, confirmSelection, disableGlobalChoices, handleError, loadJsonCatalog, loadValidatedCatalog, readGlobalSkillSet, restoreChecked, selectTargetTools, setupConsola, TOOLS } from "../shared/utils.js";
 import { groupByCategory } from "./catalog.js";
 import { ensureClaudeSkillSymlink } from "./local/index.js";
 
@@ -64,11 +64,13 @@ const formatCategory = (category) => `── ${category} ──`;
 const selectSkillsByCategory = async (groups, globalSet = readGlobalSkillSet()) => {
     const selectedSkills = new Set();
     const categories = [...groups.entries()];
-    const skippedGlobal = [...groups.values()].flat()
+    const alreadyGlobal = [...groups.values()].flat()
         .filter((entry) => globalSet.has(entry.skill))
         .map((entry) => entry.name);
 
-    while (true) {
+    // `@inquirer/select` has no native "resume at last cursor": each step passes the
+    // previously chosen row as `default` so the menu reopens where the user left it.
+    const step = async (lastChoice) => {
         const category = await select({
             message: "Choose a skill category:",
             choices: [
@@ -87,6 +89,7 @@ const selectSkillsByCategory = async (groups, globalSet = readGlobalSkillSet()) 
                 },
             ],
             pageSize: categories.length + 1,
+            default: lastChoice,
         }, CLEAR_ON_DONE);
 
         if (category === FINISH_SELECTION) {
@@ -108,33 +111,38 @@ const selectSkillsByCategory = async (groups, globalSet = readGlobalSkillSet()) 
                     items: [...automaticDependencies].map(([dependency, requiredBy]) =>
                         `${dependency} (required by ${requiredBy.join(", ")})`),
                 },
-                { title: "Skipped (already global)", items: skippedGlobal },
+                { title: "Already installed globally", items: alreadyGlobal },
             ], "Install selected skills");
 
             if (action === "install") return [...selectedSkills];
             if (action === "cancel") return null;
-            continue;
+            return step(category);
         }
 
         const entries = groups.get(category);
         const selectedInCategory = await checkbox({
             message: formatCategory(category),
-            choices: disableGlobalChoices(
-                entries.map((entry) => ({
-                    name: entry.name,
-                    value: entry,
-                    description: entry.description,
-                })),
-                (choice) => choice.value.skill,
-                globalSet,
+            choices: restoreChecked(
+                disableGlobalChoices(
+                    entries.map((entry) => ({
+                        name: entry.name,
+                        value: entry,
+                        description: entry.description,
+                    })),
+                    (choice) => choice.value.skill,
+                    globalSet,
+                ),
+                selectedSkills,
             ),
-            default: entries.filter((entry) => selectedSkills.has(entry)),
             pageSize: entries.length,
         }, CLEAR_ON_DONE);
 
         for (const entry of entries) selectedSkills.delete(entry);
         for (const entry of selectedInCategory) selectedSkills.add(entry);
-    }
+        return step(category);
+    };
+
+    return step(undefined);
 };
 
 /**

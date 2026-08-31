@@ -2,7 +2,7 @@ import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { disableGlobalChoices, readGlobalSkillSet } from "../shared/utils.js";
+import { disableGlobalChoices, readGlobalSkillSet, restoreChecked } from "../shared/utils.js";
 import { withTemporaryHome } from "./helpers.js";
 
 /**
@@ -79,9 +79,33 @@ test("disableGlobalChoices marks only the choices whose key is global, without m
 
     const annotated = disableGlobalChoices(choices, (choice) => choice.value.skill, globalSet);
 
-    assert.equal(annotated[0].disabled, "installed globally (v1.4.0)");
-    assert.equal(annotated[1].disabled, "installed globally");
+    assert.equal(annotated[0].disabled, "(installed globally · v1.4.0)");
+    assert.equal(annotated[1].disabled, "(installed globally)");
     assert.equal(annotated[2].disabled, undefined);
     // Input choices are untouched.
     assert.equal(choices[0].disabled, undefined);
+});
+
+test("restoreChecked re-checks prior picks by value reference and leaves disabled rows alone", () => {
+    const a = { skill: "a" };
+    const b = { skill: "b" };
+    const choices = [
+        { name: "A", value: a },
+        { name: "B", value: b },
+        { name: "C", value: { skill: "c" }, disabled: "(installed globally)" },
+    ];
+
+    const restored = restoreChecked(choices, new Set([a]));
+
+    assert.equal(restored[0].checked, true);
+    assert.equal(restored[1].checked, false);
+    assert.equal(restored[2].checked, undefined); // disabled row untouched
+    assert.equal(restored[2].disabled, "(installed globally)");
+    // Input choices are not mutated.
+    assert.equal(choices[0].checked, undefined);
+});
+
+test("restoreChecked treats a missing selection as nothing checked", () => {
+    const choices = [{ name: "A", value: { skill: "a" } }];
+    assert.equal(restoreChecked(choices)[0].checked, false);
 });
