@@ -35,8 +35,11 @@ readonly _MAX_GRAPH_ITERATIONS=10
 # ----- LOGGING -----------------------------------------------------------------
 # Runs before the shared logging library exists, so it writes straight to stderr.
 
-# log: Print a progress line to stderr.
+# log: Progress line to stderr, silenced unless INSTALLER_VERBOSE is non-empty — the
+# bootstrap is a quiet prerequisite of the `node …/index.js` tasks, and only the
+# global-asset sync opts in, to parse "verified N files" out of the captured output.
 log() {
+	[[ -n "${INSTALLER_VERBOSE:-}" ]] || return 0
 	printf '[install.sh] %s\n' "$*" >&2
 }
 

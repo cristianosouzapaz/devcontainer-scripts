@@ -93,7 +93,7 @@ report_names() {
 sync_installer() {
 	local assets_ref="$1" files
 	start_spinner "Refreshing installer from devcontainer-scripts@${assets_ref}"
-	SCRIPTS_REF="${assets_ref}" run_captured bash "${_INSTALLER_DIR}/install.sh" || {
+	SCRIPTS_REF="${assets_ref}" INSTALLER_VERBOSE=1 run_captured bash "${_INSTALLER_DIR}/install.sh" || {
 		spinner_cleanup
 		log_fatal "Installer fetch failed (devcontainer-scripts@${assets_ref})"
 	}
