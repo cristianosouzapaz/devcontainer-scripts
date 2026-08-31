@@ -35,7 +35,7 @@
     {
         "key": "documentation-sync",
         "name": "Documentation Sync",
-        "version": "1.2.0",
+        "version": "1.2.1",
         "description": "Requires docs/wiki/ and README.md to be checked and kept in sync whenever a change affects documented behavior.",
         "tags": [
             "docs",
@@ -53,7 +53,7 @@
     {
         "key": "vscode-tasks",
         "name": "VS Code Tasks",
-        "version": "1.0.0",
+        "version": "1.0.1",
         "description": "Points to the VS Code Tasks skill for creating or editing .vscode/tasks.json.",
         "tags": [
             "vscode",
