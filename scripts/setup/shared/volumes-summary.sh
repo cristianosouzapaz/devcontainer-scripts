@@ -3,17 +3,26 @@
 [[ -n "${_VOLUMES_SUMMARY_SH_LOADED:-}" ]] && return 0
 readonly _VOLUMES_SUMMARY_SH_LOADED=1
 
-# Volumes summary - Prints the mount and auth status of the persistent auth volumes
+# Volumes summary - Prints the mount status of the container's named volumes,
+# split into two independently-logged groups.
 #
-# Provides one public function:
-#   print_volumes_summary - Logs, for the Claude Code, Codex CLI, and GitHub
-#                            CLI auth volumes, whether each is mounted and
-#                            whether the tool is actually authenticated (not
-#                            just whether credential files are present). Mount
-#                            data comes from `docker inspect` against the
-#                            container's own ID (read from /etc/hostname); auth
-#                            data comes from each tool's own status command,
-#                            never by parsing credential files directly.
+# Provides two public functions:
+#   print_volumes_summary      - Logs, for the Claude Code, Codex CLI, and
+#                                 GitHub CLI auth volumes, whether each is
+#                                 mounted and whether the tool is actually
+#                                 authenticated (not just whether credential
+#                                 files are present). Auth data comes from each
+#                                 tool's own status command, never by parsing
+#                                 credential files directly.
+#   print_data_volumes_summary - Logs every *other* named volume mounted on the
+#                                 container (workspace source, the shared
+#                                 agent-assets store, anything the user added in
+#                                 docker-compose.yml) with its destination path
+#                                 and, when the name is recognised, a friendly
+#                                 label.
+#
+# Both read mount data from `docker inspect` against the container's own ID
+# (read from /etc/hostname) and silently do nothing without Docker access.
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
@@ -44,6 +53,15 @@ declare -ga _VOLUMES_ORDER=(
 	claude-auth-data
 	codex-auth-data
 	gh-cli-auth-data
+)
+
+# Friendly labels for the "Data volumes" group, keyed by exact volume name. The
+# per-project workspace volumes are matched separately (see data_volume_label)
+# because their names embed the project slug. A mounted volume that matches
+# neither is still listed, with a "-" in the detail column. Auth volumes never
+# reach this lookup.
+declare -gA _DATA_VOLUME_LABELS=(
+	[agents-data]="global agent assets"
 )
 
 # ----- INTERNAL HELPERS -------------------------------------------------------
@@ -105,10 +123,30 @@ volumes_summary_identity() {
 	esac
 }
 
+# data_volume_label <volume_name>: echoes a friendly description for a data
+# volume. An exact match in _DATA_VOLUME_LABELS wins; otherwise the two
+# per-project volumes named by project-init.ps1 — "<PROJECT_NAME>-workspace"
+# (docker-compose.yml) and "<PROJECT_NAME>-data" (the devcontainer.json
+# workspaceMount) — are recognised via PROJECT_NAME. Prints nothing (still
+# returns 0) for anything else; the caller renders that as a "-".
+data_volume_label() {
+	local name="$1"
+	if [[ -n "${_DATA_VOLUME_LABELS[$name]:-}" ]]; then
+		printf '%s\n' "${_DATA_VOLUME_LABELS[$name]}"
+		return 0
+	fi
+	if [[ -n "${PROJECT_NAME:-}" ]] &&
+		{ [[ "$name" == "${PROJECT_NAME}-workspace" ]] || [[ "$name" == "${PROJECT_NAME}-data" ]]; }; then
+		printf '%s\n' "workspace source"
+		return 0
+	fi
+	return 0
+}
+
 # ----- PUBLIC FUNCTIONS -------------------------------------------------------
 
 # print_volumes_summary: Logs the mount and auth status of the Claude Code,
-# Codex CLI, and GitHub CLI persistent auth volumes as a group — one primary
+# Codex CLI, and GitHub CLI auth volumes as a group — one primary
 # line announcing the count, followed by one status-carrying line per volume
 # (indented, each with its own success/warning symbol since each row is its own
 # conclusion).
@@ -164,7 +202,7 @@ print_volumes_summary() {
 
 	((${#row_names[@]} == 0)) && return 0
 
-	log_info "Persistent volumes: ${#row_names[@]}"
+	log_info "Auth volumes: ${#row_names[@]}"
 
 	if [[ "$STRUCTURED_LOGS" != "true" ]]; then
 		printf -v header '%-*s  %-*s  %-*s  %s' "$col_tool" "TOOL" "$col_volume" "VOLUME" "$col_mount" "MOUNT" "STATUS"
@@ -194,6 +232,70 @@ print_volumes_summary() {
 	return 0
 }
 
+# print_data_volumes_summary: Logs every named volume mounted on the container
+# that is NOT one of the auth volumes handled by print_volumes_summary —
+# workspace source, the shared agent-assets store, and anything the user added
+# to docker-compose.yml. Renders as its own tree group: one primary line with
+# the count, then one line per volume ("<name>  <mount>  <label>"), each a
+# conclusion of its own (always a success symbol — the volume is mounted).
+# Recognised names get a friendly label from data_volume_label; the rest show a
+# "-". In STRUCTURED_LOGS mode the column header is dropped and each row becomes
+# a clean sentence. Silently does nothing without Docker access, or when no
+# non-auth volume is mounted.
+# Args: none
+# Returns: 0 always
+print_data_volumes_summary() {
+	local mounts sorted name destination label header row i
+	local col_volume=6 col_mount=5
+	local -a row_names=() row_mounts=() row_labels=()
+
+	mounts="$(volumes_summary_list_mounts)"
+	if [[ -z "$mounts" ]]; then
+		log_debug "Skipping data volumes summary — docker unavailable"
+		return 0
+	fi
+
+	# `docker inspect` mount order is not stable — sort by name so the group
+	# reads identically across runs, matching print_volumes_summary's explicit
+	# ordering. Auth-volume and blank lines are skipped in the loop below.
+	sorted="$(sort <<<"$mounts")"
+
+	while IFS='|' read -r name destination; do
+		[[ -n "$name" ]] || continue
+		# Auth volumes have their own summary — never list them here.
+		[[ -n "${_VOLUMES_OF_INTEREST[$name]:-}" ]] && continue
+
+		label="$(data_volume_label "$name")"
+		row_names+=("$name"); row_mounts+=("$destination"); row_labels+=("$label")
+
+		((${#name} > col_volume)) && col_volume=${#name}
+		((${#destination} > col_mount)) && col_mount=${#destination}
+	done <<<"$sorted"
+
+	((${#row_names[@]} == 0)) && return 0
+
+	log_info "Data volumes: ${#row_names[@]}"
+
+	if [[ "$STRUCTURED_LOGS" != "true" ]]; then
+		printf -v header '%-*s  %-*s  %s' "$col_volume" "VOLUME" "$col_mount" "MOUNT" "DETAIL"
+		# 3 leading spaces — see the matching note in print_volumes_summary.
+		log_detail "   ${header}"
+	fi
+
+	for i in "${!row_names[@]}"; do
+		if [[ "$STRUCTURED_LOGS" == "true" ]]; then
+			row="${row_names[$i]} -> ${row_mounts[$i]}"
+			[[ -n "${row_labels[$i]}" ]] && row="${row} — ${row_labels[$i]}"
+		else
+			printf -v row '%-*s  %-*s  %s' "$col_volume" "${row_names[$i]}" "$col_mount" "${row_mounts[$i]}" "${row_labels[$i]:--}"
+		fi
+		log_item_success "$row"
+	done
+
+	return 0
+}
+
 export -f volumes_summary_list_mounts volumes_summary_claude_identity \
 	volumes_summary_codex_identity volumes_summary_gh_identity \
-	volumes_summary_identity print_volumes_summary
+	volumes_summary_identity data_volume_label print_volumes_summary \
+	print_data_volumes_summary

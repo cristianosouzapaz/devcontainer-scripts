@@ -62,6 +62,7 @@ main() {
 	fi
 
 	print_volumes_summary
+	print_data_volumes_summary
 
 	log_success "Setup completed"
 }
