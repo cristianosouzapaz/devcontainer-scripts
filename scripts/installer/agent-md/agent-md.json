@@ -2,7 +2,7 @@
     {
         "key": "component-index",
         "name": "Component Index Maintenance",
-        "version": "1.0.0",
+        "version": "1.0.1",
         "description": "Requires the Index Components skill to be run before closing out any task that touches components.",
         "tags": [
             "react",
