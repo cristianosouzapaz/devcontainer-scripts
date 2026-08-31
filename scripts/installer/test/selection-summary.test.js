@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { formatSelectionSummary } from "../shared/utils.js";
+import { formatSelectionSummary } from "../shared/prompts.js";
 
 test("formats a compact summary with counted sections", () => {
     const summary = formatSelectionSummary([

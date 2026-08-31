@@ -3,30 +3,23 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
-import { claudeSkillAdapter, getArtifactVersion, handleError, loadJsonCatalog, loadValidatedCatalog, readLockFile, recordArtifact, setupConsola, TOOLS, writeLockFile, writeOverwrite, writeWithConflict } from "../../shared/utils.js";
+import { loadJsonCatalog, loadValidatedCatalog } from "../../shared/catalog.js";
+import { TOOLS } from "../../shared/constants.js";
+import { claudeSkillAdapter, getArtifactVersion, readLockFile, recordArtifact, writeLockFile } from "../../shared/lock-file.js";
+import { handleError, setupConsola } from "../../shared/utils.js";
+import { writeOverwrite, writeWithConflict } from "../../shared/write-file.js";
 
 /**
- * @fileoverview Local, first-party Agent Skills bundled with the installer package.
- *
- * Unlike `skills/index.js` (third-party skills fetched via `npx skills add <url>`), these
- * skills ship as templates in this repo and are written directly to disk — no network call.
- *
- * Two entry points:
- *   - default (library): `agent-md/index.js` calls `installLocalSkills` for the union of
- *     `skills` referenced by the AGENTS.md blocks the user selected.
- *   - `--global`: non-interactive machine-wide install of the keys listed in this
- *     installer's own `skills.global.json`, into `~/.agents` + `~/.claude`, tracked in
- *     `~/.agents/template-lock.json`. See `installGlobalLocalSkills`.
- *
- * Always written to `.agents/skills/<key>/SKILL.md`, the canonical project location shared
- * by Codex and GitHub Copilot. Claude receives a selective symlink for each skill that is
- * actually a Claude skill; instruction skills are linked only from `.claude/rules` so they
- * cannot be loaded twice by Claude.
+ * @fileoverview Local, first-party Agent Skills bundled with the installer package. See
+ * `docs/wiki/installer/skills.md`. Claude instruction skills are linked only from
+ * `.claude/rules` so they cannot load twice.
  *
  * Installed at /opt/devcontainer/installer/skills/local/ inside the container.
  */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ─── Constants ───────────────────────────────────────────────────────────────
 
 const LOCAL_SKILLS_FILE_URL = new URL("./skills.json", import.meta.url);
 const GLOBAL_MANIFEST_URL = new URL("./skills.global.json", import.meta.url);

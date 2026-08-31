@@ -1,24 +1,16 @@
 import { execFileSync } from "node:child_process";
-import { checkbox, select } from "@inquirer/prompts";
 import consola from "consola";
-import { AGENTS, CLEAR_ON_DONE, confirmSelection, disableGlobalChoices, handleError, loadJsonCatalog, loadValidatedCatalog, readGlobalSkillSet, restoreChecked, selectTargetTools, setupConsola, TOOLS } from "../shared/utils.js";
-import { groupByCategory } from "./catalog.js";
+import { loadJsonCatalog, loadValidatedCatalog } from "../shared/catalog.js";
+import { AGENTS, TOOLS } from "../shared/constants.js";
+import { pickAssets } from "../shared/pick-assets.js";
+import { restoreChecked, selectTargetTools, selectUntilConfirmed } from "../shared/prompts.js";
+import { handleError, readGlobalSkillSet, setupConsola } from "../shared/utils.js";
+import { buildSkillChoices, readProjectSkillSet } from "./catalog.js";
 import { ensureClaudeSkillSymlink } from "./local/index.js";
 
 /**
- * @fileoverview Interactive installer for third-party Agent Skills.
- *
- * Third-party skills are always installed once into the canonical `.agents/skills`
- * directory through the Codex target. GitHub Copilot discovers that directory directly.
- * Claude Code receives selective symlinks under `.claude/skills` when selected. The external
- * skills CLI owns source and integrity tracking in skills-lock.json.
- *
- * Two entry points:
- *   - default: interactive per-project install into the current working directory.
- *   - `--global`: non-interactive machine-wide install. Adds every entry of this installer's
- *     own `skills.global.json` to the shared skills store with `npx skills add -g`, then
- *     `npx skills update -g`. See `installGlobalSkills`. First-party instruction/prompt and
- *     local-skill assets have their own `*.global.json` under `agents/` and `skills/local/`.
+ * @fileoverview Interactive installer for third-party Agent Skills. See
+ * `docs/wiki/installer/skills.md`. The external skills CLI owns source and integrity tracking.
  *
  * Installed at /opt/devcontainer/installer/skills/ inside the container.
  */
@@ -29,8 +21,6 @@ setupConsola();
 
 const SKILLS_FILE_URL = new URL("./skills.json", import.meta.url);
 const GLOBAL_MANIFEST_URL = new URL("./skills.global.json", import.meta.url);
-
-const FINISH_SELECTION = "finish-selection";
 
 // ─── Functions ───────────────────────────────────────────────────────────────
 
@@ -47,102 +37,36 @@ const loadSkillsCatalog = () => loadValidatedCatalog(SKILLS_FILE_URL, "skills", 
 });
 
 /**
- * Format a category name as the compact separator label used in the prompts.
- * @param {string} category - Category name.
- * @returns {string} The category name wrapped in dashes.
+ * Present the whole catalogue as one filterable multi-select, then confirm. The returned
+ * list is exactly what the user picked; each entry's `requires` dependencies are installed
+ * as a side effect by the caller, so they only appear in the confirmation summary.
+ * @param {object[]} skills - Validated skill catalog entries.
+ * @param {Map<string, unknown>} globalSet - Skills already installed machine-wide.
+ * @returns {Promise<object[]|null|undefined>} Picked entries, null on cancel, undefined on
+ *   an empty selection.
  */
-const formatCategory = (category) => `── ${category} ──`;
+const selectSkills = (skills, globalSet = readGlobalSkillSet(), projectSet = readProjectSkillSet()) => {
+    const choices = buildSkillChoices(skills, globalSet, projectSet);
+    const alreadyGlobal = choices.filter((choice) => choice.disabled).map((choice) => choice.name);
 
-/**
- * Interactively select skills one compact category at a time. This keeps every checkbox
- * prompt visible without relying on an internal scrolling list as the catalog grows.
- * @param {Map<string, object[]>} groups - Validated catalog entries grouped by category.
- * @param {Map<string, string|null>} globalSet - Skills already installed machine-wide, shown
- *   as non-selectable `disabled` rows.
- * @returns {Promise<object[]|null>} Selected entries, or null when the user cancels.
- */
-const selectSkillsByCategory = async (groups, globalSet = readGlobalSkillSet()) => {
-    const selectedSkills = new Set();
-    const categories = [...groups.entries()];
-    const alreadyGlobal = [...groups.values()].flat()
-        .filter((entry) => globalSet.has(entry.skill))
-        .map((entry) => entry.name);
-
-    // `@inquirer/select` has no native "resume at last cursor": each step passes the
-    // previously chosen row as `default` so the menu reopens where the user left it.
-    const step = async (lastChoice) => {
-        const category = await select({
-            message: "Choose a skill category:",
-            choices: [
-                ...categories.map(([name, entries]) => {
-                    const selectedCount = entries.filter((entry) => selectedSkills.has(entry)).length;
-                    return {
-                        name: `${formatCategory(name)} (${selectedCount}/${entries.length} selected)`,
-                        value: name,
-                    };
-                }),
-                {
-                    name: selectedSkills.size === 0
-                        ? "Finish without selecting skills"
-                        : `Review ${selectedSkills.size} selected skill${selectedSkills.size === 1 ? "" : "s"}`,
-                    value: FINISH_SELECTION,
-                },
-            ],
-            pageSize: categories.length + 1,
-            default: lastChoice,
-        }, CLEAR_ON_DONE);
-
-        if (category === FINISH_SELECTION) {
-            if (selectedSkills.size === 0) return [];
-
-            const automaticDependencies = new Map();
-            for (const entry of selectedSkills) {
+    return selectUntilConfirmed(
+        (previous) => pickAssets({ message: "Select skills", choices: restoreChecked(choices, previous), grouped: true }),
+        (selected) => {
+            const requiredBy = new Map();
+            for (const entry of selected) {
                 for (const dependency of entry.requires ?? []) {
-                    if ([...selectedSkills].some(({ skill }) => skill === dependency)) continue;
-                    const requiredBy = automaticDependencies.get(dependency) ?? [];
-                    requiredBy.push(entry.name);
-                    automaticDependencies.set(dependency, requiredBy);
+                    if (selected.some((pick) => pick.skill === dependency)) continue;
+                    requiredBy.set(dependency, [...(requiredBy.get(dependency) ?? []), entry.name]);
                 }
             }
-            const action = await confirmSelection([
-                { title: "Skills", items: [...selectedSkills].map(({ name }) => name) },
-                {
-                    title: "Automatically included",
-                    items: [...automaticDependencies].map(([dependency, requiredBy]) =>
-                        `${dependency} (required by ${requiredBy.join(", ")})`),
-                },
+            return [
+                { title: "Skills", items: selected.map(({ name }) => name) },
+                { title: "Automatically included", items: [...requiredBy].map(([dep, names]) => `${dep} (required by ${names.join(", ")})`) },
                 { title: "Already installed globally", items: alreadyGlobal },
-            ], "Install selected skills");
-
-            if (action === "install") return [...selectedSkills];
-            if (action === "cancel") return null;
-            return step(category);
-        }
-
-        const entries = groups.get(category);
-        const selectedInCategory = await checkbox({
-            message: formatCategory(category),
-            choices: restoreChecked(
-                disableGlobalChoices(
-                    entries.map((entry) => ({
-                        name: entry.name,
-                        value: entry,
-                        description: entry.description,
-                    })),
-                    (choice) => choice.value.skill,
-                    globalSet,
-                ),
-                selectedSkills,
-            ),
-            pageSize: entries.length,
-        }, CLEAR_ON_DONE);
-
-        for (const entry of entries) selectedSkills.delete(entry);
-        for (const entry of selectedInCategory) selectedSkills.add(entry);
-        return step(category);
-    };
-
-    return step(undefined);
+            ];
+        },
+        "Install selected skills",
+    );
 };
 
 /**
@@ -229,9 +153,7 @@ export const installGlobalSkills = ({ run = runSkillsCli } = {}) => {
  */
 const askUser = async () => {
     try {
-        const skills = loadSkillsCatalog();
-
-        const selectedSkills = await selectSkillsByCategory(groupByCategory(skills));
+        const selectedSkills = await selectSkills(loadSkillsCatalog());
 
         if (!selectedSkills || selectedSkills.length === 0) {
             consola.info("No skills selected.");

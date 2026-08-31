@@ -2,17 +2,16 @@ import { readFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
-import { checkbox } from "@inquirer/prompts";
-import { buildInstallCommand, buildTagsStr, CLEAR_ON_DONE, copyToClipboard, formatVersionHint, handleError, loadValidatedCatalog, readConfigInstalledVersion, readLockFile, resolvePageSize, restoreChecked, selectUntilConfirmed, setupConsola, writeLockFile, writeWithConflict } from "../shared/utils.js";
+import { loadValidatedCatalog } from "../shared/catalog.js";
+import { readLockFile, writeLockFile } from "../shared/lock-file.js";
+import { pickAssets } from "../shared/pick-assets.js";
+import { formatVersionHint, restoreChecked, selectUntilConfirmed } from "../shared/prompts.js";
+import { copyToClipboard, handleError, setupConsola } from "../shared/utils.js";
+import { writeWithConflict } from "../shared/write-file.js";
 
 /**
- * @fileoverview Interactive installer for project config file templates.
- *
- * Reads available templates from configs.json (each entry carries a version field and,
- * where applicable, a list of npm packages required for the config to function).
- * On install, writes files to the user's project root, records installed versions
- * in template-lock.json so subsequent runs can show version hints in the UI, and
- * prints a consolidated dependency installation command for the written configs.
+ * @fileoverview Interactive installer for project config templates. See
+ * `docs/wiki/installer/configs.md`.
  *
  * Installed at /opt/devcontainer/installer/configs/ inside the container.
  */
@@ -49,7 +48,7 @@ const announceRequiredPackages = (writtenConfigs) => {
     const packages = [...new Set(writtenConfigs.flatMap((c) => c.packages ?? []))];
     if (packages.length === 0) return;
 
-    const installCommand = buildInstallCommand(packages);
+    const installCommand = `pnpm add -D ${packages.join(" ")}`;
     const copied = copyToClipboard(installCommand);
 
     consola.box({
@@ -68,19 +67,17 @@ const askUser = async () => {
     try {
         const configs = loadConfigsCatalog();
         const destDir = process.cwd();
+        const lock = readLockFile(destDir);
 
-        const choices = configs.map((c) => {
-            const installedVersion = readConfigInstalledVersion(destDir, c.filename);
-            const versionStr = formatVersionHint(installedVersion, c.version);
-            return { name: `${c.name} ${versionStr} ${buildTagsStr(c.tags)}`, value: c, description: c.description };
-        });
+        const choices = configs.map((c) => ({
+            name: c.name,
+            value: c,
+            description: c.description,
+            annotation: formatVersionHint(lock.configs[c.filename] ?? null, c.version),
+        }));
 
         const selectedConfigs = await selectUntilConfirmed(
-            (previous) => checkbox({
-                choices: restoreChecked(choices, previous),
-                message: "Select config files to copy:",
-                pageSize: resolvePageSize(choices.length),
-            }, CLEAR_ON_DONE),
+            (previous) => pickAssets({ message: "Select config files", choices: restoreChecked(choices, previous) }),
             (selected) => {
                 const packages = [...new Set(selected.flatMap((config) => config.packages ?? []))];
                 return [
@@ -96,7 +93,6 @@ const askUser = async () => {
         }
         if (selectedConfigs === null) return;
 
-        const lock = readLockFile(destDir);
         const writtenConfigs = [];
 
         for (const config of selectedConfigs) {

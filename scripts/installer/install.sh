@@ -22,7 +22,7 @@ readonly _SEED_ENTRYPOINTS=(
 # Required, but not reachable from the import graph.
 readonly _EXTRA_FILES=("package.json")
 
-readonly _RUNTIME_DEPS=("@inquirer/prompts" "chalk" "consola")
+readonly _RUNTIME_DEPS=("@inquirer/core" "@inquirer/prompts" "chalk" "consola")
 
 readonly _CURL_OPTS=(
 	--fail --location --show-error --silent

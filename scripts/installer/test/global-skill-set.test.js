@@ -2,7 +2,8 @@ import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { disableGlobalChoices, readGlobalSkillSet, restoreChecked } from "../shared/utils.js";
+import { restoreChecked } from "../shared/prompts.js";
+import { readGlobalSkillSet } from "../shared/utils.js";
 import { withTemporaryHome } from "./helpers.js";
 
 /**
@@ -68,23 +69,6 @@ test("ignores dotfiles and plain files, and tolerates an unreadable lock file", 
         assert.equal(set.has(".keep"), false);
         assert.equal(set.size, 0);
     }));
-
-test("disableGlobalChoices marks only the choices whose key is global, without mutating input", () => {
-    const globalSet = new Map([["create-pr", "1.4.0"], ["caveman", null]]);
-    const choices = [
-        { name: "Create PR", value: { skill: "create-pr" } },
-        { name: "Caveman", value: { skill: "caveman" } },
-        { name: "Dataviz", value: { skill: "dataviz" } },
-    ];
-
-    const annotated = disableGlobalChoices(choices, (choice) => choice.value.skill, globalSet);
-
-    assert.equal(annotated[0].disabled, "(installed globally · v1.4.0)");
-    assert.equal(annotated[1].disabled, "(installed globally)");
-    assert.equal(annotated[2].disabled, undefined);
-    // Input choices are untouched.
-    assert.equal(choices[0].disabled, undefined);
-});
 
 test("restoreChecked re-checks prior picks by value reference and leaves disabled rows alone", () => {
     const a = { skill: "a" };

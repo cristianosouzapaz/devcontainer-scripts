@@ -3,37 +3,19 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
-import { checkbox } from "@inquirer/prompts";
-import { buildTagsStr, claudeRuleAdapter, claudeSkillAdapter, CLEAR_ON_DONE, disableGlobalChoices, formatVersionHint, getArtifactVersion, handleError, loadValidatedCatalog, readGlobalSkillSet, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, restoreChecked, selectTargetTools, selectUntilConfirmed, setupConsola, TOOLS, writeLockFile, writeOverwrite, writeWithConflict } from "../shared/utils.js";
+import { loadValidatedCatalog } from "../shared/catalog.js";
+import { TOOLS } from "../shared/constants.js";
+import { claudeRuleAdapter, claudeSkillAdapter, getArtifactVersion, readLockFile, reconcileArtifactAdapters, recordArtifact, writeLockFile } from "../shared/lock-file.js";
+import { pickAssets } from "../shared/pick-assets.js";
+import { formatVersionHint, restoreChecked, selectTargetTools, selectUntilConfirmed } from "../shared/prompts.js";
+import { handleError, readGlobalSkillSet, setupConsola } from "../shared/utils.js";
+import { writeOverwrite, writeWithConflict } from "../shared/write-file.js";
 import { ensureClaudeRuleSymlink, ensureClaudeSkillSymlink } from "../skills/local/index.js";
 
 /**
- * @fileoverview Interactive installer for agent instruction and prompt templates.
- *
- * Canonical source and adapter strategy:
- *
- *   Canonical skills (always):
- *     Instructions → .agents/skills/<instruction>/SKILL.md
- *     Commands     → .agents/skills/<command>/SKILL.md
- *
- *   Native adapters (only for selected agents):
- *     Claude Code    → selective symlinks in .claude/rules/ and .claude/skills/
- *     GitHub Copilot → .github/instructions/ and .github/prompts/
- *     Codex          → no adapter; reads AGENTS.md and .agents/skills directly
- *
- * Claude adapters are symlinks to the canonical skill, so there is never a second editable
- * copy. Copilot still receives materialized native adapters because its path-specific
- * instruction and prompt formats are not Agent Skills.
- *
- * On install, updates template-lock.json with each canonical asset's version and the
- * native adapters materialized for it. Version display in the UI reads that manifest.
- *
- * Two entry points:
- *   - default: interactive project install into the current working directory.
- *   - `--global`: non-interactive machine-wide install of the instruction and prompt names
- *     listed in this installer's own `agents.global.json`, into `~/.agents` + `~/.claude`
- *     (Claude adapter only), tracked in `~/.agents/template-lock.json`. See `installGlobal`.
- *     Local first-party skills have their own `--global` path in `skills/local/index.js`.
+ * @fileoverview Interactive installer for agent instruction and prompt templates. See
+ * `docs/wiki/installer/agents.md`. Claude adapters remain symlinks to the canonical skill;
+ * Copilot needs materialized adapters for its path-specific formats.
  *
  * Installed at /opt/devcontainer/installer/agents/ inside the container.
  */
@@ -438,58 +420,22 @@ const askUser = async () => {
         const lock = readLockFile(destRoot);
         const globalSet = readGlobalSkillSet();
 
-        // Global rows are non-actionable: no version hint / tag badges — they'd only
-        // duplicate the version already in the `(installed globally · vX)` label.
-        const choiceName = (skillName, { name, version, tags }, canonicalRelPath) =>
-            globalSet.has(skillName)
-                ? name
-                : `${name} ${formatVersionHint(getArtifactVersion(lock, canonicalRelPath), version)} ${buildTagsStr(tags)}`;
+        const toChoice = (entry, skillName) => ({
+            name: entry.name,
+            value: entry,
+            description: readTemplateDescription(entry.templateFile),
+            annotation: formatVersionHint(getArtifactVersion(lock, join(".agents", "skills", skillName, "SKILL.md")), entry.version),
+            disabled: globalSet.has(skillName) && "installed globally",
+        });
 
-        const instructionChoices = disableGlobalChoices(
-            instructions.map(({ filename, version, name, tags, templateFile }) => {
-                const skillName = toSkillName(filename);
-                const canonicalRelPath = join(".agents", "skills", skillName, "SKILL.md");
-                return {
-                    name: choiceName(skillName, { name, version, tags }, canonicalRelPath),
-                    value: { filename, version, name, tags, templateFile },
-                    description: readTemplateDescription(templateFile),
-                };
-            }),
-            (choice) => toSkillName(choice.value.filename),
-            globalSet,
-        );
-
-        const promptChoices = disableGlobalChoices(
-            prompts.map(({ filename, commandFilename, version, name, tags, templateFile }) => {
-                const skillName = toSkillName(commandFilename);
-                const canonicalRelPath = join(".agents", "skills", skillName, "SKILL.md");
-                return {
-                    name: choiceName(skillName, { name, version, tags }, canonicalRelPath),
-                    value: { filename, commandFilename, version, name, tags, templateFile },
-                    description: readTemplateDescription(templateFile),
-                };
-            }),
-            (choice) => toSkillName(choice.value.commandFilename),
-            globalSet,
-        );
-
-        const alreadyGlobal = [
-            ...instructions.filter((entry) => globalSet.has(toSkillName(entry.filename))),
-            ...prompts.filter((entry) => globalSet.has(toSkillName(entry.commandFilename))),
-        ].map((entry) => entry.name);
+        const instructionChoices = instructions.map((entry) => toChoice(entry, toSkillName(entry.filename)));
+        const promptChoices = prompts.map((entry) => toChoice(entry, toSkillName(entry.commandFilename)));
+        const alreadyGlobal = [...instructionChoices, ...promptChoices].filter((choice) => choice.disabled).map((choice) => choice.name);
 
         const selectedAssets = await selectUntilConfirmed(
             async (previous = {}) => ({
-                selectedInstructions: await checkbox({
-                    message: "Select instruction files to install:",
-                    choices: restoreChecked(instructionChoices, previous.selectedInstructions),
-                    pageSize: resolvePageSize(instructionChoices.length),
-                }, CLEAR_ON_DONE),
-                selectedPrompts: await checkbox({
-                    message: "Select prompt files to install:",
-                    choices: restoreChecked(promptChoices, previous.selectedPrompts),
-                    pageSize: resolvePageSize(promptChoices.length),
-                }, CLEAR_ON_DONE),
+                selectedInstructions: await pickAssets({ message: "Select instruction files", choices: restoreChecked(instructionChoices, previous.selectedInstructions) }),
+                selectedPrompts: await pickAssets({ message: "Select prompt files", choices: restoreChecked(promptChoices, previous.selectedPrompts) }),
             }),
             ({ selectedInstructions, selectedPrompts }) => [
                 { title: "Instruction files", items: selectedInstructions.map(({ name }) => name) },

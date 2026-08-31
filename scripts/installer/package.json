@@ -10,6 +10,7 @@
         "consola": "^3.2.0"
     },
     "devDependencies": {
+        "@inquirer/testing": "^3.3.11",
         "knip": "^6.32.2"
     }
 }

@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 /**
  * @fileoverview Presentation-independent helpers for the third-party skills catalog.
  */
@@ -38,3 +41,36 @@ export const groupByCategory = (entries) => {
         }),
     );
 };
+
+/**
+ * Read the names installed by the external skills CLI in a project. Skills have no template
+ * versions, so only their presence is relevant to the interactive picker.
+ * @param {string} [projectRoot] - Project containing `skills-lock.json`.
+ * @returns {Set<string>} Installed third-party skill names.
+ */
+export const readProjectSkillSet = (projectRoot = process.cwd()) => {
+    try {
+        const lock = JSON.parse(readFileSync(join(projectRoot, "skills-lock.json"), "utf8"));
+        return new Set(Object.keys(lock?.skills ?? {}).filter((name) => typeof name === "string" && name.length > 0));
+    } catch {
+        return new Set();
+    }
+};
+
+/**
+ * Convert catalogue entries to picker choices, retaining category order and project state.
+ * @param {object[]} skills - Validated skill catalog entries.
+ * @param {Map<string, unknown>} globalSet - Skills already installed machine-wide.
+ * @param {Set<string>} projectSet - Skills already installed in this project.
+ * @returns {object[]} Picker choices.
+ */
+export const buildSkillChoices = (skills, globalSet, projectSet) =>
+    [...groupByCategory(skills).entries()].flatMap(([group, entries]) =>
+        entries.map((entry) => ({
+            name: entry.name,
+            value: entry,
+            description: entry.description,
+            group,
+            annotation: !globalSet.has(entry.skill) && projectSet.has(entry.skill) ? "(installed)" : undefined,
+            disabled: globalSet.has(entry.skill) && "installed globally",
+        })));

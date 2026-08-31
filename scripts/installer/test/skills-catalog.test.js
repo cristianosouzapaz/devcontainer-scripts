@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { groupByCategory } from "../skills/catalog.js";
-import { readText } from "./helpers.js";
+import { buildSkillChoices, groupByCategory, readProjectSkillSet } from "../skills/catalog.js";
+import { readText, withTemporaryProject } from "./helpers.js";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 test("groups known categories in the picker order and retains catalog order within each category", () => {
     const planningFirst = { name: "Plan first", category: "Planning & Workflow" };
@@ -29,3 +31,20 @@ test("the skills picker imports the catalog helper, so the bootstrap graph walk 
     // is what pulls skills/catalog.js into the download set.
     assert.match(readText("skills/index.js"), /from "\.\/catalog\.js"/);
 });
+
+test("marks project skills as installed without reading a version", () => withTemporaryProject((projectRoot) => {
+    writeFileSync(join(projectRoot, "skills-lock.json"), JSON.stringify({
+        version: 1,
+        skills: { "diagram-design": { computedHash: "abc" } },
+    }));
+
+    const [global, installed] = buildSkillChoices([
+        { name: "Diagram Design", skill: "diagram-design", category: "Design & Frontend", description: "", tags: [] },
+        { name: "Global Skill", skill: "global-skill", category: "Planning & Workflow", description: "", tags: [] },
+    ], new Map([["global-skill", null]]), readProjectSkillSet(projectRoot));
+
+    assert.equal(installed.annotation, "(installed)");
+    assert.equal(installed.disabled, false);
+    assert.equal(global.annotation, undefined);
+    assert.equal(global.disabled, "installed globally");
+}));

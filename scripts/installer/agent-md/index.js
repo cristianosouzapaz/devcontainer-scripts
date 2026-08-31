@@ -2,26 +2,18 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import consola from "consola";
-import { checkbox } from "@inquirer/prompts";
-import { claudeSkillAdapter, CLEAR_ON_DONE, formatVersionHint, handleError, loadValidatedCatalog, readLockFile, reconcileArtifactAdapters, recordArtifact, resolvePageSize, restoreChecked, selectTargetTools, selectUntilConfirmed, setupConsola, TOOLS, writeLockFile } from "../shared/utils.js";
+import { loadValidatedCatalog } from "../shared/catalog.js";
+import { TOOLS } from "../shared/constants.js";
+import { claudeSkillAdapter, readLockFile, reconcileArtifactAdapters, recordArtifact, writeLockFile } from "../shared/lock-file.js";
+import { pickAssets } from "../shared/pick-assets.js";
+import { formatVersionHint, restoreChecked, selectTargetTools, selectUntilConfirmed } from "../shared/prompts.js";
+import { handleError, setupConsola } from "../shared/utils.js";
 import { ensureClaudeSkillSymlink, installLocalSkills } from "../skills/local/index.js";
 
 /**
- * @fileoverview Interactive installer for canonical AGENTS.md instruction blocks.
- *
- * Each catalog entry is a self-contained markdown block, wrapped in an HTML marker on
- * install so subsequent runs can find and update it in place instead of duplicating it.
- *
- * All blocks are upserted into AGENTS.md, the canonical project instruction file, regardless
- * of the selected coding agent. When Claude Code is selected, CLAUDE.md is a small adapter
- * that imports AGENTS.md. This leaves Codex, GitHub Copilot, and future coding agents with
- * one shared source of truth.
- *
- * The catalog's "targets" field is declarative metadata only (documents which files a block
- * is valid in) — it does not filter the picker or affect routing.
- *
- * On install, updates template-lock.json's "mdBlocks.AGENTS.md" section and records local
- * skills with the native adapters materialized for them. The CLAUDE.md pointer is unversioned.
+ * @fileoverview Interactive installer for canonical AGENTS.md instruction blocks. See
+ * `docs/wiki/installer/agent-md.md`. Blocks use markers for in-place upserts; `targets` is
+ * metadata only, and the CLAUDE.md pointer is unversioned.
  *
  * Installed at /opt/devcontainer/installer/agent-md/ inside the container.
  */
@@ -99,7 +91,7 @@ const upsertBlock = (content, key, version, body) => {
  * Creates the file with just the pointer line if missing; prepends the line if the file
  * exists without it. Logs every action taken via consola.info.
  * @param {string} claudeMdPath - Absolute path to CLAUDE.md.
- * @returns {string} The (possibly updated) CLAUDE.md content, for further block upserts.
+ * @returns {string} The resulting CLAUDE.md content.
  */
 const ensureClaudePointer = (claudeMdPath) => {
     if (!existsSync(claudeMdPath)) {
@@ -156,22 +148,15 @@ const askUser = async () => {
         const lock = readLockFile(destRoot);
         if (!lock.mdBlocks) lock.mdBlocks = {};
 
-        const choices = catalog.map((entry) => {
-            const agentsVersion = lock.mdBlocks["AGENTS.md"]?.[entry.key] ?? null;
-            const versionStr = formatVersionHint(agentsVersion, entry.version);
-            return {
-                name: `${entry.name} ${versionStr}`,
-                value: entry,
-                description: entry.description,
-            };
-        });
+        const choices = catalog.map((entry) => ({
+            name: entry.name,
+            value: entry,
+            description: entry.description,
+            annotation: formatVersionHint(lock.mdBlocks["AGENTS.md"]?.[entry.key] ?? null, entry.version),
+        }));
 
         const selectedBlocks = await selectUntilConfirmed(
-            (previous) => checkbox({
-                message: "Select blocks to install:",
-                choices: restoreChecked(choices, previous),
-                pageSize: resolvePageSize(choices.length),
-            }, CLEAR_ON_DONE),
+            (previous) => pickAssets({ message: "Select AGENTS.md blocks", choices: restoreChecked(choices, previous) }),
             (selected) => {
                 const skillKeys = [...new Set(selected.flatMap((block) => block.skills ?? []))];
                 return [

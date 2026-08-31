@@ -1,5 +1,16 @@
 # Installer Tests
 
+## `pick-assets.test.js`
+
+Module under test: `shared/pick-assets.js` — the shared multi-select prompt.
+
+| Test | Verifies |
+| --- | --- |
+| shows annotations, global status and category separators | Version annotations, non-selectable global rows, and category separators render through the official checkbox |
+| space toggles the active official checkbox | Space selects the active choice and Enter returns its value |
+| keeps the picker header singular across selection redraws | Repeated official checkbox redraws retain one current prompt header |
+| keeps one visible frame while paging through a long skills list | The official checkbox retains one current frame after crossing pagination boundaries |
+
 ## `global-skill-set.test.js`
 
 | Test | Verifies |
@@ -9,7 +20,6 @@
 | adds directory entries under ~/.agents/skills and ~/.claude/skills with a null version | A skill known only from a directory (real or symlink) listing is included with a `null` version |
 | the lock version wins over a bare directory listing for the same name | A name present in both the lock and a directory listing keeps its recorded version |
 | ignores dotfiles and plain files, and tolerates an unreadable lock file | Dotfiles and non-directory entries are skipped; a malformed `template-lock.json` degrades to the directory listings |
-| disableGlobalChoices marks only the choices whose key is global, without mutating input | Global keys get a `disabled` copy annotated with the global-install label; other choices and the input array are untouched |
 | restoreChecked re-checks prior picks by value reference and leaves disabled rows alone | Choices whose `value` is in the selection get `checked: true`, disabled rows keep their `disabled` label and stay unchecked, and the input array is not mutated |
 | restoreChecked treats a missing selection as nothing checked | Called with no selection argument, every choice comes back `checked: false` |
 
@@ -53,6 +63,7 @@
 | Groups known categories in the picker order and retains catalog order within each category | The category picker follows its curated display order while skills in one category retain their catalog order |
 | Places uncategorized additions after known categories in their first-seen order | A future category is still shown after curated categories without losing its catalog order |
 | the skills picker imports the catalog helper, so the bootstrap graph walk fetches it | `skills/index.js` statically imports `./catalog.js`, which is how `install.sh` discovers and downloads it |
+| marks project skills as installed without reading a version | `skills-lock.json` keys produce an `(installed)` picker annotation; global state takes precedence and remains non-selectable |
 
 ## `selection-summary.test.js`
 
