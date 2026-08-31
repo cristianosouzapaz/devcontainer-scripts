@@ -24,7 +24,11 @@ that reports its outcome correctly — not just one that runs a command.
                 "panel": "shared",
                 "clear": true
             },
-            "group": "test"
+            "group": "test",
+            "icon": {
+                "id": "beaker",
+                "color": "terminal.ansiGreen"
+            }
         }
     ]
 }
@@ -35,6 +39,12 @@ that reports its outcome correctly — not just one that runs a command.
   (e.g. "Requires Docker").
 - `type: "shell"` unless the command is a single executable with no shell syntax
   (`&&`, `||`, globs, env expansion) — then `"process"` avoids a shell in between.
+- `icon` — **required on every task.** `{ "id": "<codicon>", "color": "terminal.ansi<Name>" }`,
+  shown next to the task in the Run Task picker. Pick a codicon that fits the action
+  (`terminal-bash`, `package`, `repo-push`, `trash`, `search`, `checklist`, …) and an
+  `terminal.ansi*` theme color (`Green`, `Blue`, `Cyan`, `Magenta`, `Yellow`, `Red`). Tasks in
+  the same `Category:` should each get a distinct icon/color pair so the picker stays scannable;
+  reserve `terminal.ansiRed` for destructive tasks (resets, wipes).
 
 ## Deciding pass/fail semantics — before wiring problemMatcher or exit codes
 
@@ -65,8 +75,6 @@ red/failed terminal chrome (e.g. an informational scan). Decide which kind this 
 - `presentation.close` — closes the terminal automatically once the task exits successfully.
 - `runOptions.runOn: "folderOpen"` — runs the task once when the folder is opened (rare; only
   for setup-on-open tasks).
-- `icon` — `{ "id": "...", "color": "..." }`, a codicon + theme color shown next to the task in
-  the picker.
 - `windows` / `linux` / `osx` — per-OS override blocks when the same task needs a different
   command per platform.
 - `inputs` (top-level, alongside `tasks`) — `pickString`/`promptString`/`command` prompts
@@ -84,3 +92,5 @@ red/failed terminal chrome (e.g. an informational scan). Decide which kind this 
    command?
 4. Does the label follow `Category: Action` and match the sorting/grouping of the tasks already
    in the file?
+5. Does the task have an `icon` (`id` + `terminal.ansi*` `color`), distinct from its siblings in
+   the same `Category:`? This is required — no task ships without one.

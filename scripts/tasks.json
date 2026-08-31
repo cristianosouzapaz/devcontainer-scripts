@@ -12,6 +12,10 @@
                 "panel": "dedicated",
                 "clear": true,
                 "focus": true
+            },
+            "icon": {
+                "id": "mortar-board",
+                "color": "terminal.ansiBlue"
             }
         },
         {
@@ -25,6 +29,10 @@
                 "panel": "dedicated",
                 "clear": true,
                 "focus": true
+            },
+            "icon": {
+                "id": "settings-gear",
+                "color": "terminal.ansiCyan"
             }
         },
         {
@@ -38,6 +46,10 @@
                 "panel": "dedicated",
                 "clear": true,
                 "focus": true
+            },
+            "icon": {
+                "id": "hubot",
+                "color": "terminal.ansiMagenta"
             }
         },
         {
@@ -51,6 +63,10 @@
                 "panel": "dedicated",
                 "clear": true,
                 "focus": true
+            },
+            "icon": {
+                "id": "note",
+                "color": "terminal.ansiYellow"
             }
         }
     ]

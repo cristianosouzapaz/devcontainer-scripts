@@ -13,7 +13,7 @@
     {
         "key": "vscode-tasks",
         "name": "VS Code Tasks",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "description": "Use when creating or editing a project's .vscode/tasks.json — the VS Code task schema, which fields to reach for, and how to decide whether a failing command should fail the task.",
         "tags": [
             "vscode",
