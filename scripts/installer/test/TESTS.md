@@ -39,6 +39,19 @@ Module under test: `shared/pick-assets.js` — the shared multi-select prompt.
 | installGlobalLocalSkills is idempotent — a second run leaves the tracked artifacts unchanged | Re-running does not change the recorded `artifacts` set |
 | skills/local/skills.global.json only names keys the local skills catalog ships | Every key in the manifest resolves to a `skills/local/skills.json` entry |
 
+## `agent-md.test.js`
+
+Module under test: `agent-md/index.js` — how an Agent MD block's referenced skills are split
+between a per-project install and the machine-wide set.
+
+| Test | Verifies |
+| --- | --- |
+| routes each referenced skill to install or skip by the machine-wide set | A skill present in the global set lands in `alreadyGlobal`; the rest land in `toInstall` |
+| an empty global set leaves every referenced skill to be installed | With no shared tree, no referenced skill is treated as already global |
+| skills referenced by more than one block are de-duplicated, first occurrence wins | The referenced list is unique and keeps first-seen order across blocks |
+| blocks with no skills array contribute nothing and never throw | A block without a `skills` array yields empty partitions |
+| every skill any agent-md block references is a real local skill catalog key | Each `skills` entry in `agent-md/agent-md.json` resolves to a `skills/local/skills.json` key |
+
 ## `global-skills.test.js`
 
 | Test | Verifies |

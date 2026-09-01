@@ -7,7 +7,7 @@ import { TOOLS } from "../shared/constants.js";
 import { claudeSkillAdapter, readLockFile, reconcileArtifactAdapters, recordArtifact, writeLockFile } from "../shared/lock-file.js";
 import { pickAssets } from "../shared/pick-assets.js";
 import { formatVersionHint, restoreChecked, selectTargetTools, selectUntilConfirmed } from "../shared/prompts.js";
-import { handleError, setupConsola } from "../shared/utils.js";
+import { handleError, readGlobalSkillSet, setupConsola } from "../shared/utils.js";
 import { ensureClaudeSkillSymlink, installLocalSkills } from "../skills/local/index.js";
 
 /**
@@ -109,6 +109,26 @@ const ensureClaudePointer = (claudeMdPath) => {
     return updated;
 };
 
+// ─── Referenced skills ───────────────────────────────────────────────────────
+
+/**
+ * Split the skills referenced by the selected blocks into those to install into the project
+ * and those already present machine-wide (installed once by the "Sync Global Agent Assets"
+ * task). Order follows first appearance across the blocks in catalog order; duplicates are
+ * removed. The block text itself is written to AGENTS.md either way — only the per-project
+ * skill copy is skipped for a globally installed skill.
+ * @param {object[]} blocks - Selected catalog entries, in catalog order.
+ * @param {Map<string, unknown>} globalSkills - Result of {@link readGlobalSkillSet}.
+ * @returns {{ toInstall: string[], alreadyGlobal: string[] }}
+ */
+export const partitionReferencedSkills = (blocks, globalSkills) => {
+    const referenced = [...new Set(blocks.flatMap((block) => block.skills ?? []))];
+    return {
+        toInstall: referenced.filter((key) => !globalSkills.has(key)),
+        alreadyGlobal: referenced.filter((key) => globalSkills.has(key)),
+    };
+};
+
 // ─── Installer ───────────────────────────────────────────────────────────────
 
 /**
@@ -139,6 +159,8 @@ const installBlocks = (blocks, destPath, destFilename) => {
 /**
  * Prompt the user to select agent-md blocks, then install them into canonical AGENTS.md.
  * A Claude Code selection additionally creates the CLAUDE.md pointer and skills adapter.
+ * A block's referenced skill is installed into the project only when it is not already
+ * present machine-wide (see {@link readGlobalSkillSet}); the block text is written either way.
  * Updates template-lock.json's mdBlocks section on completion.
  */
 const askUser = async () => {
@@ -147,6 +169,10 @@ const askUser = async () => {
         const destRoot = process.cwd();
         const lock = readLockFile(destRoot);
         if (!lock.mdBlocks) lock.mdBlocks = {};
+
+        // Skills already materialized machine-wide by the "Sync Global Agent Assets" task are
+        // not re-installed into the project; the block text in AGENTS.md is still written.
+        const globalSkills = readGlobalSkillSet();
 
         const choices = catalog.map((entry) => ({
             name: entry.name,
@@ -158,10 +184,11 @@ const askUser = async () => {
         const selectedBlocks = await selectUntilConfirmed(
             (previous) => pickAssets({ message: "Select AGENTS.md blocks", choices: restoreChecked(choices, previous) }),
             (selected) => {
-                const skillKeys = [...new Set(selected.flatMap((block) => block.skills ?? []))];
+                const { toInstall, alreadyGlobal } = partitionReferencedSkills(selected, globalSkills);
                 return [
                     { title: "Agent MD blocks", items: selected.map(({ name }) => name) },
-                    { title: "Included skills", items: skillKeys },
+                    { title: "Included skills", items: toInstall },
+                    { title: "Already installed globally", items: alreadyGlobal },
                 ];
             },
             "Install selected blocks",
@@ -180,7 +207,12 @@ const askUser = async () => {
 
         if (selectedTools.includes(TOOLS.claude)) ensureClaudePointer(claudeMdPath);
 
-        const skillKeys = [...new Set(selectedBlocks.flatMap((block) => block.skills ?? []))];
+        const { toInstall: skillKeys, alreadyGlobal } = partitionReferencedSkills(selectedBlocks, globalSkills);
+
+        if (alreadyGlobal.length > 0) {
+            consola.info(`Skills already installed globally — not adding to the project: ${alreadyGlobal.join(", ")}`);
+        }
+
         if (skillKeys.length > 0) {
             const written = await installLocalSkills(skillKeys, destRoot, lock);
             for (const [key, version] of Object.entries(written)) {
