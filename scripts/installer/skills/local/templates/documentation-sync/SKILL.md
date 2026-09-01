@@ -1,6 +1,6 @@
 ---
 name: documentation-sync
-description: Use when a change affects documented behavior (API, package, toolchain, structure) — checks docs/wiki/ and README.md and keeps them from contradicting the codebase.
+description: Use when editing any file under docs/wiki/ or a README.md, or when a change affects documented behavior (API, package, toolchain, structure) — checks those docs against the codebase and keeps them from contradicting it.
 ---
 
 The code is the only source of truth for mechanics — functions, variables, flags, behavior. A
@@ -10,8 +10,9 @@ and the page is wrong.
 
 ## When this applies
 
-A change to an API, a package, a toolchain, or the project's structure affects documented
-behavior. Anything else, skip — don't touch the wiki for an unrelated change.
+You are about to edit a file under `docs/wiki/` or a `README.md` directly, or a change to an
+API, a package, a toolchain, or the project's structure affects documented behavior. Anything
+else, skip — don't touch the wiki for an unrelated change.
 
 ## Process
 

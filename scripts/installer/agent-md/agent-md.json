@@ -35,8 +35,8 @@
     {
         "key": "documentation-sync",
         "name": "Documentation Sync",
-        "version": "1.2.1",
-        "description": "Requires docs/wiki/ and README.md to be checked and kept in sync whenever a change affects documented behavior.",
+        "version": "1.2.2",
+        "description": "Requires the Documentation Sync skill to be invoked before editing docs/wiki/ or a README.md, and whenever a change affects documented behavior.",
         "tags": [
             "docs",
             "workflow"
