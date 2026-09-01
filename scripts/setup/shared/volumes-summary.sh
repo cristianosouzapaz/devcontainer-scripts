@@ -12,8 +12,10 @@ readonly _VOLUMES_SUMMARY_SH_LOADED=1
 #                                 mounted and whether the tool is actually
 #                                 authenticated (not just whether credential
 #                                 files are present). Auth data comes from each
-#                                 tool's own status command, never by parsing
-#                                 credential files directly.
+#                                 tool's own status command; so does the
+#                                 signed-in account, except for Codex, whose CLI
+#                                 reports no identity — see
+#                                 volumes_summary_codex_identity.
 #   print_data_volumes_summary - Logs every *other* named volume mounted on the
 #                                 container (workspace source, the shared
 #                                 agent-assets store, anything the user added in
@@ -90,14 +92,34 @@ volumes_summary_claude_identity() {
 	sed -n 's/^Email: //p' <<<"$output"
 }
 
-# volumes_summary_codex_identity: Confirms Codex has an active stored login
-# via `codex login status`. The CLI does not expose a stable account identifier,
-# so this deliberately returns a neutral description rather than parsing output.
-# Returns: 0 and prints a status description if authenticated, 1 otherwise.
+# volumes_summary_codex_identity: echoes the ChatGPT account email backing the
+# stored Codex login. `codex login status` confirms a session exists but exposes
+# no account identifier, so the email is read from the id_token JWT in
+# ~/.codex/auth.json (CODEX_HOME). Falls back to a neutral "active session"
+# description when the session is active but no email can be extracted — e.g. an
+# API-key login, which has no id_token.
+# Returns: 0 and prints the email (or "active session") if authenticated,
+# 1 otherwise.
 volumes_summary_codex_identity() {
+	local auth_file="${CODEX_HOME:-$HOME/.codex}/auth.json"
+	local id_token payload email
+
 	command -v codex >/dev/null 2>&1 || return 1
 	codex login status > /dev/null 2>&1 || return 1
-	printf '%s\n' "active session"
+
+	if [[ -f "$auth_file" ]] && command -v jq >/dev/null 2>&1; then
+		id_token="$(jq -r '.tokens.id_token // empty' "$auth_file" 2>/dev/null)"
+		payload="${id_token#*.}"
+		payload="${payload%%.*}"
+		if [[ -n "$payload" ]]; then
+			email="$(jq -rn --arg p "$payload" \
+				'($p | gsub("-";"+") | gsub("_";"/")) as $s
+				| ($s + ("=" * ((4 - ($s | length) % 4) % 4)))
+				| @base64d | fromjson | .email // empty' 2>/dev/null)"
+		fi
+	fi
+
+	printf '%s\n' "${email:-active session}"
 }
 
 # volumes_summary_gh_identity: echoes the authenticated account name via
