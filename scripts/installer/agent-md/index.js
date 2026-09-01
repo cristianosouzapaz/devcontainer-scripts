@@ -1,13 +1,11 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import consola from "consola";
+import { join } from "node:path";
 import { loadValidatedCatalog } from "../shared/catalog.js";
 import { TOOLS } from "../shared/constants.js";
 import { claudeSkillAdapter, readLockFile, reconcileArtifactAdapters, recordArtifact, writeLockFile } from "../shared/lock-file.js";
 import { pickAssets } from "../shared/pick-assets.js";
 import { formatVersionHint, restoreChecked, selectTargetTools, selectUntilConfirmed } from "../shared/prompts.js";
-import { handleError, readGlobalSkillSet, setupConsola } from "../shared/utils.js";
+import { handleError, isPromptCancellation, readGlobalSkillSet, setupConsola } from "../shared/utils.js";
 import { ensureClaudeSkillSymlink, installLocalSkills } from "../skills/local/index.js";
 
 /**
@@ -18,16 +16,11 @@ import { ensureClaudeSkillSymlink, installLocalSkills } from "../skills/local/in
  * Installed at /opt/devcontainer/installer/agent-md/ inside the container.
  */
 
-setupConsola();
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// ─── Constants ───────────────────────────────────────────────────────────────
+const consola = setupConsola();
 
 const AGENT_MD_FILE_URL = new URL("./agent-md.json", import.meta.url);
+const TEMPLATES_URL = new URL("./templates/", import.meta.url);
 const POINTER_LINE = "@AGENTS.md";
-
-// ─── Catalog ─────────────────────────────────────────────────────────────────
 
 /**
  * Load and validate the agent-md catalog. An entry's optional `skills` array holds skill
@@ -40,9 +33,8 @@ const loadAgentMdCatalog = () => loadValidatedCatalog(AGENT_MD_FILE_URL, "agent-
     nonEmptyStrings: ["description"],
     stringArrays: ["tags", "targets"],
     optionalStringArrays: ["skills"],
+    safeRelativePaths: ["templateFile"],
 });
-
-// ─── Block marker helpers ────────────────────────────────────────────────────
 
 /**
  * Build the opening and closing HTML markers that wrap a block's content.
@@ -84,14 +76,14 @@ const upsertBlock = (content, key, version, body) => {
     return `${content}${separator}${block}`;
 };
 
-// ─── Pointer file helpers ────────────────────────────────────────────────────
-
 /**
  * Ensure CLAUDE.md exists and starts with the "@AGENTS.md" pointer line.
  * Creates the file with just the pointer line if missing; prepends the line if the file
  * exists without it. Logs every action taken via consola.info.
  * @param {string} claudeMdPath - Absolute path to CLAUDE.md.
  * @returns {string} The resulting CLAUDE.md content.
+ * @throws {Error} If CLAUDE.md cannot be read or written.
+ * @effects Reads and may create or overwrite claudeMdPath.
  */
 const ensureClaudePointer = (claudeMdPath) => {
     if (!existsSync(claudeMdPath)) {
@@ -108,8 +100,6 @@ const ensureClaudePointer = (claudeMdPath) => {
     writeFileSync(claudeMdPath, updated, "utf8");
     return updated;
 };
-
-// ─── Referenced skills ───────────────────────────────────────────────────────
 
 /**
  * Split the skills referenced by the selected blocks into those to install into the project
@@ -129,8 +119,6 @@ export const partitionReferencedSkills = (blocks, globalSkills) => {
     };
 };
 
-// ─── Installer ───────────────────────────────────────────────────────────────
-
 /**
  * Upsert the selected blocks into the given destination file, in catalog order.
  * Creates the file if it does not exist.
@@ -138,11 +126,13 @@ export const partitionReferencedSkills = (blocks, globalSkills) => {
  * @param {string} destPath - Absolute path to the destination file.
  * @param {string} destFilename - Destination file name for logging.
  * @returns {Record<string, string>} Map of block key to installed version.
+ * @throws {Error} If a selected template cannot be read or destPath cannot be written.
+ * @effects Reads selected templates and overwrites destPath.
  */
 const installBlocks = (blocks, destPath, destFilename) => {
     const initialContent = existsSync(destPath) ? readFileSync(destPath, "utf8") : "";
     const { content, written } = blocks.reduce((result, { key, version, templateFile }) => {
-        const body = readFileSync(join(__dirname, "templates", templateFile), "utf8");
+        const body = readFileSync(new URL(templateFile, TEMPLATES_URL), "utf8");
         return {
             content: upsertBlock(result.content, key, version, body),
             written: { ...result.written, [key]: version },
@@ -154,21 +144,22 @@ const installBlocks = (blocks, destPath, destFilename) => {
     return written;
 };
 
-// ─── Main ────────────────────────────────────────────────────────────────────
-
 /**
  * Prompt the user to select agent-md blocks, then install them into canonical AGENTS.md.
  * A Claude Code selection additionally creates the CLAUDE.md pointer and skills adapter.
  * A block's referenced skill is installed into the project only when it is not already
  * present machine-wide (see {@link readGlobalSkillSet}); the block text is written either way.
  * Updates template-lock.json's mdBlocks section on completion.
+ * @returns {Promise<void>} Nothing.
+ * @throws {Error} If a prompt, template, project artifact, or lock operation fails unexpectedly.
+ * @effects Prompts the user and may write AGENTS.md, CLAUDE.md, skills, Claude adapters, and the lock below the current project.
  */
 const askUser = async () => {
     try {
         const catalog = loadAgentMdCatalog();
         const destRoot = process.cwd();
         const lock = readLockFile(destRoot);
-        if (!lock.mdBlocks) lock.mdBlocks = {};
+        const state = { lock: { ...lock, mdBlocks: { ...lock.mdBlocks } } };
 
         // Skills already materialized machine-wide by the "Sync Global Agent Assets" task are
         // not re-installed into the project; the block text in AGENTS.md is still written.
@@ -178,7 +169,7 @@ const askUser = async () => {
             name: entry.name,
             value: entry,
             description: entry.description,
-            annotation: formatVersionHint(lock.mdBlocks["AGENTS.md"]?.[entry.key] ?? null, entry.version),
+            annotation: formatVersionHint(state.lock.mdBlocks["AGENTS.md"]?.[entry.key] ?? null, entry.version),
         }));
 
         const selectedBlocks = await selectUntilConfirmed(
@@ -203,7 +194,7 @@ const askUser = async () => {
         const claudeMdPath = join(destRoot, "CLAUDE.md");
         const agentsMdPath = join(destRoot, "AGENTS.md");
         const written = installBlocks(selectedBlocks, agentsMdPath, "AGENTS.md");
-        lock.mdBlocks["AGENTS.md"] = { ...lock.mdBlocks["AGENTS.md"], ...written };
+        state.lock = { ...state.lock, mdBlocks: { ...state.lock.mdBlocks, "AGENTS.md": { ...state.lock.mdBlocks["AGENTS.md"], ...written } } };
 
         if (selectedTools.includes(TOOLS.claude)) ensureClaudePointer(claudeMdPath);
 
@@ -214,27 +205,28 @@ const askUser = async () => {
         }
 
         if (skillKeys.length > 0) {
-            const written = await installLocalSkills(skillKeys, destRoot, lock);
+            const written = await installLocalSkills(skillKeys, destRoot, state.lock);
             for (const [key, version] of Object.entries(written)) {
-                recordArtifact(lock, join(".agents", "skills", key, "SKILL.md"), { kind: "skill", version });
+                state.lock = recordArtifact(state.lock, join(".agents", "skills", key, "SKILL.md"), { kind: "skill", version });
             }
         }
 
         if (selectedTools.includes(TOOLS.claude)) {
             for (const key of skillKeys) {
                 const path = join(".agents", "skills", key, "SKILL.md");
-                if (!lock.artifacts[path]) continue;
+                if (!Object.hasOwn(state.lock.artifacts, path)) continue;
                 ensureClaudeSkillSymlink(destRoot, key);
-                recordArtifact(lock, path, {
+                state.lock = recordArtifact(state.lock, path, {
                     kind: "skill",
                     adapters: { claude: [claudeSkillAdapter(key)] },
                 });
-                reconcileArtifactAdapters(lock, destRoot, path);
+                state.lock = reconcileArtifactAdapters(state.lock, destRoot, path).lock;
             }
         }
 
-        writeLockFile(destRoot, lock);
+        writeLockFile(destRoot, state.lock);
     } catch (e) {
+        if (!isPromptCancellation(e)) throw e;
         handleError(e);
     }
 };

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import consola from "consola";
+import consolaBase from "consola";
 import { select } from "@inquirer/prompts";
 
 /**
@@ -11,6 +11,7 @@ import { select } from "@inquirer/prompts";
  */
 
 const CLEAR_ON_DONE = { clearPromptOnDone: true };
+const consola = consolaBase.withDefaults({ formatOptions: { date: false } });
 
 /**
  * Write content to destPath, prompting the user to resolve a conflict with an existing file.
@@ -21,6 +22,8 @@ const CLEAR_ON_DONE = { clearPromptOnDone: true };
  * @param {string|null} templateVersion - Version string from the catalog entry.
  * @param {string|null} knownInstalledVersion - Installed version read from template-lock.json.
  * @returns {Promise<boolean>} True when written, false when the user skipped.
+ * @throws {Error} If the prompt, backup rename, or destination write fails.
+ * @effects Reads and, when selected, writes or renames `destPath`; the supplied destination is the only filesystem target.
  */
 export const writeWithConflict = async (destPath, content, filename, templateVersion = null, knownInstalledVersion = null) => {
     if (existsSync(destPath)) {
@@ -61,6 +64,8 @@ export const writeWithConflict = async (destPath, content, filename, templateVer
  * @param {string} content - File content to write.
  * @param {string} filename - Display name for the log line.
  * @returns {Promise<boolean>} Whether the file was (re)written.
+ * @throws {Error} If the destination cannot be read, created, or written.
+ * @effects Reads `destPath`; creates its parent directory and overwrites `destPath` only when the content differs.
  */
 export const writeOverwrite = async (destPath, content, filename) => {
     if (existsSync(destPath) && readFileSync(destPath, "utf8") === content) return false;

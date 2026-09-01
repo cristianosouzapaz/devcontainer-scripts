@@ -11,6 +11,8 @@ import { withTemporaryHome } from "./helpers.js";
  * @param {string} home - Temporary home directory containing the `.agents` folder.
  * @param {Record<string, object>} artifacts - Artifact map stored under the lock's `artifacts` key.
  * @returns {void}
+ * @throws {Error} If the target file cannot be written.
+ * @effects Writes `<home>/.agents/template-lock.json`; callers provide an isolated temporary home directory.
  */
 const writeLock = (home, artifacts) =>
     writeFileSync(join(home, ".agents", "template-lock.json"), JSON.stringify({ version: "2", artifacts }), "utf8");

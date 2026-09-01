@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import consola from "consola";
 import { loadJsonCatalog, loadValidatedCatalog } from "../shared/catalog.js";
 import { AGENTS, TOOLS } from "../shared/constants.js";
 import { pickAssets } from "../shared/pick-assets.js";
@@ -15,14 +14,61 @@ import { ensureClaudeSkillSymlink } from "./local/index.js";
  * Installed at /opt/devcontainer/installer/skills/ inside the container.
  */
 
-setupConsola();
-
-// ─── Constants ───────────────────────────────────────────────────────────────
+const consola = setupConsola();
 
 const SKILLS_FILE_URL = new URL("./skills.json", import.meta.url);
 const GLOBAL_MANIFEST_URL = new URL("./skills.global.json", import.meta.url);
 
-// ─── Functions ───────────────────────────────────────────────────────────────
+/**
+ * Assert that a catalog entry owns the fields used by the interactive installer.
+ * @param {unknown} entry - Candidate catalog entry.
+ * @returns {asserts entry is { name: string, skill: string, url: string, category: string, description: string, tags: string[], requires?: string[] }} Nothing.
+ * @throws {TypeError} If the entry is malformed.
+ */
+const assertSkillCatalogEntry = (entry) => {
+    const hasString = (key) => Object.hasOwn(entry, key) && typeof entry[key] === "string";
+    const hasStringArray = (key) => Object.hasOwn(entry, key) && Array.isArray(entry[key]) && entry[key].every((value) => typeof value === "string");
+    if (entry === null || typeof entry !== "object"
+        || !hasString("name") || !hasString("skill") || !hasString("url")
+        || !hasString("category") || entry.category.length === 0
+        || !hasString("description") || entry.description.length === 0
+        || !hasStringArray("tags")
+        || (Object.hasOwn(entry, "requires") && (!Array.isArray(entry.requires) || entry.requires.some((value) => typeof value !== "string")))) {
+        throw new TypeError("Invalid skills catalog entry.");
+    }
+};
+
+/**
+ * Assert that a manifest entry owns the fields required by the global installer.
+ * @param {unknown} entry - Candidate global skills manifest entry.
+ * @returns {asserts entry is { name: string, url: string, skill?: string }} Nothing.
+ * @throws {TypeError} If the entry is malformed.
+ */
+const assertGlobalManifestEntry = (entry) => {
+    if (entry === null || typeof entry !== "object"
+        || !Object.hasOwn(entry, "name") || typeof entry.name !== "string" || entry.name.length === 0
+        || !Object.hasOwn(entry, "url") || typeof entry.url !== "string" || entry.url.length === 0
+        || (Object.hasOwn(entry, "skill") && (typeof entry.skill !== "string" || entry.skill.length === 0))) {
+        throw new TypeError("Invalid skills.global.json entry.");
+    }
+};
+
+/**
+ * Assert that a CLI runner is callable.
+ * @param {unknown} run - Candidate CLI runner.
+ * @returns {asserts run is (args: string[]) => void} Nothing.
+ * @throws {TypeError} If the value is not a function.
+ */
+const assertRunner = (run) => {
+    if (typeof run !== "function") throw new TypeError("Skills CLI runner must be a function.");
+};
+
+/**
+ * Return whether a caught value is an expected command execution failure.
+ * @param {unknown} error - Failure reported by the skills CLI.
+ * @returns {boolean} True when the CLI supplied an Error.
+ */
+const isCliFailure = (error) => error instanceof Error;
 
 /**
  * Load and validate the skills catalog from skills.json.
@@ -34,6 +80,9 @@ const loadSkillsCatalog = () => loadValidatedCatalog(SKILLS_FILE_URL, "skills", 
     nonEmptyStrings: ["category", "description"],
     stringArrays: ["tags"],
     optionalStringArrays: ["requires"],
+}).map((entry) => {
+    assertSkillCatalogEntry(entry);
+    return entry;
 });
 
 /**
@@ -73,18 +122,21 @@ const selectSkills = (skills, globalSet = readGlobalSkillSet(), projectSet = rea
  * Install a skill into the canonical Agent Skills location.
  * @param {string} url - The URL of the skill repository.
  * @param {string} skill - The skill identifier.
- * @throws Will throw an error if the installation fails.
+ * @returns {void} Nothing.
+ * @throws {Error} If the external CLI cannot install the requested skill.
+ * @effects Starts `npx skills add` for the supplied repository and skill.
  */
 const installCanonicalSkill = (url, skill) => execFileSync("npx", ["skills", "add", url, "--skill", skill, "--agent", AGENTS.codex, "--yes"], {
     stdio: "pipe",
 });
 
-// ─── Global (non-interactive) scope ──────────────────────────────────────────
-
 /**
  * Shell out to the external skills CLI. Isolated so the `--global` path can be exercised
  * in tests without a network round-trip.
  * @param {string[]} args - Arguments passed after `npx`.
+ * @returns {void} Nothing.
+ * @throws {Error} If the external CLI process fails.
+ * @effects Starts `npx` with the supplied arguments.
  */
 const runSkillsCli = (args) => execFileSync("npx", args, { stdio: "pipe" });
 
@@ -98,11 +150,12 @@ export const loadGlobalSkillsManifest = () => {
     const entries = loadJsonCatalog(GLOBAL_MANIFEST_URL);
     if (entries.length === 0) throw new Error("skills.global.json manifest is empty.");
     for (const [index, entry] of entries.entries()) {
-        const isValid =
-            typeof entry?.name === "string" && entry.name.length > 0
-            && typeof entry?.url === "string" && entry.url.length > 0
-            && (entry?.skill === undefined || (typeof entry.skill === "string" && entry.skill.length > 0));
-        if (!isValid) throw new Error(`Invalid skills.global.json entry at index ${index}.`);
+        try {
+            assertGlobalManifestEntry(entry);
+        } catch (error) {
+            if (error instanceof TypeError) throw new Error(`Invalid skills.global.json entry at index ${index}.`, { cause: error });
+            throw error;
+        }
     }
     return entries;
 };
@@ -111,10 +164,17 @@ export const loadGlobalSkillsManifest = () => {
  * Add one external skill to the machine-wide store. `skills add` is re-run on every sync as
  * the safety net for vercel-labs/skills#1143, where `skills update -g` can report
  * "No global skills tracked"; a re-add is idempotent.
- * @param {{ url: string, skill?: string }} entry
- * @param {(args: string[]) => void} run
+ * @param {{ url: string, skill?: string }} entry - Validated manifest entry to install.
+ * @param {(args: string[]) => void} run - CLI effect function.
+ * @returns {void} Nothing.
+ * @throws {TypeError} If the entry or runner is malformed.
+ * @throws {Error} If the CLI cannot add the skill to the shared store.
  */
-const addGlobalSkill = ({ url, skill }, run) => {
+const addGlobalSkill = (entry, run) => {
+    assertGlobalManifestEntry(entry);
+    assertRunner(run);
+    const { url } = entry;
+    const skill = Object.hasOwn(entry, "skill") ? entry.skill : undefined;
     const args = ["skills", "add", url, "-g", "--yes"];
     if (skill) args.push("--skill", skill);
     run(args);
@@ -126,23 +186,35 @@ const addGlobalSkill = ({ url, skill }, run) => {
  * `skills update -g` is tolerated because the per-skill re-add above is the real freshness
  * guarantee.
  * @param {{ run?: (args: string[]) => void }} [options] - CLI runner override for tests.
+ * @returns {void} Nothing.
+ * @throws {TypeError} If options or its runner are malformed.
+ * @throws {Error} If the manifest is invalid or a runner throws a non-Error value.
+ * @effects Starts the supplied CLI runner for each manifest entry and the final update command.
  */
-export const installGlobalSkills = ({ run = runSkillsCli } = {}) => {
+export const installGlobalSkills = (options = {}) => {
+    if (options === null || typeof options !== "object" || Array.isArray(options)
+        || (Object.hasOwn(options, "run") && typeof options.run !== "function")) {
+        throw new TypeError("Global skills options must be an object with an optional runner function.");
+    }
+    const run = Object.hasOwn(options, "run") ? options.run : runSkillsCli;
+    assertRunner(run);
     const external = loadGlobalSkillsManifest();
     for (const entry of external) {
         consola.start(`Adding ${entry.name} to the shared skills store`);
         try {
             addGlobalSkill(entry, run);
             consola.success(`${entry.name} added`);
-        } catch (e) {
-            consola.error(`Failed to add ${entry.name}: ${e instanceof Error ? e.message : String(e)}`);
+        } catch (error) {
+            if (!isCliFailure(error)) throw error;
+            consola.error(`Failed to add ${entry.name}: ${error.message}`);
         }
     }
     try {
         run(["skills", "update", "-g", "--yes"]);
         consola.success("Shared skills store refreshed");
-    } catch (e) {
-        consola.warn(`skills update -g failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    } catch (error) {
+        if (!isCliFailure(error)) throw error;
+        consola.warn(`skills update -g failed (non-fatal): ${error.message}`);
     }
 };
 
@@ -150,6 +222,8 @@ export const installGlobalSkills = ({ run = runSkillsCli } = {}) => {
  * Prompt the user to select skills and target tools, then install each selected skill into
  * the canonical Agent Skills location, adding Claude symlinks when Claude Code is selected.
  * @returns {Promise<void>}
+ * @throws {Error} If a prompt, skill installation, or Claude adapter update fails unexpectedly.
+ * @effects Prompts the user, starts the skills CLI, and may create Claude adapter symlinks beneath the current project.
  */
 const askUser = async () => {
     try {
@@ -171,12 +245,13 @@ const askUser = async () => {
                     for (const dependency of requires) ensureClaudeSkillSymlink(process.cwd(), dependency);
                 }
                 consola.success(`${skill} installed`);
-            } catch (e) {
-                consola.error(`Failed to install ${skill}: ${e instanceof Error ? e.message : String(e)}`);
+            } catch (error) {
+                if (!isCliFailure(error)) throw error;
+                consola.error(`Failed to install ${skill}: ${error.message}`);
             }
         }
-    } catch (e) {
-        handleError(e);
+    } catch (error) {
+        handleError(error);
     }
 };
 
@@ -184,8 +259,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (process.argv[2] === "--global") {
         try {
             installGlobalSkills();
-        } catch (e) {
-            handleError(e);
+        } catch (error) {
+            handleError(error);
         }
     } else {
         await askUser();

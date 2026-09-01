@@ -1,14 +1,12 @@
 import { readFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import consola from "consola";
-import { loadValidatedCatalog } from "../shared/catalog.js";
+import { join } from "node:path";
+import { loadJsonObject, loadValidatedCatalog } from "../shared/catalog.js";
 import { TOOLS } from "../shared/constants.js";
 import { claudeRuleAdapter, claudeSkillAdapter, getArtifactVersion, readLockFile, reconcileArtifactAdapters, recordArtifact, writeLockFile } from "../shared/lock-file.js";
 import { pickAssets } from "../shared/pick-assets.js";
 import { formatVersionHint, restoreChecked, selectTargetTools, selectUntilConfirmed } from "../shared/prompts.js";
-import { handleError, readGlobalSkillSet, setupConsola } from "../shared/utils.js";
+import { handleError, isPromptCancellation, readGlobalSkillSet, setupConsola } from "../shared/utils.js";
 import { writeOverwrite, writeWithConflict } from "../shared/write-file.js";
 import { ensureClaudeRuleSymlink, ensureClaudeSkillSymlink } from "../skills/local/index.js";
 
@@ -20,19 +18,13 @@ import { ensureClaudeRuleSymlink, ensureClaudeSkillSymlink } from "../skills/loc
  * Installed at /opt/devcontainer/installer/agents/ inside the container.
  */
 
-setupConsola();
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// ─── Constants ───────────────────────────────────────────────────────────────
+const consola = setupConsola();
 
 const BASE_CATALOG_KEYS = ["name", "filename", "version", "templateFile"];
 const INSTRUCTIONS_FILE_URL = new URL("./instructions.json", import.meta.url);
 const PROMPTS_FILE_URL = new URL("./prompts.json", import.meta.url);
 const GLOBAL_MANIFEST_URL = new URL("./agents.global.json", import.meta.url);
-const TEMPLATES_DIR = join(__dirname, "templates");
-
-// ─── Frontmatter helpers ─────────────────────────────────────────────────────
+const TEMPLATES_URL = new URL("./templates/", import.meta.url);
 
 /**
  * Parse YAML frontmatter from markdown content.
@@ -74,8 +66,6 @@ const buildFrontmatter = (fields, body) => {
     return `---\n${lines.join("\n")}\n---\n${body}`;
 };
 
-// ─── Filename helpers ────────────────────────────────────────────────────────
-
 /**
  * Derive the .claude/rules/ filename from a Copilot instruction filename.
  * Example: agent-orchestration.instructions.md → agent-orchestration.md
@@ -94,8 +84,6 @@ const toSkillName = (filename) => filename
     .replace(/\.instructions\.md$/, "")
     .replace(/\.prompt\.md$/, "")
     .replace(/\.md$/, "");
-
-// ─── Claude content builders ─────────────────────────────────────────────────
 
 /**
  * Strip a single layer of surrounding double quotes from a raw frontmatter value.
@@ -121,7 +109,7 @@ const appliesToAllFiles = (applyTo) => stripQuotes(applyTo) === "**";
  * @returns {string}
  */
 const readTemplateDescription = (templateFile) => {
-    const { raw } = parseFrontmatter(readFileSync(join(__dirname, "templates", templateFile), "utf8"));
+    const { raw } = parseFrontmatter(readFileSync(new URL(templateFile, TEMPLATES_URL), "utf8"));
     return stripQuotes(raw.description ?? "");
 };
 
@@ -160,8 +148,6 @@ const installCanonicalSkill = async (destRoot, skillName, content, version, inst
     return { path: relPath, written };
 };
 
-// ─── Catalog loaders ─────────────────────────────────────────────────────────
-
 /**
  * Load and validate a catalog JSON file.
  *
@@ -174,9 +160,8 @@ const installCanonicalSkill = async (destRoot, skillName, content, version, inst
 const loadCatalog = (url, extraKeys, catalogName) => loadValidatedCatalog(url, catalogName, {
     strings: [...BASE_CATALOG_KEYS, ...extraKeys],
     stringArrays: ["tags"],
+    safeRelativePaths: ["templateFile"],
 });
-
-// ─── Installers ──────────────────────────────────────────────────────────────
 
 /**
  * Install canonical Agent Skills and the native adapters for one catalog type.
@@ -187,18 +172,19 @@ const loadCatalog = (url, extraKeys, catalogName) => loadValidatedCatalog(url, c
  * @param {object} lock - Parsed template-lock.json.
  * @param {{ writer?: typeof writeWithConflict }} options - File writer override for tests.
  * @param {object} spec - Type-specific skill and adapter operations.
- * @returns {Promise<boolean>} Whether the lock manifest changed.
+ * @returns {Promise<{ changed: boolean, lock: object }>} Whether the lock changed and updated lock data.
  */
 const installAgentAssets = async (entries, destRoot, tools, lock, options, spec) => {
     const changedPaths = new Set();
+    const state = { lock };
     const writer = options.writer ?? writeWithConflict;
     const templates = new Map(entries.map((entry) => [
         entry.templateFile,
-        readFileSync(join(spec.templatesDir, entry.templateFile), "utf8"),
+        readFileSync(new URL(entry.templateFile, TEMPLATES_URL), "utf8"),
     ]));
     const managedPaths = new Set(entries
         .map((entry) => join(".agents", "skills", spec.skillName(entry), "SKILL.md"))
-        .filter((path) => lock.artifacts[path]));
+        .filter((path) => Object.hasOwn(state.lock.artifacts, path)));
 
     for (const entry of entries) {
         const skillName = spec.skillName(entry);
@@ -208,11 +194,11 @@ const installAgentAssets = async (entries, destRoot, tools, lock, options, spec)
             skillName,
             spec.buildCanonicalContent(templates.get(entry.templateFile), skillName),
             entry.version,
-            getArtifactVersion(lock, canonicalPath),
+            getArtifactVersion(state.lock, canonicalPath),
             writer,
         );
         if (written) {
-            recordArtifact(lock, canonicalPath, { kind: spec.kind, version: entry.version });
+            state.lock = recordArtifact(state.lock, canonicalPath, { kind: spec.kind, version: entry.version });
             managedPaths.add(canonicalPath);
             changedPaths.add(canonicalPath);
         }
@@ -233,19 +219,21 @@ const installAgentAssets = async (entries, destRoot, tools, lock, options, spec)
                 template: templates.get(entry.templateFile),
                 writer,
                 version: entry.version,
-                installedVersion: getArtifactVersion(lock, canonicalPath),
+                installedVersion: getArtifactVersion(state.lock, canonicalPath),
             });
             if (materialized) {
-                recordArtifact(lock, canonicalPath, { kind: spec.kind, adapters: { [adapter.name]: [materialized] } });
+                state.lock = recordArtifact(state.lock, canonicalPath, { kind: spec.kind, adapters: { [adapter.name]: [materialized] } });
                 changedPaths.add(canonicalPath);
             }
         }
     }
 
     for (const path of managedPaths) {
-        if (reconcileArtifactAdapters(lock, destRoot, path)) changedPaths.add(path);
+        const reconciled = reconcileArtifactAdapters(state.lock, destRoot, path);
+        state.lock = reconciled.lock;
+        if (reconciled.changed) changedPaths.add(path);
     }
-    return changedPaths.size > 0;
+    return { changed: changedPaths.size > 0, lock: state.lock };
 };
 
 /**
@@ -286,7 +274,6 @@ const claudeSkillSymlinkAdapter = () => ({
  */
 const instructionSpec = () => ({
     kind: "instruction",
-    templatesDir: TEMPLATES_DIR,
     skillName: (entry) => toSkillName(entry.filename),
     buildCanonicalContent: (template, skillName) => buildCanonicalSkillContent(template, skillName, true),
     adapters: [
@@ -310,7 +297,6 @@ const instructionSpec = () => ({
  */
 const promptSpec = () => ({
     kind: "prompt",
-    templatesDir: TEMPLATES_DIR,
     skillName: (entry) => toSkillName(entry.commandFilename),
     buildCanonicalContent: (template, skillName) => buildCanonicalSkillContent(template, skillName),
     adapters: [
@@ -326,7 +312,7 @@ const promptSpec = () => ({
  * @param {Set<string>} tools - Selected values from TOOLS.
  * @param {object} lock - Parsed template-lock.json.
  * @param {{ writer?: typeof writeWithConflict }} [options] - File writer override for tests.
- * @returns {Promise<boolean>} Whether the lock manifest changed.
+ * @returns {Promise<{ changed: boolean, lock: object }>} Whether the lock changed and updated lock data.
  */
 export const installInstructions = (instructions, destRoot, tools, lock, options = {}) =>
     installAgentAssets(instructions, destRoot, tools, lock, options, instructionSpec());
@@ -338,12 +324,10 @@ export const installInstructions = (instructions, destRoot, tools, lock, options
  * @param {Set<string>} tools - Selected values from TOOLS.
  * @param {object} lock - Parsed template-lock.json.
  * @param {{ writer?: typeof writeWithConflict }} [options] - File writer override for tests.
- * @returns {Promise<boolean>} Whether the lock manifest changed.
+ * @returns {Promise<{ changed: boolean, lock: object }>} Whether the lock changed and updated lock data.
  */
 export const installPrompts = (prompts, destRoot, tools, lock, options = {}) =>
     installAgentAssets(prompts, destRoot, tools, lock, options, promptSpec());
-
-// ─── Global (non-interactive) scope ──────────────────────────────────────────
 
 /**
  * Load and validate this installer's machine-wide manifest (`agents.global.json`): the
@@ -352,9 +336,9 @@ export const installPrompts = (prompts, destRoot, tools, lock, options = {}) =>
  * @throws If a section is missing or is not an array of non-empty strings.
  */
 const loadGlobalAgentManifest = () => {
-    const manifest = JSON.parse(readFileSync(GLOBAL_MANIFEST_URL, "utf8"));
+    const manifest = loadJsonObject(GLOBAL_MANIFEST_URL);
     for (const key of ["instructions", "prompts"]) {
-        const list = manifest?.[key];
+        const list = Object.hasOwn(manifest, key) ? manifest[key] : null;
         if (!Array.isArray(list) || !list.every((name) => typeof name === "string" && name.length > 0)) {
             throw new Error(`Invalid agents.global.json: "${key}" must be an array of names.`);
         }
@@ -397,16 +381,13 @@ export const installGlobal = async (options = {}) => {
     const tools = new Set([TOOLS.claude]);
     const opts = { writer: options.writer ?? writeOverwrite };
 
-    const changed = [];
-    if (instructions.length > 0) changed.push(await installAgentAssets(instructions, destRoot, tools, lock, opts, instructionSpec()));
-    if (prompts.length > 0) changed.push(await installAgentAssets(prompts, destRoot, tools, lock, opts, promptSpec()));
+    const instructionResult = instructions.length > 0 ? await installAgentAssets(instructions, destRoot, tools, lock, opts, instructionSpec()) : { changed: false, lock };
+    const promptResult = prompts.length > 0 ? await installAgentAssets(prompts, destRoot, tools, instructionResult.lock, opts, promptSpec()) : instructionResult;
 
-    if (changed.some(Boolean)) writeLockFile(lockRoot, lock);
+    if (instructionResult.changed || promptResult.changed) writeLockFile(lockRoot, promptResult.lock);
     const synced = [...resolvedInstructions, ...resolvedPrompts].sort().join(", ");
     consola.success(`Global agent assets synced: ${synced || "(agents.global.json is empty)"}`);
 };
-
-// ─── Main ────────────────────────────────────────────────────────────────────
 
 /**
  * Prompt the user to select instruction and prompt templates, then install them.
@@ -453,19 +434,11 @@ const askUser = async () => {
         const { selectedInstructions, selectedPrompts } = selectedAssets;
 
         const selectedTools = new Set(await selectTargetTools());
-        const writtenFlags = [];
-
-        if (selectedInstructions.length > 0) {
-            writtenFlags.push(await installInstructions(selectedInstructions, destRoot, selectedTools, lock));
-        }
-        if (selectedPrompts.length > 0) {
-            writtenFlags.push(await installPrompts(selectedPrompts, destRoot, selectedTools, lock));
-        }
-
-        if (writtenFlags.some(Boolean)) {
-            writeLockFile(destRoot, lock);
-        }
+        const instructionResult = selectedInstructions.length > 0 ? await installInstructions(selectedInstructions, destRoot, selectedTools, lock) : { changed: false, lock };
+        const promptResult = selectedPrompts.length > 0 ? await installPrompts(selectedPrompts, destRoot, selectedTools, instructionResult.lock) : instructionResult;
+        if (instructionResult.changed || promptResult.changed) writeLockFile(destRoot, promptResult.lock);
     } catch (e) {
+        if (!isPromptCancellation(e)) throw e;
         handleError(e);
     }
 };
@@ -475,6 +448,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         try {
             await installGlobal();
         } catch (e) {
+            if (!isPromptCancellation(e)) throw e;
             handleError(e);
         }
     } else {

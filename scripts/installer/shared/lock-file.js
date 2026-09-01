@@ -1,133 +1,103 @@
 import { lstatSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-/**
- * @fileoverview `template-lock.json` — the record of which canonical assets an installer
- * wrote and which native adapter files/symlinks it materialized for them. Lives in the
- * project root for a per-project install, or in `~/.agents` for a `--global` sync.
- */
+/** @fileoverview Immutable loading, updating, reconciliation, and persistence for template locks. */
 
 const LOCK_VERSION = "2";
-
-/** A fresh, empty lock structure for the current schema version. */
 const emptyLock = () => ({ version: LOCK_VERSION, updatedAt: "", configs: {}, artifacts: {}, mdBlocks: {} });
+const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const isMissingFileError = (error) => isRecord(error) && Object.hasOwn(error, "code") && error.code === "ENOENT";
 
-/**
- * Merge a native adapter record into an agent's adapter list in place: update an existing
- * entry with the same path and type, otherwise append. No-op when agent or adapter is falsy.
- * @param {Record<string, object[]>} adapters - Map of agent name to adapter entries.
- * @param {string} agent - Agent name key.
- * @param {{ path: string, type: string }} adapter - Adapter record to merge.
- */
 const addAdapter = (adapters, agent, adapter) => {
-    if (!agent || !adapter) return;
-    const entries = adapters[agent] ?? [];
-    const existing = entries.find((entry) => entry.path === adapter.path && entry.type === adapter.type);
-    if (existing) Object.assign(existing, adapter);
-    else entries.push(adapter);
-    adapters[agent] = entries;
+    const entries = Array.isArray(adapters[agent]) ? adapters[agent] : [];
+    const isMatch = (entry) => isRecord(entry) && entry.path === adapter.path && entry.type === adapter.type;
+    return { ...adapters, [agent]: entries.some(isMatch)
+        ? entries.map((entry) => isMatch(entry) ? { ...entry, ...adapter } : { ...entry })
+        : [...entries.map((entry) => ({ ...entry })), { ...adapter }] };
 };
 
 /**
- * Read and parse template-lock.json from a root directory. Returns a default empty structure
- * when the file is missing, invalid, or written to another schema version.
- * @param {string} projectRoot - Absolute path to the root that holds template-lock.json.
- * @returns {{ version: "2", updatedAt: string, configs: object, artifacts: object, mdBlocks: object }}
+ * Read a lock file. Missing, malformed, and obsolete locks return an empty current lock; other I/O failures rethrow.
+ * Effects: reads `template-lock.json` below projectRoot.
+ * @param {string} projectRoot - Root containing the lock file.
+ * @returns {{ version: string, updatedAt: string, configs: object, artifacts: object, mdBlocks: object }} Validated lock data.
+ * @throws {Error} If reading an existing lock fails unexpectedly.
  */
 export const readLockFile = (projectRoot) => {
     try {
         const parsed = JSON.parse(readFileSync(join(projectRoot, "template-lock.json"), "utf8"));
-        if (parsed.version !== LOCK_VERSION) return emptyLock();
-        return {
-            ...emptyLock(),
-            ...parsed,
-            configs: { ...(parsed.configs ?? {}) },
-            artifacts: { ...(parsed.artifacts ?? {}) },
-            mdBlocks: { ...(parsed.mdBlocks ?? {}) },
-        };
-    } catch {
-        return emptyLock();
+        if (!isRecord(parsed) || !Object.hasOwn(parsed, "version") || parsed.version !== LOCK_VERSION) return emptyLock();
+        return { ...emptyLock(), ...parsed, configs: isRecord(parsed.configs) ? { ...parsed.configs } : {}, artifacts: isRecord(parsed.artifacts) ? { ...parsed.artifacts } : {}, mdBlocks: isRecord(parsed.mdBlocks) ? { ...parsed.mdBlocks } : {} };
+    } catch (error) {
+        if (error instanceof SyntaxError || isMissingFileError(error)) return emptyLock();
+        throw error;
     }
 };
 
 /**
- * Write lock data to template-lock.json, always stamping `updatedAt` with the current time.
- * @param {string} projectRoot - Absolute path to the root that holds template-lock.json.
- * @param {{ version: "2", configs: object, artifacts: object, mdBlocks: object }} lockData
+ * Persist lock data with a fresh timestamp.
+ * Effects: overwrites `template-lock.json` below projectRoot; write failures rethrow.
+ * @param {string} projectRoot - Root containing the lock file.
+ * @param {object} lockData - Validated lock data to serialize.
+ * @returns {void}
+ * @throws {Error} If the lock cannot be written.
  */
 export const writeLockFile = (projectRoot, lockData) => {
-    const data = { ...lockData, version: LOCK_VERSION, updatedAt: new Date().toISOString() };
-    writeFileSync(join(projectRoot, "template-lock.json"), JSON.stringify(data, null, 4) + "\n", "utf8");
+    writeFileSync(join(projectRoot, "template-lock.json"), `${JSON.stringify({ ...lockData, version: LOCK_VERSION, updatedAt: new Date().toISOString() }, null, 4)}\n`, "utf8");
 };
 
-/** Return an artifact's installed version, if tracked. */
-export const getArtifactVersion = (lock, path) => lock.artifacts?.[path]?.version ?? null;
+/** @param {object} lock - Lock data. @param {string} path - Canonical artifact path. @returns {string|null} Recorded version, if valid. */
+export const getArtifactVersion = (lock, path) => {
+    const artifact = isRecord(lock.artifacts) && Object.hasOwn(lock.artifacts, path) ? lock.artifacts[path] : null;
+    return isRecord(artifact) && typeof artifact.version === "string" ? artifact.version : null;
+};
 
-/** Record a canonical artifact and merge its materialized native adapters. */
+/**
+ * Return lock data with an artifact recorded and adapters merged.
+ * @param {object} lock - Existing lock data, never mutated.
+ * @param {string} path - Canonical artifact path.
+ * @param {{ kind: string, version?: string, adapters?: Record<string, object[]>, source?: string }} artifact - Artifact fields.
+ * @returns {object} New lock data.
+ */
 export const recordArtifact = (lock, path, { kind, version, adapters = {}, source }) => {
-    const existing = lock.artifacts[path] ?? { kind, adapters: {} };
-    const mergedAdapters = { ...(existing.adapters ?? {}) };
-    for (const [agent, entries] of Object.entries(adapters)) {
-        for (const entry of entries) addAdapter(mergedAdapters, agent, entry);
-    }
-    lock.artifacts[path] = {
-        ...existing,
-        kind,
-        ...(version === undefined ? {} : { version }),
-        ...(source === undefined ? {} : { source }),
-        adapters: mergedAdapters,
-    };
+    const existing = isRecord(lock.artifacts) && Object.hasOwn(lock.artifacts, path) && isRecord(lock.artifacts[path]) ? lock.artifacts[path] : { kind, adapters: {} };
+    const mergedAdapters = Object.entries(isRecord(adapters) ? adapters : {}).reduce((current, [agent, entries]) => Array.isArray(entries) ? entries.reduce((next, adapter) => isRecord(adapter) && typeof adapter.path === "string" && typeof adapter.type === "string" ? addAdapter(next, agent, adapter) : next, current) : current, isRecord(existing.adapters) ? { ...existing.adapters } : {});
+    return { ...lock, artifacts: { ...(isRecord(lock.artifacts) ? lock.artifacts : {}), [path]: { ...existing, kind, ...(version === undefined ? {} : { version }), ...(source === undefined ? {} : { source }), adapters: mergedAdapters } } };
 };
 
-/** Remove adapter records that no longer match their materialized filesystem entry. */
+/**
+ * Return lock data whose adapters still exist beneath root.
+ * Effects: reads adapter paths below root; missing adapter paths are removed and other failures rethrow.
+ * @param {object} lock - Existing lock data, never mutated.
+ * @param {string} root - Filesystem root containing adapters.
+ * @param {string} path - Canonical artifact path.
+ * @returns {{ lock: object, changed: boolean }} Updated lock and reconciliation result.
+ * @throws {Error} If an existing adapter cannot be inspected.
+ */
 export const reconcileArtifactAdapters = (lock, root, path) => {
-    const artifact = lock.artifacts?.[path];
-    if (!artifact) return false;
-
+    const artifact = isRecord(lock.artifacts) && Object.hasOwn(lock.artifacts, path) && isRecord(lock.artifacts[path]) ? lock.artifacts[path] : null;
+    if (!artifact) return { lock: { ...lock }, changed: false };
     const before = JSON.stringify(artifact.adapters ?? {});
-    const adapters = {};
-    for (const [agent, entries] of Object.entries(artifact.adapters ?? {})) {
-        const present = entries.filter((adapter) => {
+    const adapters = Object.entries(isRecord(artifact.adapters) ? artifact.adapters : {}).reduce((current, [agent, entries]) => {
+        const present = Array.isArray(entries) ? entries.filter((adapter) => {
             try {
-                const stats = lstatSync(join(root, adapter.path));
-                if (adapter.type === "symlink") {
-                    const linkPath = join(root, adapter.path);
-                    return stats.isSymbolicLink()
-                        && typeof adapter.target === "string"
-                        && resolve(dirname(linkPath), readlinkSync(linkPath)) === resolve(root, adapter.target);
-                }
-                return adapter.type === "file" && stats.isFile();
-            } catch {
-                return false;
+                if (!isRecord(adapter) || typeof adapter.path !== "string" || typeof adapter.type !== "string") return false;
+                const linkPath = join(root, adapter.path);
+                const stats = lstatSync(linkPath);
+                return adapter.type === "symlink" ? stats.isSymbolicLink() && typeof adapter.target === "string" && resolve(dirname(linkPath), readlinkSync(linkPath)) === resolve(root, adapter.target) : adapter.type === "file" && stats.isFile();
+            } catch (error) {
+                if (isMissingFileError(error)) return false;
+                throw error;
             }
-        });
-        if (present.length > 0) adapters[agent] = present;
-    }
-    artifact.adapters = adapters;
-    return before !== JSON.stringify(adapters);
+        }) : [];
+        return present.length > 0 ? { ...current, [agent]: present } : current;
+    }, {});
+    const changed = before !== JSON.stringify(adapters);
+    return { lock: { ...lock, artifacts: { ...(isRecord(lock.artifacts) ? lock.artifacts : {}), [path]: { ...artifact, adapters } } }, changed };
 };
 
-/**
- * Lock-file adapter record for a `.claude/skills/<skillName>` symlink pointing at the
- * canonical skill directory.
- * @param {string} skillName - Portable Agent Skill name.
- * @returns {{ path: string, type: "symlink", target: string }}
- */
-export const claudeSkillAdapter = (skillName) => ({
-    path: join(".claude", "skills", skillName),
-    type: "symlink",
-    target: join(".agents", "skills", skillName),
-});
+/** @param {string} skillName - Skill directory name. @returns {{ path: string, type: string, target: string }} Claude skill adapter. */
+export const claudeSkillAdapter = (skillName) => ({ path: join(".claude", "skills", skillName), type: "symlink", target: join(".agents", "skills", skillName) });
 
-/**
- * Lock-file adapter record for a `.claude/rules/<filename>` symlink pointing at a canonical
- * skill's SKILL.md.
- * @param {string} skillName - Portable Agent Skill name.
- * @param {string} filename - Rule filename under .claude/rules/.
- * @returns {{ path: string, type: "symlink", target: string }}
- */
-export const claudeRuleAdapter = (skillName, filename) => ({
-    path: join(".claude", "rules", filename),
-    type: "symlink",
-    target: join(".agents", "skills", skillName, "SKILL.md"),
-});
+/** @param {string} skillName - Skill directory name. @param {string} filename - Claude rule filename. @returns {{ path: string, type: string, target: string }} Claude rule adapter. */
+export const claudeRuleAdapter = (skillName, filename) => ({ path: join(".claude", "rules", filename), type: "symlink", target: join(".agents", "skills", skillName, "SKILL.md") });

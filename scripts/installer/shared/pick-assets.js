@@ -36,6 +36,8 @@ const groupChoices = (choices) => choices.flatMap((choice, index) => [
  * @param {number} [config.pageSize]
  * @param {object} [context] - Optional Inquirer runtime context, used by tests.
  * @returns {Promise<unknown[]>} The selected values.
+ * @throws {Error} If the prompt cannot be rendered or is cancelled.
+ * @effects Presents an interactive checkbox prompt on the current terminal.
  */
 export const pickAssets = ({ message, choices, grouped = false, pageSize = 14 }, context) => checkbox({
     message,

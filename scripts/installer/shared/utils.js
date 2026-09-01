@@ -10,10 +10,14 @@ import consola from "consola";
  * writing in `write-file.js`, and the selection prompts in `prompts.js` / `pick-assets.js`.
  */
 
-/** Configure consola to drop timestamps from installer output. */
-export const setupConsola = () => {
-    consola.options = { ...consola.options, formatOptions: { ...consola.options.formatOptions, date: false } };
-};
+/**
+ * Return a consola instance configured for installer output without changing the shared default.
+ * @returns {typeof consola} A timestamp-free consola instance.
+ */
+export const setupConsola = () => consola.withDefaults({ formatOptions: { date: false } });
+
+/** @param {unknown} error - Filesystem failure. @returns {boolean} Whether an optional global source is unavailable. */
+const isUnavailableGlobalSource = (error) => error instanceof Error && "code" in error && ["EACCES", "ENOENT", "ENOTDIR"].includes(error.code);
 
 /**
  * Names of Agent Skills and commands already installed machine-wide by the "Sync Global Agent
@@ -28,6 +32,8 @@ export const setupConsola = () => {
  *
  * @returns {Map<string, string|null>} name → recorded version, or null when the name is only
  *   known from a directory listing.
+ * @throws {Error} If an existing global source cannot be inspected.
+ * @effects Reads the global `.agents` and `.claude` directories and optional lock file below the current user home directory.
  */
 export const readGlobalSkillSet = () => {
     const agentsRoot = join(homedir(), ".agents");
@@ -41,16 +47,22 @@ export const readGlobalSkillSet = () => {
                     found.set(entry.name, null);
                 }
             }
-        } catch { /* directory absent — contributes nothing */ }
+        } catch (error) {
+            if (!isUnavailableGlobalSource(error)) throw error;
+        }
     }
 
     try {
         const lock = JSON.parse(readFileSync(join(agentsRoot, "template-lock.json"), "utf8"));
-        for (const [path, artifact] of Object.entries(lock?.artifacts ?? {})) {
+        const artifacts = lock !== null && typeof lock === "object" && !Array.isArray(lock) && Object.hasOwn(lock, "artifacts") && lock.artifacts !== null && typeof lock.artifacts === "object" && !Array.isArray(lock.artifacts) ? lock.artifacts : {};
+        for (const [path, artifact] of Object.entries(artifacts)) {
             const match = /^\.agents\/skills\/(.+)\/SKILL\.md$/.exec(path);
-            if (match) found.set(match[1], artifact?.version ?? null);
+            const version = artifact !== null && typeof artifact === "object" && !Array.isArray(artifact) && Object.hasOwn(artifact, "version") && typeof artifact.version === "string" ? artifact.version : null;
+            if (match) found.set(match[1], version);
         }
-    } catch { /* lock absent or invalid — directory listings still stand */ }
+    } catch (error) {
+        if (!(error instanceof SyntaxError) && !isUnavailableGlobalSource(error)) throw error;
+    }
 
     return found;
 };
@@ -62,6 +74,7 @@ export const readGlobalSkillSet = () => {
  * an unsupported terminal silently ignores it.
  * @param {string} text - The text to copy.
  * @returns {boolean} Whether the sequence was written (not whether the copy succeeded).
+ * @effects Writes an OSC 52 sequence to the current process stdout when it is a TTY.
  */
 export const copyToClipboard = (text) => {
     if (!process.stdout.isTTY) return false;
@@ -71,12 +84,20 @@ export const copyToClipboard = (text) => {
 };
 
 /**
- * Handle a top-level installer error: exit 0 on SIGINT, otherwise log and exit 1.
- * @param {unknown} e - The caught error.
+ * Whether Inquirer reported an expected user cancellation.
+ * @param {unknown} error - Caught prompt error.
+ * @returns {boolean} Whether the error is the known SIGINT cancellation.
  */
-export const handleError = (e) => {
-    const message = e instanceof Error ? e.message : String(e);
-    if (message.includes("User force closed the prompt with SIGINT")) process.exit(0);
-    consola.error(`An error occurred: ${message}`);
-    process.exit(1);
+export const isPromptCancellation = (error) => error instanceof Error && error.message.includes("User force closed the prompt with SIGINT");
+
+/**
+ * End an installer after an expected prompt cancellation.
+ * Effects: writes no files; exits the current process with status 0. Unexpected errors rethrow.
+ * @param {unknown} error - Caught error to handle.
+ * @returns {never} Does not return for a prompt cancellation.
+ * @throws {unknown} If error is not the known SIGINT cancellation.
+ */
+export const handleError = (error) => {
+    if (!isPromptCancellation(error)) throw error;
+    process.exit(0);
 };
