@@ -16,7 +16,6 @@
         "version": "1.1.0",
         "description": "Use when creating or editing a project's .vscode/tasks.json — the VS Code task schema, which fields to reach for, and how to decide whether a failing command should fail the task.",
         "tags": [
-            "vscode",
             "workflow"
         ],
         "templateFile": "vscode-tasks/SKILL.md"
@@ -27,7 +26,7 @@
         "version": "1.0.0",
         "description": "Index React components in one or more folders by reading local component files and summarizing each component's UI role. Use when documenting component folders anywhere in a workspace.",
         "tags": [
-            "react",
+            "frontend",
             "docs"
         ],
         "templateFile": "index-components/SKILL.md"

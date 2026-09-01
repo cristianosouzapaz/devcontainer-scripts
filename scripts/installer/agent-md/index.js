@@ -169,6 +169,7 @@ const askUser = async () => {
             name: entry.name,
             value: entry,
             description: entry.description,
+            tags: entry.tags,
             annotation: formatVersionHint(state.lock.mdBlocks["AGENTS.md"]?.[entry.key] ?? null, entry.version),
         }));
 
@@ -179,7 +180,7 @@ const askUser = async () => {
                 return [
                     { title: "Agent MD blocks", items: selected.map(({ name }) => name) },
                     { title: "Included skills", items: toInstall },
-                    { title: "Already installed globally", items: alreadyGlobal },
+                    { title: "Already installed globally", items: alreadyGlobal, note: true },
                 ];
             },
             "Install selected blocks",

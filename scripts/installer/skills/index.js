@@ -111,7 +111,7 @@ const selectSkills = (skills, globalSet = readGlobalSkillSet(), projectSet = rea
             return [
                 { title: "Skills", items: selected.map(({ name }) => name) },
                 { title: "Automatically included", items: [...requiredBy].map(([dep, names]) => `${dep} (required by ${names.join(", ")})`) },
-                { title: "Already installed globally", items: alreadyGlobal },
+                { title: "Already installed globally", items: alreadyGlobal, note: true },
             ];
         },
         "Install selected skills",

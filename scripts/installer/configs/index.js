@@ -73,6 +73,7 @@ const askUser = async () => {
             name: c.name,
             value: c,
             description: c.description,
+            tags: c.tags,
             annotation: formatVersionHint(state.lock.configs[c.filename] ?? null, c.version),
         }));
 
@@ -82,7 +83,7 @@ const askUser = async () => {
                 const packages = [...new Set(selected.flatMap((config) => config.packages ?? []))];
                 return [
                     { title: "Config files", items: selected.map(({ name }) => name) },
-                    { title: "Required packages (run separately)", items: packages },
+                    { title: "Required packages (run separately)", items: packages, note: true },
                 ];
             },
             "Install selected files",

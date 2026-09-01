@@ -405,6 +405,7 @@ const askUser = async () => {
             name: entry.name,
             value: entry,
             description: readTemplateDescription(entry.templateFile),
+            tags: entry.tags,
             annotation: formatVersionHint(getArtifactVersion(lock, join(".agents", "skills", skillName, "SKILL.md")), entry.version),
             disabled: globalSet.has(skillName) && "installed globally",
         });
@@ -421,7 +422,7 @@ const askUser = async () => {
             ({ selectedInstructions, selectedPrompts }) => [
                 { title: "Instruction files", items: selectedInstructions.map(({ name }) => name) },
                 { title: "Prompt files", items: selectedPrompts.map(({ name }) => name) },
-                { title: "Already installed globally", items: alreadyGlobal },
+                { title: "Already installed globally", items: alreadyGlobal, note: true },
             ],
             "Install selected files",
             ({ selectedInstructions, selectedPrompts }) => selectedInstructions.length + selectedPrompts.length === 0,

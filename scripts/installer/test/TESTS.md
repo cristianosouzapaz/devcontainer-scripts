@@ -2,14 +2,24 @@
 
 ## `pick-assets.test.js`
 
-Module under test: `shared/pick-assets.js` — the shared multi-select prompt.
+Module under test: `shared/pick-assets.js` — the shared multi-select prompt, including its
+tag-filter chip bar.
 
 | Test | Verifies |
 | --- | --- |
-| shows annotations, global status and category separators | Version annotations, non-selectable global rows, and category separators render through the official checkbox |
-| space toggles the active official checkbox | Space selects the active choice and Enter returns its value |
-| keeps the picker header singular across selection redraws | Repeated official checkbox redraws retain one current prompt header |
-| keeps one visible frame while paging through a long skills list | The official checkbox retains one current frame after crossing pagination boundaries |
+| shows annotations, global status and category separators | Version annotations, non-selectable global rows, and category separators render in the list |
+| space toggles the active choice; the list is alphabetical within each group | Space selects the active choice, Enter returns its value, and the first row is the alphabetically-first entry of the first group |
+| orders a flat list alphabetically regardless of caller order | An ungrouped picker sorts its rows by name whatever order the caller passed |
+| keeps groups in caller order but sorts entries alphabetically within them | Grouped categories stay in the caller's order while entries inside each are alphabetised |
+| keeps the picker header singular across selection redraws | Repeated redraws retain one current prompt header |
+| keeps one visible frame while paging through a long skills list | The list retains one current frame after crossing pagination boundaries |
+| hides the tag bar when no choice carries tags | With untagged choices the prompt renders as a plain multi-select — no chip bar, no filter hint |
+| shows an All chip plus every tag, sorted | Tagged choices produce an `All` chip followed by each distinct tag in sorted order |
+| right arrow filters the list to the active tag | Stepping the chip bar to a tag narrows the list to entries carrying that tag |
+| shows a match count for an active tag but not for All | The chip bar gains a trailing `· N` count once a tag is active; the `All` view shows none |
+| keeps selections made under one tag after switching filters | A choice checked under one tag is still returned after moving to another chip |
+| the select-all shortcut only toggles the filtered subset | `a` selects only the entries visible under the active tag, not the whole catalog |
+| drops category separators when the filtered view is one category | Group headers render only while the visible items span two or more categories, so a filtered view does not just echo the active tag |
 
 ## `global-skill-set.test.js`
 
@@ -83,5 +93,7 @@ between a per-project install and the machine-wide set.
 
 | Test | Verifies |
 | --- | --- |
-| Formats a compact summary with counted sections | The shared summary uses the standard title, divider, counts, and indented items |
-| Omits empty sections | Optional sections with no entries do not add visual noise to the summary |
+| renders a section rule, titles with counts, and indented items | The summary opens with a `── Selection ──` rule and lists each section as a title, a `· N` count, and its items indented one per line |
+| puts a blank line after the rule and between sections, with no trailing blank | Exactly one blank separates the rule from the first section and each section from the next; the block does not end on a blank |
+| a note section still shows its title, count and items | A `note: true` section keeps the same title, count, and per-line items as a normal section |
+| omits empty sections | Optional sections with no entries do not add visual noise to the summary |

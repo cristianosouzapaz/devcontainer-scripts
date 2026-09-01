@@ -4,8 +4,7 @@
         "filename": "bash.instructions.md",
         "version": "1.4.0",
         "tags": [
-            "bash",
-            "shell"
+            "language"
         ],
         "templateFile": "instructions/bash.instructions.md"
     },
@@ -14,8 +13,7 @@
         "filename": "javascript.instructions.md",
         "version": "1.0.3",
         "tags": [
-            "javascript",
-            "jsx"
+            "language"
         ],
         "templateFile": "instructions/javascript.instructions.md"
     },
@@ -24,8 +22,7 @@
         "filename": "agent-orchestration.instructions.md",
         "version": "1.2.0",
         "tags": [
-            "agents",
-            "multi-agent"
+            "agents"
         ],
         "templateFile": "instructions/agent-orchestration.instructions.md"
     },
@@ -34,9 +31,7 @@
         "filename": "documentation.instructions.md",
         "version": "1.2.0",
         "tags": [
-            "docs",
-            "jsdoc",
-            "typescript"
+            "docs"
         ],
         "templateFile": "instructions/documentation.instructions.md"
     },
@@ -45,8 +40,7 @@
         "filename": "nextjs.instructions.md",
         "version": "1.1.1",
         "tags": [
-            "nextjs",
-            "react"
+            "framework"
         ],
         "templateFile": "instructions/nextjs.instructions.md"
     },
@@ -55,7 +49,7 @@
         "filename": "typescript.instructions.md",
         "version": "1.1.1",
         "tags": [
-            "typescript"
+            "language"
         ],
         "templateFile": "instructions/typescript.instructions.md"
     }

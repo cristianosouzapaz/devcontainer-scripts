@@ -143,6 +143,7 @@ export const buildSkillChoices = (skills, globalSet, projectSet) =>
             value: entry,
             description: entry.description,
             group,
+            tags: entry.tags,
             annotation: !globalSet.has(entry.skill) && projectSet.has(entry.skill) ? "(installed)" : undefined,
             disabled: globalSet.has(entry.skill) && "installed globally",
         })));

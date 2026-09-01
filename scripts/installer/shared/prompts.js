@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import { checkbox, select, Separator } from "@inquirer/prompts";
 import { TOOLS } from "./constants.js";
+import { PROMPT_THEME, sectionHeader } from "./theme.js";
 
 /**
  * @fileoverview Selection-prompt helpers shared by the installer sub-commands: the plain-text
@@ -11,25 +12,26 @@ import { TOOLS } from "./constants.js";
 const CLEAR_ON_DONE = { clearPromptOnDone: true };
 
 /**
- * Format the deliberately plain-text summary shown before an installer proceeds. Empty
- * sections are dropped so optional groups add no noise.
- * @param {{title: string, items: string[]}[]} sections
+ * Format the review shown before an installer proceeds: a section rule, then one block per
+ * non-empty section — a bold title with a dim count, and its items indented one per line.
+ * A `note` section (nothing is written for it, e.g. assets already installed globally) is
+ * rendered dim throughout so it reads as context rather than an action.
+ * @param {{title: string, items: string[], note?: boolean}[]} sections
  * @returns {string}
  */
 export const formatSelectionSummary = (sections) => {
-    const visibleSections = sections.filter(({ items }) => items.length > 0);
-    const contentLines = visibleSections.flatMap(({ title, items }) => [
-        `${title} (${items.length})`,
-        ...items.map((item) => `  • ${item}`),
-        "",
-    ]);
-    const width = Math.max(44, ...contentLines.map((line) => line.length));
-    const top = `┌─ Selection summary ${"─".repeat(width - 18)}┐`;
-    const bottom = `└${"─".repeat(width + 2)}┘`;
+    const block = ({ title, items, note }) => {
+        const heading = note
+            ? chalk.dim(`${title} · ${items.length}`)
+            : `${chalk.bold(title)}${chalk.dim(` · ${items.length}`)}`;
+        return [heading, ...items.map((item) => (note ? chalk.dim(`  ${item}`) : `  ${item}`))];
+    };
     return [
-        top,
-        ...contentLines.map((line) => `│ ${line.padEnd(width)} │`),
-        bottom,
+        sectionHeader("Selection"),
+        " ",
+        ...sections
+            .filter(({ items }) => items.length > 0)
+            .flatMap((section, index) => [...(index > 0 ? [" "] : []), ...block(section)]),
     ].join("\n");
 };
 
@@ -45,6 +47,7 @@ export const formatSelectionSummary = (sections) => {
  */
 const confirmSelection = async (sections, installLabel = "Install selected assets") => {
     const summaryLines = formatSelectionSummary(sections).split("\n");
+    const blank = () => new Separator(" ");
     return select({
         // Keep the readline message single-line. Multiline messages confuse Inquirer's
         // cursor accounting when this prompt is reopened after "Continue editing selection".
@@ -52,12 +55,15 @@ const confirmSelection = async (sections, installLabel = "Install selected asset
         choices: [
             // Separators render the summary as part of the prompt screen without becoming
             // selectable rows, so the edit loop can redraw it without leaving stale lines.
+            blank(),
             ...summaryLines.map((line) => new Separator(line)),
+            blank(),
             { name: installLabel, value: "install" },
             { name: "Continue editing selection", value: "edit" },
             { name: "Cancel", value: "cancel" },
         ],
-        pageSize: summaryLines.length + 3,
+        pageSize: summaryLines.length + 5,
+        theme: PROMPT_THEME,
     }, CLEAR_ON_DONE);
 };
 
@@ -129,4 +135,5 @@ export const selectTargetTools = () => checkbox({
         { name: "Codex", value: TOOLS.codex },
     ],
     validate: (selected) => selected.length > 0 || "Select at least one coding agent.",
+    theme: PROMPT_THEME,
 }, CLEAR_ON_DONE);

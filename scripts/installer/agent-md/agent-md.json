@@ -5,7 +5,7 @@
         "version": "1.0.1",
         "description": "Requires the Index Components skill to be run before closing out any task that touches components.",
         "tags": [
-            "react",
+            "frontend",
             "docs"
         ],
         "templateFile": "component-index.md",
@@ -23,8 +23,7 @@
         "version": "1.0.0",
         "description": "Placeholder section declaring the use of @base-ui/react, ready for project-specific customization.",
         "tags": [
-            "ui",
-            "react"
+            "frontend"
         ],
         "templateFile": "base-ui.md",
         "targets": [
@@ -56,7 +55,6 @@
         "version": "1.0.1",
         "description": "Points to the VS Code Tasks skill for creating or editing .vscode/tasks.json.",
         "tags": [
-            "vscode",
             "workflow"
         ],
         "templateFile": "vscode-tasks.md",

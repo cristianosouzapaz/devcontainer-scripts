@@ -6,7 +6,7 @@
         "description": "Fast native CLI for controlling web browsers via simple commands, built for AI agents.",
         "tags": [
             "automation",
-            "web"
+            "tooling"
         ],
         "url": "https://github.com/vercel-labs/agent-browser"
     },
@@ -16,7 +16,6 @@
         "category": "Security",
         "description": "Configure Better Auth's server/client, database adapters, sessions, and plugins for TypeScript auth setups.",
         "tags": [
-            "authentication",
             "security"
         ],
         "url": "https://github.com/better-auth/skills"
@@ -27,7 +26,6 @@
         "category": "Planning & Workflow",
         "description": "Refines rough ideas into a validated design through structured questions before any code is written.",
         "tags": [
-            "ideation",
             "planning"
         ],
         "url": "https://github.com/obra/superpowers"
@@ -38,8 +36,7 @@
         "category": "Productivity & Communication",
         "description": "Ultra-compressed communication mode — cuts token usage ~75% while keeping full technical accuracy.",
         "tags": [
-            "productivity",
-            "communication"
+            "planning"
         ],
         "url": "https://github.com/juliusbrussee/caveman"
     },
@@ -49,8 +46,7 @@
         "category": "Discovery & Tooling",
         "description": "CLI to discover, install, and manage reusable agent skills across 70+ coding agents.",
         "tags": [
-            "discovery",
-            "tools"
+            "tooling"
         ],
         "url": "https://github.com/vercel-labs/skills"
     },
@@ -60,8 +56,7 @@
         "category": "Design & Frontend",
         "description": "Guidance for distinctive visual design — aesthetic direction, typography, choices that don't look templated.",
         "tags": [
-            "design",
-            "frontend"
+            "design"
         ],
         "url": "https://github.com/anthropics/skills"
     },
@@ -71,10 +66,7 @@
         "category": "Design & Frontend",
         "description": "Creates editorial-quality, accessible HTML and SVG diagrams from 39 layout types, with optional brand matching.",
         "tags": [
-            "design",
-            "diagrams",
-            "svg",
-            "visualization"
+            "design"
         ],
         "url": "https://github.com/cathrynlavery/diagram-design"
     },
@@ -84,8 +76,7 @@
         "category": "Framework (Next.js/Vercel)",
         "description": "Patterns for Next.js 14+ App Router: Server Components, streaming, parallel routes, data fetching.",
         "tags": [
-            "nextjs",
-            "routing"
+            "framework"
         ],
         "url": "https://github.com/wshobson/agents"
     },
@@ -95,8 +86,7 @@
         "category": "Code Quality",
         "description": "Keeps the codebase compact and low-entropy by minimizing unnecessary size and complexity.",
         "tags": [
-            "code-quality",
-            "refactoring"
+            "quality"
         ],
         "url": "https://github.com/softaworks/agent-toolkit"
     },
@@ -106,8 +96,7 @@
         "category": "Discovery & Tooling",
         "description": "Create, edit, and iteratively improve agent skills, including running evals and benchmarking performance.",
         "tags": [
-            "development",
-            "tools"
+            "tooling"
         ],
         "url": "https://github.com/anthropics/skills"
     },
@@ -117,8 +106,8 @@
         "category": "Framework (Next.js/Vercel)",
         "description": "Avoids boolean-prop proliferation via compound components, state lifting, and internal composition.",
         "tags": [
-            "vercel",
-            "patterns"
+            "framework",
+            "quality"
         ],
         "url": "https://github.com/vercel-labs/agent-skills"
     },
@@ -128,9 +117,8 @@
         "category": "Design & Frontend",
         "description": "Vercel Engineering's React/Next.js performance guidelines — 40+ rules across 8 categories.",
         "tags": [
-            "vercel",
-            "react",
-            "best-practices"
+            "framework",
+            "quality"
         ],
         "url": "https://github.com/vercel-labs/agent-skills"
     },
@@ -140,8 +128,7 @@
         "category": "Design & Frontend",
         "description": "Audits UI code against 100+ guidelines covering accessibility, performance, and UX.",
         "tags": [
-            "design",
-            "web"
+            "design"
         ],
         "url": "https://github.com/vercel-labs/agent-skills"
     },
@@ -151,9 +138,7 @@
         "category": "Design & Frontend",
         "description": "Design guidance with 23 commands and 46 rules to push AI-generated UI away from generic template looks.",
         "tags": [
-            "design",
-            "frontend",
-            "ui"
+            "design"
         ],
         "url": "https://github.com/pbakaus/impeccable"
     },
@@ -163,9 +148,7 @@
         "category": "Planning & Workflow",
         "description": "Interviews you relentlessly about a plan or design, one question at a time, until reaching shared understanding.",
         "tags": [
-            "planning",
-            "design",
-            "interview"
+            "planning"
         ],
         "url": "https://github.com/mattpocock/skills",
         "requires": [
@@ -179,9 +162,7 @@
         "description": "Interview that builds your project's domain model while updating CONTEXT.md and ADRs.",
         "tags": [
             "planning",
-            "design",
-            "interview",
-            "documentation"
+            "docs"
         ],
         "url": "https://github.com/mattpocock/skills",
         "requires": [
@@ -195,9 +176,7 @@
         "category": "Planning & Workflow",
         "description": "Compresses the current conversation into a document so another agent can seamlessly continue the work.",
         "tags": [
-            "planning",
-            "workflow",
-            "context"
+            "planning"
         ],
         "url": "https://github.com/mattpocock/skills"
     },
@@ -207,9 +186,7 @@
         "category": "Planning & Workflow",
         "description": "Maps complex efforts on the issue tracker via 'decision tickets' — resolves key decisions rather than executing work directly.",
         "tags": [
-            "planning",
-            "project-management",
-            "decision-making"
+            "planning"
         ],
         "url": "https://github.com/mattpocock/skills"
     },
@@ -219,8 +196,7 @@
         "category": "Productivity & Communication",
         "description": "Makes agents write minimal necessary code via a 'laziness ladder' — reuse or stdlib before writing anything new.",
         "tags": [
-            "productivity",
-            "communication"
+            "quality"
         ],
         "url": "https://github.com/dietrichgebert/ponytail"
     },
@@ -230,8 +206,7 @@
         "category": "Bundles",
         "description": "Bundle install of 24 production-grade engineering skills spanning spec, plan, build, test, review, and ship.",
         "tags": [
-            "bundle",
-            "workflow"
+            "bundle"
         ],
         "url": "https://github.com/addyosmani/agent-skills"
     },
@@ -241,8 +216,7 @@
         "category": "Bundles",
         "description": "Bundle install of a full software-development methodology built from composable skills.",
         "tags": [
-            "bundle",
-            "workflow"
+            "bundle"
         ],
         "url": "https://github.com/obra/superpowers"
     },
@@ -252,8 +226,7 @@
         "category": "Bundles",
         "description": "Bundle install of Matt Pocock's 29 skills spanning specs, planning, TDD, code review, and codebase architecture.",
         "tags": [
-            "bundle",
-            "workflow"
+            "bundle"
         ],
         "url": "https://github.com/mattpocock/skills"
     },
@@ -263,9 +236,7 @@
         "category": "Productivity & Communication",
         "description": "Obsidian-flavored Markdown: wikilinks, callouts, frontmatter, tags, and Dataview queries for knowledge vaults.",
         "tags": [
-            "obsidian",
-            "markdown",
-            "knowledge-base"
+            "docs"
         ],
         "url": "https://github.com/kepano/obsidian-skills"
     }

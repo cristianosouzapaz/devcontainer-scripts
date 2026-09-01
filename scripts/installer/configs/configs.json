@@ -5,7 +5,6 @@
         "version": "1.1.1",
         "description": "Biome linter/formatter config — organizes imports, sorts keys and attributes, Tailwind-aware CSS parsing.",
         "tags": [
-            "linting",
             "formatting"
         ],
         "templateFile": "biome.json",
@@ -39,7 +38,7 @@
         "version": "1.0.0",
         "description": "Conventional Commits rules — restricts commit types and caps header/body/footer line lengths.",
         "tags": [
-            "git-hooks"
+            "git"
         ],
         "templateFile": "commitlint.config.js",
         "packages": [
@@ -53,7 +52,7 @@
         "version": "1.0.2",
         "description": "Git hooks: runs Biome and TypeScript checks on staged files, enforces branch naming and commit message conventions, blocks pushes to main.",
         "tags": [
-            "git-hooks"
+            "git"
         ],
         "templateFile": "lefthook.yml",
         "packages": [
@@ -79,8 +78,7 @@
         "version": "1.0.0",
         "description": "tsconfig tailored for Next.js — adds JSX, DOM libs, and Next.js path/module resolution.",
         "tags": [
-            "typescript",
-            "nextjs"
+            "typescript"
         ],
         "templateFile": "tsconfig.nextjs.json",
         "packages": [
@@ -104,7 +102,7 @@
         "description": "Registers the context7 MCP server (up-to-date library docs) for Claude Code.",
         "tags": [
             "claude",
-            "tool"
+            "tooling"
         ],
         "templateFile": "claude.mcp.json"
     },
@@ -114,8 +112,7 @@
         "version": "1.0.0",
         "description": "Excludes dependencies and build output from Graphify's code graph analysis.",
         "tags": [
-            "ai",
-            "tool"
+            "tooling"
         ],
         "templateFile": ".graphifyignore"
     }
