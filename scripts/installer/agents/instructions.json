@@ -10,6 +10,16 @@
         "templateFile": "instructions/bash.instructions.md"
     },
     {
+        "name": "JavaScript Rules",
+        "filename": "javascript.instructions.md",
+        "version": "1.0.3",
+        "tags": [
+            "javascript",
+            "jsx"
+        ],
+        "templateFile": "instructions/javascript.instructions.md"
+    },
+    {
         "name": "Agent Orchestration",
         "filename": "agent-orchestration.instructions.md",
         "version": "1.2.0",

@@ -67,6 +67,7 @@ between a per-project install and the machine-wide set.
 | Test | Verifies |
 | --- | --- |
 | Records Claude and Copilot adapters for every generated agent artifact | A v2 lock records canonical instruction and prompt artifacts, their generated Claude symlinks including expected targets, and Copilot adapter files; a removed symlink is pruned during reconciliation |
+| Installs JavaScript Rules with its scoped glob in every adapter | The JavaScript template produces canonical, Claude, and Copilot artifacts, retaining its JavaScript/JSX path glob in the canonical skill |
 | Does not create adapters for an unmanaged asset skipped during conflict resolution | Skipping an untracked canonical conflict leaves the asset unrecorded and creates neither Claude nor Copilot adapter |
 
 ## `skills-catalog.test.js`

@@ -5,25 +5,25 @@ import assert from "node:assert/strict";
 import { installInstructions, installPrompts } from "../agents/index.js";
 import { TOOLS } from "../shared/constants.js";
 import { readLockFile, reconcileArtifactAdapters, writeLockFile } from "../shared/lock-file.js";
-import { withTemporaryProject } from "./helpers.js";
+import { readText, withTemporaryProject } from "./helpers.js";
 
 test("records Claude and Copilot adapters for every generated agent artifact", async () => {
     await withTemporaryProject(async (root) => {
         const lock = readLockFile(root);
         const tools = new Set([TOOLS.claude, TOOLS.copilot]);
 
-        await installInstructions([{
+        const instructionResult = await installInstructions([{
             filename: "bash.instructions.md",
             version: "1.4.0",
             templateFile: "instructions/bash.instructions.md",
         }], root, tools, lock);
-        await installPrompts([{
+        const promptResult = await installPrompts([{
             filename: "generate-commit.prompt.md",
             commandFilename: "generate-commit.md",
             version: "1.2.0",
             templateFile: "prompts/generate-commit.prompt.md",
-        }], root, tools, lock);
-        writeLockFile(root, lock);
+        }], root, tools, instructionResult.lock);
+        writeLockFile(root, promptResult.lock);
 
         const persisted = JSON.parse(readFileSync(join(root, "template-lock.json"), "utf8"));
         assert.equal(persisted.version, "2");
@@ -51,10 +51,32 @@ test("records Claude and Copilot adapters for every generated agent artifact", a
         assert.equal(lstatSync(join(root, ".claude/skills/generate-commit")).isSymbolicLink(), true);
 
         unlinkSync(join(root, ".claude/skills/generate-commit"));
-        assert.equal(reconcileArtifactAdapters(lock, root, ".agents/skills/generate-commit/SKILL.md"), true);
-        assert.deepEqual(lock.artifacts[".agents/skills/generate-commit/SKILL.md"].adapters, {
+        const reconciled = reconcileArtifactAdapters(promptResult.lock, root, ".agents/skills/generate-commit/SKILL.md");
+        assert.equal(reconciled.changed, true);
+        assert.deepEqual(reconciled.lock.artifacts[".agents/skills/generate-commit/SKILL.md"].adapters, {
             copilot: [{ path: ".github/prompts/generate-commit.prompt.md", type: "file" }],
         });
+    });
+});
+
+test("installs JavaScript Rules with its scoped glob in every adapter", async () => {
+    await withTemporaryProject(async (root) => {
+        const lock = readLockFile(root);
+
+        await installInstructions([{
+            filename: "javascript.instructions.md",
+            version: "1.0.3",
+            templateFile: "instructions/javascript.instructions.md",
+        }], root, new Set([TOOLS.claude, TOOLS.copilot]), lock);
+
+        const canonical = join(root, ".agents/skills/javascript/SKILL.md");
+        const copilot = join(root, ".github/instructions/javascript.instructions.md");
+        const claude = join(root, ".claude/rules/javascript.md");
+
+        assert.equal(existsSync(canonical), true);
+        assert.match(readFileSync(canonical, "utf8"), /^---\nname: javascript\n[\s\S]*paths:\n  - "\*\*\/\*\.\{js,mjs,cjs,jsx\}"\n---/);
+        assert.equal(readFileSync(copilot, "utf8"), readText("agents/templates/instructions/javascript.instructions.md"));
+        assert.equal(lstatSync(claude).isSymbolicLink(), true);
     });
 });
 
