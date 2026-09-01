@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { checkbox, select } from "@inquirer/prompts";
+import { checkbox, select, Separator } from "@inquirer/prompts";
 import { TOOLS } from "./constants.js";
 
 /**
@@ -40,19 +40,26 @@ export const formatSelectionSummary = (sections) => {
  * @param {{title: string, items: string[]}[]} sections
  * @param {string} installLabel
  * @returns {Promise<"install"|"edit"|"cancel">}
+ * @throws {Error} If the interactive prompt cannot complete.
+ * @effects Presents an interactive confirmation prompt on the current terminal.
  */
-const confirmSelection = async (sections, installLabel = "Install selected assets") =>
-    select({
-        message: `${formatSelectionSummary(sections)}\n\nWhat would you like to do?`,
+const confirmSelection = async (sections, installLabel = "Install selected assets") => {
+    const summaryLines = formatSelectionSummary(sections).split("\n");
+    return select({
+        // Keep the readline message single-line. Multiline messages confuse Inquirer's
+        // cursor accounting when this prompt is reopened after "Continue editing selection".
+        message: "What would you like to do?",
         choices: [
+            // Separators render the summary as part of the prompt screen without becoming
+            // selectable rows, so the edit loop can redraw it without leaving stale lines.
+            ...summaryLines.map((line) => new Separator(line)),
             { name: installLabel, value: "install" },
             { name: "Continue editing selection", value: "edit" },
             { name: "Cancel", value: "cancel" },
         ],
-        // Empty prefix + plain message style: inquirer prepends `?` to (and bolds) only
-        // the first line, which would misalign the summary box's top border.
-        theme: { prefix: "", style: { message: (text) => text } },
+        pageSize: summaryLines.length + 3,
     }, CLEAR_ON_DONE);
+};
 
 /**
  * Repeat a selection and confirmation until the user installs or cancels. Returns undefined
@@ -65,6 +72,8 @@ const confirmSelection = async (sections, installLabel = "Install selected asset
  * @param {string} installLabel
  * @param {(selection: unknown) => boolean} [isEmpty]
  * @returns {Promise<unknown|null|undefined>}
+ * @throws {Error} If a picker or confirmation prompt fails.
+ * @effects Repeatedly presents the supplied picker and confirmation prompts on the current terminal.
  */
 export const selectUntilConfirmed = async (selectSelection, buildSections, installLabel, isEmpty = (selection) => selection.length === 0, previous = undefined) => {
     const selection = await selectSelection(previous);
@@ -109,6 +118,8 @@ export const formatVersionHint = (installedVersion, version) => {
  * Prompt for one or more coding agents. Callers route on the returned set rather than
  * branching on every combination, so adding an agent needs no new branches here.
  * @returns {Promise<string[]>} Selected values from `TOOLS`.
+ * @throws {Error} If the interactive prompt cannot complete.
+ * @effects Presents an interactive checkbox prompt on the current terminal.
  */
 export const selectTargetTools = () => checkbox({
     message: "Select target tool(s):",
