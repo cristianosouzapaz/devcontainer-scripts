@@ -35,8 +35,8 @@
     {
         "key": "documentation-sync",
         "name": "Documentation Sync",
-        "version": "1.2.2",
-        "description": "Requires the Documentation Sync skill to be invoked before editing docs/wiki/ or a README.md, and whenever a change affects documented behavior.",
+        "version": "1.3.0",
+        "description": "Requires the Documentation Sync skill to be invoked before editing the documentation tree or the README, and whenever a change affects documented behavior; adds the /documentation-sync audit sweep.",
         "tags": [
             "docs",
             "workflow"

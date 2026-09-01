@@ -2,8 +2,8 @@
     {
         "key": "documentation-sync",
         "name": "Documentation Sync",
-        "version": "1.2.1",
-        "description": "Use when editing any file under docs/wiki/ or a README.md, or when a change affects documented behavior (API, package, toolchain, structure): checks those docs against the codebase and keeps them from contradicting it.",
+        "version": "1.3.0",
+        "description": "Use when editing any file in the project's documentation tree or the README, or when a change affects documented behavior (API, package, toolchain, structure): checks those docs against the codebase and keeps them from contradicting it. Run /documentation-sync audit for a full docs + README review.",
         "tags": [
             "docs",
             "workflow"
