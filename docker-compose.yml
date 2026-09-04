@@ -2,6 +2,8 @@ services:
   project-name:
     build:
       context: .
+      args:
+        PROJECT_NAME: project-name
     container_name: project-name
     stdin_open: true
     volumes:

@@ -11,6 +11,9 @@
         }
     },
     "build": {
+        "args": {
+            "PROJECT_NAME": "project-name"
+        },
         "dockerfile": "Dockerfile"
     },
     "name": "project-name",

@@ -6,22 +6,20 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl jq \
     && rm -rf /var/lib/apt/lists/*
 
-# SET ENVIRONMENT VARIABLES FOR PNPM CONFIGURATION
 ENV PNPM_HOME=/root/.local/share/pnpm \
     PATH=/root/.local/share/pnpm:$PATH \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
-# SET ENVIRONMENT VARIABLES FOR CLAUDE AND CODEX CONFIGURATION
 ENV CLAUDE_CONFIG_DIR=/root/.claude \
     CODEX_HOME=/root/.codex
 
-# DOWNLOAD SETUP SCRIPTS FROM REPO
 ARG SCRIPTS_REF="main"
 ARG SCRIPTS_REPO="cristianosouzapaz/devcontainer-scripts"
 ENV SCRIPTS_REF=${SCRIPTS_REF}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# Fetch the setup scripts and put the bin/ entrypoints on PATH.
 RUN mkdir -p /tmp/dc-init \
     && node --input-type=module -e " \
       const res = await fetch('https://github.com/${SCRIPTS_REPO}/archive/refs/heads/${SCRIPTS_REF}.tar.gz'); \
@@ -38,6 +36,7 @@ RUN mkdir -p /tmp/dc-init \
     && install -m 0755 /opt/devcontainer/bin/* /usr/local/bin/ \
     && ln -sf /opt/devcontainer/bin/devcontainer-data /usr/local/bin/devcontainer-data
 
+# Install the latest herdr release, verified against its published checksum.
 RUN set -eux; \
     case "$(uname -m)" in \
         x86_64) herdr_arch='x86_64' ;; \
@@ -57,3 +56,9 @@ RUN set -eux; \
     printf '%s  %s\n' "${herdr_digest#sha256:}" /tmp/herdr | sha256sum --check --status; \
     install -D -m 0755 /tmp/herdr /usr/local/lib/herdr/herdr; \
     rm -f /tmp/herdr "$release_file"
+
+# Pre-create the workspace folder and its schema marker in the image so a freshly
+# created project volume already has them before any lifecycle command runs.
+ARG PROJECT_NAME="project-name"
+RUN mkdir -p "/workspace/${PROJECT_NAME}" /workspace/.metadata \
+    && jq -r '.schemaVersion' /opt/devcontainer/config/persistent-data.json > /workspace/.metadata/.schema-version
