@@ -240,6 +240,14 @@ install_dependencies() {
 
 # ----- CORE SETUP ----------------------------------------------------------
 
+# installer_base_url: Print the raw-content base URL for an installer ref.
+# Args: $1 - git ref.
+# Returns: 0, URL on stdout.
+installer_base_url() {
+	local scripts_ref="$1"
+	printf 'https://raw.githubusercontent.com/cristianosouzapaz/devcontainer-scripts/%s/public/scripts/installer\n' "${scripts_ref}"
+}
+
 # main: Fetches, verifies and installs the whole installer package.
 # Returns: 0 on success; fatal on any missing prerequisite, download or verification failure.
 main() {
@@ -247,7 +255,7 @@ main() {
 
 	installer_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 	scripts_ref="${SCRIPTS_REF:-main}"
-	base_url="https://raw.githubusercontent.com/cristianosouzapaz/devcontainer-scripts/${scripts_ref}/scripts/installer"
+	base_url="$(installer_base_url "${scripts_ref}")"
 
 	command -v curl >/dev/null 2>&1 || fail "curl is required but was not found on PATH"
 	command -v node >/dev/null 2>&1 || fail "node is required but was not found on PATH"
@@ -268,7 +276,8 @@ main() {
 	log "installer ready"
 }
 
-export -f log fail cleanup download_file required_paths fetch_graph assert_parses verify_stage install_dependencies main
+export -f log fail cleanup download_file required_paths fetch_graph assert_parses verify_stage \
+	install_dependencies installer_base_url main
 
 # ----- ENTRY POINT ---------------------------------------------------------
 
