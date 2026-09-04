@@ -8,8 +8,6 @@ set -euo pipefail
 
 # ----- PATH AND STRUCTURE VARIABLES -------------------------------------------
 
-readonly _SETUP_MODULES_DIR="setup/modules"
-readonly _SETUP_LIB_DIR="setup/lib"
 # Test seam — not readonly so tests can point this at a fixture file
 _VERSION_FILE="VERSION"
 
@@ -19,11 +17,13 @@ _VERSION_FILE="VERSION"
 [[ "${1:-}" == "--debug" ]] && DEBUG_MODE=true
 
 # Resolve script directory (either local workspace mount or container copy)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
-source "$SCRIPT_DIR/$_SETUP_LIB_DIR/loader.sh"
+# The loader publishes the absolute script tree anchors (DEVCONTAINER_LIB_DIR, DEVCONTAINER_MODULES_DIR, …)
+# used below, so this is the only path this script has to spell out itself.
+source "$SCRIPT_DIR/setup/lib/loader.sh"
 
 # ----- FUNCTIONS --------------------------------------------------------------
 
@@ -56,7 +56,7 @@ main() {
 		log_debug "Context: $(pwd)"
 	fi
 
-	if ! run_all_modules "$SCRIPT_DIR/$_SETUP_MODULES_DIR"; then
+	if ! run_all_modules "$DEVCONTAINER_MODULES_DIR"; then
 		log_fatal "One or more setup modules failed"
 	fi
 

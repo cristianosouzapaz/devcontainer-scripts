@@ -6,22 +6,36 @@ readonly _LOADER_SH_LOADED=1
 # Single entry point for the shared utility layer: modules source this, never an
 # individual shared file. Also sets the container's environment-variable defaults.
 
-readonly LIB_DIR="$(dirname "${BASH_SOURCE[0]}")"
+# ----- SCRIPT TREE ANCHORS ----------------------------------------------------
+#
+# The one place that knows the layout of the script tree. Every path below is
+# absolute and derived from this file's own location, so nothing downstream
+# depends on the working directory — modules `cd` into the workspace mid-run —
+# and nothing else has to spell out a `../` hop of its own.
 
-source "$LIB_DIR/env-loader.sh"
-source "$LIB_DIR/error-handler.sh"
-source "$LIB_DIR/logging.sh"
-source "$LIB_DIR/module-registry.sh"
-source "$LIB_DIR/persistent-data/registry.sh"
-source "$LIB_DIR/persistent-data/paths.sh"
-source "$LIB_DIR/persistent-data/locks.sh"
-source "$LIB_DIR/persistent-data/schema.sh"
-source "$LIB_DIR/persistent-data/copy.sh"
-source "$LIB_DIR/persistent-data/summary.sh"
-source "$LIB_DIR/retry.sh"
-source "$LIB_DIR/spinner.sh"
-source "$LIB_DIR/validation.sh"
-source "$LIB_DIR/herdr.sh"
+readonly DEVCONTAINER_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly DEVCONTAINER_SETUP_DIR="${DEVCONTAINER_LIB_DIR%/*}"
+readonly DEVCONTAINER_SCRIPTS_DIR="${DEVCONTAINER_SETUP_DIR%/*}"
+readonly DEVCONTAINER_MODULES_DIR="${DEVCONTAINER_SETUP_DIR}/modules"
+readonly DEVCONTAINER_ASSETS_DIR="${DEVCONTAINER_SETUP_DIR}/assets"
+readonly DEVCONTAINER_CONFIG_DIR="${DEVCONTAINER_SCRIPTS_DIR}/config"
+readonly DEVCONTAINER_INSTALLER_DIR="${DEVCONTAINER_SCRIPTS_DIR}/installer"
+readonly DEVCONTAINER_BIN_DIR="${DEVCONTAINER_SCRIPTS_DIR}/bin"
+
+source "$DEVCONTAINER_LIB_DIR/env-loader.sh"
+source "$DEVCONTAINER_LIB_DIR/error-handler.sh"
+source "$DEVCONTAINER_LIB_DIR/logging.sh"
+source "$DEVCONTAINER_LIB_DIR/module-registry.sh"
+source "$DEVCONTAINER_LIB_DIR/persistent-data/registry.sh"
+source "$DEVCONTAINER_LIB_DIR/persistent-data/paths.sh"
+source "$DEVCONTAINER_LIB_DIR/persistent-data/locks.sh"
+source "$DEVCONTAINER_LIB_DIR/persistent-data/schema.sh"
+source "$DEVCONTAINER_LIB_DIR/persistent-data/copy.sh"
+source "$DEVCONTAINER_LIB_DIR/persistent-data/summary.sh"
+source "$DEVCONTAINER_LIB_DIR/retry.sh"
+source "$DEVCONTAINER_LIB_DIR/spinner.sh"
+source "$DEVCONTAINER_LIB_DIR/validation.sh"
+source "$DEVCONTAINER_LIB_DIR/herdr.sh"
 
 # ----- ENVIRONMENT VARIABLES --------------------------------------------------
 

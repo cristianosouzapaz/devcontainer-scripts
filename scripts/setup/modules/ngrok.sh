@@ -13,7 +13,7 @@ set -euo pipefail
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
-source "$(dirname "${BASH_SOURCE[0]}")/../lib/loader.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 

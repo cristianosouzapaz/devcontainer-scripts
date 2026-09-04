@@ -21,10 +21,7 @@ set -euo pipefail
 
 # ----- PATH AND STRUCTURE VARIABLES -----------------------------------------
 
-# Test seams — not readonly so tests can point these at fixtures.
-_SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
-[[ "${_SCRIPT_DIR}" == "." ]] && _SCRIPT_DIR="$(pwd)"
-_INSTALLER_DIR="${_SCRIPT_DIR}/installer"
+_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # Set by run_captured / report_names for the caller to read back.
 _CAPTURED=""
@@ -32,7 +29,11 @@ _SCOPE_COUNT=0
 
 # ----- SHARED UTILITIES LOADING -------------------------------------------------
 
+# The loader publishes the absolute script tree anchors this script reads below.
 source "${_SCRIPT_DIR}/setup/lib/loader.sh"
+
+# Test seam — not readonly so tests can point it at a fixture installer tree.
+_INSTALLER_DIR="${DEVCONTAINER_INSTALLER_DIR}"
 
 # ----- HELPER FUNCTIONS -----------------------------------------------------
 

@@ -47,8 +47,13 @@ applyTo: "**/*.sh"
 ## Sourcing and Imports
 
 - **Single loader:** MUST source shared utilities exclusively through a single loader file. MUST NOT source individual utility files directly from modules.
-- **Relative path:** MUST resolve the source path relative to `${BASH_SOURCE[0]}` to ensure portability.
-- **No assumed CWD:** MUST NOT assume a working directory; always derive paths from `BASH_SOURCE[0]` or an explicitly set `SCRIPT_DIR`.
+- **Path anchors:** The loader MUST derive the absolute directory anchors of the script tree once, from its own `${BASH_SOURCE[0]}`, and publish them for the rest of the scripts. Every other file MUST read a path from those anchors. MUST NOT re-derive the tree layout anywhere else.
+- **Namespaced globals:** Published anchors and any other global the loader declares `readonly` MUST carry a project-specific prefix. An unprefixed common name (`CONFIG_DIR`, `BIN_DIR`, …) collides with the caller's environment: assigning to a `readonly` variable fails, which aborts the run under `set -e`.
+- **Bootstrap hop:** The one `..` hop allowed anywhere is the bootstrap line by which a file locates the loader, and it MUST be absolutized on the spot with `cd … && pwd`.
+  - ✓ `source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"`
+  - ✗ `source "$(dirname "${BASH_SOURCE[0]}")/../lib/loader.sh"`
+- **No assumed CWD:** MUST NOT resolve a path against the working directory — no bare relative path, no `$PWD`- or `$(pwd)`-anchored path. A script may be invoked from anywhere, may `cd` elsewhere mid-run, and may be installed at a different location than the one it was written at.
+- **Symlinked entry points:** A script reachable through a symlink MUST resolve `${BASH_SOURCE[0]}` through the link (`readlink -f`) before deriving anything from it; otherwise it anchors on the link's directory instead of its own.
 
 ## Error Handling
 

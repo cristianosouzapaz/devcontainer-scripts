@@ -5,10 +5,13 @@ set -euo pipefail
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
+# Resolved through readlink so the command still finds the script tree when it is
+# invoked through a symlink on PATH. The loader then publishes DEVCONTAINER_LIB_DIR and the rest
+# of the absolute anchors, so migrate.sh needs no path of its own.
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
-SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
-source "$SCRIPT_DIR/../setup/lib/loader.sh"
-source "$SCRIPT_DIR/../setup/lib/persistent-data/migrate.sh"
+BOOTSTRAP_LIB_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")/../setup/lib" && pwd)"
+source "$BOOTSTRAP_LIB_DIR/loader.sh"
+source "$DEVCONTAINER_LIB_DIR/persistent-data/migrate.sh"
 
 # ----- INTERNAL HELPERS -------------------------------------------------------
 

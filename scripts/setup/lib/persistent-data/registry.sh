@@ -5,7 +5,8 @@ readonly _PERSISTENT_DATA_REGISTRY_SH_LOADED=1
 
 # Registry access for persistent-data categories.
 
-_PERSISTENT_DATA_REGISTRY="${PERSISTENT_DATA_REGISTRY:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/config/persistent-data.json}"
+# DEVCONTAINER_CONFIG_DIR comes from loader.sh, which sources this file — see the script tree anchors there.
+_PERSISTENT_DATA_REGISTRY="${PERSISTENT_DATA_REGISTRY:-${DEVCONTAINER_CONFIG_DIR}/persistent-data.json}"
 
 # persistent_data_registry_validate: Validates the persistent-data registry.
 # Args: none.
