@@ -6,18 +6,16 @@ set -euo pipefail
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
 # Resolved through readlink so the command still finds the script tree when it is
-# invoked through a symlink on PATH. The loader then publishes DEVCONTAINER_LIB_DIR and the rest
-# of the absolute anchors, so migrate.sh needs no path of its own.
+# invoked through a symlink on PATH.
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 BOOTSTRAP_LIB_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")/../setup/lib" && pwd)"
 source "$BOOTSTRAP_LIB_DIR/loader.sh"
-source "$DEVCONTAINER_LIB_DIR/persistent-data/migrate.sh"
 
 # ----- INTERNAL HELPERS -------------------------------------------------------
 
 # cli_usage: Logs the supported persistent-data command syntax.
 cli_usage() {
-	log_info 'Usage: devcontainer-data {list|status|path <id>|reset <id> [--yes]|migrate [project]|interactive}'
+	log_info 'Usage: devcontainer-data {list|status|path <id>|reset <id> [--yes]|interactive}'
 }
 
 # cli_category_record: Prints the record for a known category.
@@ -203,26 +201,6 @@ cli_interactive_reset() {
 	cli_reset "$category_id" false
 }
 
-# cli_interactive_migrate: Presents the two migration flows, delegating to the direct commands.
-cli_interactive_migrate() {
-	local choice
-
-	while true; do
-		log_info 'Migrate data'
-		log_detail '1) Migrate shared data'
-		log_detail '2) Migrate current project'
-		log_detail 'b) Back'
-		log_info 'Action [1-2, b]:'
-		read -r choice </dev/tty || return 0
-		case "$choice" in
-		1) cli_migrate_shared || true; return 0 ;;
-		2) cli_migrate_project || true; return 0 ;;
-		b | B) return 0 ;;
-		*) log_warning 'Invalid selection. Enter 1-2 or b.' ;;
-		esac
-	done
-}
-
 # cli_interactive_menu: Runs the main action loop until the user quits.
 cli_interactive_menu() {
 	local action
@@ -233,18 +211,16 @@ cli_interactive_menu() {
 		log_detail '2) Status'
 		log_detail '3) Show path'
 		log_detail '4) Reset data'
-		log_detail '5) Migrate data'
 		log_detail 'q) Quit'
-		log_info 'Action [1-5, q]:'
+		log_info 'Action [1-4, q]:'
 		read -r action </dev/tty || return 0
 		case "$action" in
 		1) cli_list || true ;;
 		2) cli_status || true ;;
 		3) cli_interactive_path || true ;;
 		4) cli_interactive_reset || true ;;
-		5) cli_interactive_migrate || true ;;
 		q | Q) return 0 ;;
-		*) log_warning 'Invalid selection. Enter 1-5 or q.' ;;
+		*) log_warning 'Invalid selection. Enter 1-4 or q.' ;;
 		esac
 	done
 }
@@ -343,10 +319,6 @@ cli_main() {
 			assume_yes=true
 		fi
 		cli_reset "$category_id" "$assume_yes"
-		;;
-	migrate)
-		[[ "$#" -eq 1 || ( "$#" -eq 2 && "$2" == 'project' ) ]] || { cli_usage; return 1; }
-		if [[ "$#" -eq 2 ]]; then cli_migrate_project; else cli_migrate_shared; fi
 		;;
 	interactive) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_interactive ;;
 	*) cli_usage; return 1 ;;
