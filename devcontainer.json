@@ -31,6 +31,7 @@
         "LOG_LEVEL": "INFO",
         "PROJECT_NAME": "project-name",
         "REPO_SOURCE": "",
+        "REQUIRE_DEPENDENCY_INSTALL": "false",
         "SSH_SIGNING": "true",
         "STRUCTURED_LOGS": "false",
         "VALIDATE_TOKEN": "true"
