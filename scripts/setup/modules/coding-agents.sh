@@ -31,7 +31,7 @@ readonly _CODEX_INSTALL_NAME="@openai/codex"
 
 # Path constants: NOT readonly — test seams per bash rules.
 _CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/root/.claude}"
-_STATUSLINE_SOURCE="/opt/devcontainer/setup/assets/statusline-command.sh"
+_STATUSLINE_SOURCE="${DEVCONTAINER_ASSETS_DIR}/statusline-command.sh"
 _STATUSLINE_DEST="${_CLAUDE_CONFIG_DIR}/statusline-command.sh"
 _STATUSLINE_SETTINGS="${_CLAUDE_CONFIG_DIR}/settings.json"
 _STATUSLINE_HASH_FILE="${_CLAUDE_CONFIG_DIR}/.statusline-hash"
@@ -52,7 +52,7 @@ install_claude_cli() {
 	exit_code=0
 	spinner_stream log_debug npm install -g "${_CLAUDE_INSTALL_NAME}" || exit_code=$?
 	if [[ $exit_code -ne 0 ]]; then
-		push_error "$FATAL_ERROR" "${LINENO}" "install_claude_cli" \
+		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" "install_claude_cli" \
 			"npm install -g ${_CLAUDE_INSTALL_NAME}" "Claude CLI installation failed"
 		stop_spinner 1
 		return 1
@@ -72,7 +72,7 @@ install_codex_cli() {
 	exit_code=0
 	spinner_stream log_debug npm install -g "${_CODEX_INSTALL_NAME}" || exit_code=$?
 	if [[ $exit_code -ne 0 ]]; then
-		push_error "$FATAL_ERROR" "${LINENO}" "install_codex_cli" \
+		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" "install_codex_cli" \
 			"npm install -g ${_CODEX_INSTALL_NAME}" "Codex CLI installation failed"
 		stop_spinner 1
 		return 1

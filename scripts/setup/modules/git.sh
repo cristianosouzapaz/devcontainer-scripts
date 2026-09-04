@@ -107,13 +107,13 @@ resolve_token_for_host() {
 # repo URLs are known yet (repo_url may be empty in that case).
 configure_git_credentials() {
 	if ! check_env_var GIT_USER; then
-		push_error "$VALIDATION_ERROR" "${LINENO}" "configure_git_credentials" "GIT_USER" "GIT_USER is not set"
+		push_error "$DEVCONTAINER_VALIDATION_ERROR" "${LINENO}" "configure_git_credentials" "GIT_USER" "GIT_USER is not set"
 		log_error "GIT_USER is required for git configuration"
 		return 1
 	fi
 
 	if ! validate_env_var_format GIT_EMAIL email; then
-		push_error "$VALIDATION_ERROR" "${LINENO}" "configure_git_credentials" "GIT_EMAIL=${GIT_EMAIL}" "Invalid or missing GIT_EMAIL"
+		push_error "$DEVCONTAINER_VALIDATION_ERROR" "${LINENO}" "configure_git_credentials" "GIT_EMAIL=${GIT_EMAIL}" "Invalid or missing GIT_EMAIL"
 		log_error "GIT_EMAIL is not a valid email address: ${GIT_EMAIL}"
 		return 1
 	fi
@@ -254,7 +254,7 @@ install_dependencies() {
 
 	spinner_cleanup
 	if [[ "${REQUIRE_DEPENDENCY_INSTALL}" == "true" ]]; then
-		push_error "$FATAL_ERROR" "${LINENO}" "install_dependencies" "${pm} install" "Dependency installation failed"
+		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" "install_dependencies" "${pm} install" "Dependency installation failed"
 		log_error "Dependency installation failed with ${pm}"
 		return 1
 	fi
@@ -355,13 +355,30 @@ validate_token_access() {
 	if git ls-remote "$url" HEAD >/dev/null 2>&1; then
 		log_item_success "Token validated"
 	else
-		push_error "$AUTH_ERROR" "${LINENO}" "validate_token_access" "git ls-remote $url" "Token validation failed"
+		push_error "$DEVCONTAINER_AUTH_ERROR" "${LINENO}" "validate_token_access" "git ls-remote $url" "Token validation failed"
 		log_error "Token validation failed"
 		return 1
 	fi
 }
 
 # ----- CORE SETUP -------------------------------------------------------------
+
+# run_in_repo: Runs a command with the working directory set to a repository folder,
+# restoring the previous working directory afterwards. Not a subshell: setup_repository
+# and install_dependencies record failures in the shared error stack, which a subshell
+# would discard.
+# Args: $1 - repository directory, $@ - command and arguments.
+# Returns: the command's exit code, or 1 when a directory change fails.
+run_in_repo() {
+	local dir="$1"; shift
+	local previous_dir rc=0
+
+	previous_dir="$(pwd)"
+	cd "$dir" || return 1
+	"$@" || rc=$?
+	cd "$previous_dir" || return 1
+	return "$rc"
+}
 
 # git_setup: Module entry point. Collects repository URLs from REPO_SOURCE_N env vars,
 # configures git credentials, validates token access, then clones or updates each repository.
@@ -389,9 +406,8 @@ git_setup() {
 	if [[ "${#_trimmed_entries[@]}" -eq 1 ]]; then
 		validate_token_access "${_trimmed_entries[0]}" || return 1
 		mkdir -p "${_WORKSPACE_DIR}/${PROJECT_NAME}"
-		cd "${_WORKSPACE_DIR}/${PROJECT_NAME}"
-		setup_repository "${_trimmed_entries[0]}"
-		install_dependencies || return 1
+		run_in_repo "${_WORKSPACE_DIR}/${PROJECT_NAME}" setup_repository "${_trimmed_entries[0]}" || return 1
+		run_in_repo "${_WORKSPACE_DIR}/${PROJECT_NAME}" install_dependencies || return 1
 	else
 		validate_same_host "${_trimmed_entries[@]}" || true
 		for entry in "${_trimmed_entries[@]}"; do
@@ -403,9 +419,8 @@ git_setup() {
 			_seen_folders["$folder_name"]=1
 			validate_token_access "$entry" || return 1
 			mkdir -p "${_WORKSPACE_DIR}/${folder_name}"
-			cd "${_WORKSPACE_DIR}/${folder_name}"
-			setup_repository "$entry"
-			install_dependencies || deps_failed=true
+			run_in_repo "${_WORKSPACE_DIR}/${folder_name}" setup_repository "$entry" || return 1
+			run_in_repo "${_WORKSPACE_DIR}/${folder_name}" install_dependencies || deps_failed=true
 		done
 		if [[ "$deps_failed" == true ]]; then
 			return 1
@@ -413,4 +428,4 @@ git_setup() {
 	fi
 }
 
-export -f cleanup_sensitive_data url_host url_scheme token_env_var_name resolve_token_for_host configure_git_credentials detect_package_manager install_dependencies setup_repository validate_same_host validate_token_access git_setup
+export -f run_in_repo cleanup_sensitive_data url_host url_scheme token_env_var_name resolve_token_for_host configure_git_credentials detect_package_manager install_dependencies setup_repository validate_same_host validate_token_access git_setup

@@ -64,6 +64,12 @@ source "$DEVCONTAINER_LIB_DIR/herdr.sh"
 #                         Read by workspaces.sh to add extra roots to the .code-workspace file.
 #                         Default: (none)
 #
+# GIT_CLONE_TOKEN         Global fallback token for authenticating git clone/fetch against any
+#                         HTTP(S) git host. A host with its own GIT_CLONE_TOKEN_<HOST> variable
+#                         uses that instead. Set in ~/.config/.env on the host; unset again at
+#                         the end of setup when CLEAN_CREDENTIALS is true.
+#                         Default: (empty)
+#
 # GIT_SIGNING_KEY         SSH public key used for commit signing (e.g. "ssh-ed25519 AAAA...")
 #                         Set in ~/.config/.env on the host. Required for SSH commit signing
 #                         via the forwarded 1Password SSH agent socket.
@@ -78,6 +84,10 @@ source "$DEVCONTAINER_LIB_DIR/herdr.sh"
 #
 # LOG_LEVEL               Minimum log level: DEBUG, INFO, SUCCESS, WARNING, ERROR, FATAL
 #                         Default: INFO
+#
+# NGROK_AUTHTOKEN         Authentication token for the ngrok tunnel. The ngrok module skips
+#                         itself when this is empty. Set in ~/.config/.env on the host.
+#                         Default: (empty)
 #
 # REPO_SOURCE             Where to clone from. Repo name is taken from the workspace folder,
 #                         except when a full URL is provided.

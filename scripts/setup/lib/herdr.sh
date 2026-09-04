@@ -11,7 +11,7 @@ readonly _HERDR_SH_LOADED=1
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
 _HERDR_COMMAND="${HERDR_COMMAND:-herdr}"
-_HERDR_TEMPLATE="${HERDR_TEMPLATE:-/opt/devcontainer/setup/assets/herdr-config.toml}"
+_HERDR_TEMPLATE="${HERDR_TEMPLATE:-${DEVCONTAINER_ASSETS_DIR}/herdr-config.toml}"
 _HERDR_CONFIG_PATH="${HERDR_CONFIG_PATH:-}"
 
 # ----- HELPER FUNCTIONS -----------------------------------------------------

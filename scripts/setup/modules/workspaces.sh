@@ -64,7 +64,7 @@ workspaces_setup() {
 	fi
 
 	if ! check_command "jq"; then
-		log_debug "jq not available, skipping workspace file generation"
+		log_warning "jq not available — skipping workspace file generation"
 		module_skip
 		return 0
 	fi

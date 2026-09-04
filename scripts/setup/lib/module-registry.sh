@@ -35,7 +35,7 @@ registry_validate_meta() {
 		log_error "Module ${file_name}: invalid MODULE_NAME: ${name}"
 		return 1
 	fi
-	if [[ "$file_name" != "$name" && ! "$file_name" =~ ^[0-9][0-9]-$name$ ]]; then
+	if [[ "$file_name" != "$name" ]]; then
 		log_error "Module ${file_name}: filename must match MODULE_NAME ${name}"
 		return 1
 	fi
@@ -67,11 +67,9 @@ discover_modules() {
 	for file in "$modules_dir"/*.sh; do
 		[[ -f "$file" ]] || continue
 		registry_validate_meta "$file" || return 1
+		# The filename must equal MODULE_NAME, so two files in this directory can never
+		# claim the same identifier — validate_meta rejects the second one first.
 		name="$(registry_read_meta "$file" 'NAME')"
-		if [[ -n "${module_files[$name]:-}" ]]; then
-			log_error "Duplicate module identifier: ${name}"
-			return 1
-		fi
 		module_files["$name"]="$file"
 		module_after["$name"]="$(registry_read_meta "$file" 'AFTER')"
 		names+=("$name")
@@ -126,7 +124,7 @@ run_module() {
 	_MODULE_SKIPPED=''
 	source "$module_file"
 	if ! "$entry"; then
-		push_error "$FATAL_ERROR" "${LINENO}" 'run_module' "$entry" "${name} failed"
+		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" 'run_module' "$entry" "${name} failed"
 		return 1
 	fi
 	if [[ "${_MODULE_SKIPPED:-}" == 'true' ]]; then

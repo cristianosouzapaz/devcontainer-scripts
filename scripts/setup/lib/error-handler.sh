@@ -17,10 +17,10 @@ readonly _ERROR_HANDLER_SH_LOADED=1
 
 # ----- ERROR CODE CONSTANTS ---------------------------------------------------
 
-readonly FATAL_ERROR=1
-readonly VALIDATION_ERROR=2
-readonly AUTH_ERROR=4
-readonly NETWORK_ERROR=8
+readonly DEVCONTAINER_FATAL_ERROR=1
+readonly DEVCONTAINER_VALIDATION_ERROR=2
+readonly DEVCONTAINER_AUTH_ERROR=4
+readonly DEVCONTAINER_NETWORK_ERROR=8
 
 # ----- INTERNAL STATE ---------------------------------------------------------
 
@@ -61,7 +61,7 @@ run_cleanup_handlers() {
 # push_error: Push an error record onto the internal error stack.
 # Usage: push_error [code] [lineno] [func] [cmd] [message]
 # Args:
-#   code: numeric error code (default: $FATAL_ERROR)
+#   code: numeric error code (default: $DEVCONTAINER_FATAL_ERROR)
 #   lineno: line number where the error occurred (default: 0)
 #   func: function name or context (default: MAIN)
 #   cmd: command string that failed or triggered the error
@@ -69,7 +69,7 @@ run_cleanup_handlers() {
 # Returns:
 #   Appends a serialized error entry to the `_ERROR_STACK` array.
 push_error() {
-	local code="${1:-$FATAL_ERROR}"
+	local code="${1:-$DEVCONTAINER_FATAL_ERROR}"
 	shift || true
 	local lineno="${1:-0}"
 	shift || true
