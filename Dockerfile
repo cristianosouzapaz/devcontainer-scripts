@@ -1,9 +1,11 @@
 ARG NODE_IMAGE="node:lts-slim"
 FROM ${NODE_IMAGE}
 
+# python3 provides the stdlib the herdr Claude Code hook needs (the base image
+# ships only python3-minimal, which lacks json/socket).
 # hadolint ignore=DL3008
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl jq \
+    && apt-get install -y --no-install-recommends ca-certificates curl jq python3 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PNPM_HOME=/root/.local/share/pnpm \
