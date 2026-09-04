@@ -83,8 +83,9 @@ download_file() {
 # ----- DEPENDENCY GRAPH --------------------------------------------------------
 
 # required_paths: Print every repo-relative path referenced by the staged .js and .json
-# files — resolved relative imports, `new URL("./...")` data files, and manifest
-# `templateFile`s — sorted and de-duplicated. Analysis runs in node, so JS/JSON
+# files — resolved relative imports, file `new URL("./...")` references, and manifest
+# `templateFile`s — sorted and de-duplicated. Directory `new URL()` references are
+# intentionally ignored: they are bases for later reads, not files to download. Analysis runs in node, so JS/JSON
 # formatting is irrelevant; an invalid staged JSON file aborts the run.
 # Args: $1 stage_dir
 required_paths() {
@@ -125,7 +126,7 @@ required_paths() {
 				const src = readFileSync(file, "utf8");
 				return REFERENCE_PATTERNS
 					.flatMap((re) => [...src.matchAll(re)].map((m) => m[1]))
-					.filter((spec) => spec.startsWith("."))
+					.filter((spec) => spec.startsWith(".") && !spec.endsWith("/"))
 					.map((spec) => resolveImport(file, spec));
 			}
 			if (file.endsWith(".json")) {
