@@ -72,6 +72,11 @@ source "$LIB_DIR/herdr.sh"
 #                         Full URL (e.g. "https://github.com/org/repo.git") → used as-is
 #                         Default: (auto-constructed from GIT_USER)
 #
+# REQUIRE_DEPENDENCY_INSTALL  Fail container setup when the git module cannot install the
+#                         project's dependencies (true/false). When false, a failed install
+#                         is logged as a warning and setup continues.
+#                         Default: false
+#
 # SSH_SIGNING             Enable SSH commit signing via Docker Desktop SSH agent forwarding (true/false)
 #                         Default: true
 #
@@ -100,6 +105,7 @@ LOG_FILE="${LOG_FILE:-}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 NGROK_AUTHTOKEN="${NGROK_AUTHTOKEN:-}"
 REPO_SOURCE="${REPO_SOURCE:-}"
+REQUIRE_DEPENDENCY_INSTALL="${REQUIRE_DEPENDENCY_INSTALL:-false}"
 SSH_SIGNING="${SSH_SIGNING:-true}"
 STRUCTURED_LOGS="${STRUCTURED_LOGS:-false}"
 VALIDATE_TOKEN="${VALIDATE_TOKEN:-true}"

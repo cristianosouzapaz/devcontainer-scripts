@@ -50,6 +50,16 @@
       "binary": "herdr",
       "statusCheck": "directory",
       "resettable": true
+    },
+    {
+      "id": "pnpm-store",
+      "scope": "project",
+      "relativePath": ".cache/pnpm",
+      "label": "pnpm store",
+      "group": "tool",
+      "binary": "pnpm",
+      "statusCheck": "directory",
+      "resettable": true
     }
   ]
 }

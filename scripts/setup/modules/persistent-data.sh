@@ -10,8 +10,8 @@ set -euo pipefail
 #
 # Runs before every other module: initializes the persistent-data storage
 # layout and creates the managed home-directory links (~/.agents, ~/.claude,
-# ~/.codex, ~/.config/gh) so later modules write straight into the persistent
-# volumes.
+# ~/.codex, ~/.config/gh, ~/.local/share/pnpm) so later modules write straight
+# into the persistent volumes.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -24,6 +24,7 @@ _PERSISTENT_DATA_AGENTS_LINK="${PERSISTENT_DATA_AGENTS_LINK:-/root/.agents}"
 _PERSISTENT_DATA_CLAUDE_LINK="${PERSISTENT_DATA_CLAUDE_LINK:-/root/.claude}"
 _PERSISTENT_DATA_CODEX_LINK="${PERSISTENT_DATA_CODEX_LINK:-/root/.codex}"
 _PERSISTENT_DATA_GITHUB_LINK="${PERSISTENT_DATA_GITHUB_LINK:-/root/.config/gh}"
+_PERSISTENT_DATA_PNPM_LINK="${PERSISTENT_DATA_PNPM_LINK:-/root/.local/share/pnpm}"
 
 # persistent_data_create_category_directories: Creates every registered category directory.
 persistent_data_create_category_directories() {
@@ -84,7 +85,8 @@ persistent_data_setup() {
 	persistent_data_link_standard_path "$_PERSISTENT_DATA_AGENTS_LINK" agents || return 1
 	persistent_data_link_standard_path "$_PERSISTENT_DATA_CLAUDE_LINK" claude || return 1
 	persistent_data_link_standard_path "$_PERSISTENT_DATA_CODEX_LINK" codex || return 1
-	persistent_data_link_standard_path "$_PERSISTENT_DATA_GITHUB_LINK" github
+	persistent_data_link_standard_path "$_PERSISTENT_DATA_GITHUB_LINK" github || return 1
+	persistent_data_link_standard_path "$_PERSISTENT_DATA_PNPM_LINK" pnpm-store
 }
 
 export -f persistent_data_create_category_directories persistent_data_link_standard_path \

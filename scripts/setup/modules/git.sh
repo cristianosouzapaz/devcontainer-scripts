@@ -30,16 +30,18 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/loader.sh"
 # - GIT_EMAIL
 # - GIT_USER
 # - PROJECT_NAME
-# - REPO_SOURCE     
+# - REPO_SOURCE
 # - REPO_SOURCE_N
+# - REQUIRE_DEPENDENCY_INSTALL
 # - VALIDATE_TOKEN
 
 # ----- CONSTANTS --------------------------------------------------------------
 
 readonly _GIT_CREDENTIALS_FILE="$HOME/.git-credentials"
-readonly _PKG_INSTALL_TIMEOUT=180
 
-# Test seam — not readonly so tests can override it
+# Test seams — not readonly so tests can override them
+# _PKG_INSTALL_TIMEOUT: per-attempt dependency-install timeout, in seconds.
+_PKG_INSTALL_TIMEOUT="${_PKG_INSTALL_TIMEOUT:-300}"
 _WORKSPACE_DIR="${_WORKSPACE_DIR:-/workspace}"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
@@ -184,10 +186,13 @@ detect_package_manager() {
 
 # install_dependencies: Skips when package.json is absent.
 # Detects the package manager via detect_package_manager and runs the appropriate install.
-# When pnpm is used, the store is set to an absolute path outside the workspace.
+# When pnpm is used, the store is set to an absolute path outside the workspace (persisted
+# by the persistent-data module) and the network retry budget is widened for slow registries.
 # Each install attempt is bounded by _PKG_INSTALL_TIMEOUT seconds. Pnpm receives --force so
 # a persisted, incompatible node_modules directory is recreated without an interactive prompt;
 # its unfrozen fallback is skipped when the frozen-lockfile attempt times out (exit code 124).
+# A failed install is logged as a warning and returns 0 unless REQUIRE_DEPENDENCY_INSTALL=true,
+# which restores the fatal push_error / non-zero return.
 install_dependencies() {
 	[[ -f "package.json" ]] || {
 		log_debug "No package.json found, skipping dependency installation"
@@ -202,6 +207,9 @@ install_dependencies() {
 		pnpm)
 			skip_fallback=false
 			pnpm config set store-dir /root/.local/share/pnpm/store >/dev/null 2>&1
+			# Widen the network retry budget for slow registries: 5 retries, 120s cap.
+			pnpm config set fetch-retries 5 >/dev/null 2>&1
+			pnpm config set fetch-retry-maxtimeout 120000 >/dev/null 2>&1
 			if [[ -f "pnpm-lock.yaml" ]]; then
 				exit_code=0
 				spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --frozen-lockfile --force || exit_code=$?
@@ -245,9 +253,13 @@ install_dependencies() {
 	esac
 
 	spinner_cleanup
-	push_error "$FATAL_ERROR" "${LINENO}" "install_dependencies" "${pm} install" "Dependency installation failed"
-	log_error "Dependency installation failed with ${pm}"
-	return 1
+	if [[ "${REQUIRE_DEPENDENCY_INSTALL}" == "true" ]]; then
+		push_error "$FATAL_ERROR" "${LINENO}" "install_dependencies" "${pm} install" "Dependency installation failed"
+		log_error "Dependency installation failed with ${pm}"
+		return 1
+	fi
+	log_item_warning "Dependency installation failed with ${pm} — run '${pm} install' in the container to retry"
+	return 0
 }
 
 # setup_repository <resolved_url>: Two cases: (1) .git exists → optionally fast-forward merge;
@@ -355,10 +367,13 @@ validate_token_access() {
 # configures git credentials, validates token access, then clones or updates each repository.
 # Single-repo (one entry): operates in _WORKSPACE_DIR/<PROJECT_NAME>.
 # Multi-repo (two or more entries): loops over all entries, skipping duplicate folder names.
+# A dependency-install failure only aborts the module when REQUIRE_DEPENDENCY_INSTALL=true
+# (see install_dependencies), and in multi-repo only after every repo has been attempted.
 git_setup() {
 	local -a _trimmed_entries=()
 	local entry folder_name
 	local -A _seen_folders=()
+	local deps_failed=false
 	setup_error_traps
 	register_cleanup cleanup_sensitive_data
 
@@ -376,7 +391,7 @@ git_setup() {
 		mkdir -p "${_WORKSPACE_DIR}/${PROJECT_NAME}"
 		cd "${_WORKSPACE_DIR}/${PROJECT_NAME}"
 		setup_repository "${_trimmed_entries[0]}"
-		install_dependencies
+		install_dependencies || return 1
 	else
 		validate_same_host "${_trimmed_entries[@]}" || true
 		for entry in "${_trimmed_entries[@]}"; do
@@ -390,8 +405,11 @@ git_setup() {
 			mkdir -p "${_WORKSPACE_DIR}/${folder_name}"
 			cd "${_WORKSPACE_DIR}/${folder_name}"
 			setup_repository "$entry"
-			install_dependencies
+			install_dependencies || deps_failed=true
 		done
+		if [[ "$deps_failed" == true ]]; then
+			return 1
+		fi
 	fi
 }
 
