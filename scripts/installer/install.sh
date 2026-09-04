@@ -5,7 +5,8 @@ set -euo pipefail
 # source file, manifest and template by walking the entry scripts' import graph, downloads
 # them into a staging tree, verifies the tree is complete and parseable, and only then
 # copies it live and installs the npm runtime dependencies. Any failure leaves the live
-# installer directory untouched.
+# installer directory untouched. It hands the run to its own published copy first — see
+# SELF-UPDATE below.
 
 # ----- CONFIGURATION -------------------------------------------------------------
 
@@ -43,6 +44,12 @@ log() {
 	printf '[install.sh] %s\n' "$*" >&2
 }
 
+# warn: Print a problem the run carried on past. Not gated on INSTALLER_VERBOSE — a
+# degraded run must say so, or a silent fallback reads as a clean one.
+warn() {
+	printf '[install.sh] WARNING: %s\n' "$*" >&2
+}
+
 # fail: Print a fatal message to stderr and exit non-zero.
 fail() {
 	printf '[install.sh] ERROR: %s\n' "$*" >&2
@@ -52,32 +59,38 @@ fail() {
 # ----- CLEANUP ---------------------------------------------------------------
 
 _STAGE_DIR=""
+_BOOTSTRAP_DIR=""
 
-# cleanup: Remove the staging directory. Always returns 0 so it never blocks exit.
+# cleanup: Remove the staging directory and the self-update scratch directory. Always
+# returns 0 so it never blocks exit.
 cleanup() {
 	[[ -n "${_STAGE_DIR}" && -d "${_STAGE_DIR}" ]] && rm -rf "${_STAGE_DIR}"
+	[[ -n "${_BOOTSTRAP_DIR}" && -d "${_BOOTSTRAP_DIR}" ]] && rm -rf "${_BOOTSTRAP_DIR}"
 	return 0
 }
 
 # ----- DOWNLOAD ------------------------------------------------------------
 
 # download_file: Fetch one repo-relative path into the staging tree, writing through a
-# temp file so a failed or empty transfer never leaves a partial file behind.
+# temp file so a failed or empty transfer never leaves a partial file behind. curl's output
+# is captured, not printed: every retry repeats the same line, so only the last one survives,
+# as the reason on the fatal message.
 # Args: $1 base_url, $2 stage_dir, $3 repo-relative path
 # Returns: 0 on success; fatal otherwise.
 download_file() {
 	local base_url="$1" stage_dir="$2" rel="$3"
-	local url="${base_url}/${rel}" dest="${stage_dir}/${rel}" tmp
+	local url="${base_url}/${rel}" dest="${stage_dir}/${rel}" tmp err rc=0
 
 	mkdir -p "$(dirname "${dest}")"
 	tmp="$(mktemp "${dest}.XXXXXX")"
 
-	if curl "${_CURL_OPTS[@]}" "${url}" -o "${tmp}" && [[ -s "${tmp}" ]]; then
+	err="$(curl "${_CURL_OPTS[@]}" "${url}" -o "${tmp}" 2>&1)" || rc=$?
+	if [[ "${rc}" -eq 0 && -s "${tmp}" ]]; then
 		mv -f "${tmp}" "${dest}"
 		return 0
 	fi
 	rm -f "${tmp}"
-	fail "download failed or empty: ${url}"
+	fail "download failed: ${url}${err:+ — ${err##*$'\n'}}"
 }
 
 # ----- DEPENDENCY GRAPH --------------------------------------------------------
@@ -238,14 +251,69 @@ install_dependencies() {
 	done
 }
 
+# ----- SELF-UPDATE -----------------------------------------------------------
+
+# This script is the one file the import graph cannot reach — it is what walks the graph — so
+# a fix here would otherwise wait for an image rebuild, and a bootstrap too broken to download
+# anything would stay broken until then. The published copy is fetched first and handed the
+# run when it differs.
+#
+# It never overwrites the copy in the image, which stays the known-good fallback: a bad
+# publish is undone by publishing a fix, not by rebuilding every image.
+
+# self_update: Hand the run to the published copy of this script when it differs from this
+# one. A candidate that cannot be fetched, is empty, does not parse, or fails is discarded.
+# _INSTALLER_SELF_UPDATED stops the candidate fetching one of its own; _INSTALLER_DIR carries
+# the target directory it cannot derive from its temporary path.
+# Args: $1 base_url, $2 installer_dir
+# Returns: 0 when this process should carry on; exits 0 once a candidate has done the run.
+self_update() {
+	local base_url="$1" installer_dir="$2" candidate output err status=0
+
+	[[ -z "${_INSTALLER_SELF_UPDATED:-}" ]] || return 0
+
+	_BOOTSTRAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/devcontainer-bootstrap.XXXXXX")"
+	candidate="${_BOOTSTRAP_DIR}/install.sh"
+	output="${_BOOTSTRAP_DIR}/output"
+
+	if ! err="$(curl "${_CURL_OPTS[@]}" "${base_url}/install.sh" -o "${candidate}" 2>&1)" || [[ ! -s "${candidate}" ]]; then
+		log "self-update skipped, install.sh could not be fetched${err:+ — ${err##*$'\n'}}"
+		return 0
+	fi
+	if ! bash -n "${candidate}" 2>/dev/null; then
+		log "self-update skipped, the published install.sh does not parse"
+		return 0
+	fi
+	if cmp -s "${candidate}" "${BASH_SOURCE[0]}"; then
+		log "self-update: already current"
+		return 0
+	fi
+
+	log "self-update: running the published install.sh"
+	_INSTALLER_SELF_UPDATED=1 _INSTALLER_DIR="${installer_dir}" bash "${candidate}" >"${output}" 2>&1 || status=$?
+	if [[ "${status}" -ne 0 ]]; then
+		# A discarded candidate's errors describe a run that did not happen, so they stay
+		# behind the verbose gate; the fallback itself is always reported.
+		[[ -z "${INSTALLER_VERBOSE:-}" ]] || cat "${output}" >&2
+		warn "the published install.sh failed (exit ${status}) — continued with the bundled one"
+		return 0
+	fi
+
+	# The candidate did the real work, so its output is this run's output.
+	cat "${output}" >&2
+	exit 0
+}
+
 # ----- CORE SETUP ----------------------------------------------------------
 
-# installer_base_url: Print the raw-content base URL for an installer ref.
+# installer_base_url: Print the raw-content base URL for an installer ref. The public
+# repository is this repository's `public/` subtree published at its root, so the
+# installer sits at `scripts/installer` there and not under a `public/` prefix.
 # Args: $1 - git ref.
 # Returns: 0, URL on stdout.
 installer_base_url() {
 	local scripts_ref="$1"
-	printf 'https://raw.githubusercontent.com/cristianosouzapaz/devcontainer-scripts/%s/public/scripts/installer\n' "${scripts_ref}"
+	printf 'https://raw.githubusercontent.com/cristianosouzapaz/devcontainer-scripts/%s/scripts/installer\n' "${scripts_ref}"
 }
 
 # main: Fetches, verifies and installs the whole installer package.
@@ -253,13 +321,15 @@ installer_base_url() {
 main() {
 	local installer_dir base_url scripts_ref
 
-	installer_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+	installer_dir="${_INSTALLER_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}"
 	scripts_ref="${SCRIPTS_REF:-main}"
 	base_url="$(installer_base_url "${scripts_ref}")"
 
 	command -v curl >/dev/null 2>&1 || fail "curl is required but was not found on PATH"
 	command -v node >/dev/null 2>&1 || fail "node is required but was not found on PATH"
 	command -v npm  >/dev/null 2>&1 || fail "npm is required but was not found on PATH"
+
+	self_update "${base_url}" "${installer_dir}"
 
 	_STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/devcontainer-installer.XXXXXX")"
 
@@ -276,8 +346,8 @@ main() {
 	log "installer ready"
 }
 
-export -f log fail cleanup download_file required_paths fetch_graph assert_parses verify_stage \
-	install_dependencies installer_base_url main
+export -f log warn fail cleanup download_file required_paths fetch_graph assert_parses \
+	verify_stage install_dependencies self_update installer_base_url main
 
 # ----- ENTRY POINT ---------------------------------------------------------
 

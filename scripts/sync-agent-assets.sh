@@ -50,15 +50,53 @@ strip_ansi() {
 	sed -E $'s/\x1b\\[[0-9;]*[a-zA-Z]//g'
 }
 
-# run_captured: Run a command with its combined output collected in _CAPTURED.
-# On failure, echoes that output to stderr so a fatal caller shows the real error.
+# emit_captured: Render captured output as detail lines. The text is third-party, so it is
+# passed through verbatim apart from its own ANSI styling, which would fight this script's.
+# Args: $1 - captured output.
+emit_captured() {
+	local captured="$1" line
+
+	while IFS= read -r line; do
+		[[ -n "${line}" ]] || continue
+		log_detail "${line}"
+	done < <(printf '%s\n' "${captured}" | strip_ansi)
+}
+
+# run_captured: Run a command with its combined output collected in _CAPTURED. Nothing is
+# rendered here: a failing step is still inside a spinner, so the caller decides when the
+# output can be shown without cutting across it.
 # Args: $@ - command and arguments.
 # Returns: the command's exit code.
 run_captured() {
 	local rc=0
 	_CAPTURED="$("$@" 2>&1)" || rc=$?
-	[[ "${rc}" -eq 0 ]] || printf '%s\n' "${_CAPTURED}" >&2
 	return "${rc}"
+}
+
+# report_warnings: Surface a step's warning lines as warning items. Captured output is
+# otherwise shown only when a step fails, so a step that succeeded while degrading — the
+# bootstrap falling back to its bundled copy — would read as clean indefinitely.
+# Args: $1 - captured output.
+report_warnings() {
+	local captured="$1" line
+
+	while IFS= read -r line; do
+		[[ -n "${line}" ]] || continue
+		log_item_warning "${line#*WARNING: }"
+	done < <(printf '%s\n' "${captured}" | strip_ansi | grep 'WARNING: ' || true)
+}
+
+# fail_with_captured: End the run on a failed step — stop the spinner, show the step's own
+# output, then fail. In that order: the output is only legible once the spinner has
+# released the line.
+# Args: $1 - fatal message.
+# Returns: does not return; exits the process with status 1.
+fail_with_captured() {
+	local message="$1"
+
+	spinner_cleanup
+	emit_captured "${_CAPTURED}"
+	log_fatal "${message}"
 }
 
 # report_names: Render the assets an installer touched as an indented list and
@@ -94,13 +132,12 @@ report_names() {
 sync_installer() {
 	local assets_ref="$1" files
 	start_spinner "Refreshing installer from devcontainer-scripts@${assets_ref}"
-	SCRIPTS_REF="${assets_ref}" INSTALLER_VERBOSE=1 run_captured bash "${_INSTALLER_DIR}/install.sh" || {
-		spinner_cleanup
-		log_fatal "Installer fetch failed (devcontainer-scripts@${assets_ref})"
-	}
+	SCRIPTS_REF="${assets_ref}" INSTALLER_VERBOSE=1 run_captured bash "${_INSTALLER_DIR}/install.sh" \
+		|| fail_with_captured "Installer fetch failed (devcontainer-scripts@${assets_ref})"
 	spinner_cleanup
 	files="$(printf '%s\n' "${_CAPTURED}" | sed -nE 's/.*verified ([0-9]+) files.*/\1/p' | tail -n1)"
 	log_item_success "Installer refreshed${files:+ (${files} files verified)}"
+	report_warnings "${_CAPTURED}"
 }
 
 # count_label: "<n> <word>", pluralised with a trailing "s" unless n is 1.
@@ -118,7 +155,7 @@ sync_scope() {
 	local heading="$1" entry="$2" fatal="$3" slow="${4:-}"
 	log_detail "${heading}"
 	if [[ "${slow}" == "slow" ]]; then start_spinner "Updating the shared skills store"; fi
-	run_captured node "${_INSTALLER_DIR}/${entry}" --global || { spinner_cleanup; log_fatal "${fatal}"; }
+	run_captured node "${_INSTALLER_DIR}/${entry}" --global || fail_with_captured "${fatal}"
 	spinner_cleanup
 	report_names "${_CAPTURED}"
 	if [[ "${slow}" == "slow" ]] && printf '%s\n' "${_CAPTURED}" | grep -q 'skills update -g failed'; then
@@ -136,14 +173,16 @@ sync_agent_assets() {
 	setup_error_traps
 	started="$(date +%s)"
 
+	assets_ref="$(resolve_assets_ref)"
+
+	# Before the prerequisite checks, so their detail lines have a primary line to nest under.
+	log_info "Syncing global agent assets · devcontainer-scripts@${assets_ref}"
+
 	check_command node || log_fatal "node is required to sync global agent assets"
 	check_command npx || log_warning "npx not found — third-party skill sync will report failures"
 	[[ -f "${_INSTALLER_DIR}/install.sh" ]] || log_fatal "Installer not found at ${_INSTALLER_DIR}/install.sh"
 
-	assets_ref="$(resolve_assets_ref)"
 	mkdir -p "${HOME}/.agents/skills" "${HOME}/.claude/skills"
-
-	log_info "Syncing global agent assets · devcontainer-scripts@${assets_ref}"
 
 	sync_installer "${assets_ref}"
 	sync_scope "First-party agent commands" "agents/index.js" "Global agent-command sync failed"
@@ -156,8 +195,8 @@ sync_agent_assets() {
 	log_success "Global agent assets synced in $(( $(date +%s) - started ))s · $(count_label "${n_cmd}" "agent command"), $(count_label "${n_local}" "local skill"), $(count_label "${n_ext}" "third-party skill")"
 }
 
-export -f resolve_assets_ref strip_ansi run_captured report_names count_label \
-	sync_installer sync_scope sync_agent_assets
+export -f resolve_assets_ref strip_ansi emit_captured run_captured report_warnings \
+	fail_with_captured report_names count_label sync_installer sync_scope sync_agent_assets
 
 # ----- ENTRY POINT --------------------------------------------------------------
 

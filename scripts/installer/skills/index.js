@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { loadJsonCatalog, loadValidatedCatalog } from "../lib/catalog.js";
 import { AGENTS, TOOLS } from "../lib/constants.js";
 import { readGlobalSkillSet } from "../lib/global-skill-set.js";
@@ -182,15 +185,35 @@ const addGlobalSkill = (entry, run) => {
 };
 
 /**
+ * Point the Claude adapter of one machine-wide third-party skill at an absolute canonical
+ * path. The external CLI writes a `../../.agents/…` target, which resolves only while
+ * `~/.claude` and `~/.agents` are physical siblings; in the devcontainer both are symlinks
+ * into separate volume categories, so it dangles and Claude Code silently finds no global
+ * skill. A skill the CLI did not materialize is left alone rather than linked to nothing.
+ * @param {{ name: string, skill?: string }} entry - Validated manifest entry just added.
+ * @returns {void} Nothing.
+ * @throws {TypeError} If the entry is malformed.
+ * @throws {Error} If the adapter path holds an unmanaged entry that must be migrated by hand.
+ * @effects Reads `~/.agents/skills` and may replace the `~/.claude/skills/<name>` symlink below the current user home directory.
+ */
+const normalizeGlobalClaudeAdapter = (entry) => {
+    assertGlobalManifestEntry(entry);
+    const skillName = Object.hasOwn(entry, "skill") ? entry.skill : entry.name;
+    const home = homedir();
+    if (!existsSync(join(home, ".agents", "skills", skillName))) return;
+    ensureClaudeSkillSymlink(home, skillName);
+};
+
+/**
  * Non-interactive `--global` path: add every manifest `external` skill to the shared store,
- * then refresh them. A single skill's failure is logged and skipped; a failed
- * `skills update -g` is tolerated because the per-skill re-add above is the real freshness
- * guarantee.
+ * then refresh them, normalizing each skill's Claude adapter to an absolute canonical target.
+ * A single skill's failure is logged and skipped; a failed `skills update -g` is tolerated
+ * because the per-skill re-add above is the real freshness guarantee.
  * @param {{ run?: (args: string[]) => void }} [options] - CLI runner override for tests.
  * @returns {void} Nothing.
  * @throws {TypeError} If options or its runner are malformed.
  * @throws {Error} If the manifest is invalid or a runner throws a non-Error value.
- * @effects Starts the supplied CLI runner for each manifest entry and the final update command.
+ * @effects Starts the supplied CLI runner for each manifest entry and the final update command, and may replace the Claude adapter symlinks below the current user home directory.
  */
 export const installGlobalSkills = (options = {}) => {
     if (options === null || typeof options !== "object" || Array.isArray(options)
@@ -204,6 +227,7 @@ export const installGlobalSkills = (options = {}) => {
         consola.start(`Adding ${entry.name} to the shared skills store`);
         try {
             addGlobalSkill(entry, run);
+            normalizeGlobalClaudeAdapter(entry);
             consola.success(`${entry.name} added`);
         } catch (error) {
             if (!isCliFailure(error)) throw error;
