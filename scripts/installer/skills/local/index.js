@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -127,24 +127,32 @@ const isMissingPathError = (error) => error instanceof Error
     && Object.hasOwn(error, "code") && error.code === "ENOENT";
 
 /**
- * Build the relative path from a Claude adapter directory to a canonical Agent Skill.
+ * Build the former relative target used by Claude adapters. It is retained only to
+ * migrate adapters created before ~/.claude became a managed symlink.
  * @param {string} skillName - Canonical `.agents/skills/<skillName>` directory name.
- * @returns {string} Relative symlink target.
+ * @returns {string} Legacy relative symlink target.
  */
 const relativeCanonicalSkill = (skillName) => join("..", "..", ".agents", "skills", skillName);
 
 /**
- * Create a symlink when absent, or validate the existing symlink target.
+ * Create a symlink when absent, validate its target, or replace a known legacy target.
  * @param {string} linkPath - Absolute path of the adapter symlink.
- * @param {string} target - Expected relative symlink target.
+ * @param {string} target - Expected absolute symlink target.
  * @param {string} description - Human-readable path used in conflict errors.
+ * @param {string} [legacyTarget] - Former target that is safe to replace.
  * @returns {void}
  * @throws If the path exists and is not the expected symlink.
+ * @effects Creates or replaces linkPath; other existing paths are left untouched and throw.
  */
-const ensureSymlink = (linkPath, target, description) => {
+const ensureSymlink = (linkPath, target, description, legacyTarget) => {
     try {
         const stats = lstatSync(linkPath);
         if (stats.isSymbolicLink() && readlinkSync(linkPath) === target) return;
+        if (stats.isSymbolicLink() && readlinkSync(linkPath) === legacyTarget) {
+            unlinkSync(linkPath);
+            symlinkSync(target, linkPath);
+            return;
+        }
         throw new Error(`${description} already exists and is not the expected symlink. Migrate it explicitly before installing shared assets.`);
     } catch (error) {
         if (!isMissingPathError(error)) throw error;
@@ -162,7 +170,7 @@ const ensureSymlink = (linkPath, target, description) => {
  * @returns {void} Nothing.
  * @throws {TypeError} If the root or skill name is unsafe.
  * @throws {Error} If the target contains a conflicting Claude skills entry.
- * @effects Creates directories and the `.claude/skills/<skillName>` symlink beneath destRoot when absent.
+ * @effects Creates directories and an absolute `.claude/skills/<skillName>` symlink beneath destRoot when absent; replaces only the known legacy relative target.
  */
 export const ensureClaudeSkillSymlink = (destRoot, skillName) => {
     assertProjectRoot(destRoot);
@@ -187,7 +195,7 @@ export const ensureClaudeSkillSymlink = (destRoot, skillName) => {
         mkdirSync(claudeSkillsPath, { recursive: true });
     }
 
-    ensureSymlink(join(claudeSkillsPath, skillName), relativeCanonicalSkill(skillName), `.claude/skills/${skillName}`);
+    ensureSymlink(join(claudeSkillsPath, skillName), join(canonicalSkillsDir, skillName), `.claude/skills/${skillName}`, relativeCanonicalSkill(skillName));
 };
 
 /**
@@ -198,7 +206,7 @@ export const ensureClaudeSkillSymlink = (destRoot, skillName) => {
  * @returns {void} Nothing.
  * @throws {TypeError} If an input path is unsafe.
  * @throws {Error} If the target rule path conflicts with another file or symlink.
- * @effects Creates the `.claude/rules/<ruleFilename>` directory and symlink beneath destRoot when absent.
+ * @effects Creates the `.claude/rules/<ruleFilename>` directory and an absolute symlink beneath destRoot when absent; replaces only the known legacy relative target.
  */
 export const ensureClaudeRuleSymlink = (destRoot, skillName, ruleFilename) => {
     assertProjectRoot(destRoot);
@@ -206,7 +214,7 @@ export const ensureClaudeRuleSymlink = (destRoot, skillName, ruleFilename) => {
     assertPathSegment(ruleFilename, "Rule filename");
     const rulesDir = join(destRoot, ".claude", "rules");
     mkdirSync(rulesDir, { recursive: true });
-    ensureSymlink(join(rulesDir, ruleFilename), relativeCanonicalSkill(skillName) + "/SKILL.md", `.claude/rules/${ruleFilename}`);
+    ensureSymlink(join(rulesDir, ruleFilename), join(destRoot, ".agents", "skills", skillName, "SKILL.md"), `.claude/rules/${ruleFilename}`, relativeCanonicalSkill(skillName) + "/SKILL.md");
 };
 
 /**
