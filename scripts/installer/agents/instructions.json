@@ -2,7 +2,7 @@
     {
         "name": "Bash Rules",
         "filename": "bash.instructions.md",
-        "version": "1.5.0",
+        "version": "1.5.1",
         "tags": [
             "language"
         ],
@@ -20,7 +20,7 @@
     {
         "name": "Agent Orchestration",
         "filename": "agent-orchestration.instructions.md",
-        "version": "1.2.0",
+        "version": "1.2.1",
         "tags": [
             "agents"
         ],

@@ -19,11 +19,12 @@ applyTo: "**/*.sh"
 - **File names:** MUST use `kebab-case`.
 - **Module file names:** MUST use the module identifier in kebab-case (e.g. `git.sh`). Every module MUST declare `MODULE_NAME`, `MODULE_DESCRIPTION`, `MODULE_ENTRY`, and `MODULE_AFTER`; the filename MUST be `<MODULE_NAME>.sh`.
 - **Function names:** MUST use `snake_case`.
-- **Internal functions:** MUST NOT be prefixed with `_`. Public vs internal is signaled by the comment convention (block vs single-line), not by a name prefix.
+- **Internal functions:** MUST NOT be prefixed with `_`. A function is read at its definition, where the comment convention (block vs single-line) already states whether it is public; a prefix would only repeat it. A variable is read at its use sites, far from its declaration, which is why variables carry the prefix and functions do not.
   - ✓ `validate_token`
   - ✗ `_validate_token`
 - **Global constants:** MUST use `SCREAMING_SNAKE_CASE`.
 - **Internal constants:** MUST be prefixed with `_` and use `SCREAMING_SNAKE_CASE`.
+- **Prefix scope:** `_` marks what never leaves its own file; a project-specific prefix marks what does. A name published for other files MUST carry the project prefix and MUST NOT carry `_`; a name confined to one file MUST carry `_` and MUST NOT carry the project prefix. The two answer different questions — `_` tells a reader not to touch it, the project prefix keeps the runtime from colliding — so a published name needs the second even though it is not private. `_` is a note, not a namespace: every library following the convention shares the same `_*` space, so on its own it prevents no collision.
 - **Local variables:** MUST use `snake_case` within functions.
 - **Environment variables:** MUST use `SCREAMING_SNAKE_CASE`.
 
