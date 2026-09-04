@@ -4,19 +4,20 @@ set -euo pipefail
 # MODULE_NAME="git"
 # MODULE_DESCRIPTION="Configures git credentials, validates token, clones or updates repositories"
 # MODULE_ENTRY="git_setup"
+# MODULE_AFTER="persistent-data"
 
-# Git repository setup module
+# ----- OVERVIEW ---------------------------------------------------------------
 #
-# This module initializes or updates Git repositories in the container workspace.
-# It configures git credentials, validates token access on any HTTP(S) git host
-# (GitHub, GitLab, Gitea, Bitbucket, etc.), resolving one clone token per host so
-# repos from different hosts can be mixed in the same project (see GIT_CLONE_TOKEN_<HOST>),
-# clones or fetches repositories, and installs dependencies using the package manager
-# detected from the project (pnpm, npm, or yarn).
+# Initializes or updates the project's Git repositories in the container
+# workspace: configures credentials, validates token access on any HTTP(S) Git
+# host (GitHub, GitLab, Gitea, Bitbucket, …) resolving one clone token per host
+# (see GIT_CLONE_TOKEN_<HOST>) so repos from different hosts can be mixed, then
+# clones or fetches each repo and installs dependencies with the detected
+# package manager (pnpm, npm, or yarn).
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
-source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/loader.sh"
 
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 
@@ -372,6 +373,7 @@ git_setup() {
 
 	if [[ "${#_trimmed_entries[@]}" -eq 1 ]]; then
 		validate_token_access "${_trimmed_entries[0]}" || return 1
+		mkdir -p "${_WORKSPACE_DIR}/${PROJECT_NAME}"
 		cd "${_WORKSPACE_DIR}/${PROJECT_NAME}"
 		setup_repository "${_trimmed_entries[0]}"
 		install_dependencies
@@ -385,6 +387,7 @@ git_setup() {
 			fi
 			_seen_folders["$folder_name"]=1
 			validate_token_access "$entry" || return 1
+			mkdir -p "${_WORKSPACE_DIR}/${folder_name}"
 			cd "${_WORKSPACE_DIR}/${folder_name}"
 			setup_repository "$entry"
 			install_dependencies

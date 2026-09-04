@@ -9,7 +9,7 @@ set -euo pipefail
 # ----- PATH AND STRUCTURE VARIABLES -------------------------------------------
 
 readonly _SETUP_MODULES_DIR="setup/modules"
-readonly _SETUP_SHARED_DIR="setup/shared"
+readonly _SETUP_LIB_DIR="setup/lib"
 # Test seam — not readonly so tests can point this at a fixture file
 _VERSION_FILE="VERSION"
 
@@ -19,12 +19,11 @@ _VERSION_FILE="VERSION"
 [[ "${1:-}" == "--debug" ]] && DEBUG_MODE=true
 
 # Resolve script directory (either local workspace mount or container copy)
-SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
-[[ "$SCRIPT_DIR" == "." ]] && SCRIPT_DIR="$(pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
-source "$SCRIPT_DIR/$_SETUP_SHARED_DIR/loader.sh"
+source "$SCRIPT_DIR/$_SETUP_LIB_DIR/loader.sh"
 
 # ----- FUNCTIONS --------------------------------------------------------------
 
@@ -38,7 +37,7 @@ cleanup_temp_files() {
 
 # main: Orchestrates the full devcontainer setup sequence.
 # Installs error traps, registers temp-file cleanup, loads environment
-# variables, and runs all discovered modules in numeric order.
+# variables, and runs all discovered modules in dependency order.
 # Exits fatally if any module fails.
 # Returns: 0 on success (does not return on fatal module failure).
 main() {
@@ -61,8 +60,7 @@ main() {
 		log_fatal "One or more setup modules failed"
 	fi
 
-	print_volumes_summary
-	print_data_volumes_summary
+	persistent_data_summary_print
 
 	log_success "Setup completed"
 }

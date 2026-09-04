@@ -41,13 +41,11 @@
     {
         "label": "GitHub CLI",
         "key": "github-cli",
-        "default": true,
-        "mandatory": false,
+        "mandatory": true,
         "feature": {
             "url": "ghcr.io/devcontainers/features/github-cli:1",
             "options": {}
-        },
-        "mount": "source=gh-cli-auth-data,target=/root/.config/gh,type=volume"
+        }
     },
     {
         "label": "ngrok (HTTP tunneling)",

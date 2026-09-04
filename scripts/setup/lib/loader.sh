@@ -6,16 +6,22 @@ readonly _LOADER_SH_LOADED=1
 # Single entry point for the shared utility layer: modules source this, never an
 # individual shared file. Also sets the container's environment-variable defaults.
 
-readonly SHARED_DIR="$(dirname "${BASH_SOURCE[0]}")"
+readonly LIB_DIR="$(dirname "${BASH_SOURCE[0]}")"
 
-source "$SHARED_DIR/env-loader.sh"
-source "$SHARED_DIR/error-handler.sh"
-source "$SHARED_DIR/logging.sh"
-source "$SHARED_DIR/module-registry.sh"
-source "$SHARED_DIR/retry.sh"
-source "$SHARED_DIR/spinner.sh"
-source "$SHARED_DIR/validation.sh"
-source "$SHARED_DIR/volumes-summary.sh"
+source "$LIB_DIR/env-loader.sh"
+source "$LIB_DIR/error-handler.sh"
+source "$LIB_DIR/logging.sh"
+source "$LIB_DIR/module-registry.sh"
+source "$LIB_DIR/persistent-data/registry.sh"
+source "$LIB_DIR/persistent-data/paths.sh"
+source "$LIB_DIR/persistent-data/locks.sh"
+source "$LIB_DIR/persistent-data/schema.sh"
+source "$LIB_DIR/persistent-data/copy.sh"
+source "$LIB_DIR/persistent-data/summary.sh"
+source "$LIB_DIR/retry.sh"
+source "$LIB_DIR/spinner.sh"
+source "$LIB_DIR/validation.sh"
+source "$LIB_DIR/herdr.sh"
 
 # ----- ENVIRONMENT VARIABLES --------------------------------------------------
 
@@ -41,7 +47,7 @@ source "$SHARED_DIR/volumes-summary.sh"
 #
 # EXTRA_FOLDER_N          Numbered extra workspace folder names (EXTRA_FOLDER_1, EXTRA_FOLDER_2, …),
 #                         each already bind-mounted by devcontainer.json at /workspace/<name>.
-#                         Read by 05-workspaces.sh to add extra roots to the .code-workspace file.
+#                         Read by workspaces.sh to add extra roots to the .code-workspace file.
 #                         Default: (none)
 #
 # GIT_SIGNING_KEY         SSH public key used for commit signing (e.g. "ssh-ed25519 AAAA...")

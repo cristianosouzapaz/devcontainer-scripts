@@ -1,18 +1,26 @@
 ARG NODE_IMAGE="node:lts-slim"
 FROM ${NODE_IMAGE}
 
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl jq \
+    && rm -rf /var/lib/apt/lists/*
+
 # SET ENVIRONMENT VARIABLES FOR PNPM CONFIGURATION
 ENV PNPM_HOME=/root/.local/share/pnpm \
     PATH=/root/.local/share/pnpm:$PATH \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
-# SET ENVIRONMENT VARIABLES FOR CLAUDE CONFIGURATION
-ENV CLAUDE_CONFIG_DIR=/root/.claude
+# SET ENVIRONMENT VARIABLES FOR CLAUDE AND CODEX CONFIGURATION
+ENV CLAUDE_CONFIG_DIR=/root/.claude \
+    CODEX_HOME=/root/.codex
 
 # DOWNLOAD SETUP SCRIPTS FROM REPO
 ARG SCRIPTS_REF="main"
 ARG SCRIPTS_REPO="cristianosouzapaz/devcontainer-scripts"
 ENV SCRIPTS_REF=${SCRIPTS_REF}
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN mkdir -p /tmp/dc-init \
     && node --input-type=module -e " \
@@ -25,4 +33,27 @@ RUN mkdir -p /tmp/dc-init \
     " \
     && mv /tmp/dc-init/scripts /opt/devcontainer \
     && rm -rf /tmp/dc-init \
-    && find /opt/devcontainer -name "*.sh" -exec chmod +x {} +
+    && find /opt/devcontainer -name "*.sh" -exec chmod +x {} + \
+    && chmod +x /opt/devcontainer/bin/* \
+    && install -m 0755 /opt/devcontainer/bin/* /usr/local/bin/ \
+    && ln -sf /opt/devcontainer/bin/devcontainer-data /usr/local/bin/devcontainer-data
+
+RUN set -eux; \
+    case "$(uname -m)" in \
+        x86_64) herdr_arch='x86_64' ;; \
+        aarch64|arm64) herdr_arch='aarch64' ;; \
+        *) exit 1 ;; \
+    esac; \
+    release_file="$(mktemp)"; \
+    curl --fail --location --silent --show-error \
+        'https://api.github.com/repos/herdrdev/herdr/releases/latest' \
+        --output "$release_file"; \
+    herdr_asset="herdr-linux-${herdr_arch}"; \
+    herdr_url="$(jq -r --arg asset "$herdr_asset" '.assets[] | select(.name == $asset) | .browser_download_url' "$release_file")"; \
+    herdr_digest="$(jq -r --arg asset "$herdr_asset" '.assets[] | select(.name == $asset) | .digest' "$release_file")"; \
+    test -n "$herdr_url" && test "$herdr_url" != null; \
+    test "${herdr_digest#sha256:}" != "$herdr_digest"; \
+    curl --fail --location --silent --show-error "$herdr_url" --output /tmp/herdr; \
+    printf '%s  %s\n' "${herdr_digest#sha256:}" /tmp/herdr | sha256sum --check --status; \
+    install -D -m 0755 /tmp/herdr /usr/local/lib/herdr/herdr; \
+    rm -f /tmp/herdr "$release_file"

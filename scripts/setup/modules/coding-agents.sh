@@ -4,18 +4,23 @@ set -euo pipefail
 # MODULE_NAME="coding-agents"
 # MODULE_DESCRIPTION="Installs and configures the supported coding agent CLIs"
 # MODULE_ENTRY="coding_agents_setup"
+# MODULE_AFTER="persistent-data"
 
-# Coding agent CLI installer and configurator module
+# ----- OVERVIEW ---------------------------------------------------------------
+#
+# Installs and configures the supported coding-agent CLIs — Claude Code and the
+# Codex CLI — including the Claude statusline and Codex credential storage.
+# Every step is idempotent and safe to re-run on a container rebuild.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
-source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/loader.sh"
 
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 
 # This module uses the following configuration variables:
-# - CLAUDE_CONFIG_DIR (optional, defaults to /root/.claude)
-# - CODEX_HOME (optional, defaults to /root/.codex)
+# - CLAUDE_CONFIG_DIR (optional, defaults to the persistent-data managed /root/.claude link)
+# - CODEX_HOME (optional, defaults to the persistent-data managed /root/.codex link)
 
 # ----- CONSTANTS --------------------------------------------------------------
 

@@ -4,45 +4,14 @@
     Functions for collecting, validating, and injecting repository configuration.
 #>
 
-function Add-RepoMountsToConfig {
-    <#
-    .SYNOPSIS
-        Appends per-repo volume mount entries to the mounts array in devcontainer.json.
-    .DESCRIPTION
-        Reads the existing mounts array (already populated by Add-MountsToConfig),
-        appends one volume mount per repo, and writes the result back.
-        Mount format: source=<project>-<folder>-data,target=/workspace/<folder>,type=volume
-    .PARAMETER FilePath
-        Absolute path to the devcontainer.json file to update.
-    .PARAMETER ProjectName
-        Project name used to construct volume names.
-    .PARAMETER RepoList
-        Array of fully normalised repository URLs.
-    #>
-    param([string]$FilePath, [string]$ProjectName, [string[]]$RepoList)
-
-    $config = Read-JsonFile -FilePath $FilePath
-    $mounts = [System.Collections.ArrayList]::new()
-    if ($null -ne $config.mounts) {
-        @($config.mounts) | ForEach-Object { [void]$mounts.Add($_) }
-    }
-
-    foreach ($url in $RepoList) {
-        $folder = _Get-RepoFolderName -Url $url
-        [void]$mounts.Add("source=$ProjectName-$folder-data,target=/workspace/$folder,type=volume")
-    }
-
-    Write-MountsArray -FilePath $FilePath -Mounts $mounts.ToArray() -LogMessage "Repo mounts injected ($($RepoList.Count) repos)"
-}
-
 function Get-TokenVarName {
     <#
     .SYNOPSIS
         Computes the GIT_CLONE_TOKEN_<HOST> variable name for a given repo host.
     .DESCRIPTION
         Normalises the host to uppercase, replacing every non-alphanumeric character
-        with "_". Mirrors token_env_var_name in public/scripts/setup/modules/01-git.sh —
-        keep both in sync, since 01-git.sh resolves the same variable name at runtime.
+        with "_". Mirrors token_env_var_name in public/scripts/setup/modules/git.sh —
+        keep both in sync, since git.sh resolves the same variable name at runtime.
         Example: gitlab.example.com -> GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM
     .PARAMETER RepoHost
         The repo's hostname (e.g. from ([Uri]$url).Host).
@@ -186,33 +155,13 @@ function Sort-ComposeVolumeBlock {
 function New-ComposeWithRepoVolumes {
     <#
     .SYNOPSIS
-        Transforms the docker-compose.yml template to add per-repo volumes and
+    Transforms the docker-compose.yml template and
         writes the result to the destination .devcontainer folder.
     .DESCRIPTION
         Performs placeholder substitution (project-name → ProjectName), then
-        handles two distinct layouts depending on repo count and extra folders:
-        - Single-repo, no extra folders: replaces the workspace root volume line
-          with the single repo volume (<project>-data:/workspace/<project>).
-          Deliberately keyed by ProjectName rather than the repo's URL-derived
-          folder name — 01-git.sh's single-entry REPO_SOURCE path always clones
-          into $_WORKSPACE_DIR/$PROJECT_NAME regardless of the repo's own name,
-          so this must match that target, not the repo folder, to actually be
-          persisted. Mirrors standard (non-compose) mode's project-name-data
-          convention. Safe here because workspaceFolder stays
-          /workspace/<project> — /workspace itself is never opened, so it
-          doesn't need to persist.
-        - Multi-repo, or single-repo with extra folders: preserves the
-          workspace root volume and injects per-repo service volume entries and
-          top-level volume declarations for each repo immediately after their
-          respective anchor lines. Required whenever workspaceFolder is
-          promoted to the shared /workspace root (Set-WorkspaceMountInConfig) —
-          extra folders make /workspace itself the thing VS Code opens, and the
-          generated .code-workspace file (see workspaces_setup in
-          05-workspaces.sh) lives directly under /workspace, so that root must
-          persist or the file — and everything else at that level — is wiped on
-          every container rebuild.
+        keeps the project workspace volume mounted at /workspace in every mode.
         For every selected entry that declares a named-volume mount
-        (source=X,target=Y,type=volume — e.g. the GitHub CLI auth volume), appends
+        (source=X,target=Y,type=volume), appends
         a matching top-level volume declaration if one isn't already present in the
         template. This keeps docker-compose.yml's declared volumes in sync with
         whichever optional features were actually selected, instead of requiring
@@ -248,61 +197,6 @@ function New-ComposeWithRepoVolumes {
 
     $content = (Get-Content -Path $TemplateFile -Raw) -replace '\r\n', "`n"
     $content = $content.Replace('project-name', $ProjectName)
-
-    if ($RepoList.Count -eq 1 -and $ExtraFolders.Count -eq 0) {
-        $volumeName = "$ProjectName-data"
-        $content    = $content.Replace(
-            "      - $ProjectName-workspace:/workspace",
-            "      - ${volumeName}:/workspace/$ProjectName"
-        )
-        $content    = $content.Replace(
-            "  $ProjectName-workspace:",
-            "  ${volumeName}:"
-        )
-    } else {
-        $lines   = [System.Collections.ArrayList]@($content -split "`n")
-
-        $serviceMarker    = "      - $ProjectName-workspace:/workspace"
-        $volumeMarker     = "  $ProjectName-workspace:"
-        $serviceInsertIdx = -1
-        $volumeInsertIdx  = -1
-
-        for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i].Contains($serviceMarker)) { $serviceInsertIdx = $i }
-            if ($lines[$i].Contains($volumeMarker))  { $volumeInsertIdx  = $i }
-        }
-
-        # Keying: see .DESCRIPTION above.
-        $repoVolumes = if ($RepoList.Count -eq 1) {
-            @([PSCustomObject]@{ Folder = $ProjectName; VolumeName = "$ProjectName-data" })
-        } else {
-            $RepoList | ForEach-Object {
-                $folder = _Get-RepoFolderName -Url $_
-                [PSCustomObject]@{ Folder = $folder; VolumeName = "$ProjectName-$folder-data" }
-            }
-        }
-
-        $serviceLines = [System.Collections.ArrayList]@()
-        foreach ($repoVolume in $repoVolumes) {
-            [void]$serviceLines.Add("      - $($repoVolume.VolumeName):/workspace/$($repoVolume.Folder)")
-        }
-        if ($serviceInsertIdx -ge 0) {
-            $lines.InsertRange($serviceInsertIdx + 1, $serviceLines)
-        }
-
-        # Recompute volumeInsertIdx after service line insertions
-        $volumeInsertIdx += $serviceLines.Count
-
-        $volumeLines = [System.Collections.ArrayList]@()
-        foreach ($repoVolume in $repoVolumes) {
-            [void]$volumeLines.Add("  $($repoVolume.VolumeName):")
-        }
-        if ($volumeInsertIdx -ge 0) {
-            $lines.InsertRange($volumeInsertIdx + 1, $volumeLines)
-        }
-
-        $content = $lines -join "`n"
-    }
 
     $featureVolumeLines = [System.Collections.ArrayList]@()
     foreach ($e in $SelectedEntries) {

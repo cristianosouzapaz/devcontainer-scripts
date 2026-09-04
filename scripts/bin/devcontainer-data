@@ -1,0 +1,353 @@
+#!/bin/bash
+set -euo pipefail
+
+# Direct CLI for persistent-data categories.
+
+# ----- SHARED UTILITIES LOADING -----------------------------------------------
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+source "$SCRIPT_DIR/../setup/lib/loader.sh"
+source "$SCRIPT_DIR/../setup/lib/persistent-data/migrate.sh"
+
+# ----- INTERNAL HELPERS -------------------------------------------------------
+
+# cli_usage: Logs the supported persistent-data command syntax.
+cli_usage() {
+	log_info 'Usage: devcontainer-data {list|status|path <id>|reset <id> [--yes]|migrate [project]|interactive}'
+}
+
+# cli_category_record: Prints the record for a known category.
+cli_category_record() {
+	local category_id="$1" category
+
+	category=$(persistent_data_category "$category_id") || return 1
+	printf '%s\n' "$category"
+}
+
+# cli_category_is_mounted: Checks that a category's containing persistent root is mounted.
+cli_category_is_mounted() {
+	local category="$1" scope root
+
+	scope=$(jq -r '.scope' <<<"$category")
+	root=$(persistent_data_root "$scope") || return 1
+	mountpoint -q "$root"
+}
+
+# cli_category_status: Prints the status specific to a registry category.
+cli_category_status() {
+	local category="$1" status_check identity identity_status
+
+	status_check=$(jq -r '.statusCheck' <<<"$category")
+	case "$status_check" in
+	directory) printf '%s\n' 'directory present' ;;
+	claude | codex | github)
+		identity=''
+		identity_status=0
+		identity=$(persistent_data_summary_identity "$status_check") || identity_status=$?
+		[[ "$identity_status" -eq 0 && -n "$identity" ]] || { printf '%s\n' 'not authenticated'; return 0; }
+		printf 'authenticated (%s)\n' "$identity"
+		;;
+	*) log_error "Unsupported persistent-data status check: $status_check"; return 1 ;;
+	esac
+}
+
+# cli_reset_category: Deletes and recreates only the requested category directory.
+cli_reset_category() {
+	local category_id="$1" category category_path scope root root_path category_path_real
+	local category_parent category_name category_parent_real category_parent_current
+
+	category=$(cli_category_record "$category_id") || return 1
+	category_path=$(persistent_data_category_path "$category_id") || return 1
+	scope=$(jq -r '.scope' <<<"$category")
+	root=$(persistent_data_root "$scope") || return 1
+	root_path=$(realpath -m "$root") || return 1
+	category_path_real=$(realpath -m "$category_path") || return 1
+	if [[ "$category_path_real" != "$root_path/"* ]]; then
+		log_error "Persistent-data category escapes its root: $category_id"
+		return 1
+	fi
+	if ! cli_category_is_mounted "$category"; then
+		log_error "Persistent-data category is not mounted: $category_id"
+		return 1
+	fi
+	category_parent=$(dirname "$category_path")
+	category_name=$(basename "$category_path")
+	category_parent_real=$(dirname "$category_path_real")
+	(
+		cd -P "$category_parent" || exit 1
+		category_parent_current=$(pwd -P)
+		if [[ "$category_parent_current" != "$category_parent_real" ]]; then
+			log_error "Persistent-data category parent changed: $category_id"
+			exit 1
+		fi
+		rm -rf -- "./$category_name" || exit 1
+		mkdir -p -- "./$category_name"
+	) || return 1
+	log_success "Reset persistent-data category: $category_id"
+}
+
+# cli_reset_herdr_locked: Clears the project Herdr data and restores its initial configuration.
+cli_reset_herdr_locked() {
+	cli_reset_category herdr || return 1
+	herdr_initialize_config
+}
+
+# cli_reset_herdr: Resets the project Herdr configuration, then reapplies the agent integrations.
+# The reset and reinitialization run under the project lock; reinstalling the integrations touches
+# shared Claude/Codex config and takes the shared then project lock (see docs/wiki/setup/persistent-data.md).
+cli_reset_herdr() {
+	with_project_data_lock cli_reset_herdr_locked || return 1
+	with_shared_data_lock with_project_data_lock herdr_install_integrations
+}
+
+# cli_reconcile_herdr: Restores integrations affected by a Claude or Codex reset.
+cli_reconcile_herdr() {
+	herdr_apply
+}
+
+# cli_confirm_reset: Asks the user to confirm a destructive category reset.
+cli_confirm_reset() {
+	local category_id="$1" reply
+
+	if [[ ! -t 0 ]]; then
+		log_error 'Reset requires an interactive confirmation or --yes'
+		return 1
+	fi
+	log_warning "This permanently deletes the data in category '$category_id'. Type yes to continue:"
+	read -r reply </dev/tty
+	if [[ "$reply" != 'yes' ]]; then
+		log_error 'Reset cancelled'
+		return 1
+	fi
+}
+
+# ----- INTERACTIVE MENU ------------------------------------------------------
+
+# cli_resettable_category_ids: Prints registry category IDs whose resettable flag is true.
+cli_resettable_category_ids() {
+	local category_id category resettable
+	while IFS= read -r category_id; do
+		category=$(cli_category_record "$category_id") || return 1
+		resettable=$(jq -r '.resettable' <<<"$category")
+		[[ "$resettable" == 'true' ]] && printf '%s\n' "$category_id"
+	done < <(persistent_data_category_ids)
+}
+
+# cli_interactive_overview: Prints the compact persistent-data snapshot shown before the menu.
+cli_interactive_overview() {
+	local category_id category label category_path status
+
+	log_info 'Persistent data'
+	log_detail 'Shared volume: devcontainer-shared-data'
+	while IFS= read -r category_id; do
+		category=$(cli_category_record "$category_id") || return 1
+		label=$(jq -r '.label' <<<"$category")
+		category_path=$(persistent_data_category_path "$category_id") || return 1
+		if ! cli_category_is_mounted "$category"; then
+			log_item_warning "$label · not mounted"
+			continue
+		fi
+		if [[ ! -d "$category_path" ]]; then
+			log_item_warning "$label · unavailable"
+			continue
+		fi
+		status=$(cli_category_status "$category") || return 1
+		[[ "$status" == 'directory present' ]] && status='available'
+		case "$status" in
+		authenticated*|available) log_item_success "$label · $status" ;;
+		*) log_item_warning "$label · $status" ;;
+		esac
+	done < <(persistent_data_category_ids)
+}
+
+# cli_interactive_path: Prompts for a registry category and prints its path,
+# re-prompting on an unknown id and returning on a blank line.
+cli_interactive_path() {
+	local category_id ids resolved
+
+	ids=$(persistent_data_category_ids | paste -sd , - | sed 's/,/, /g')
+	while true; do
+		log_info "Select category [${ids}], or blank to go back:"
+		read -r category_id </dev/tty || return 0
+		[[ -z "$category_id" ]] && return 0
+		if resolved=$(cli_path "$category_id"); then
+			log_item_success "$resolved"
+			return 0
+		fi
+	done
+}
+
+# cli_interactive_reset: Prompts for a resettable category and runs the confirmed
+# reset, re-prompting on an unknown id and returning on a blank line.
+cli_interactive_reset() {
+	local category_id ids_list ids all_ids
+
+	ids_list=$(cli_resettable_category_ids)
+	all_ids=$(persistent_data_category_ids)
+	ids=$(paste -sd , - <<<"$ids_list" | sed 's/,/, /g')
+	while true; do
+		log_info "Select category [${ids}], or blank to go back:"
+		read -r category_id </dev/tty || return 0
+		[[ -z "$category_id" ]] && return 0
+		grep -qxF -- "$category_id" <<<"$ids_list" && break
+		if grep -qxF -- "$category_id" <<<"$all_ids"; then
+			log_warning "Not a resettable category: ${category_id}"
+		else
+			log_warning "Unknown persistent-data category: ${category_id}"
+		fi
+	done
+	cli_reset "$category_id" false
+}
+
+# cli_interactive_migrate: Presents the two migration flows, delegating to the direct commands.
+cli_interactive_migrate() {
+	local choice
+
+	while true; do
+		log_info 'Migrate data'
+		log_detail '1) Migrate shared data'
+		log_detail '2) Migrate current project'
+		log_detail 'b) Back'
+		log_info 'Action [1-2, b]:'
+		read -r choice </dev/tty || return 0
+		case "$choice" in
+		1) cli_migrate_shared || true; return 0 ;;
+		2) cli_migrate_project || true; return 0 ;;
+		b | B) return 0 ;;
+		*) log_warning 'Invalid selection. Enter 1-2 or b.' ;;
+		esac
+	done
+}
+
+# cli_interactive_menu: Runs the main action loop until the user quits.
+cli_interactive_menu() {
+	local action
+
+	while true; do
+		log_info 'Select an action'
+		log_detail '1) List categories'
+		log_detail '2) Status'
+		log_detail '3) Show path'
+		log_detail '4) Reset data'
+		log_detail '5) Migrate data'
+		log_detail 'q) Quit'
+		log_info 'Action [1-5, q]:'
+		read -r action </dev/tty || return 0
+		case "$action" in
+		1) cli_list || true ;;
+		2) cli_status || true ;;
+		3) cli_interactive_path || true ;;
+		4) cli_interactive_reset || true ;;
+		5) cli_interactive_migrate || true ;;
+		q | Q) return 0 ;;
+		*) log_warning 'Invalid selection. Enter 1-5 or q.' ;;
+		esac
+	done
+}
+
+# ----- COMMANDS ---------------------------------------------------------------
+
+# cli_interactive: Runs the terminal menu, reusing only the direct commands.
+cli_interactive() {
+	if [[ ! -t 0 ]]; then
+		log_error 'Interactive mode requires a terminal'
+		return 1
+	fi
+	cli_interactive_overview || return 1
+	cli_interactive_menu
+}
+
+# cli_list: Lists all declared persistent-data categories.
+cli_list() {
+	local category_id category label scope
+
+	while IFS= read -r category_id; do
+		category=$(cli_category_record "$category_id") || return 1
+		label=$(jq -r '.label' <<<"$category")
+		scope=$(jq -r '.scope' <<<"$category")
+		printf '%s\t%s\t%s\n' "$category_id" "$scope" "$label"
+	done < <(persistent_data_category_ids)
+}
+
+# cli_status: Lists location, availability, mount, and status for every category.
+cli_status() {
+	local category_id category category_path available mounted status
+
+	while IFS= read -r category_id; do
+		category=$(cli_category_record "$category_id") || return 1
+		category_path=$(persistent_data_category_path "$category_id") || return 1
+		available=false
+		mounted=false
+		[[ -d "$category_path" ]] && available=true
+		cli_category_is_mounted "$category" && mounted=true
+		if [[ "$mounted" != true ]]; then
+			status='not mounted'
+		elif [[ "$available" == true ]]; then
+			status=$(cli_category_status "$category") || return 1
+		else
+			status='unavailable'
+		fi
+		printf '%s\t%s\tavailable=%s\tmounted=%s\t%s\n' "$category_id" "$category_path" "$available" "$mounted" "$status"
+	done < <(persistent_data_category_ids)
+}
+
+# cli_path: Prints a category's registered absolute path.
+cli_path() {
+	persistent_data_category_path "$1"
+}
+
+# cli_reset: Confirms and resets one declared category under its required lock.
+cli_reset() {
+	local category_id="$1" assume_yes="$2" category scope resettable
+
+	category=$(cli_category_record "$category_id") || return 1
+	resettable=$(jq -r '.resettable' <<<"$category")
+	if [[ "$resettable" != true ]]; then
+		log_error "Persistent-data category cannot be reset: $category_id"
+		return 1
+	fi
+	if [[ "$assume_yes" != true ]]; then
+		cli_confirm_reset "$category_id" || return 1
+	fi
+	scope=$(jq -r '.scope' <<<"$category")
+	if [[ "$category_id" == 'herdr' ]]; then
+		cli_reset_herdr || return 1
+	elif [[ "$scope" == 'shared' ]]; then
+		with_shared_data_lock cli_reset_category "$category_id" || return 1
+	else
+		with_project_data_lock cli_reset_category "$category_id" || return 1
+	fi
+	case "$category_id" in
+	claude|codex) cli_reconcile_herdr ;;
+	esac
+}
+
+# cli_main: Parses phase-4 direct CLI commands.
+cli_main() {
+	local command="${1:-}" category_id assume_yes=false
+
+	persistent_data_registry_validate || return 1
+	case "$command" in
+	list) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_list ;;
+	status) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_status ;;
+	path) [[ "$#" -eq 2 ]] || { cli_usage; return 1; }; cli_path "$2" ;;
+	reset)
+		[[ "$#" -eq 2 || "$#" -eq 3 ]] || { cli_usage; return 1; }
+		category_id="$2"
+		if [[ "$#" -eq 3 ]]; then
+			[[ "$3" == '--yes' ]] || { cli_usage; return 1; }
+			assume_yes=true
+		fi
+		cli_reset "$category_id" "$assume_yes"
+		;;
+	migrate)
+		[[ "$#" -eq 1 || ( "$#" -eq 2 && "$2" == 'project' ) ]] || { cli_usage; return 1; }
+		if [[ "$#" -eq 2 ]]; then cli_migrate_project; else cli_migrate_shared; fi
+		;;
+	interactive) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_interactive ;;
+	*) cli_usage; return 1 ;;
+	esac
+}
+
+cli_main "$@"

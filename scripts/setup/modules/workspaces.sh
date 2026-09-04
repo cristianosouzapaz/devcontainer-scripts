@@ -4,12 +4,17 @@ set -euo pipefail
 # MODULE_NAME="workspaces"
 # MODULE_DESCRIPTION="Generates the VS Code .code-workspace file for multi-repo and/or extra-folder containers"
 # MODULE_ENTRY="workspaces_setup"
+# MODULE_AFTER="git"
 
-# VS Code workspace generation module
+# ----- OVERVIEW ---------------------------------------------------------------
+#
+# Generates the VS Code /workspace/<PROJECT_NAME>.code-workspace file listing
+# each repo and each EXTRA_FOLDER_N as a root folder. Skips silently for a
+# single repo with no extra folders; never overwrites an existing file.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
-source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/loader.sh"
 
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 
@@ -76,7 +81,7 @@ workspaces_setup() {
 		return 0
 	fi
 
-	# Mirrors 01-git.sh's git_setup: exactly one repo (whichever REPO_SOURCE
+	# Mirrors git.sh's git_setup: exactly one repo (whichever REPO_SOURCE
 	# variant it came from) clones into $PROJECT_NAME; only 2+ repos use
 	# repo_entry_folder_name per entry.
 	if [[ "${#_entries[@]}" -ge 2 ]]; then

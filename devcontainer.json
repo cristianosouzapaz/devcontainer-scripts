@@ -38,5 +38,5 @@
         "--privileged"
     ],
     "workspaceFolder": "/workspace/project-name",
-    "workspaceMount": "source=project-name-data,target=/workspace/project-name,type=volume"
+    "workspaceMount": "source=project-name-data,target=/workspace,type=volume"
 }

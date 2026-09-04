@@ -131,8 +131,10 @@ required_paths() {
 			if (file.endsWith(".json")) {
 				const data = parseJson(file);
 				return (Array.isArray(data) ? data : [data])
-					.filter((entry) => entry && typeof entry.templateFile === "string")
-					.map((entry) => join(dirname(file), "templates", entry.templateFile));
+					.flatMap((entry) => entry && typeof entry.templateFile === "string"
+						? [entry.templateFile, ...(Array.isArray(entry.resources) ? entry.resources : [])]
+						: [])
+					.map((templateFile) => join(dirname(file), "templates", templateFile));
 			}
 			return [];
 		};

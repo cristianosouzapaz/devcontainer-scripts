@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { loadJsonCatalog, loadValidatedCatalog } from "../shared/catalog.js";
-import { AGENTS, TOOLS } from "../shared/constants.js";
-import { pickAssets } from "../shared/pick-assets.js";
-import { restoreChecked, selectTargetTools, selectUntilConfirmed } from "../shared/prompts.js";
-import { handleError, readGlobalSkillSet, setupConsola } from "../shared/utils.js";
-import { buildSkillChoices, readProjectSkillSet } from "./catalog.js";
+import { loadJsonCatalog, loadValidatedCatalog } from "../lib/catalog.js";
+import { AGENTS, TOOLS } from "../lib/constants.js";
+import { readGlobalSkillSet } from "../lib/global-skill-set.js";
+import { pickAssets } from "../lib/pick-assets.js";
+import { restoreChecked, selectTargetTools, selectUntilConfirmed } from "../lib/prompts.js";
+import { handleError, setupConsola } from "../lib/utils.js";
+import { buildSkillChoices, readProjectSkillSet } from "./picker.js";
 import { ensureClaudeSkillSymlink } from "./local/index.js";
 
 /**

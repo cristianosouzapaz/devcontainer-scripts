@@ -1,11 +1,12 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadValidatedCatalog } from "../shared/catalog.js";
-import { TOOLS } from "../shared/constants.js";
-import { claudeSkillAdapter, readLockFile, reconcileArtifactAdapters, recordArtifact, writeLockFile } from "../shared/lock-file.js";
-import { pickAssets } from "../shared/pick-assets.js";
-import { formatVersionHint, restoreChecked, selectTargetTools, selectUntilConfirmed } from "../shared/prompts.js";
-import { handleError, isPromptCancellation, readGlobalSkillSet, setupConsola } from "../shared/utils.js";
+import { loadValidatedCatalog } from "../lib/catalog.js";
+import { TOOLS } from "../lib/constants.js";
+import { readGlobalSkillSet } from "../lib/global-skill-set.js";
+import { claudeSkillAdapter, readLockFile, reconcileArtifactAdapters, recordArtifact, writeLockFile } from "../lib/lock-file.js";
+import { pickAssets } from "../lib/pick-assets.js";
+import { formatVersionHint, restoreChecked, selectTargetTools, selectUntilConfirmed } from "../lib/prompts.js";
+import { handleError, isPromptCancellation, setupConsola } from "../lib/utils.js";
 import { ensureClaudeSkillSymlink, installLocalSkills } from "../skills/local/index.js";
 
 /**

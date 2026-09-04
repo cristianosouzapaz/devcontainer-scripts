@@ -4,7 +4,8 @@ set -euo pipefail
 # Sync Global Agent Assets
 #
 # Refreshes the machine-wide agent skills/commands store that every devcontainer on
-# this host shares (the `agents-data` volume, mounted at ~/.agents):
+# this host shares — the `agents` category of the shared `devcontainer-shared-data`
+# volume, surfaced at ~/.agents via a managed symlink:
 #
 #   1. re-fetch the installer from devcontainer-scripts@<ref>
 #   2. first-party instruction/prompt skills  → agents/index.js --global
@@ -31,7 +32,7 @@ _SCOPE_COUNT=0
 
 # ----- SHARED UTILITIES LOADING -------------------------------------------------
 
-source "${_SCRIPT_DIR}/setup/shared/loader.sh"
+source "${_SCRIPT_DIR}/setup/lib/loader.sh"
 
 # ----- HELPER FUNCTIONS -----------------------------------------------------
 

@@ -5,13 +5,11 @@ services:
     container_name: project-name
     stdin_open: true
     volumes:
-      - project-name-workspace:/workspace
+      - project-name-data:/workspace
+      - devcontainer-shared-data:/var/lib/devcontainer
 
 volumes:
-  agents-data:
-    name: agents-data
-  claude-auth-data:
-    name: claude-auth-data
-  codex-auth-data:
-    name: codex-auth-data
-  project-name-workspace:
+  project-name-data:
+    name: project-name-data
+  devcontainer-shared-data:
+    name: devcontainer-shared-data

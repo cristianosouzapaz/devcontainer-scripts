@@ -64,18 +64,14 @@ function Get-ExtraFolderList {
         slug and used as both the container mount target (/workspace/<name>) and
         the .code-workspace folder name; it is rejected and re-prompted if it
         duplicates another extra folder's name, the project name, or any repo's
-        folder name — all of which already claim a /workspace/<name> mount target
-        somewhere in the generated config (single-repo, standard or compose, uses
-        /workspace/<ProjectName>; multi-repo uses /workspace/<repo-folder> per repo
-        — see New-ComposeWithRepoVolumes and Add-RepoMountsToConfig). The repo
-        folder name is reserved unconditionally here too, since this function isn't
-        told which mode will be used and reserving it is harmless even when unused.
+        folder name. These names are reserved beneath the shared /workspace root,
+        where the project repository and additional repositories are created.
     .PARAMETER ProjectName
-        The project name, reserved because single-repo mode (standard or compose)
-        mounts it at /workspace/<ProjectName>.
+        The project name, reserved because single-repo mode creates its repository
+        at /workspace/<ProjectName>.
     .PARAMETER RepoList
         Array of fully normalised repository URLs (as returned by Get-RepoList).
-        Every repo's folder name is reserved, since it claims /workspace/<folder>
+        Every repo's folder name is reserved, since it is created at /workspace/<folder>
         in multi-repo mode.
     .OUTPUTS
         Array of ordered hashtables: @{ Name = <string>; RawPath = <string>; IsAbsolute = <bool> }.

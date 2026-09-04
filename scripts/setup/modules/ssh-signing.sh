@@ -4,17 +4,18 @@ set -euo pipefail
 # MODULE_NAME="ssh-signing"
 # MODULE_DESCRIPTION="Configures git SSH commit signing via SSH agent"
 # MODULE_ENTRY="ssh_signing_setup"
+# MODULE_AFTER="git"
 
-# SSH signing setup module
+# ----- OVERVIEW ---------------------------------------------------------------
 #
-# Opt-in: activates only when SSH_SIGNING=true and SSH_AUTH_SOCK points to a
-# valid socket. VS Code forwards the host SSH agent automatically, so any
-# agent on the host (1Password, OpenSSH, Keychain, etc.) is transparently
-# available inside the container. The private key never leaves the agent.
+# Opt-in: configures Git SSH commit signing, and only when SSH_SIGNING=true and
+# SSH_AUTH_SOCK points to a valid socket. VS Code forwards the host SSH agent
+# automatically, so any host agent (1Password, OpenSSH, Keychain, …) works
+# inside the container and the private key never leaves the agent.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
-source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/loader.sh"
 
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 

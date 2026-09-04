@@ -1,0 +1,8 @@
+#!/bin/bash
+set -euo pipefail
+
+# Public Herdr wrapper. Project-specific configuration, sockets, and sessions
+# stay below /workspace without changing the XDG home of other tools.
+
+export XDG_CONFIG_HOME='/workspace/.config'
+exec /usr/local/lib/herdr/herdr "$@"

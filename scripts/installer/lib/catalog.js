@@ -50,13 +50,15 @@ const isSafeRelativePath = (value) => typeof value === "string"
  *   stringArrays?: string[],
  *   optionalStringArrays?: string[],
  *   safeRelativePaths?: string[],
+ *   optionalSafeRelativePathArrays?: string[],
  * }} [schema] - Required string fields, non-empty string fields, string-array fields, and
- *   string-array fields that may also be absent.
+ *   string-array fields that may also be absent, including optional arrays of safe relative
+ *   template paths.
  * @returns {object[]} The validated entries.
  * @throws If the file is not an array or any entry violates the schema.
  */
 export const loadValidatedCatalog = (fileUrl, catalogName, schema = {}) => {
-    const { strings = [], nonEmptyStrings = [], stringArrays = [], optionalStringArrays = [], safeRelativePaths = [] } = schema;
+    const { strings = [], nonEmptyStrings = [], stringArrays = [], optionalStringArrays = [], safeRelativePaths = [], optionalSafeRelativePathArrays = [] } = schema;
     const isStringArray = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
     const entries = loadJsonCatalog(fileUrl);
 
@@ -66,7 +68,9 @@ export const loadValidatedCatalog = (fileUrl, catalogName, schema = {}) => {
             && nonEmptyStrings.every((key) => Object.hasOwn(entry, key) && typeof entry[key] === "string" && entry[key].length > 0)
             && stringArrays.every((key) => Object.hasOwn(entry, key) && isStringArray(entry[key]))
             && optionalStringArrays.every((key) => !Object.hasOwn(entry, key) || isStringArray(entry[key]))
-            && safeRelativePaths.every((key) => Object.hasOwn(entry, key) && isSafeRelativePath(entry[key]));
+            && safeRelativePaths.every((key) => Object.hasOwn(entry, key) && isSafeRelativePath(entry[key]))
+            && optionalSafeRelativePathArrays.every((key) => !Object.hasOwn(entry, key)
+                || (isStringArray(entry[key]) && entry[key].every(isSafeRelativePath)));
         if (!valid) throw new Error(`Invalid ${catalogName} catalog entry at index ${index}.`);
     });
 

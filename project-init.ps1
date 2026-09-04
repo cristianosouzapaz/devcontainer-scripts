@@ -36,7 +36,7 @@ $DevContainerFolderName  = ".devcontainer"
 $DockerIgnoreFile        = ".dockerignore"
 $DockerfileName          = "Dockerfile"
 $DevContainerJson        = "devcontainer.json"
-$DevContainerJsonCompose = "devcontainer-compose.json"
+$DevContainerJsonCompose = "devcontainer.compose.json"
 $DockerComposeYml        = "docker-compose.yml"
 $EntryManifestPath       = Join-Path -Path $PSScriptRoot -ChildPath "devcontainer.entries.json"
 

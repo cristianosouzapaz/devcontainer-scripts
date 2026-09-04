@@ -85,6 +85,27 @@
                 "id": "sync",
                 "color": "terminal.ansiGreen"
             }
+        },
+        {
+            "label": "Data: Manage Persistent Data",
+            "detail": "Opens the interactive persistent-data manager in this devcontainer.",
+            "type": "shell",
+            "command": "devcontainer-data interactive",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated",
+                "clear": true
+            },
+            "icon": {
+                "id": "database",
+                "color": "terminal.ansiCyan"
+            }
         }
     ]
 }

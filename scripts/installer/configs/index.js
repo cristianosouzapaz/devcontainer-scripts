@@ -1,11 +1,11 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { loadValidatedCatalog } from "../shared/catalog.js";
-import { readLockFile, writeLockFile } from "../shared/lock-file.js";
-import { pickAssets } from "../shared/pick-assets.js";
-import { formatVersionHint, restoreChecked, selectUntilConfirmed } from "../shared/prompts.js";
-import { copyToClipboard, handleError, isPromptCancellation, setupConsola } from "../shared/utils.js";
-import { writeWithConflict } from "../shared/write-file.js";
+import { loadValidatedCatalog } from "../lib/catalog.js";
+import { readLockFile, writeLockFile } from "../lib/lock-file.js";
+import { pickAssets } from "../lib/pick-assets.js";
+import { formatVersionHint, restoreChecked, selectUntilConfirmed } from "../lib/prompts.js";
+import { copyToClipboard, handleError, isPromptCancellation, setupConsola } from "../lib/utils.js";
+import { writeWithConflict } from "../lib/write-file.js";
 
 /**
  * @fileoverview Interactive installer for project config templates. See

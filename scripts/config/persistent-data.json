@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "categories": [
+    {
+      "id": "agents",
+      "scope": "shared",
+      "relativePath": "agents",
+      "label": "Agents",
+      "group": "tool",
+      "binary": null,
+      "statusCheck": "directory",
+      "resettable": true
+    },
+    {
+      "id": "claude",
+      "scope": "shared",
+      "relativePath": "config/claude",
+      "label": "Claude Code",
+      "group": "authentication",
+      "binary": "claude",
+      "statusCheck": "claude",
+      "resettable": true
+    },
+    {
+      "id": "codex",
+      "scope": "shared",
+      "relativePath": "config/codex",
+      "label": "Codex CLI",
+      "group": "authentication",
+      "binary": "codex",
+      "statusCheck": "codex",
+      "resettable": true
+    },
+    {
+      "id": "github",
+      "scope": "shared",
+      "relativePath": "config/github",
+      "label": "GitHub CLI",
+      "group": "authentication",
+      "binary": "gh",
+      "statusCheck": "github",
+      "resettable": true
+    },
+    {
+      "id": "herdr",
+      "scope": "project",
+      "relativePath": ".config/herdr",
+      "label": "Herdr",
+      "group": "tool",
+      "binary": "herdr",
+      "statusCheck": "directory",
+      "resettable": true
+    }
+  ]
+}

@@ -14,7 +14,7 @@ function _Get-RepoFolderName {
     .SYNOPSIS
         Extracts the last URL path segment without the .git extension.
     .DESCRIPTION
-        Used by both config.ps1 (Set-OnCreateCommandInConfig) and repos.ps1.
+        Used by repository configuration helpers.
         Defined here to avoid a cross-module dependency between those two files.
     .PARAMETER Url
         Fully normalised repository URL (https://host/owner/repo.git).

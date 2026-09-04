@@ -17,7 +17,7 @@ applyTo: "**/*.sh"
 ## Naming
 
 - **File names:** MUST use `kebab-case`.
-- **Module file names:** MUST use a two-digit numeric prefix followed by a kebab-case name (e.g. `01-git.sh`).
+- **Module file names:** MUST use the module identifier in kebab-case (e.g. `git.sh`). Every module MUST declare `MODULE_NAME`, `MODULE_DESCRIPTION`, `MODULE_ENTRY`, and `MODULE_AFTER`; the filename MUST be `<MODULE_NAME>.sh`.
 - **Function names:** MUST use `snake_case`.
 - **Internal functions:** MUST NOT be prefixed with `_`. Public vs internal is signaled by the comment convention (block vs single-line), not by a name prefix.
   - ✓ `validate_token`

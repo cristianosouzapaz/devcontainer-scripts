@@ -4,12 +4,16 @@ set -euo pipefail
 # MODULE_NAME="ngrok"
 # MODULE_DESCRIPTION="Configures ngrok authentication token if NGROK_AUTHTOKEN is set"
 # MODULE_ENTRY="ngrok_setup"
+# MODULE_AFTER="workspaces"
 
-# Ngrok setup module
+# ----- OVERVIEW ---------------------------------------------------------------
+#
+# Opt-in: configures the ngrok authentication token, and only when
+# NGROK_AUTHTOKEN is set. Absent the token the module skips silently.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
-source "$(dirname "${BASH_SOURCE[0]}")/../shared/loader.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/loader.sh"
 
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 

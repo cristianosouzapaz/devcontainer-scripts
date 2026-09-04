@@ -1,13 +1,14 @@
 import { readFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { loadJsonObject, loadValidatedCatalog } from "../shared/catalog.js";
-import { TOOLS } from "../shared/constants.js";
-import { claudeRuleAdapter, claudeSkillAdapter, getArtifactVersion, readLockFile, reconcileArtifactAdapters, recordArtifact, writeLockFile } from "../shared/lock-file.js";
-import { pickAssets } from "../shared/pick-assets.js";
-import { formatVersionHint, restoreChecked, selectTargetTools, selectUntilConfirmed } from "../shared/prompts.js";
-import { handleError, isPromptCancellation, readGlobalSkillSet, setupConsola } from "../shared/utils.js";
-import { writeOverwrite, writeWithConflict } from "../shared/write-file.js";
+import { loadJsonObject, loadValidatedCatalog } from "../lib/catalog.js";
+import { TOOLS } from "../lib/constants.js";
+import { readGlobalSkillSet } from "../lib/global-skill-set.js";
+import { claudeRuleAdapter, claudeSkillAdapter, getArtifactVersion, readLockFile, reconcileArtifactAdapters, recordArtifact, writeLockFile } from "../lib/lock-file.js";
+import { pickAssets } from "../lib/pick-assets.js";
+import { formatVersionHint, restoreChecked, selectTargetTools, selectUntilConfirmed } from "../lib/prompts.js";
+import { handleError, isPromptCancellation, setupConsola } from "../lib/utils.js";
+import { writeOverwrite, writeWithConflict } from "../lib/write-file.js";
 import { ensureClaudeRuleSymlink, ensureClaudeSkillSymlink } from "../skills/local/index.js";
 
 /**

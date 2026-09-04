@@ -54,21 +54,21 @@ collect_numbered_vars() {
 }
 
 # collect_numbered_repo_entries <nameref> [fallback_var]: Populates an array with clone
-# URLs from REPO_SOURCE_1, REPO_SOURCE_2, … Used by both 01-git.sh (fallback: REPO_SOURCE)
-# and 05-workspaces.sh (no fallback).
+# URLs from REPO_SOURCE_1, REPO_SOURCE_2, … Used by both git.sh (fallback: REPO_SOURCE)
+# and workspaces.sh (no fallback).
 collect_numbered_repo_entries() {
 	collect_numbered_vars "$1" "REPO_SOURCE" "${2:-}"
 }
 
 # collect_numbered_extra_folders <nameref>: Populates an array with extra workspace folder
-# names from EXTRA_FOLDER_1, EXTRA_FOLDER_2, … Used by 05-workspaces.sh to add extra
+# names from EXTRA_FOLDER_1, EXTRA_FOLDER_2, … Used by workspaces.sh to add extra
 # bind-mounted roots to the .code-workspace file.
 collect_numbered_extra_folders() {
 	collect_numbered_vars "$1" "EXTRA_FOLDER"
 }
 
 # repo_entry_folder_name <url>: Extracts the last path segment without the .git extension.
-# Used by both 01-git.sh and 05-workspaces.sh to derive the workspace folder name from a clone URL.
+# Used by both git.sh and workspaces.sh to derive the workspace folder name from a clone URL.
 # Examples: https://github.com/org/repo.git → repo
 #           https://gitlab.com/myorg/my-app  → my-app
 repo_entry_folder_name() {

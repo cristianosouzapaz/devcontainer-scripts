@@ -8,7 +8,7 @@ readonly _ENV_LOADER_SH_LOADED=1
 # Usage in .env:
 #   PERSIST_CONTEXT7_API_KEY=your-key   # persisted as CONTEXT7_API_KEY
 #   GIT_CLONE_TOKEN=secret                          # available during setup only; global fallback
-#   GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM=secret       # per-host override, see 01-git.sh
+#   GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM=secret       # per-host override, see git.sh
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 

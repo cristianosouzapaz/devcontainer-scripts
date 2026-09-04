@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * @fileoverview Presentation-independent helpers for the third-party skills catalog.
+ * @fileoverview Presentation-independent helpers for the third-party skills picker.
  */
 
 /**
