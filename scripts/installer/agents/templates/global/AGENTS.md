@@ -31,6 +31,9 @@ A feature, however small: issue. A reported bug: issue.
 
 ## The four flows
 
+Name the flow before writing anything. If none of them fits, say so and agree on
+what to do instead — never proceed silently.
+
 **Large feature** — too big for one session, the route is not yet visible.
 Chart a map of decision tickets and resolve them one at a time (`wayfinder`),
 then split the outcome into tracer-bullet tickets (`to-tickets`).
@@ -38,7 +41,8 @@ then split the outcome into tracer-bullet tickets (`to-tickets`).
 **Small feature** — fits in one session.
 Sharpen the idea by interview (`grilling`), then turn the conversation into a
 spec published to the tracker (`to-spec`). Split it into tickets (`to-tickets`)
-only when the work has real ordering constraints.
+only when the work has real ordering constraints. A single clarifying question
+is not an interview.
 
 **Fix** — something is broken.
 Reproduce and isolate before changing anything (`diagnosing-bugs`). Reports that
@@ -46,8 +50,9 @@ arrive raw get sorted first (`triage`).
 
 **Close out** — the work is done.
 Write the commits (`generate-commit`), then open the PR (`create-pr`). The PR
-body must carry `Closes #<n>` so the tracker does not accumulate finished work.
-Branch naming is free.
+body must carry a `Closes #<n>` line for every issue the branch resolves, so the
+tracker does not accumulate finished work. A branch may close several issues —
+one branch per issue is not required. Branch naming is free.
 
 **One unit of work per session.** When a ticket or a flow completes, say so and
 stop. The next unit starts in a fresh session, from its issue. If this session
@@ -57,6 +62,11 @@ out, work interrupted mid-way — tell the user to run `/handoff` before clearin
 **Writing code is not a flow, it is a constant.** Whenever code gets written, in
 any flow, take the laziest solution that actually works (`ponytail`). A ticket
 that is ready goes straight to code — there is no separate build step.
+
+**Edit the source, never a copy of it.** Before editing a file, establish whether
+it is the source or something produced from one: build output, generated code,
+vendored or installed artifacts. Edit the source and let the pipeline produce the
+copy.
 
 ## Toolbox
 

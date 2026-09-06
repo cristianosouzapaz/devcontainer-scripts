@@ -3,7 +3,7 @@
         "name": "Generate Commit",
         "filename": "generate-commit.prompt.md",
         "commandFilename": "generate-commit.md",
-        "version": "1.3.1",
+        "version": "1.4.0",
         "tags": [
             "git"
         ],
@@ -13,7 +13,7 @@
         "name": "Generate PR",
         "filename": "generate-pr.prompt.md",
         "commandFilename": "generate-pr.md",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "tags": [
             "git"
         ],
@@ -23,7 +23,7 @@
         "name": "Create PR",
         "filename": "create-pr.prompt.md",
         "commandFilename": "create-pr.md",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "tags": [
             "git"
         ],

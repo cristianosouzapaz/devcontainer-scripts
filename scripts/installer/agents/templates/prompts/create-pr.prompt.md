@@ -37,7 +37,9 @@ If `<from-branch>` and `<to-branch>` resolve to the same branch, stop and report
 
 ## 3. TITLE AND DESCRIPTION GENERATION
 
-Run `/generate-pr <to-branch>` with `<from-branch>` as the current branch to obtain the PR title and description. Use its output as-is.
+Run `/generate-pr <to-branch>` with `<from-branch>` as the current branch to obtain the PR title and description. Use its output as-is — including any `Closes #<n>` line, which must survive into the PR body verbatim so the tracker closes the issue on merge.
+
+The description is multi-line markdown: write the content of the `### PR Description` block — without its heading and its enclosing fence — to a file, and pass `--body-file` rather than inlining it into `--body`.
 
 ---
 
@@ -64,7 +66,7 @@ gh pr create \
   --base <to-branch> \
   --head <from-branch> \
   --title "<generated title>" \
-  --body "<generated description>" \
+  --body-file <path-to-description-file> \
   --assignee <resolved-username> \
   --label <label-1> --label <label-2> ...
 ```
@@ -77,7 +79,7 @@ Omit `--label` flags entirely if no label was selected in Section 5.
 
 After the command succeeds, output only the resulting PR URL and a one-line confirmation of the assignee and labels applied. Then stop.
 
-Do not proceed to merge, squash, close, or request reviewers unless the user explicitly asks in a separate instruction — and even then, refuse merge/squash per the hard rule in Section 0.
+Do not proceed to merge, squash, close, or request reviewers unless the user explicitly asks in a separate instruction — and even then, refuse merge/squash per the HARD RULE at the top of this specification.
 
 ---
 
@@ -88,7 +90,7 @@ Before running `gh pr create`, silently verify every item below. Fix any failure
 - [ ] `<from-branch>` and `<to-branch>` are both resolved and distinct
 - [ ] `<from-branch>` is confirmed pushed and in sync with its remote tracking branch
 - [ ] No duplicate open PR exists for this head/base pair
-- [ ] Title and description follow the `generate-pr` specification exactly
+- [ ] Title and description follow the `generate-pr` specification exactly, with any `Closes #<n>` line preserved
 - [ ] Exactly one assignee is set, resolved from `gh api user`
 - [ ] Every label applied genuinely matches the PR content and already exists in the repository
 - [ ] The command does not include `--merge`, `--squash`, or any auto-merge flag

@@ -7,148 +7,117 @@ agent: "agent"
 
 # COMMIT MESSAGE SPECIFICATION
 
-You are a strict technical assistant. Your sole purpose is to analyze the current workspace changes and produce the `git add` commands and Conventional Commit messages needed to record them as one or more logical commits.
+Analyze the current workspace changes and produce the `git add` and `git commit` commands needed to record them as one or more logical commits.
 
-> **HARD RULE:** Output only the structure defined in section 5 (summary list, commit labels, and fenced Bash code blocks) and nothing else. No greetings, no explanations beyond what section 5 allows, no XML, and never run `git add` or `git commit` yourself.
+> **HARD RULE:** Output only the structure defined in section 5. No preamble, no explanations, no XML. Never run `git add` or `git commit` yourself.
 
-Use the user argument, when provided, as one of the following:
-- a preferred commit scope, if the changes support that scope
-- the flag `--staged`, which means analyze only staged changes
-- the flag `--single`, which forces a single commit covering all changes, skipping the grouping step below
+The user argument, when provided, is one of:
+- a preferred commit scope, used only if the changes support it
+- `--staged` — analyze only staged changes
+- `--single` — force one commit covering everything, skipping section 2
 
-If no argument is provided, prefer staged changes when any exist; otherwise analyze the current working tree changes.
+With no argument: prefer staged changes when any exist, otherwise the working tree.
 
 ---
 
 ## 1. CONTEXT RETRIEVAL
 
-Gather context before writing anything.
+1. `git status --short` — this is the authoritative list of what changed.
+2. Diff source: `--staged` or existing staged changes → `git diff --cached --unified=3`; otherwise `git diff --unified=3`. Add `--stat` for the same source to gauge scope.
+3. **Untracked files (`??` in status) do not appear in any diff.** They belong to the analyzed set only when the working tree is the source — a staged-only run ignores them. For each one that is in scope, read the file, or run `git diff --no-index -- /dev/null <path>`. A new file is often the most significant change in the set — never omit it because the diff was silent about it. Untracked directories must be expanded to their files (`git status --short --untracked-files=all`).
+4. If the diff still does not explain intent, read the most relevant changed files.
 
-1. Run `git status --short`.
-2. Decide the diff source:
-   - if the argument is `--staged`, use `git diff --cached --unified=3`
-   - else if staged changes exist, use `git diff --cached --unified=3`
-   - else use `git diff --unified=3`
-3. Use `git diff --stat` for the same source to understand scope and impact.
-4. If the diff alone does not explain intent, read only the most relevant changed files.
-
-If there are no relevant changes, output exactly: `No changes detected.`
+If nothing relevant changed, output exactly: `No changes detected.`
 
 ---
 
 ## 2. GROUPING STRATEGY
 
-Unless `--single` was passed, split the changes into separate logical commits when they cover unrelated concerns (e.g. an unrelated fix mixed into a feature, a chore alongside a refactor).
+Unless `--single` was passed, split unrelated concerns into separate commits.
 
-Rules:
-- The unit of grouping is the **whole file**, never a hunk or partial file. Do not propose `git add -p` or any partial-file staging.
-- Group changed files by the concern they belong to (same feature, same fix, same refactor, etc.), based on the diff content, not just file paths.
-- If a single file contains changes belonging to more than one concern, keep the whole file in the group of its predominant (larger or more significant) concern. Do not split it. Mention this in a short note directly above that group's commands.
-- If two groups are coupled — one group's code would not build, lint, or pass tests without the other (e.g. a new function and its first usage, a renamed export and its call sites) — merge them into a single group. Never order commits so that an intermediate commit leaves the tree in a broken state.
-- Order the resulting groups so that dependencies come first (e.g. a new shared utility before the code that consumes it).
-- If, after grouping, only one group remains, treat it like `--single`: produce a single commit.
-- Every changed file must appear in exactly one group.
+- The unit of grouping is the **whole file**, never a hunk. Never propose `git add -p`.
+- Group by concern as revealed by the diff content, not by file path.
+- A file spanning two concerns stays whole, in the group of its predominant concern. Flag it with a `Note:` line (section 5).
+- Merge two groups when one would not build, lint, or pass tests without the other (a new export and its first call site). No intermediate commit may leave the tree broken.
+- Order groups so dependencies land first.
+- Every file in the analyzed set appears in exactly one group.
+- One group left after grouping → treat as `--single`.
 
 ---
 
 ## 3. COMMIT RULES
 
-Header format:
-
 `<type>(<optional-scope>): <imperative-description>`
 
-Allowed types:
+Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
 
-`feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
+- Imperative mood: `add`, `fix`, `update` — not `added`, `fixed`, `updates`.
+- Header within the `header-max-length` the project's commitlint configuration enforces; 100 characters when there is none.
+- Scope only when clear and materially more precise; a user-supplied scope only when it matches the changes.
+- `!` only for a real breaking change.
+- No file names unless the file is the user-facing deliverable.
 
-Rules:
-- Use imperative mood: `add`, `fix`, `update`, not `added`, `fixed`, `updates`
-- Keep the header at 100 characters or fewer
-- Include a scope only when it is clear and materially improves precision
-- If the user provided a scope hint, use it only when it matches the actual changes
-- Use `!` only for an actual breaking change
-- Do not mention file names unless they are the user-facing deliverable
+Body only when the header cannot carry the needed context: one blank line after the header, then why or what changed — never the analysis process.
+
+Footer only for `BREAKING CHANGE: ...` or for issue references the context actually supports.
+
+Never add authorship or tooling trailers — no `Co-Authored-By`, no session or agent links. The commit belongs to the person who runs it.
 
 ---
 
-## 4. BODY AND FOOTER RULES
+## 4. QUOTING
 
-Add a body only when the change needs extra context that does not fit in the header.
-
-Add a footer only for:
-- breaking changes, using `BREAKING CHANGE: ...`
-- issue references or other required commit trailers that are directly supported by the context
-
-If a body is present:
-- leave one blank line after the header
-- keep lines concise and specific
-- explain why or what changed, not the analysis process
+Wrap every path and message in single quotes. An apostrophe inside a message is closed and re-opened: `'don'\''t'`. Prefer rephrasing to avoid the escape when the wording allows. Always put `--` between `git add` and its paths.
 
 ---
 
 ## 5. OUTPUT FORMAT
 
-When more than one commit results, start with a summary list, bold, in application order:
+For more than one commit, open with a summary list in application order:
 
 ```
-**N commit(s) proposed:**
+**N commits proposed:**
 1. `type(scope)` — description
 2. `type(scope)` — description
 ```
 
-Then, for each commit, in application order, emit a bold commit label followed by two separate
-copyable Bash code blocks: first the staging command, then the commit command.
+Then, per commit in application order, a bold label followed by two separate copyable blocks — staging first, commit second, never combined:
 
 ```
 **Commit i/N — type(scope): description**
 ```
 
 ```bash
-git add -- path/one.ts path/two.ts
+git add -- 'path/one.ts' 'path/two.ts'
 ```
 
 ```bash
 git commit -m 'type(scope): description'
 ```
 
-When a body or footer is required, pass every paragraph as a separate `-m` argument:
+Body and footer paragraphs each get their own `-m`:
 
 ```bash
 git commit \
   -m 'type(scope): description' \
-  -m 'body paragraph or bullet-like lines when necessary' \
-  -m 'footer when necessary'
+  -m 'body paragraph' \
+  -m 'footer'
 ```
 
-Quote every path and commit-message argument as needed for a valid Bash command. Use `--` after
-`git add` before the file paths. Do not combine staging and committing in the same code block.
+A file kept whole across two concerns gets a one-line `Note:` directly above that commit's `git add` block.
 
-If a file was kept in a group despite containing changes for more than one concern (see Grouping Strategy), add a one-line note directly above that commit's `git add` block, prefixed with `Note:`.
-
-When only one commit results (single concern, or `--single` was passed), skip the summary list and commit label entirely — output just the separate staging and commit code blocks.
+For a single commit, emit just the two code blocks — no summary list, no label.
 
 ---
 
 ## 6. SELF-VALIDATION
 
-Before emitting the final output, silently verify all of the following:
+Silently verify before emitting:
 
-- every commit's type is one of the allowed values
-- every description is imperative and specific
-- every header is 100 characters or fewer
-- scope is omitted when unclear
-- body and footer are included only when justified by the diff
-- every changed file appears in exactly one `git add` command, and no command stages part of a file
-- every staging command includes `git add --` and is separate from its commit command
-- every commit message is represented by a copyable `git commit` Bash command, with separate `-m`
-  arguments for its header, body paragraphs, and footer when present
-- commit order does not leave any intermediate state broken (missing dependency, unresolved reference)
-- when multiple commits are emitted, the summary list and commit labels match the commits and their order exactly
-- when a single commit is emitted, no summary list or commit label is present
-- the output contains only the section 5 structure, nothing else
-
-Examples of valid headers:
-- `feat(parser): add array literal support`
-- `fix(ui): correct button alignment`
-- `docs: update setup instructions`
-- `refactor(vscode): simplify prompt loading rules`
+- every file in the analyzed set appears in exactly one `git add`, and no in-scope untracked file was dropped because the diff was silent about it
+- headers are valid types, imperative, within the configured length; scope omitted when unclear
+- body and footer justified by the diff; no authorship or tooling trailers anywhere
+- quoting is valid Bash; `--` present; staging and committing in separate blocks
+- commit order leaves no broken intermediate state
+- summary list and labels match the commits, or are both absent for a single commit
+- output contains nothing but the section 5 structure
