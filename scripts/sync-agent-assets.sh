@@ -164,13 +164,101 @@ sync_scope() {
 	fi
 }
 
+# sync_file_if_changed: Copy src to dest only when their contents differ, so an
+# already-current destination is left untouched and keeps its mtime.
+# Args: $1 - source path, $2 - destination path.
+# Returns: 0; prints "unchanged" or "updated" to stdout.
+sync_file_if_changed() {
+	local src="$1" dest="$2"
+	if [[ -f "${dest}" ]] && cmp -s "${src}" "${dest}"; then
+		printf 'unchanged\n'
+		return 0
+	fi
+	cp "${src}" "${dest}"
+	printf 'updated\n'
+}
+
+# sync_claude_adapter: Ensure a CLAUDE.md file's first line imports the
+# canonical working agreement, without disturbing any content the user already
+# keeps there. Claude Code does not read AGENTS.md itself — it reads CLAUDE.md
+# and expands `@path` imports at session start.
+# Args: $1 - path to CLAUDE.md.
+# Returns: 0; prints "created", "updated", or "unchanged" to stdout.
+sync_claude_adapter() {
+	local claude_md="$1" import_line="@~/.agents/AGENTS.md" tmp
+
+	if [[ ! -f "${claude_md}" ]]; then
+		printf '%s\n' "${import_line}" > "${claude_md}"
+		printf 'created\n'
+		return 0
+	fi
+
+	if grep -qF -- "${import_line}" "${claude_md}"; then
+		printf 'unchanged\n'
+		return 0
+	fi
+
+	tmp="$(mktemp -p "$(dirname -- "${claude_md}")")"
+	{
+		printf '%s\n\n' "${import_line}"
+		cat -- "${claude_md}"
+	} > "${tmp}"
+	mv "${tmp}" "${claude_md}"
+	printf 'updated\n'
+}
+
+# sync_working_agreement: Install the canonical machine-wide working agreement
+# to ~/.agents/AGENTS.md, then update the Claude Code and Codex CLI adapters so
+# both tools load it at session start. The source is the installer tree that
+# sync_installer just refreshed, not the copy baked into the image, so editing
+# the agreement takes effect on the next sync without an image rebuild.
+# Idempotent: an already-current
+# destination is left untouched and reported as up to date. ~/.codex is only
+# ever written to if it already exists — creating it here as a plain directory
+# would break persistent-data's managed symlink into the shared volume.
+# Returns: 0; sets _SCOPE_COUNT to how many of the three destinations changed.
+sync_working_agreement() {
+	local canonical="${_INSTALLER_DIR}/agents/templates/global/AGENTS.md" codex_dir="${HOME}/.codex" result
+	_SCOPE_COUNT=0
+
+	log_detail "Personal working agreement"
+
+	result="$(sync_file_if_changed "${canonical}" "${HOME}/.agents/AGENTS.md")"
+	if [[ "${result}" == "unchanged" ]]; then
+		log_item_success "~/.agents/AGENTS.md already up to date"
+	else
+		log_item_success "~/.agents/AGENTS.md installed"
+		_SCOPE_COUNT=$(( _SCOPE_COUNT + 1 ))
+	fi
+
+	result="$(sync_claude_adapter "${HOME}/.claude/CLAUDE.md")"
+	if [[ "${result}" == "unchanged" ]]; then
+		log_item_success "Claude adapter (~/.claude/CLAUDE.md) already up to date"
+	else
+		log_item_success "Claude adapter (~/.claude/CLAUDE.md) ${result}"
+		_SCOPE_COUNT=$(( _SCOPE_COUNT + 1 ))
+	fi
+
+	if [[ -e "${codex_dir}" ]]; then
+		result="$(sync_file_if_changed "${canonical}" "${codex_dir}/AGENTS.md")"
+		if [[ "${result}" == "unchanged" ]]; then
+			log_item_success "Codex adapter (~/.codex/AGENTS.md) already up to date"
+		else
+			log_item_success "Codex adapter (~/.codex/AGENTS.md) installed"
+			_SCOPE_COUNT=$(( _SCOPE_COUNT + 1 ))
+		fi
+	else
+		log_item_warning "Codex adapter skipped — ~/.codex not present (Codex not configured in this container)"
+	fi
+}
+
 # ----- CORE -----------------------------------------------------------------
 
 # sync_agent_assets: Fetch the installer, then run every --global scope in order,
 # rendering the run as one tree with a closing summary. Fatal on a missing
 # prerequisite or any failing step.
 sync_agent_assets() {
-	local assets_ref started n_cmd n_local n_ext
+	local assets_ref started n_cmd n_local n_ext n_agreement
 	setup_error_traps
 	started="$(date +%s)"
 
@@ -192,12 +280,15 @@ sync_agent_assets() {
 	n_local="${_SCOPE_COUNT}"
 	sync_scope "Third-party skills" "skills/index.js" "Global third-party skill sync failed" slow
 	n_ext="${_SCOPE_COUNT}"
+	sync_working_agreement
+	n_agreement="${_SCOPE_COUNT}"
 
-	log_success "Global agent assets synced in $(( $(date +%s) - started ))s · $(count_label "${n_cmd}" "agent command"), $(count_label "${n_local}" "local skill"), $(count_label "${n_ext}" "third-party skill")"
+	log_success "Global agent assets synced in $(( $(date +%s) - started ))s · $(count_label "${n_cmd}" "agent command"), $(count_label "${n_local}" "local skill"), $(count_label "${n_ext}" "third-party skill"), $(count_label "${n_agreement}" "adapter update")"
 }
 
 export -f resolve_assets_ref strip_ansi emit_captured run_captured report_warnings \
-	fail_with_captured report_names count_label sync_installer sync_scope sync_agent_assets
+	fail_with_captured report_names count_label sync_installer sync_scope \
+	sync_file_if_changed sync_claude_adapter sync_working_agreement sync_agent_assets
 
 # ----- ENTRY POINT --------------------------------------------------------------
 

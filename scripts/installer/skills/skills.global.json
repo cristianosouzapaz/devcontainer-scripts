@@ -1,13 +1,13 @@
 [
     {
-        "name": "brainstorming",
-        "url": "https://github.com/obra/superpowers",
-        "skill": "brainstorming"
-    },
-    {
         "name": "caveman",
         "url": "https://github.com/juliusbrussee/caveman",
         "skill": "caveman"
+    },
+    {
+        "name": "diagnosing-bugs",
+        "url": "https://github.com/mattpocock/skills",
+        "skill": "diagnosing-bugs"
     },
     {
         "name": "domain-modeling",
@@ -58,6 +58,21 @@
         "name": "skill-creator",
         "url": "https://github.com/anthropics/skills",
         "skill": "skill-creator"
+    },
+    {
+        "name": "to-spec",
+        "url": "https://github.com/mattpocock/skills",
+        "skill": "to-spec"
+    },
+    {
+        "name": "to-tickets",
+        "url": "https://github.com/mattpocock/skills",
+        "skill": "to-tickets"
+    },
+    {
+        "name": "triage",
+        "url": "https://github.com/mattpocock/skills",
+        "skill": "triage"
     },
     {
         "name": "wayfinder",

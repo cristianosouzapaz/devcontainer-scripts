@@ -4,71 +4,80 @@ description: Use when editing any file in the project's documentation tree or th
 argument-hint: "[audit]"
 ---
 
-A doc page makes the *shape and why* of the system reachable without re-deriving it from the
-source every time.
+Documentation states the *shape and why* of a system so a reader reaches the right file
+without re-deriving it from the source. The code is the source of truth for mechanics; a page
+that repeats what the code already says becomes a second source of truth, and a second source
+of truth rots in silence.
 
-## Modes
+This skill keeps the documentation tree and the README from contradicting the code, and holds
+new writing to that bar. It is organized as a small wiki of its own: this page is the map, and
+each reference below is loaded only when the work at hand needs it.
 
-- **Sync** (default) — a change touched documented behavior, or you are about to edit a page
-  directly. Runs on `/documentation-sync` and may auto-trigger.
-- **Audit** — `/documentation-sync audit`. Explicit only, never auto-triggered. Reviews the
-  whole documentation tree and the README against the code and against the rules below,
-  reports in chat, then fixes what you approve.
+## Who reads this
+
+Two readers, and both can open the code: the developer working on the project, and the coding
+agent working alongside them. Neither needs a tutorial. Three consequences shape every rule
+below:
+
+- **A false claim costs more than a missing one.** A developer who hits a line contradicting
+  the code notices and fixes it; an agent takes the page as authoritative and propagates it
+  into new work. Optimize for saying nothing false, never for coverage.
+- **The why is the only irrecoverable part.** The *what* is re-derivable from the code in
+  seconds. Intent exists nowhere else.
+- **A page is a unit of loading.** A page that mixes two concepts costs twice the context to
+  use half of it. Atomicity and a precise index are economy, not taste.
+
+A project written for other readers says so in its documentation index's charter, which wins
+over this section — every rule below assumes the two readers above.
+
+## The gate
+
+**Most code changes need no doc change.** A page describes responsibilities and decisions;
+changing a default, adding a helper, or renaming an internal touches neither. Ask what a
+reader would now get wrong. If the answer is nothing, say the docs need no change and stop —
+that is a complete, correct outcome.
 
 ## The rules
 
-Every doc page must satisfy these; the audit scores each one.
+Six judgment rules. You decide them; the audit scores them per page.
 
-1. **Consistency** — every verifiable claim (config values, env var and flag names, paths,
-   commands, version numbers, structure) matches the code. On any conflict the code wins.
-2. **No frontmatter** — pages carry no YAML frontmatter.
-3. **Atomic** — one concept per page; the title has no "and" and the page bundles no
-   sub-topic list. A title that needs "and" is two pages.
-4. **Length** — under ~400 lines (soft); 800 is a hard stop that should never be reached.
-5. **Reachable** — every page is linked from the docs index, directly or through an inline
-   cross-reference on a linked page. Adding, renaming or removing a page updates the index in
-   the same change — an unlinked page does not exist.
-6. **Altitude** — state *what* and *why*, never *how*. Don't name internal symbols (functions,
-   private `_`-prefixed variables, lock or hash files the tooling writes): a rename would
-   silently stale the page and the code already shows what they do — describe the behavior
-   instead. Do name stable contract identifiers (env vars, flags, CLI commands, config-file
-   keys, published file names) and structural locations (a source directory, the file a page
-   is about, an extension-point config a contributor edits): a rename there is a real change
-   that *should* reach the docs. Name a location, never what lives inside it.
+1. **Consistency** — every verifiable claim (env var and flag names, paths, commands, version
+   numbers, structure) matches the code. On any conflict the code wins.
+2. **Verifiability** — every *factual* claim is checkable against this repository. The why of a
+   decision is not, and stays admitted on one condition: it must be **attributable** — naming
+   the constraint it answers or the alternative it rejected. A why that names neither is an
+   opinion. Third-party behavior is never documentable here.
+3. **Altitude** — state *what* and *why*. Accept fragility where a machine catches it, refuse
+   it where it cannot: a stale path is reported by the checker, a renamed internal symbol lies
+   for months. So name locations and contracts, never functions or private variables. The lock
+   and hash files the tooling generates are out for a second reason — an artifact a tool
+   produces is not a decision anyone made.
+4. **No mirroring** — don't reproduce a value the code holds, and don't inventory a location's
+   contents. Name the location and point at it.
+5. **Single source** — one page owns each verifiable fact; a second page that needs it links to
+   the owner instead of restating it. A repeated one-line orientation is not a second source.
+6. **Atomic** — one concept per page. A title that needs "and" is two pages.
 
-The README is held to rule 1 only; rules 2–6 are docs-page rules.
+The README says how the project is used; the wiki says how it is shaped and why. The README is
+held to Consistency and Verifiability only. If the documentation index states its own charter,
+that statement wins over anything here.
 
-## Sync mode
+## The reference wiki
 
-When a change affects documented behavior, or before editing a page directly:
+| Load | When |
+| ---- | ---- |
+| [Principles](references/principles.md) | Before writing, keeping, or judging any sentence — the two questions, the admission test, worked examples |
+| [The form of a page](references/page-form.md) | Adding, splitting or deleting a page, or writing an index entry |
+| [The checker](references/checker.md) | Running the mechanical checks, or configuring them for this project |
+| [Sync mode](references/sync.md) | A change touched documented behavior, or you are editing a page directly |
+| [Audit mode](references/audit.md) | Only on an explicit `/documentation-sync audit` |
 
-1. Open the docs index (the documentation tree's entry page), then every page it links to
-   that covers the affected area — the index is the map, don't guess which pages matter.
-2. Update each affected page so it matches the code and satisfies **The rules**.
-3. Reflect any page add / rename / remove in the index in the same change.
+## Modes
 
-Add a page only when its content is verifiable against the code. Intent, guidelines and
-aspirational material go in a top-level doc linked from the index, never inlined into a page.
+- **Sync** (default) — the everyday path, and what an auto-trigger runs. Follow
+  [Sync mode](references/sync.md).
+- **Audit** — full review of the tree plus the README, reported before anything is edited.
+  Explicit only, never auto-triggered. Follow [Audit mode](references/audit.md).
 
-Done when every page you touched matches the code and the index links every page that exists.
-
-## Audit mode
-
-Runs only on an explicit `/documentation-sync audit`.
-
-1. **Scope** — every page in the documentation tree (walk out from the index) plus the
-   README. Ignore vendored and generated trees (dependencies, build output, third-party
-   checkouts).
-2. **Check** — for each page evaluate all six rules. Verify rule-1 claims against the actual
-   code, not memory. With 3+ independent pages, fan the consistency checks out to parallel
-   subagents, then synthesize.
-3. **Report** — one table: pages as rows, rules 1–6 as columns, each cell `✅` (pass),
-   `⚠️` (borderline / minor) or `❌` (violation), `—` when a rule doesn't apply (rules 2–6
-   for the README). Under the table, number each `⚠️` / `❌` with the finding and a proposed
-   fix. Make no edits yet.
-4. **Confirm** — if anything is `⚠️` or `❌`, ask which findings to fix (all / a subset /
-   none). "None" ends the run as a report only.
-5. **Fix & re-verify** — apply the approved fixes, re-check the touched pages against the
-   rules, and confirm every inline link still resolves.
-6. **Final report** — the table again, updated, plus a short list of what changed and what
-   was deferred. If step 3 found nothing, say so and stop.
+Both end the same way: every page you touched matches the code, the checker reports no errors,
+and the index links every page that exists.

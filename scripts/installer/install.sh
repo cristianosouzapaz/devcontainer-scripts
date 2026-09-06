@@ -20,8 +20,10 @@ readonly _SEED_ENTRYPOINTS=(
 	"agent-md/index.js"
 )
 
-# Required, but not reachable from the import graph.
-readonly _EXTRA_FILES=("package.json")
+# Required, but not reachable from the import graph. The global working agreement is a
+# plain template no entry script imports: sync-agent-assets.sh copies it out of the
+# refreshed installer tree, which is what keeps it updatable without an image rebuild.
+readonly _EXTRA_FILES=("package.json" "agents/templates/global/AGENTS.md")
 
 readonly _RUNTIME_DEPS=("@inquirer/core" "@inquirer/prompts" "chalk" "consola")
 

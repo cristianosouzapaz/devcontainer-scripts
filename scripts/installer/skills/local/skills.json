@@ -2,13 +2,21 @@
     {
         "key": "documentation-sync",
         "name": "Documentation Sync",
-        "version": "1.3.0",
+        "version": "2.0.0",
         "description": "Use when editing any file in the project's documentation tree or the README, or when a change affects documented behavior (API, package, toolchain, structure): checks those docs against the codebase and keeps them from contradicting it. Run /documentation-sync audit for a full docs + README review.",
         "tags": [
             "docs",
             "workflow"
         ],
-        "templateFile": "documentation-sync/SKILL.md"
+        "templateFile": "documentation-sync/SKILL.md",
+        "resources": [
+            "documentation-sync/references/principles.md",
+            "documentation-sync/references/page-form.md",
+            "documentation-sync/references/checker.md",
+            "documentation-sync/references/sync.md",
+            "documentation-sync/references/audit.md",
+            "documentation-sync/scripts/check.py"
+        ]
     },
     {
         "key": "vscode-tasks",
