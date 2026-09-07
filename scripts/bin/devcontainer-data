@@ -15,7 +15,7 @@ source "$BOOTSTRAP_LIB_DIR/loader.sh"
 
 # cli_usage: Logs the supported persistent-data command syntax.
 cli_usage() {
-	log_info 'Usage: devcontainer-data {list|status|path <id>|reset <id> [--yes]|interactive}'
+	log_info 'Usage: devcontainer-data {list|status|path <id>|repair|reset <id> [--yes]|interactive}'
 }
 
 # cli_category_record: Prints the record for a known category.
@@ -33,6 +33,29 @@ cli_category_is_mounted() {
 	scope=$(jq -r '.scope' <<<"$category")
 	root=$(persistent_data_root "$scope") || return 1
 	mountpoint -q "$root"
+}
+
+# cli_link_problem: Prints a description of a category's managed link when that
+# link is not in place, naming the path and the target it should have. A broken
+# link makes the tool that owns the path lose its configuration, which its own
+# status command reports as "not authenticated" — so this takes precedence over
+# cli_category_status wherever a category status is rendered.
+# Args: $1 - category id.
+# Returns: 0 and the description when the link needs repair, 1 when it is in
+# place or the category has no managed link.
+cli_link_problem() {
+	local category_id="$1" state destination source_path
+
+	state=$(persistent_data_link_state "$category_id") || return 1
+	[[ "$state" == 'ok' || "$state" == 'none' ]] && return 1
+
+	destination=$(persistent_data_link_path "$category_id") || return 1
+	source_path=$(persistent_data_category_path "$category_id") || return 1
+	case "$state" in
+	missing) printf 'managed link missing: %s -> %s, run: devcontainer-data repair\n' "$destination" "$source_path" ;;
+	foreign) printf 'managed link points at %s, expected %s -> %s\n' "$(readlink "$destination")" "$destination" "$source_path" ;;
+	unmanaged) printf 'managed link blocked by unmanaged data: %s, expected -> %s\n' "$destination" "$source_path" ;;
+	esac
 }
 
 # cli_category_status: Prints the status specific to a registry category.
@@ -137,7 +160,7 @@ cli_resettable_category_ids() {
 
 # cli_interactive_overview: Prints the compact persistent-data snapshot shown before the menu.
 cli_interactive_overview() {
-	local category_id category label category_path status
+	local category_id category label category_path status link_problem
 
 	log_info 'Persistent data'
 	log_detail 'Shared volume: devcontainer-shared-data'
@@ -151,6 +174,10 @@ cli_interactive_overview() {
 		fi
 		if [[ ! -d "$category_path" ]]; then
 			log_item_warning "$label · unavailable"
+			continue
+		fi
+		if link_problem=$(cli_link_problem "$category_id"); then
+			log_item_warning "$label · $link_problem"
 			continue
 		fi
 		status=$(cli_category_status "$category") || return 1
@@ -211,16 +238,18 @@ cli_interactive_menu() {
 		log_detail '2) Status'
 		log_detail '3) Show path'
 		log_detail '4) Reset data'
+		log_detail '5) Repair managed links'
 		log_detail 'q) Quit'
-		log_info 'Action [1-4, q]:'
+		log_info 'Action [1-5, q]:'
 		read -r action </dev/tty || return 0
 		case "$action" in
 		1) cli_list || true ;;
 		2) cli_status || true ;;
 		3) cli_interactive_path || true ;;
 		4) cli_interactive_reset || true ;;
+		5) cli_repair || true ;;
 		q | Q) return 0 ;;
-		*) log_warning 'Invalid selection. Enter 1-4 or q.' ;;
+		*) log_warning 'Invalid selection. Enter 1-5 or q.' ;;
 		esac
 	done
 }
@@ -251,7 +280,7 @@ cli_list() {
 
 # cli_status: Lists location, availability, mount, and status for every category.
 cli_status() {
-	local category_id category category_path available mounted status
+	local category_id category category_path available mounted status link_problem
 
 	while IFS= read -r category_id; do
 		category=$(cli_category_record "$category_id") || return 1
@@ -262,13 +291,40 @@ cli_status() {
 		cli_category_is_mounted "$category" && mounted=true
 		if [[ "$mounted" != true ]]; then
 			status='not mounted'
-		elif [[ "$available" == true ]]; then
-			status=$(cli_category_status "$category") || return 1
-		else
+		elif [[ "$available" != true ]]; then
 			status='unavailable'
+		elif link_problem=$(cli_link_problem "$category_id"); then
+			status="$link_problem"
+		else
+			status=$(cli_category_status "$category") || return 1
 		fi
 		printf '%s\t%s\tavailable=%s\tmounted=%s\t%s\n' "$category_id" "$category_path" "$available" "$mounted" "$status"
 	done < <(persistent_data_category_ids)
+}
+
+# cli_repair: Re-asserts every managed link that is not already in place.
+# The links are the one part of the layout nothing re-checks after setup: they
+# are created once from postCreateCommand and stay lost for the life of the
+# container if anything removes one. Repair is delegated to
+# persistent_data_link_ensure, so a path holding real data is refused here
+# exactly as it is during setup, and a category with no managed link is skipped.
+# Returns: 0 when every link is in place, 1 when one could not be repaired.
+cli_repair() {
+	local category_id state destination failed=false
+
+	while IFS= read -r category_id; do
+		state=$(persistent_data_link_state "$category_id") || return 1
+		[[ "$state" == 'ok' || "$state" == 'none' ]] && continue
+		destination=$(persistent_data_link_path "$category_id") || return 1
+		if persistent_data_link_ensure "$category_id"; then
+			log_item_success "Repaired managed link: ${destination}"
+		else
+			failed=true
+		fi
+	done < <(persistent_data_category_ids)
+
+	[[ "$failed" == true ]] && return 1
+	return 0
 }
 
 # cli_path: Prints a category's registered absolute path.
@@ -311,6 +367,7 @@ cli_main() {
 	list) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_list ;;
 	status) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_status ;;
 	path) [[ "$#" -eq 2 ]] || { cli_usage; return 1; }; cli_path "$2" ;;
+	repair) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_repair ;;
 	reset)
 		[[ "$#" -eq 2 || "$#" -eq 3 ]] || { cli_usage; return 1; }
 		category_id="$2"
