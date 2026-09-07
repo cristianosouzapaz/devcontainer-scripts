@@ -9,18 +9,16 @@ readonly _PERSISTENT_DATA_SUMMARY_SH_LOADED=1
 #
 # Provides one public function:
 #   persistent_data_summary_print - Logs the shared physical volume once as the
-#                                    common origin, then three groups sourced
-#                                    from the central persistent-data registry
-#                                    and the container's own mounts:
-#                                      Authentication data  (group=authentication)
-#                                      Persistent tool data (group=tool)
-#                                      Workspace data        (the <project>-data
-#                                                             volume on /workspace)
-#                                    Authentication rows carry the tool's own
-#                                    login status (via its status command, never
-#                                    by reading credential files); tool rows only
-#                                    report path availability. A category whose
-#                                    scope root isn't mounted shows "not mounted".
+#   common origin, then three groups sourced from the central persistent-data registry
+#   and the container's own mounts:
+#       Authentication data  (group=authentication)
+#       Persistent tool data (group=tool)
+#       Workspace data        (the <project>-data volume on /workspace)
+#   Authentication rows carry the tool's own
+#   login status (via its status command, never
+#   by reading credential files); tool rows only
+#   report path availability. A category whose
+#   scope root isn't mounted shows "not mounted".
 #
 # Mount data comes from `docker inspect` against the container's own ID (read
 # from /etc/hostname); the function silently does nothing without Docker access.
@@ -121,17 +119,18 @@ persistent_data_summary_identity() {
 	esac
 }
 
-# persistent_data_summary_render <title>: renders one TOOL/CATEGORY/PATH/STATUS
-# group from pipe-delimited rows on stdin: "<ok>|<tool>|<category>|<path>|<status>"
-# where <ok> is "true" (success symbol) or "false" (warning symbol). Plain-text
-# mode prints an aligned column table under an indented header; STRUCTURED_LOGS
-# mode drops the header and emits one self-contained sentence per row. Emits
-# nothing at all for an empty group.
+# persistent_data_summary_render <title>: renders one TOOL/PATH/STATUS group
+# from pipe-delimited rows on stdin: "<ok>|<tool>|<category>|<path>|<status>"
+# where <ok> is "true" (success symbol) or "false" (warning symbol) and
+# <category> is the registry id, surfaced only in the STRUCTURED_LOGS sentence
+# as a stable parsing key. Plain-text mode prints an aligned column table under
+# an indented header; STRUCTURED_LOGS mode drops the header and emits one
+# self-contained sentence per row. Emits nothing at all for an empty group.
 # Args: $1 - group title.
 # Returns: 0 always.
 persistent_data_summary_render() {
 	local title="$1" ok tool category path status
-	local col_tool=4 col_cat=8 col_path=4
+	local col_tool=4 col_path=4
 	local -a ok_v=() tool_v=() cat_v=() path_v=() status_v=()
 	local i header row
 
@@ -140,7 +139,6 @@ persistent_data_summary_render() {
 		ok_v+=("$ok"); tool_v+=("$tool"); cat_v+=("$category")
 		path_v+=("$path"); status_v+=("$status")
 		((${#tool} > col_tool)) && col_tool=${#tool}
-		((${#category} > col_cat)) && col_cat=${#category}
 		((${#path} > col_path)) && col_path=${#path}
 	done
 
@@ -149,7 +147,7 @@ persistent_data_summary_render() {
 	log_info "${title}: ${#ok_v[@]}"
 
 	if [[ "$STRUCTURED_LOGS" != "true" ]]; then
-		printf -v header '%-*s  %-*s  %-*s  %s' "$col_tool" "TOOL" "$col_cat" "CATEGORY" "$col_path" "PATH" "STATUS"
+		printf -v header '%-*s  %-*s  %s' "$col_tool" "TOOL" "$col_path" "PATH" "STATUS"
 		# 3 leading spaces: the "detail" tree-bar prefix is one column narrower
 		# than the "item" tree-bar + symbol prefix used for the rows below.
 		log_detail "   ${header}"
@@ -159,7 +157,7 @@ persistent_data_summary_render() {
 		if [[ "$STRUCTURED_LOGS" == "true" ]]; then
 			row="${tool_v[$i]} (${cat_v[$i]}) -> ${path_v[$i]} — ${status_v[$i]}"
 		else
-			printf -v row '%-*s  %-*s  %-*s  %s' "$col_tool" "${tool_v[$i]}" "$col_cat" "${cat_v[$i]}" "$col_path" "${path_v[$i]}" "${status_v[$i]}"
+			printf -v row '%-*s  %-*s  %s' "$col_tool" "${tool_v[$i]}" "$col_path" "${path_v[$i]}" "${status_v[$i]}"
 		fi
 		if [[ "${ok_v[$i]}" == "true" ]]; then
 			log_item_success "$row"
