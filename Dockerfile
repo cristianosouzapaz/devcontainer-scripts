@@ -21,6 +21,9 @@ ENV SCRIPTS_REF=${SCRIPTS_REF}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# Cache-buster for the scripts fetch RUN below, keyed to ${SCRIPTS_REF}'s commit.
+ADD https://api.github.com/repos/${SCRIPTS_REPO}/commits/${SCRIPTS_REF} /tmp/scripts.rev
+
 # Fetch the setup scripts and put the bin/ entrypoints on PATH.
 RUN mkdir -p /tmp/dc-init \
     && node --input-type=module -e " \
@@ -32,22 +35,29 @@ RUN mkdir -p /tmp/dc-init \
       if (r.status !== 0) throw new Error('tar failed: ' + (r.stderr || Buffer.alloc(0)).toString()); \
     " \
     && mv /tmp/dc-init/scripts /opt/devcontainer \
-    && rm -rf /tmp/dc-init \
+    && rm -rf /tmp/dc-init /tmp/scripts.rev \
     && find /opt/devcontainer -name "*.sh" -exec chmod +x {} + \
     && chmod +x /opt/devcontainer/bin/* \
     && install -m 0755 /opt/devcontainer/bin/* /usr/local/bin/ \
     && ln -sf /opt/devcontainer/bin/devcontainer-data /usr/local/bin/devcontainer-data
 
-# Install the latest herdr release, verified against its published checksum.
+# Install herdr, verified against its published checksum. HERDR_VERSION is empty
+# by default (latest release); set it to pin a release and bust this layer.
+ARG HERDR_VERSION=""
 RUN set -eux; \
     case "$(uname -m)" in \
         x86_64) herdr_arch='x86_64' ;; \
         aarch64|arm64) herdr_arch='aarch64' ;; \
         *) exit 1 ;; \
     esac; \
+    if [ -n "${HERDR_VERSION}" ]; then \
+        herdr_release_url="https://api.github.com/repos/herdrdev/herdr/releases/tags/${HERDR_VERSION}"; \
+    else \
+        herdr_release_url='https://api.github.com/repos/herdrdev/herdr/releases/latest'; \
+    fi; \
     release_file="$(mktemp)"; \
     curl --fail --location --silent --show-error \
-        'https://api.github.com/repos/herdrdev/herdr/releases/latest' \
+        "$herdr_release_url" \
         --output "$release_file"; \
     herdr_asset="herdr-linux-${herdr_arch}"; \
     herdr_url="$(jq -r --arg asset "$herdr_asset" '.assets[] | select(.name == $asset) | .browser_download_url' "$release_file")"; \
