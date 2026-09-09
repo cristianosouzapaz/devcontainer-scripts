@@ -29,7 +29,7 @@ function _Get-RawKey {
         mock the function and inject a synthetic key sequence without needing to
         interact with the real console host.
     .OUTPUTS
-        System.Management.Automation.Host.KeyInfo — the key that was pressed.
+        System.Management.Automation.Host.KeyInfo - the key that was pressed.
     #>
     return $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 }
@@ -39,7 +39,7 @@ function Get-ProjectTypeSelection {
     .SYNOPSIS
         Prompts the user to choose between a standard or Docker Compose project type.
     .OUTPUTS
-        System.Boolean — $true for Docker Compose, $false for standard single-container.
+        System.Boolean - $true for Docker Compose, $false for standard single-container.
     #>
     $options = @(
         "Standard (single container)",
@@ -57,14 +57,14 @@ function Format-SecretsPathForDisplay {
         The local default is stored as the devcontainer.json placeholder
         ${localEnv:USERPROFILE}\.config\.env, which is what has to reach the
         generated file but is not what the user picked it by. Shows that one
-        value as %USERPROFILE%\.config\.env — the same string the selector
-        offered — so the summary at the end of a run does not name the local
+        value as %USERPROFILE%\.config\.env - the same string the selector
+        offered - so the summary at the end of a run does not name the local
         path in a notation that appeared nowhere else. Every other path is
         already literal and is returned untouched.
     .PARAMETER SecretsPath
         The mount source to render.
     .OUTPUTS
-        System.String — the path as it should be shown to the user.
+        System.String - the path as it should be shown to the user.
     #>
     param([string]$SecretsPath)
     if ($SecretsPath -eq $SecretsPathLocalValue) { return $SecretsPathLocalDisplay }
@@ -81,7 +81,7 @@ function Get-SecretsPathSelection {
         the local Windows default, an optional remote Docker host path read from the
         DEVCONTAINER_SECRETS_PATH environment variable, and a manual entry fallback.
     .OUTPUTS
-        System.String — the chosen (or typed) secrets file mount source.
+        System.String - the chosen (or typed) secrets file mount source.
     #>
     # Label and value are aligned on column 31, matching the extra-folder legend;
     # Select-Option prints each option behind a four-character cursor prefix.
@@ -103,7 +103,7 @@ function Get-SecretsPathSelection {
     }
 
     # Select-Option clears the screen on its way out, so the free-text fallback
-    # has to reintroduce itself — otherwise the prompt lands alone on a blank
+    # has to reintroduce itself - otherwise the prompt lands alone on a blank
     # terminal. Mirrors the header Get-DockerContextInput prints for its own.
     Write-Section "Secrets File Location"
     Write-Host "  Where the .env file holding the container's credentials lives." -ForegroundColor "DarkGray"
@@ -128,10 +128,10 @@ function Get-DockerContextInput {
     .DESCRIPTION
         The context name cannot be reached through launcher.ps1, which invokes
         project-init.ps1 without parameters, so the DEVCONTAINER_DOCKER_CONTEXT
-        environment variable carries the workstation's daemon — the same escape
+        environment variable carries the workstation's daemon - the same escape
         hatch DEVCONTAINER_SECRETS_PATH provides for the secrets file.
 
-        Unset, this is a free-text prompt (not Select-Option — the value is an
+        Unset, this is a free-text prompt (not Select-Option - the value is an
         arbitrary name, not a short enumeration). Set, it becomes the arrow
         selector, defaulting to None: pinning a project to a remote daemon stays
         a deliberate act, and Enter keeps today's behaviour. Other falls through
@@ -142,7 +142,7 @@ function Get-DockerContextInput {
         into the generated .vscode/settings.json, honoured only by the VS Code
         Container Tools extension.
     .OUTPUTS
-        System.String — the trimmed context name, or an empty string when the
+        System.String - the trimmed context name, or an empty string when the
         response is blank, whitespace-only, or None.
     #>
     $envContext = $env:DEVCONTAINER_DOCKER_CONTEXT
@@ -165,7 +165,7 @@ function Get-DockerContextInput {
     Write-Host "  Pins this project to a named Docker CLI context (see 'docker context ls')," -ForegroundColor "DarkGray"
     Write-Host "  instead of whatever context happens to be active when VS Code opens it." -ForegroundColor "DarkGray"
     Write-Host "  Leave blank to skip the pin. Requires the VS Code Container Tools" -ForegroundColor "DarkGray"
-    Write-Host "  extension — otherwise the setting is ignored." -ForegroundColor "DarkGray"
+    Write-Host "  extension - otherwise the setting is ignored." -ForegroundColor "DarkGray"
     Write-Host ""
 
     $entered = Read-Host "Docker context name (blank to skip)"
@@ -185,10 +185,10 @@ function Select-Features {
         to confirm. Returns the combined set of mandatory plus chosen optional entries.
 
         Key bindings (VirtualKeyCode):
-          38 — VK_UP     : move cursor up
-          40 — VK_DOWN   : move cursor down
-          32 — VK_SPACE  : toggle the item under the cursor
-          13 — VK_RETURN : confirm selection and exit the loop
+          38 - VK_UP     : move cursor up
+          40 - VK_DOWN   : move cursor down
+          32 - VK_SPACE  : toggle the item under the cursor
+          13 - VK_RETURN : confirm selection and exit the loop
     .PARAMETER Manifest
         Array of entry objects loaded from the manifest (see Get-EntryManifest).
     .OUTPUTS
@@ -252,9 +252,9 @@ function Select-Option {
         Enter confirms the highlighted selection.
 
         Key bindings (VirtualKeyCode):
-          38 — VK_UP     : move cursor up
-          40 — VK_DOWN   : move cursor down
-          13 — VK_RETURN : confirm selection and exit the loop
+          38 - VK_UP     : move cursor up
+          40 - VK_DOWN   : move cursor down
+          13 - VK_RETURN : confirm selection and exit the loop
     .PARAMETER Title
         Section title displayed above the options.
     .PARAMETER Options
@@ -262,7 +262,7 @@ function Select-Option {
     .PARAMETER Default
         Zero-based index of the pre-selected option. Defaults to 0.
     .OUTPUTS
-        System.Int32 — zero-based index of the confirmed selection.
+        System.Int32 - zero-based index of the confirmed selection.
     #>
     param(
         [string]$Title,

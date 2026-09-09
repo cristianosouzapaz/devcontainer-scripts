@@ -12,7 +12,7 @@ function Test-DestinationPath {
     .PARAMETER Path
         The absolute destination path to validate.
     .OUTPUTS
-        System.Boolean — $true if the path is acceptable, $false otherwise.
+        System.Boolean - $true if the path is acceptable, $false otherwise.
     #>
     param([string]$Path)
     Write-Message "Validating destination path" -Level "Info"
@@ -43,7 +43,7 @@ function Test-PathCoherence {
         Warns when the secrets path and the extra folders disagree about which
         machine the Docker daemon runs on.
     .DESCRIPTION
-        The secrets path and each extra folder are independent inputs by design —
+        The secrets path and each extra folder are independent inputs by design -
         the shape of what the user types is the only signal, and no "remote mode"
         exists to keep them in step. So a run can end with the two disagreeing,
         and either direction is the same silent failure: Docker resolves a mount
@@ -61,9 +61,9 @@ function Test-PathCoherence {
         passed via -SecretsPath.
     .PARAMETER ExtraFolders
         Array of extra folder objects as returned by Get-ExtraFolderList. Empty
-        is coherent by definition — there is nothing to disagree with.
+        is coherent by definition - there is nothing to disagree with.
     .OUTPUTS
-        System.Boolean — $true when the inputs agree (or there is nothing to
+        System.Boolean - $true when the inputs agree (or there is nothing to
         compare), $false when a warning was emitted.
     #>
     param([string]$SecretsPath, [array]$ExtraFolders = @())
@@ -98,7 +98,7 @@ function Test-ProjectName {
     .PARAMETER Name
         The project name string to validate.
     .OUTPUTS
-        System.Boolean — $true if valid, $false otherwise.
+        System.Boolean - $true if valid, $false otherwise.
     #>
     param([string]$Name)
     Write-Message "Validating project name" -Level "Info"

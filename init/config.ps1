@@ -45,7 +45,7 @@ function Write-MountsArray {
         string is inserted first and then replaced in the raw JSON to preserve the
         correct array-of-strings structure after pretty-printing.
         Mounts are alphabetically sorted before writing, purely for a stable, readable
-        diff in devcontainer.json — mount order has no functional effect on the
+        diff in devcontainer.json - mount order has no functional effect on the
         container. Shared write path behind Add-MountsToConfig and
         Add-ExtraFolderMountsToConfig.
     .PARAMETER FilePath
@@ -217,7 +217,7 @@ function Copy-ConfigurationFiles {
         multi-repo volume layout is applied.
     .PARAMETER ExtraFolders
         Array of extra workspace folder objects (as returned by Get-ExtraFolderList).
-        Optional — when empty, devcontainer.json and docker-compose.yml are generated
+        Optional - when empty, devcontainer.json and docker-compose.yml are generated
         exactly as they are without extra folders.
     .PARAMETER SecretsPath
         Host- or daemon-side path to the secrets .env file, forwarded to
@@ -334,13 +334,13 @@ function Set-WorkspaceMountInConfig {
         devcontainer.json to the shared /workspace root layout.
     .DESCRIPTION
         Used for multi-repo projects, and for single-repo projects with extra folders
-        (see Copy-ConfigurationFiles) — both need /workspace itself, rather than a
+        (see Copy-ConfigurationFiles) - both need /workspace itself, rather than a
         single project folder, to be what VS Code attaches to and mounts, so sibling
         folders (other repos, extra folders, the generated .code-workspace file) are
         visible from the first attach.
         workspaceMount is only ever set outside compose mode: per the devcontainer.json
         schema it's an image/Dockerfile-only property, invalid alongside
-        dockerComposeFile — compose mode mounts /workspace entirely through
+        dockerComposeFile - compose mode mounts /workspace entirely through
         docker-compose.yml (see New-ComposeWithRepoVolumes), so workspaceFolder alone
         is enough there.
     .PARAMETER FilePath

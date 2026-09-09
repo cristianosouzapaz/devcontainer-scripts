@@ -24,7 +24,7 @@
     Optional Docker CLI context name to pin the generated project to, written to
     .vscode/settings.json as containers.environment.DOCKER_CONTEXT. Passed as an
     empty string, the generated project is unchanged, it inherits whatever context
-    is active, and the prompt is skipped — the way to decline the pin without an
+    is active, and the prompt is skipped - the way to decline the pin without an
     interactive answer. Omitted entirely, the prompt is shown.
     Only honoured with the VS Code Container Tools extension installed.
 

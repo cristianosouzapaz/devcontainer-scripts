@@ -10,13 +10,13 @@ function Get-TokenVarName {
         Computes the GIT_CLONE_TOKEN_<HOST> variable name for a given repo host.
     .DESCRIPTION
         Normalises the host to uppercase, replacing every non-alphanumeric character
-        with "_". Mirrors token_env_var_name in public/scripts/setup/modules/git.sh —
+        with "_". Mirrors token_env_var_name in public/scripts/setup/modules/git.sh -
         keep both in sync, since git.sh resolves the same variable name at runtime.
         Example: gitlab.example.com -> GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM
     .PARAMETER RepoHost
         The repo's hostname (e.g. from ([Uri]$url).Host).
     .OUTPUTS
-        System.String — the computed environment variable name.
+        System.String - the computed environment variable name.
     #>
     param([string]$RepoHost)
     $normalized = ($RepoHost.ToUpperInvariant() -replace '[^A-Z0-9]', '_')
@@ -32,14 +32,14 @@ function Get-RepoList {
         repos until the user submits a blank entry. Each entry is validated with
         Test-RepoEntry, normalised with Resolve-RepoUrl, and checked for
         duplicate folder names (inline warning + re-prompt on collision).
-        Repos may span multiple hosts — each host resolves its own clone token
+        Repos may span multiple hosts - each host resolves its own clone token
         at runtime via GIT_CLONE_TOKEN_<HOST> (falling back to GIT_CLONE_TOKEN).
         When an accepted repo's host isn't github.com, a hint with the exact
         token variable name to add to .env is printed via Get-TokenVarName.
-        For optional repos (repo 2+), a blank response at any point — including
-        after a validation warning — terminates the loop and returns the accepted list.
+        For optional repos (repo 2+), a blank response at any point - including
+        after a validation warning - terminates the loop and returns the accepted list.
     .OUTPUTS
-        System.String[] — array of fully normalised URLs (at least one entry).
+        System.String[] - array of fully normalised URLs (at least one entry).
     #>
     $acceptedUrls    = [System.Collections.ArrayList]@()
     $acceptedFolders = [System.Collections.Generic.HashSet[string]]@()
@@ -158,7 +158,7 @@ function New-ComposeWithRepoVolumes {
     Transforms the docker-compose.yml template and
         writes the result to the destination .devcontainer folder.
     .DESCRIPTION
-        Performs placeholder substitution (project-name → ProjectName), then
+        Performs placeholder substitution (project-name -> ProjectName), then
         keeps the project workspace volume mounted at /workspace in every mode.
         For every selected entry that declares a named-volume mount
         (source=X,target=Y,type=volume), appends
@@ -167,10 +167,10 @@ function New-ComposeWithRepoVolumes {
         whichever optional features were actually selected, instead of requiring
         every such feature to hardcode its volume into the static template.
         For every selected entry that declares a bind mount (source=X,target=Y,type=bind
-        — e.g. the Docker socket), appends a matching entry to the primary service's
+        - e.g. the Docker socket), appends a matching entry to the primary service's
         volumes list, so the mount is explicit in the generated docker-compose.yml
         instead of relying solely on the devcontainer.json mounts/override mechanism.
-        Extra workspace folders are intentionally NOT mounted here — they are only
+        Extra workspace folders are intentionally NOT mounted here - they are only
         added to devcontainer.json's mounts array (see Add-ExtraFolderMountsToConfig),
         so a compose-mode project doesn't get a duplicate bind mount for the same
         host path.
@@ -190,7 +190,7 @@ function New-ComposeWithRepoVolumes {
         mount isn't a named volume (type=volume), are ignored.
     .PARAMETER ExtraFolders
         Array of extra workspace folder objects (as returned by Get-ExtraFolderList).
-        Only their presence matters here — see .DESCRIPTION for why. Optional —
+        Only their presence matters here - see .DESCRIPTION for why. Optional -
         when empty, single-repo behaves as before.
     #>
     param([string]$TemplateFile, [string]$ProjectName, [string[]]$RepoList, [string]$Destination, [array]$SelectedEntries = @(), [array]$ExtraFolders = @())

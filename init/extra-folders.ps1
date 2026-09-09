@@ -15,12 +15,12 @@ function Get-ExtraFolderDevcontainerSource {
         (e.g. /srv/data/vault, meant to resolve on a remote Docker host) are used
         as-is. Paths relative to the Windows home are prefixed with
         ${localEnv:USERPROFILE}. Extra folders are only ever mounted through
-        devcontainer.json's mounts array — never duplicated as a docker-compose.yml
-        volume — so this is the sole source-string builder.
+        devcontainer.json's mounts array - never duplicated as a docker-compose.yml
+        volume - so this is the sole source-string builder.
     .PARAMETER Folder
         Extra folder object (as returned by Get-ExtraFolderList).
     .OUTPUTS
-        System.String — the devcontainer.json mount source.
+        System.String - the devcontainer.json mount source.
     #>
     param($Folder)
     if ($Folder.IsAbsolute) { return $Folder.RawPath }
@@ -34,14 +34,14 @@ function Resolve-ExtraFolderHostPath {
         for existence validation only.
     .DESCRIPTION
         Not used to build the generated mount string (Get-ExtraFolderDevcontainerSource
-        keeps the ${localEnv:USERPROFILE} placeholder for portability) — only to let
+        keeps the ${localEnv:USERPROFILE} placeholder for portability) - only to let
         Test-Path check, on the machine actually running project-init.ps1, whether
         the folder exists.
 
         Classifies RawPath itself rather than taking the caller's verdict as a
         parameter. The caller has already made that judgement, but passing it in
         as a second argument makes the two separable, and a call that says
-        "absolute" of a path that isn't produces a wrong path with no error —
+        "absolute" of a path that isn't produces a wrong path with no error -
         Join-Path would simply hang it off %USERPROFILE%. One argument, one
         source of truth, nothing to hold wrong.
 
@@ -54,7 +54,7 @@ function Resolve-ExtraFolderHostPath {
         The raw path as entered by the user: an absolute Windows path, or one
         relative to the Windows home. Must not be a daemon-side POSIX path.
     .OUTPUTS
-        System.String — a concrete path resolvable by Test-Path on this machine.
+        System.String - a concrete path resolvable by Test-Path on this machine.
     #>
     param([string]$RawPath)
     if (Test-DockerHostPath -Path $RawPath) {
@@ -70,15 +70,15 @@ function Get-ExtraFolderList {
         Interactively collects zero or more extra workspace folders from the user.
     .DESCRIPTION
         Prompts for a host path, then a workspace name, looping until the user
-        submits a blank path. Entirely optional — a blank first response returns
+        submits a blank path. Entirely optional - a blank first response returns
         an empty array and leaves the rest of the flow unchanged.
-        Each path is auto-detected as absolute — a drive letter (e.g. "C:\..." or
-        "C:/...") or a leading "/" for a path on a remote Docker host — or relative
+        Each path is auto-detected as absolute - a drive letter (e.g. "C:\..." or
+        "C:/...") or a leading "/" for a path on a remote Docker host - or relative
         to the Windows home (%USERPROFILE%). Windows paths (absolute or relative)
         are then checked with Test-Path; a path that doesn't exist on this host is
         rejected with a warning and re-prompted, rather than silently generating a
         mount to an empty auto-created folder. Absolute POSIX paths skip that check
-        entirely — they name a folder on the Docker daemon's filesystem, which is
+        entirely - they name a folder on the Docker daemon's filesystem, which is
         unverifiable from Windows, and are accepted as typed. The name is validated
         as a filesystem-safe slug and used as both the container mount target
         (/workspace/<name>) and the .code-workspace folder name; it is rejected
@@ -107,7 +107,7 @@ function Get-ExtraFolderList {
     if (-not [string]::IsNullOrWhiteSpace($ProjectName)) {
         [void]$acceptedNames.Add($ProjectName)
     }
-    # Reserved unconditionally — see .DESCRIPTION above.
+    # Reserved unconditionally - see .DESCRIPTION above.
     foreach ($url in $RepoList) { [void]$acceptedNames.Add((_Get-RepoFolderName -Url $url)) }
     $index = 1
 

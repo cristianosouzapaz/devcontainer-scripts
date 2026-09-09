@@ -39,7 +39,7 @@ function ConvertTo-JsonStringArray {
     .PARAMETER Items
         The string values to serialise.
     .OUTPUTS
-        System.String — e.g. ["item1","item 2"]
+        System.String - e.g. ["item1","item 2"]
     #>
     param([object[]]$Items)
     return '[' + (@($Items | ForEach-Object { ConvertTo-Json $_ -Compress }) -join ',') + ']'
@@ -57,7 +57,7 @@ function Format-Json {
     .PARAMETER Json
         The raw JSON string to format.
     .OUTPUTS
-        System.String — the formatted JSON string (no trailing newline).
+        System.String - the formatted JSON string (no trailing newline).
     #>
     param([string]$Json)
 
@@ -132,7 +132,7 @@ function Read-JsonFile {
     .PARAMETER FilePath
         Absolute path to the JSON file.
     .OUTPUTS
-        PSCustomObject — the deserialised JSON root object.
+        PSCustomObject - the deserialised JSON root object.
     #>
     param([string]$FilePath)
     return Get-Content -Path $FilePath -Raw | ConvertFrom-Json
@@ -174,8 +174,8 @@ function Test-DockerHostPath {
     .DESCRIPTION
         The shape of the path is the signal: a leading "/" means the user typed a
         path on the daemon's filesystem, which Docker resolves there and which is
-        therefore unverifiable from here. Everything else — a drive letter or a
-        path relative to the Windows home — is client-side.
+        therefore unverifiable from here. Everything else - a drive letter or a
+        path relative to the Windows home - is client-side.
 
         Single definition of that rule: the extra-folder prompt classifies input
         with it, and Test-PathCoherence compares the secrets path and the extra
@@ -183,7 +183,7 @@ function Test-DockerHostPath {
     .PARAMETER Path
         The raw path to classify. A blank or null value is not a daemon-side path.
     .OUTPUTS
-        System.Boolean — $true for an absolute POSIX path, $false otherwise.
+        System.Boolean - $true for an absolute POSIX path, $false otherwise.
     #>
     param([string]$Path)
     return $Path -like '/*'
@@ -196,7 +196,7 @@ function Write-JsonFile {
         raw-string replacements before formatting.
     .DESCRIPTION
         Converts Config to JSON with ConvertTo-Json -Depth 10, applies each entry in
-        Replacements (placeholder string → raw JSON fragment), runs Format-Json, and
+        Replacements (placeholder string -> raw JSON fragment), runs Format-Json, and
         writes the result with a trailing newline via [System.IO.File]::WriteAllText.
 
         Replacements are used to inject raw JSON structures (e.g. string arrays) that
