@@ -1,0 +1,19 @@
+{
+  "files": [
+    ".dockerignore",
+    "Dockerfile",
+    "devcontainer.compose.json",
+    "devcontainer.entries.json",
+    "devcontainer.json",
+    "docker-compose.yml",
+    "init/config.ps1",
+    "init/extra-folders.ps1",
+    "init/manifest.ps1",
+    "init/repos.ps1",
+    "init/ui.ps1",
+    "init/utils.ps1",
+    "init/validation.ps1",
+    "init/vscode.ps1",
+    "project-init.ps1"
+  ]
+}
