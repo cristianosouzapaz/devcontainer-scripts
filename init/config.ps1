@@ -2,6 +2,10 @@
 <#
 .SYNOPSIS
     Functions for transforming and writing devcontainer configuration files.
+.DESCRIPTION
+    Everything here writes inside the destination's .devcontainer/ folder. The
+    generated project's VS Code settings are a separate concern and live in
+    vscode.ps1.
 #>
 
 function Add-FeaturesToConfig {
@@ -66,19 +70,24 @@ function Add-MountsToConfig {
     .SYNOPSIS
         Injects the required bind mounts into devcontainer.json.
     .DESCRIPTION
-        Adds the host %USERPROFILE%\.config\.env secret mount and selected feature
-        mounts. Dockerfile/image configurations also mount the shared persistent-data
-        volume; Compose owns that mount in docker-compose.yml.
+        Adds the secrets bind mount and selected feature mounts. The secrets source is
+        supplied by the caller via SecretsPath, defaulting to the Windows home location;
+        pass a daemon-side POSIX path here (verbatim, unvalidated) when the Docker daemon
+        runs on a remote host. Dockerfile/image configurations also mount the shared
+        persistent-data volume; Compose owns that mount in docker-compose.yml.
     .PARAMETER FilePath
         Absolute path to the devcontainer.json file to update.
     .PARAMETER SelectedEntries
         Array of selected entry objects; entries without a .mount value are ignored.
+    .PARAMETER SecretsPath
+        Host- or daemon-side path to the secrets .env file, used verbatim as the mount's
+        source. Defaults to the Windows home location.
     #>
-    param([string]$FilePath, [array]$SelectedEntries, [bool]$UseCompose = $false)
+    param([string]$FilePath, [array]$SelectedEntries, [bool]$UseCompose = $false, [string]$SecretsPath = '${localEnv:USERPROFILE}\.config\.env')
 
     # Listed alphabetically for readability; Write-MountsArray sorts the final array anyway.
     $mounts = [System.Collections.ArrayList]@()
-    [void]$mounts.Add('source=${localEnv:USERPROFILE}\.config\.env,target=/tmp/.env,type=bind,consistency=cached,readonly')
+    [void]$mounts.Add("source=$SecretsPath,target=/tmp/.env,type=bind,consistency=cached,readonly")
     if (-not $UseCompose) {
         [void]$mounts.Add('source=devcontainer-shared-data,target=/var/lib/devcontainer,type=volume')
     }
@@ -210,6 +219,9 @@ function Copy-ConfigurationFiles {
         Array of extra workspace folder objects (as returned by Get-ExtraFolderList).
         Optional — when empty, devcontainer.json and docker-compose.yml are generated
         exactly as they are without extra folders.
+    .PARAMETER SecretsPath
+        Host- or daemon-side path to the secrets .env file, forwarded to
+        Add-MountsToConfig. Defaults to the Windows home location.
     #>
     param(
         [string]$Source,
@@ -218,7 +230,8 @@ function Copy-ConfigurationFiles {
         [bool]$UseCompose,
         [array]$SelectedEntries,
         [string[]]$RepoList = @(),
-        [array]$ExtraFolders = @()
+        [array]$ExtraFolders = @(),
+        [string]$SecretsPath = '${localEnv:USERPROFILE}\.config\.env'
     )
 
     $destDevContainerPath = Join-Path -Path $Destination -ChildPath $DevContainerFolderName
@@ -256,7 +269,7 @@ function Copy-ConfigurationFiles {
         Write-LogEntry $configLabel -Status Success
         Replace-ProjectNamePlaceholder -FilePath $destConfig -ProjectName $ProjectName
         Add-FeaturesToConfig           -FilePath $destConfig -SelectedEntries $SelectedEntries
-        Add-MountsToConfig             -FilePath $destConfig -SelectedEntries $SelectedEntries -UseCompose $UseCompose
+        Add-MountsToConfig             -FilePath $destConfig -SelectedEntries $SelectedEntries -UseCompose $UseCompose -SecretsPath $SecretsPath
         Set-SshSigningFlag             -FilePath $destConfig -SelectedEntries $SelectedEntries
         Set-RepoSourcesInConfig        -FilePath $destConfig -RepoList $RepoList
 

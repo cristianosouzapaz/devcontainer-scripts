@@ -13,6 +13,13 @@ $Colors = @{
     Highlight = "White"
 }
 
+# The local secrets file, in the two notations it is shown and written in: the
+# devcontainer.json placeholder that ends up in the generated mount, and the
+# %USERPROFILE% form a user recognises. Paired here so the selector, the summary
+# and the generated file can never drift apart.
+$SecretsPathLocalValue   = '${localEnv:USERPROFILE}\.config\.env'
+$SecretsPathLocalDisplay = '%USERPROFILE%\.config\.env'
+
 function _Get-RawKey {
     <#
     .SYNOPSIS
@@ -38,8 +45,134 @@ function Get-ProjectTypeSelection {
         "Standard (single container)",
         "Docker Compose (multi-container)"
     )
-    $index = Select-ProjectType -Title "Project Type Selection" -Options $options -Default 0
+    $index = Select-Option -Title "Project Type Selection" -Options $options -Default 0
     return ($index -eq 1)
+}
+
+function Format-SecretsPathForDisplay {
+    <#
+    .SYNOPSIS
+        Renders a secrets file mount source for the console.
+    .DESCRIPTION
+        The local default is stored as the devcontainer.json placeholder
+        ${localEnv:USERPROFILE}\.config\.env, which is what has to reach the
+        generated file but is not what the user picked it by. Shows that one
+        value as %USERPROFILE%\.config\.env — the same string the selector
+        offered — so the summary at the end of a run does not name the local
+        path in a notation that appeared nowhere else. Every other path is
+        already literal and is returned untouched.
+    .PARAMETER SecretsPath
+        The mount source to render.
+    .OUTPUTS
+        System.String — the path as it should be shown to the user.
+    #>
+    param([string]$SecretsPath)
+    if ($SecretsPath -eq $SecretsPathLocalValue) { return $SecretsPathLocalDisplay }
+    return $SecretsPath
+}
+
+function Get-SecretsPathSelection {
+    <#
+    .SYNOPSIS
+        Prompts the user to choose the secrets file mount source.
+    .DESCRIPTION
+        Docker resolves a bind mount's `source=` on the daemon's filesystem, so the
+        secrets path must match where the Docker daemon runs, not the client. Offers
+        the local Windows default, an optional remote Docker host path read from the
+        DEVCONTAINER_SECRETS_PATH environment variable, and a manual entry fallback.
+    .OUTPUTS
+        System.String — the chosen (or typed) secrets file mount source.
+    #>
+    # Label and value are aligned on column 31, matching the extra-folder legend;
+    # Select-Option prints each option behind a four-character cursor prefix.
+    $values  = @($SecretsPathLocalValue)
+    $options = @(('{0,-27}{1}' -f 'Local Docker', $SecretsPathLocalDisplay))
+
+    $remotePath = $env:DEVCONTAINER_SECRETS_PATH
+    if (-not [string]::IsNullOrWhiteSpace($remotePath)) {
+        $values  += $remotePath
+        $options += ('{0,-27}{1}' -f 'Remote Docker host', $remotePath)
+    }
+
+    $options += ('{0,-27}{1}' -f 'Other', 'enter the path manually')
+
+    $index = Select-Option -Title "Secrets File Location" -Options $options -Default 0
+
+    if ($index -lt $values.Count) {
+        return $values[$index]
+    }
+
+    # Select-Option clears the screen on its way out, so the free-text fallback
+    # has to reintroduce itself — otherwise the prompt lands alone on a blank
+    # terminal. Mirrors the header Get-DockerContextInput prints for its own.
+    Write-Section "Secrets File Location"
+    Write-Host "  Where the .env file holding the container's credentials lives." -ForegroundColor "DarkGray"
+    Write-Host "  Docker resolves this on the machine the daemon runs on, so give" -ForegroundColor "DarkGray"
+    Write-Host "  a path on that machine (e.g. /srv/data/.config/.env) when it is" -ForegroundColor "DarkGray"
+    Write-Host "  not this one. Not verified either way." -ForegroundColor "DarkGray"
+    Write-Host ""
+
+    $entered = Read-Host "Secrets file path"
+    if ([string]::IsNullOrWhiteSpace($entered)) {
+        Write-Message "No path given. Falling back to $SecretsPathLocalDisplay." -Level "Warning"
+        return $SecretsPathLocalValue
+    }
+    return $entered.Trim()
+}
+
+function Get-DockerContextInput {
+    <#
+    .SYNOPSIS
+        Prompts the user for an optional Docker CLI context name to pin the
+        generated project to.
+    .DESCRIPTION
+        The context name cannot be reached through launcher.ps1, which invokes
+        project-init.ps1 without parameters, so the DEVCONTAINER_DOCKER_CONTEXT
+        environment variable carries the workstation's daemon — the same escape
+        hatch DEVCONTAINER_SECRETS_PATH provides for the secrets file.
+
+        Unset, this is a free-text prompt (not Select-Option — the value is an
+        arbitrary name, not a short enumeration). Set, it becomes the arrow
+        selector, defaulting to None: pinning a project to a remote daemon stays
+        a deliberate act, and Enter keeps today's behaviour. Other falls through
+        to the same free-text prompt.
+
+        Left blank (or None), the project inherits whatever Docker context is
+        active on the machine that opens it; a chosen name is written verbatim
+        into the generated .vscode/settings.json, honoured only by the VS Code
+        Container Tools extension.
+    .OUTPUTS
+        System.String — the trimmed context name, or an empty string when the
+        response is blank, whitespace-only, or None.
+    #>
+    $envContext = $env:DEVCONTAINER_DOCKER_CONTEXT
+    if (-not [string]::IsNullOrWhiteSpace($envContext)) {
+        $envContext = $envContext.Trim()
+
+        # Label and value are aligned on column 31, matching the secrets selector.
+        $options = @(
+            ('{0,-27}{1}' -f 'None', 'use whichever context is active')
+            ('{0,-27}{1}' -f 'Remote Docker host', $envContext)
+            ('{0,-27}{1}' -f 'Other', 'enter a name manually')
+        )
+        $index = Select-Option -Title "Docker Context" -Options $options -Default 0
+
+        if ($index -eq 0) { return '' }
+        if ($index -eq 1) { return $envContext }
+    }
+
+    Write-Section "Docker Context"
+    Write-Host "  Pins this project to a named Docker CLI context (see 'docker context ls')," -ForegroundColor "DarkGray"
+    Write-Host "  instead of whatever context happens to be active when VS Code opens it." -ForegroundColor "DarkGray"
+    Write-Host "  Leave blank to skip the pin. Requires the VS Code Container Tools" -ForegroundColor "DarkGray"
+    Write-Host "  extension — otherwise the setting is ignored." -ForegroundColor "DarkGray"
+    Write-Host ""
+
+    $entered = Read-Host "Docker context name (blank to skip)"
+    if ([string]::IsNullOrWhiteSpace($entered)) {
+        return ''
+    }
+    return $entered.Trim()
 }
 
 function Select-Features {
@@ -110,7 +243,7 @@ function Select-Features {
     return $selected.ToArray()
 }
 
-function Select-ProjectType {
+function Select-Option {
     <#
     .SYNOPSIS
         Presents an interactive terminal UI for selecting one option from a list.

@@ -37,6 +37,59 @@ function Test-DestinationPath {
     return $true
 }
 
+function Test-PathCoherence {
+    <#
+    .SYNOPSIS
+        Warns when the secrets path and the extra folders disagree about which
+        machine the Docker daemon runs on.
+    .DESCRIPTION
+        The secrets path and each extra folder are independent inputs by design —
+        the shape of what the user types is the only signal, and no "remote mode"
+        exists to keep them in step. So a run can end with the two disagreeing,
+        and either direction is the same silent failure: Docker resolves a mount
+        source on the daemon's filesystem, finds nothing there, and creates an
+        empty directory instead of failing. The container comes up either without
+        credentials or with an empty folder where the vault should be, and the
+        first symptom arrives much later.
+
+        Warns rather than rejects: these are the user's paths, and a mixed setup
+        may be deliberate (a folder shared into the daemon's filesystem under a
+        client-side path, say). Returns $false only to report that a warning was
+        emitted; the caller is not expected to abort.
+    .PARAMETER SecretsPath
+        The secrets file mount source, as chosen by Get-SecretsPathSelection or
+        passed via -SecretsPath.
+    .PARAMETER ExtraFolders
+        Array of extra folder objects as returned by Get-ExtraFolderList. Empty
+        is coherent by definition — there is nothing to disagree with.
+    .OUTPUTS
+        System.Boolean — $true when the inputs agree (or there is nothing to
+        compare), $false when a warning was emitted.
+    #>
+    param([string]$SecretsPath, [array]$ExtraFolders = @())
+
+    if ($ExtraFolders.Count -eq 0) { return $true }
+
+    $secretsOnDockerHost = Test-DockerHostPath -Path $SecretsPath
+    $foldersOnDockerHost = @($ExtraFolders | Where-Object { $_.IsPosix })
+    $foldersOnClient     = @($ExtraFolders | Where-Object { -not $_.IsPosix })
+
+    if ($foldersOnDockerHost.Count -gt 0 -and -not $secretsOnDockerHost) {
+        Write-Message "Extra folders use Docker-host paths but the secrets file does not." -Level "Warning"
+        Write-Message "If the daemon is remote, the container starts without credentials." -Level "Warning"
+        return $false
+    }
+
+    if ($secretsOnDockerHost -and $foldersOnClient.Count -gt 0) {
+        $names = ($foldersOnClient | ForEach-Object { $_.Name }) -join ', '
+        Write-Message "The secrets file uses a Docker-host path but these extra folders do not: $names." -Level "Warning"
+        Write-Message "If the daemon is remote, they mount as empty folders it creates on the spot." -Level "Warning"
+        return $false
+    }
+
+    return $true
+}
+
 function Test-ProjectName {
     <#
     .SYNOPSIS

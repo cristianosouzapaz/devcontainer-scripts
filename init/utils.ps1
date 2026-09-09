@@ -166,6 +166,29 @@ function Set-ConfigProperty {
     return $sortedConfig
 }
 
+function Test-DockerHostPath {
+    <#
+    .SYNOPSIS
+        Reports whether a path was written to resolve on the Docker daemon's host
+        rather than on the Windows machine running this script.
+    .DESCRIPTION
+        The shape of the path is the signal: a leading "/" means the user typed a
+        path on the daemon's filesystem, which Docker resolves there and which is
+        therefore unverifiable from here. Everything else — a drive letter or a
+        path relative to the Windows home — is client-side.
+
+        Single definition of that rule: the extra-folder prompt classifies input
+        with it, and Test-PathCoherence compares the secrets path and the extra
+        folders with it.
+    .PARAMETER Path
+        The raw path to classify. A blank or null value is not a daemon-side path.
+    .OUTPUTS
+        System.Boolean — $true for an absolute POSIX path, $false otherwise.
+    #>
+    param([string]$Path)
+    return $Path -like '/*'
+}
+
 function Write-JsonFile {
     <#
     .SYNOPSIS
