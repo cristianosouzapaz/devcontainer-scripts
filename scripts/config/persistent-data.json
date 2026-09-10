@@ -32,6 +32,16 @@
       "resettable": true
     },
     {
+      "id": "pi",
+      "scope": "shared",
+      "relativePath": "config/pi",
+      "label": "Pi",
+      "group": "authentication",
+      "binary": "pi",
+      "statusCheck": "pi",
+      "resettable": true
+    },
+    {
       "id": "github",
       "scope": "shared",
       "relativePath": "config/github",

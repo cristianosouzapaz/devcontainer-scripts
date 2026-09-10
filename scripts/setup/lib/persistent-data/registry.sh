@@ -41,7 +41,7 @@ persistent_data_registry_validate() {
 		elif (.id | type) != "string" or (.id | test("^[a-z0-9-]+$") | not) then "invalid category id"
 		elif (.scope != "shared" and .scope != "project") then "invalid scope"
 		elif (.group != "authentication" and .group != "tool") then "invalid group"
-		elif (.statusCheck != "directory" and .statusCheck != "claude" and .statusCheck != "codex" and .statusCheck != "github") then "invalid statusCheck"
+		elif (.statusCheck != "directory" and .statusCheck != "claude" and .statusCheck != "codex" and .statusCheck != "github" and .statusCheck != "pi") then "invalid statusCheck"
 		elif (.relativePath | type) != "string" or (.relativePath | startswith("/")) or ([.relativePath | split("/")[]] | any(. == "" or . == "." or . == "..")) then "invalid relativePath"
 		elif (.label | type) != "string" or (.label | length) == 0 then "invalid label"
 		elif ((.binary | type) != "string" and .binary != null) then "invalid binary"

@@ -65,7 +65,7 @@ cli_category_status() {
 	status_check=$(jq -r '.statusCheck' <<<"$category")
 	case "$status_check" in
 	directory) printf '%s\n' 'directory present' ;;
-	claude | codex | github)
+	claude | codex | github | pi)
 		identity=''
 		identity_status=0
 		identity=$(persistent_data_summary_identity "$status_check") || identity_status=$?
@@ -119,13 +119,13 @@ cli_reset_herdr_locked() {
 
 # cli_reset_herdr: Resets the project Herdr configuration, then reapplies the agent integrations.
 # The reset and reinitialization run under the project lock; reinstalling the integrations touches
-# shared Claude/Codex config and takes the shared then project lock (see docs/wiki/setup/persistent-data.md).
+# shared agent config and takes the shared then project lock (see docs/wiki/setup/persistent-data-locks.md).
 cli_reset_herdr() {
 	with_project_data_lock cli_reset_herdr_locked || return 1
 	with_shared_data_lock with_project_data_lock herdr_install_integrations
 }
 
-# cli_reconcile_herdr: Restores integrations affected by a Claude or Codex reset.
+# cli_reconcile_herdr: Restores integrations affected by resetting shared agent config.
 cli_reconcile_herdr() {
 	herdr_apply
 }
@@ -354,7 +354,7 @@ cli_reset() {
 		with_project_data_lock cli_reset_category "$category_id" || return 1
 	fi
 	case "$category_id" in
-	claude|codex) cli_reconcile_herdr ;;
+	claude|codex|pi) cli_reconcile_herdr ;;
 	esac
 }
 

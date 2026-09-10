@@ -13,7 +13,8 @@ ENV PNPM_HOME=/root/.local/share/pnpm \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 ENV CLAUDE_CONFIG_DIR=/root/.claude \
-    CODEX_HOME=/root/.codex
+    CODEX_HOME=/root/.codex \
+    PI_CODING_AGENT_DIR=/root/.pi/agent
 
 ARG SCRIPTS_REF="main"
 ARG SCRIPTS_REPO="cristianosouzapaz/devcontainer-scripts"

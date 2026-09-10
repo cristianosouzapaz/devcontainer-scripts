@@ -8,9 +8,10 @@ set -euo pipefail
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
-# Installs and configures the supported coding-agent CLIs — Claude Code and the
-# Codex CLI — including the Claude statusline and Codex credential storage.
-# Every step is idempotent and safe to re-run on a container rebuild.
+# Installs and configures the supported coding-agent CLIs. Agent-specific
+# configuration lives in the smallest helper that owns the relevant tool; the
+# entry point wires those helpers in install order. Every step is idempotent and
+# safe to re-run on a container rebuild.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -21,6 +22,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 # This module uses the following configuration variables:
 # - CLAUDE_CONFIG_DIR (optional, defaults to the persistent-data managed /root/.claude link)
 # - CODEX_HOME (optional, defaults to the persistent-data managed /root/.codex link)
+# - PI_CODING_AGENT_DIR (optional, defaults to the persistent-data managed /root/.pi/agent link)
 
 # ----- CONSTANTS --------------------------------------------------------------
 
@@ -28,6 +30,8 @@ readonly _CLAUDE_CLI_COMMAND="claude"
 readonly _CLAUDE_INSTALL_NAME="@anthropic-ai/claude-code"
 readonly _CODEX_CLI_COMMAND="codex"
 readonly _CODEX_INSTALL_NAME="@openai/codex"
+readonly _PI_CLI_COMMAND="pi"
+readonly _PI_INSTALL_NAME="@earendil-works/pi-coding-agent"
 
 # Path constants: NOT readonly — test seams per bash rules.
 _CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/root/.claude}"
@@ -37,6 +41,9 @@ _STATUSLINE_SETTINGS="${_CLAUDE_CONFIG_DIR}/settings.json"
 _STATUSLINE_HASH_FILE="${_CLAUDE_CONFIG_DIR}/.statusline-hash"
 _CODEX_CONFIG_DIR="${CODEX_HOME:-/root/.codex}"
 _CODEX_SETTINGS="${_CODEX_CONFIG_DIR}/config.toml"
+_PI_CONFIG_DIR="${PI_CODING_AGENT_DIR:-/root/.pi/agent}"
+_PI_SETTINGS="${_PI_CONFIG_DIR}/settings.json"
+_PI_DEFAULTS_CATALOG="${DEVCONTAINER_CONFIG_DIR}/pi-defaults.json"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
@@ -74,6 +81,26 @@ install_codex_cli() {
 	if [[ $exit_code -ne 0 ]]; then
 		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" "install_codex_cli" \
 			"npm install -g ${_CODEX_INSTALL_NAME}" "Codex CLI installation failed"
+		stop_spinner 1
+		return 1
+	fi
+	stop_spinner 0
+}
+
+# install_pi_cli: Installs Pi via npm if not already present.
+# Fails hard on install failure.
+install_pi_cli() {
+	local exit_code
+	check_command "${_PI_CLI_COMMAND}" && {
+		log_debug "Pi CLI already installed, skipping"
+		return 0
+	}
+	start_spinner "Installing Pi CLI (${_PI_INSTALL_NAME})"
+	exit_code=0
+	spinner_stream log_debug npm install -g "${_PI_INSTALL_NAME}" || exit_code=$?
+	if [[ $exit_code -ne 0 ]]; then
+		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" "install_pi_cli" \
+			"npm install -g ${_PI_INSTALL_NAME}" "Pi CLI installation failed"
 		stop_spinner 1
 		return 1
 	fi
@@ -186,18 +213,70 @@ configure_statusline() {
 	fi
 }
 
+# configure_pi_defaults: Applies the Pi default package catalog and settings.
+# Package installs go through Pi so its managed npm tree is populated; settings
+# are merged so existing developer choices win over shipped defaults.
+configure_pi_defaults() {
+	local catalog_packages catalog_settings current_settings installed_packages result tmp_file package
+	local -a missing_packages=()
+
+	if [[ ! -f "${_PI_DEFAULTS_CATALOG}" ]]; then
+		log_error "Pi defaults catalog is missing: ${_PI_DEFAULTS_CATALOG}"
+		return 1
+	fi
+	if ! jq -e '(.packages | type == "array") and (.settings | type == "object")' "${_PI_DEFAULTS_CATALOG}" >/dev/null 2>&1; then
+		log_error "Pi defaults catalog is invalid: ${_PI_DEFAULTS_CATALOG}"
+		return 1
+	fi
+	if [[ -f "${_PI_SETTINGS}" ]] && ! jq -e . "${_PI_SETTINGS}" >/dev/null 2>&1; then
+		log_item_warning "Pi settings.json is malformed — skipping Pi defaults"
+		return 0
+	fi
+
+	mkdir -p "${_PI_CONFIG_DIR}"
+	catalog_packages=$(jq -c '.packages' "${_PI_DEFAULTS_CATALOG}")
+	catalog_settings=$(jq -c '.settings' "${_PI_DEFAULTS_CATALOG}")
+	if [[ -f "${_PI_SETTINGS}" ]]; then
+		current_settings=$(< "${_PI_SETTINGS}")
+	else
+		current_settings='{}'
+	fi
+	installed_packages=$(jq -c '.packages // []' <<< "${current_settings}")
+	mapfile -t missing_packages < <(jq -r --argjson catalog "${catalog_packages}" \
+		--argjson installed "${installed_packages}" '$catalog - $installed | .[]')
+
+	for package in "${missing_packages[@]}"; do
+		log_detail "Installing Pi extension ${package}"
+		spinner_stream log_debug "${_PI_CLI_COMMAND}" install "${package}" || return 1
+	done
+
+	if [[ -f "${_PI_SETTINGS}" ]]; then
+		current_settings=$(< "${_PI_SETTINGS}")
+	else
+		current_settings='{}'
+	fi
+	result=$(jq --argjson defaults "${catalog_settings}" '$defaults * .' <<< "${current_settings}") || return 1
+	tmp_file=$(mktemp)
+	printf '%s\n' "${result}" > "${tmp_file}"
+	mv "${tmp_file}" "${_PI_SETTINGS}"
+	log_debug "Merged Pi default settings into ${_PI_SETTINGS}"
+}
+
 # ----- CORE SETUP -------------------------------------------------------------
 
-# coding_agents_setup: Module entry point. Ensures Claude Code and Codex CLI
-# are installed and configured. Every step is idempotent and safe to re-run on
-# container rebuilds.
+# coding_agents_setup: Module entry point. Ensures each supported coding-agent
+# CLI is installed and its persistent defaults are configured. Every step is
+# idempotent and safe to re-run on container rebuilds.
 coding_agents_setup() {
 	setup_error_traps
 	install_claude_cli || return 1
 	configure_statusline
 	install_codex_cli || return 1
 	configure_codex_auth_storage
+	install_pi_cli || return 1
+	configure_pi_defaults
 }
 
-export -f install_claude_cli install_codex_cli configure_codex_auth_storage \
-	merge_statusline_settings configure_statusline coding_agents_setup
+export -f install_claude_cli install_codex_cli install_pi_cli \
+	configure_codex_auth_storage configure_pi_defaults merge_statusline_settings \
+	configure_statusline coding_agents_setup

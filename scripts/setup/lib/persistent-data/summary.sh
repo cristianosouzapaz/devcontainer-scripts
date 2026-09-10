@@ -38,6 +38,7 @@ declare -gA _PERSISTENT_DATA_LOGIN_HINT=(
 	[claude]="claude auth login"
 	[codex]="codex login"
 	[github]="gh auth login"
+	[pi]="pi"
 )
 
 # ----- INTERNAL HELPERS -------------------------------------------------------
@@ -106,8 +107,35 @@ persistent_data_summary_gh_identity() {
 	sed -n 's/.*Logged in to [^ ]* account \([^ ]*\).*/\1/p' <<<"$output" | head -1
 }
 
+# persistent_data_summary_pi_identity: echoes ready Pi providers by asking Pi to
+# check each provider found in its stored auth file. Readiness comes from Pi's
+# JSON payload, not the command's exit status.
+# Returns: 0 and prints providers if authenticated, 1 otherwise.
+persistent_data_summary_pi_identity() {
+	local auth_file="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json"
+	local provider output status ready_providers=""
+
+	command -v pi >/dev/null 2>&1 || return 1
+	[[ -f "$auth_file" ]] || return 1
+	command -v jq >/dev/null 2>&1 || return 1
+
+	while IFS= read -r provider; do
+		[[ -n "$provider" ]] || continue
+		output="$(pi auth check --provider "$provider" --json --no-refresh 2>/dev/null || true)"
+		status="$(jq -r '.status // empty' <<<"$output" 2>/dev/null || true)"
+		[[ "$status" == 'ready' ]] || continue
+		if [[ -n "$ready_providers" ]]; then
+			ready_providers+=", "
+		fi
+		ready_providers+="$provider"
+	done < <(jq -r 'keys[]' "$auth_file" 2>/dev/null)
+
+	[[ -n "$ready_providers" ]] || return 1
+	printf '%s\n' "$ready_providers"
+}
+
 # persistent_data_summary_identity <status-check>: dispatches to the tool-specific
-# identity check for a registry statusCheck token (claude, codex, github).
+# identity check for a registry statusCheck token.
 # Returns: 0 and prints the identity if authenticated, 1 otherwise.
 persistent_data_summary_identity() {
 	local status_check="$1"
@@ -115,6 +143,7 @@ persistent_data_summary_identity() {
 	claude) persistent_data_summary_claude_identity ;;
 	codex) persistent_data_summary_codex_identity ;;
 	github) persistent_data_summary_gh_identity ;;
+	pi) persistent_data_summary_pi_identity ;;
 	*) return 1 ;;
 	esac
 }
@@ -312,5 +341,6 @@ persistent_data_summary_print() {
 
 export -f persistent_data_summary_list_mounts persistent_data_summary_claude_identity \
 	persistent_data_summary_codex_identity persistent_data_summary_gh_identity \
-	persistent_data_summary_identity persistent_data_summary_render \
+	persistent_data_summary_pi_identity persistent_data_summary_identity \
+	persistent_data_summary_render \
 	persistent_data_summary_render_workspace persistent_data_summary_print

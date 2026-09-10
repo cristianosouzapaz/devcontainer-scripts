@@ -45,8 +45,8 @@ load_env_file() {
 
 # persist_env_vars: Writes variables prefixed with PERSIST_ to
 # $_ETC_ENVIRONMENT_PATH (default /etc/environment), stripping the prefix so
-# they are available to all container processes (including Claude Code)
-# after setup. Existing entries for the same key are replaced (idempotent).
+# they are available to all container processes after setup. Existing entries
+# for the same key are replaced (idempotent).
 # Must be called after load_env_file so PERSIST_* vars are in the environment.
 # Args: none. Returns: 0 always.
 persist_env_vars() {

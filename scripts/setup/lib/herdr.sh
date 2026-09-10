@@ -59,7 +59,7 @@ herdr_require_command() {
 # herdr_integration_current: Succeeds when `herdr integration status` reports
 # the target as current ("<target>: current (vN) (<path>)"). A missing, outdated
 # or unreadable status counts as not current, so the caller (re)installs it.
-# Arguments: $1 - integration target (claude, codex).
+# Arguments: $1 - integration target.
 # Returns: 0 when current, 1 otherwise.
 herdr_integration_current() {
 	local target="$1" status_output
@@ -78,7 +78,7 @@ herdr_install_integrations() {
 	local target
 
 	herdr_require_command || return 1
-	for target in claude codex; do
+	for target in claude codex pi; do
 		if herdr_integration_current "$target"; then
 			log_debug "Herdr ${target} integration already current, skipping"
 			continue
@@ -90,9 +90,8 @@ herdr_install_integrations() {
 # herdr_apply: Initializes the project config and installs the agent integrations
 # under the required locks. Fails fast when the Herdr CLI is missing, before any
 # lock is taken. The project configuration is initialized under the project lock
-# only; installing the integrations touches shared Claude/Codex config, so it
-# takes the shared then project lock, in that order (see
-# docs/wiki/setup/persistent-data.md).
+# only; installing the integrations touches shared agent config, so it takes the
+# shared then project lock, in that order (see docs/wiki/setup/persistent-data-locks.md).
 # Returns: 0 on success, 1 when configuration or integration setup fails.
 herdr_apply() {
 	herdr_require_command || return 1

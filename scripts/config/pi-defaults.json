@@ -1,0 +1,10 @@
+{
+  "packages": [
+    "npm:pi-web-access",
+    "npm:pi-subagents",
+    "npm:@tian.zuo/pi-background-terminals"
+  ],
+  "settings": {
+    "hideThinkingBlock": true
+  }
+}

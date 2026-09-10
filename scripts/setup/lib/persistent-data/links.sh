@@ -5,19 +5,20 @@ readonly _PERSISTENT_DATA_LINKS_SH_LOADED=1
 
 # Managed home-directory links for persistent-data categories.
 #
-# Five of the registered categories are reached through a fixed path in the home
-# directory (~/.claude, ~/.codex, ...) because the tool that owns them has no way
-# to be pointed at the volume. Those paths live here rather than in the setup
-# module because both the setup orchestrator and bin/devcontainer-data need them:
-# the orchestrator creates the links, the CLI verifies and repairs them.
+# Some registered categories are reached through a fixed path in the home
+# directory because the tool that owns them has no way to be pointed at the
+# volume. Those paths live here rather than in the setup module because both the
+# setup orchestrator and bin/devcontainer-data need them: the orchestrator creates
+# the links, the CLI verifies and repairs them.
 #
-# A category with no entry here (herdr) is reached through its own configuration
-# and has no managed link at all.
+# A category with no entry here is reached through its own configuration and has
+# no managed link at all.
 
 # Test seams — not readonly so tests can avoid the real home directory.
 _PERSISTENT_DATA_AGENTS_LINK="${PERSISTENT_DATA_AGENTS_LINK:-/root/.agents}"
 _PERSISTENT_DATA_CLAUDE_LINK="${PERSISTENT_DATA_CLAUDE_LINK:-/root/.claude}"
 _PERSISTENT_DATA_CODEX_LINK="${PERSISTENT_DATA_CODEX_LINK:-/root/.codex}"
+_PERSISTENT_DATA_PI_LINK="${PERSISTENT_DATA_PI_LINK:-/root/.pi}"
 _PERSISTENT_DATA_GITHUB_LINK="${PERSISTENT_DATA_GITHUB_LINK:-/root/.config/gh}"
 _PERSISTENT_DATA_PNPM_LINK="${PERSISTENT_DATA_PNPM_LINK:-/root/.local/share/pnpm}"
 
@@ -29,6 +30,7 @@ persistent_data_link_path() {
 	agents) printf '%s\n' "$_PERSISTENT_DATA_AGENTS_LINK" ;;
 	claude) printf '%s\n' "$_PERSISTENT_DATA_CLAUDE_LINK" ;;
 	codex) printf '%s\n' "$_PERSISTENT_DATA_CODEX_LINK" ;;
+	pi) printf '%s\n' "$_PERSISTENT_DATA_PI_LINK" ;;
 	github) printf '%s\n' "$_PERSISTENT_DATA_GITHUB_LINK" ;;
 	pnpm-store) printf '%s\n' "$_PERSISTENT_DATA_PNPM_LINK" ;;
 	*) return 1 ;;

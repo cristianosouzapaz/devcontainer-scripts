@@ -208,17 +208,17 @@ sync_claude_adapter() {
 }
 
 # sync_working_agreement: Install the canonical machine-wide working agreement
-# to ~/.agents/AGENTS.md, then update the Claude Code and Codex CLI adapters so
-# both tools load it at session start. The source is the installer tree that
+# to ~/.agents/AGENTS.md, then update each supported coding-agent adapter so the
+# tools load it at session start. The source is the installer tree that
 # sync_installer just refreshed, not the copy baked into the image, so editing
 # the agreement takes effect on the next sync without an image rebuild.
-# Idempotent: an already-current
-# destination is left untouched and reported as up to date. ~/.codex is only
-# ever written to if it already exists — creating it here as a plain directory
-# would break persistent-data's managed symlink into the shared volume.
-# Returns: 0; sets _SCOPE_COUNT to how many of the three destinations changed.
+# Idempotent: an already-current destination is left untouched and reported as up
+# to date. Adapters under managed persistent-data links are written only when
+# their parent directory already exists; creating those directories here would
+# break persistence by replacing the managed symlink with a plain directory.
+# Returns: 0; sets _SCOPE_COUNT to how many destinations changed.
 sync_working_agreement() {
-	local canonical="${_INSTALLER_DIR}/agents/templates/global/AGENTS.md" codex_dir="${HOME}/.codex" result
+	local canonical="${_INSTALLER_DIR}/agents/templates/global/AGENTS.md" codex_dir="${HOME}/.codex" pi_agent_dir="${HOME}/.pi/agent" result
 	_SCOPE_COUNT=0
 
 	log_detail "Personal working agreement"
@@ -250,6 +250,18 @@ sync_working_agreement() {
 		fi
 	else
 		log_item_warning "Codex adapter skipped — ~/.codex not present (Codex not configured in this container)"
+	fi
+
+	if [[ -d "${pi_agent_dir}" ]]; then
+		result="$(sync_file_if_changed "${canonical}" "${pi_agent_dir}/AGENTS.md")"
+		if [[ "${result}" == "unchanged" ]]; then
+			log_item_success "Pi adapter (~/.pi/agent/AGENTS.md) already up to date"
+		else
+			log_item_success "Pi adapter (~/.pi/agent/AGENTS.md) installed"
+			_SCOPE_COUNT=$(( _SCOPE_COUNT + 1 ))
+		fi
+	else
+		log_item_warning "Pi adapter skipped — ~/.pi/agent not present (Pi not configured in this container)"
 	fi
 }
 

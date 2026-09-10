@@ -9,9 +9,8 @@ set -euo pipefail
 # ----- OVERVIEW ---------------------------------------------------------------
 #
 # Runs before every other module: initializes the persistent-data storage
-# layout and creates the managed home-directory links (~/.agents, ~/.claude,
-# ~/.codex, ~/.config/gh, ~/.local/share/pnpm) so later modules write straight
-# into the persistent volumes.
+# layout and creates the managed home-directory links declared by the registry
+# link layer, so later modules write straight into the persistent volumes.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 

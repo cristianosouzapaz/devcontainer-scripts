@@ -8,9 +8,9 @@ set -euo pipefail
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
-# Initializes the project's Herdr configuration and its Claude/Codex agent
-# integrations. Guards on the Herdr command, then applies the locked
-# config + integration sequence (see setup/lib/herdr.sh).
+# Initializes the project's Herdr configuration and coding-agent integrations.
+# Guards on the Herdr command, then applies the locked config + integration
+# sequence (see setup/lib/herdr.sh).
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
