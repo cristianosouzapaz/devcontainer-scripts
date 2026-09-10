@@ -242,7 +242,8 @@ configure_pi_defaults() {
 		current_settings='{}'
 	fi
 	installed_packages=$(jq -c '.packages // []' <<< "${current_settings}")
-	mapfile -t missing_packages < <(jq -r --argjson catalog "${catalog_packages}" \
+	# -n: no input document; without it jq blocks on the caller's open stdin.
+	mapfile -t missing_packages < <(jq -nr --argjson catalog "${catalog_packages}" \
 		--argjson installed "${installed_packages}" '$catalog - $installed | .[]')
 
 	for package in "${missing_packages[@]}"; do
@@ -254,6 +255,11 @@ configure_pi_defaults() {
 		current_settings=$(< "${_PI_SETTINGS}")
 	else
 		current_settings='{}'
+	fi
+	# Rewriting an up-to-date file would still bump its mtime and break idempotency.
+	if jq -e --argjson defaults "${catalog_settings}" '($defaults * .) == .' <<< "${current_settings}" >/dev/null; then
+		log_debug "Pi default settings already applied, skipping"
+		return 0
 	fi
 	result=$(jq --argjson defaults "${catalog_settings}" '$defaults * .' <<< "${current_settings}") || return 1
 	tmp_file=$(mktemp)

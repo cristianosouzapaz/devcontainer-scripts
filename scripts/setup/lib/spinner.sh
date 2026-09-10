@@ -157,7 +157,9 @@ spinner_stream() {
 		else
 			"$log_function" "$line"
 		fi
-	done < <(_cmd_exit_code=0; "$@" 2>&1 || _cmd_exit_code=$?; echo "$_cmd_exit_code" >"$exit_file")
+	# </dev/null: a third-party CLI that prompts gets EOF and fails, instead of
+	# blocking forever on a lifecycle hook's open, silent stdin.
+	done < <(_cmd_exit_code=0; "$@" </dev/null 2>&1 || _cmd_exit_code=$?; echo "$_cmd_exit_code" >"$exit_file")
 
 	exit_code=$(<"$exit_file")
 	rm -f "$exit_file"

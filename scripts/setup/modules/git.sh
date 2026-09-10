@@ -393,6 +393,8 @@ git_setup() {
 	local deps_failed=false
 	setup_error_traps
 	register_cleanup cleanup_sensitive_data
+	# A rejected token must fail the clone, not prompt on a lifecycle hook's terminal.
+	export GIT_TERMINAL_PROMPT=0
 
 	collect_numbered_repo_entries _trimmed_entries REPO_SOURCE
 	if [[ "${#_trimmed_entries[@]}" -eq 0 ]]; then
