@@ -135,7 +135,7 @@ merge_statusline_settings() {
 # Uses sha256sum hash to detect changes; re-applies only when needed.
 configure_statusline() {
 	local sha_output source_hash stored_hash
-	local hash_differs=false settings_missing=false
+	local hash_differs=false dest_missing=false settings_missing=false
 
 	if [[ ! -f "${_STATUSLINE_SOURCE}" ]]; then
 		log_debug "Statusline source not found (${_STATUSLINE_SOURCE}), skipping"
@@ -156,25 +156,31 @@ configure_statusline() {
 	fi
 
 	[[ "${source_hash}" != "${stored_hash}" ]] && hash_differs=true
+	# A missing deployed copy is restored; an existing one is never compared,
+	# so a developer's edits survive until the shipped version changes.
+	[[ ! -f "${_STATUSLINE_DEST}" ]] && dest_missing=true
 
 	if [[ ! -f "${_STATUSLINE_SETTINGS}" ]] \
 		|| ! jq -e '.statusLine' "${_STATUSLINE_SETTINGS}" > /dev/null 2>&1; then
 		settings_missing=true
 	fi
 
-	if [[ "${hash_differs}" == 'false' ]] && [[ "${settings_missing}" == 'false' ]]; then
+	if [[ "${hash_differs}" == 'false' ]] && [[ "${dest_missing}" == 'false' ]] \
+		&& [[ "${settings_missing}" == 'false' ]]; then
 		log_debug "Statusline already configured and up to date, skipping"
 		return 0
 	fi
 
 	log_detail "Configuring Claude Code status line"
 
-	if [[ "${hash_differs}" == 'true' ]]; then
+	if [[ "${hash_differs}" == 'true' ]] || [[ "${dest_missing}" == 'true' ]]; then
 		cp "${_STATUSLINE_SOURCE}" "${_STATUSLINE_DEST}"
 		printf '%s\n' "${source_hash}" > "${_STATUSLINE_HASH_FILE}"
 		log_debug "Updated statusline script (${source_hash})"
 	fi
 
+	# Restoring a deleted copy leaves settings.json alone: the merge overwrites
+	# the statusLine key, which may hold a developer's custom command.
 	if [[ "${settings_missing}" == 'true' ]] || [[ "${hash_differs}" == 'true' ]]; then
 		merge_statusline_settings
 	fi

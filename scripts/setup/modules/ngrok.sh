@@ -22,7 +22,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 
 # ----- CONSTANTS --------------------------------------------------------------
 
-readonly _NGROK_CONFIG_COMMAND="config add-authtoken"
+readonly -a _NGROK_CONFIG_COMMAND=(config add-authtoken)
 
 # ----- CORE SETUP -------------------------------------------------------------
 
@@ -48,9 +48,9 @@ ngrok_setup() {
 
 	start_spinner "Configuring ngrok with authtoken"
 	exit_code=0
-	spinner_stream log_debug retry_command 3 1 "$(command -v ngrok || echo 'ngrok')" ${_NGROK_CONFIG_COMMAND} "${NGROK_AUTHTOKEN}" || exit_code=$?
+	spinner_stream log_debug retry_command 3 1 "$(command -v ngrok || echo 'ngrok')" "${_NGROK_CONFIG_COMMAND[@]}" "${NGROK_AUTHTOKEN}" || exit_code=$?
 	if [[ $exit_code -ne 0 ]]; then
-		push_error "$DEVCONTAINER_NETWORK_ERROR" "${LINENO}" "ngrok_setup" "ngrok $_NGROK_CONFIG_COMMAND" "ngrok configuration failed after retries"
+		push_error "$DEVCONTAINER_NETWORK_ERROR" "${LINENO}" "ngrok_setup" "ngrok ${_NGROK_CONFIG_COMMAND[*]}" "ngrok configuration failed after retries"
 		stop_spinner 1
 		return 1
 	fi

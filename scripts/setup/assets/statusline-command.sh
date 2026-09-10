@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# No `set -euo pipefail` on purpose: a status line must degrade to a partial
+# render, never abort. Every field below is "read, then test for empty" — a
+# missing key, a non-git directory or a bad number must not blank the line.
+
 input=$(cat)
 
 readonly _COLOR_RESET=$'\033[0m'
@@ -82,8 +86,8 @@ filled=$(( (pct_int * _BAR_WIDTH + 50) / 100 ))
 [[ "${filled}" -lt 0 ]] && filled=0
 empty=$(( _BAR_WIDTH - filled ))
 bar_str=""
-for i in $(seq 1 "${filled}"); do bar_str="${bar_str}█"; done
-for i in $(seq 1 "${empty}");  do bar_str="${bar_str}░"; done
+for _ in $(seq 1 "${filled}"); do bar_str="${bar_str}█"; done
+for _ in $(seq 1 "${empty}");  do bar_str="${bar_str}░"; done
 
 # Token counts formatted as "48k/200k".
 tokens_used=$(printf '%s' "${input}" | jq -r '.context_window.total_input_tokens // empty')

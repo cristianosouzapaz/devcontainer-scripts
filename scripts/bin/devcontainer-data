@@ -360,10 +360,10 @@ cli_reset() {
 
 # cli_main: Parses phase-4 direct CLI commands.
 cli_main() {
-	local command="${1:-}" category_id assume_yes=false
+	local subcommand="${1:-}" category_id assume_yes=false
 
 	persistent_data_registry_validate || return 1
-	case "$command" in
+	case "$subcommand" in
 	list) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_list ;;
 	status) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_status ;;
 	path) [[ "$#" -eq 2 ]] || { cli_usage; return 1; }; cli_path "$2" ;;

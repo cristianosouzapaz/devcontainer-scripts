@@ -224,6 +224,7 @@ sync_working_agreement() {
 	log_detail "Personal working agreement"
 
 	result="$(sync_file_if_changed "${canonical}" "${HOME}/.agents/AGENTS.md")"
+	# shellcheck disable=SC2088  # literal "~/" is intentional in this user-facing message, not a path to expand
 	if [[ "${result}" == "unchanged" ]]; then
 		log_item_success "~/.agents/AGENTS.md already up to date"
 	else

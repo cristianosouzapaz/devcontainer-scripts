@@ -56,11 +56,35 @@ herdr_require_command() {
 	return 1
 }
 
-# herdr_install_integrations: Installs the supported agent integrations.
+# herdr_integration_current: Succeeds when `herdr integration status` reports
+# the target as current ("<target>: current (vN) (<path>)"). A missing, outdated
+# or unreadable status counts as not current, so the caller (re)installs it.
+# Arguments: $1 - integration target (claude, codex).
+# Returns: 0 when current, 1 otherwise.
+herdr_integration_current() {
+	local target="$1" status_output
+
+	status_output=$("$_HERDR_COMMAND" integration status 2>/dev/null) || {
+		log_debug "Herdr integration status unavailable, treating ${target} as not current"
+		return 1
+	}
+	grep -q "^${target}: current " <<<"$status_output"
+}
+
+# herdr_install_integrations: Installs each supported agent integration that is
+# not already current; a current one is left untouched.
+# Returns: 0 on success, 1 when the Herdr CLI is missing or an install fails.
 herdr_install_integrations() {
+	local target
+
 	herdr_require_command || return 1
-	spinner_stream log_debug "$_HERDR_COMMAND" integration install claude || return 1
-	spinner_stream log_debug "$_HERDR_COMMAND" integration install codex
+	for target in claude codex; do
+		if herdr_integration_current "$target"; then
+			log_debug "Herdr ${target} integration already current, skipping"
+			continue
+		fi
+		spinner_stream log_debug "$_HERDR_COMMAND" integration install "$target" || return 1
+	done
 }
 
 # herdr_apply: Initializes the project config and installs the agent integrations
@@ -77,4 +101,4 @@ herdr_apply() {
 }
 
 export -f herdr_config_path herdr_require_command herdr_initialize_config \
-	herdr_install_integrations herdr_apply
+	herdr_integration_current herdr_install_integrations herdr_apply

@@ -33,7 +33,10 @@ readonly _CURL_OPTS=(
 	--connect-timeout 15 --max-time 120
 )
 
-readonly _MAX_GRAPH_ITERATIONS=10
+# Safety cap on the import-graph download loop (int, default 10). Real graphs
+# settle in two or three passes; hitting this is a bug. Not readonly — a test
+# lowers it to exercise the non-convergence path.
+_MAX_GRAPH_ITERATIONS=10
 
 # ----- LOGGING -----------------------------------------------------------------
 # Runs before the shared logging library exists, so it writes straight to stderr.
@@ -105,6 +108,7 @@ download_file() {
 # Args: $1 stage_dir
 required_paths() {
 	local stage_dir="$1"
+	# shellcheck disable=SC2016  # the single-quoted body is a JS program, not a shell string
 	node -e '
 		const { readdirSync, readFileSync, existsSync } = require("node:fs");
 		const { join, dirname, relative, resolve } = require("node:path");
