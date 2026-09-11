@@ -13,6 +13,9 @@ readonly _HERDR_SH_LOADED=1
 _HERDR_COMMAND="${HERDR_COMMAND:-herdr}"
 _HERDR_TEMPLATE="${HERDR_TEMPLATE:-${DEVCONTAINER_ASSETS_DIR}/herdr-config.toml}"
 _HERDR_CONFIG_PATH="${HERDR_CONFIG_PATH:-}"
+_HERDR_XDG_RESET_ASSET="${HERDR_XDG_RESET_ASSET:-${DEVCONTAINER_ASSETS_DIR}/herdr-xdg-reset.sh}"
+_HERDR_BASHRC_PATH="${HERDR_BASHRC_PATH:-/etc/bash.bashrc}"
+_HERDR_XDG_RESET_MARKER='devcontainer-herdr-xdg-reset'
 
 # ----- HELPER FUNCTIONS -----------------------------------------------------
 
@@ -44,6 +47,26 @@ herdr_initialize_config() {
 	mkdir -p "$(dirname "$config_path")" || return 1
 	cp "$_HERDR_TEMPLATE" "$config_path"
 	log_detail "Initialized Herdr configuration"
+}
+
+# herdr_reset_xdg_config_home: Appends the XDG_CONFIG_HOME pane-reset snippet to the
+# system-wide bashrc, once. The public wrapper narrows XDG_CONFIG_HOME for the
+# herdr server process, and every pane it spawns afterwards inherits that value
+# via ordinary process env inheritance, which breaks XDG-aware tools (gh, etc.)
+# run inside a pane (see docs/wiki/setup/herdr.md). Idempotent: skips when the
+# snippet is already present, so a re-run never duplicates it.
+# Returns: 0 on success, 1 when the snippet asset is missing.
+herdr_reset_xdg_config_home() {
+	if [[ ! -f "$_HERDR_XDG_RESET_ASSET" ]]; then
+		log_error "Herdr XDG_CONFIG_HOME reset asset is missing: $_HERDR_XDG_RESET_ASSET"
+		return 1
+	fi
+	if grep -qF "$_HERDR_XDG_RESET_MARKER" "$_HERDR_BASHRC_PATH" 2>/dev/null; then
+		log_debug "Herdr XDG_CONFIG_HOME reset already present, skipping"
+		return 0
+	fi
+	cat "$_HERDR_XDG_RESET_ASSET" >>"$_HERDR_BASHRC_PATH"
+	log_detail "Installed Herdr XDG_CONFIG_HOME pane reset"
 }
 
 # herdr_require_command: Fails with a user-facing message when the Herdr CLI is
@@ -87,17 +110,21 @@ herdr_install_integrations() {
 	done
 }
 
-# herdr_apply: Initializes the project config and installs the agent integrations
-# under the required locks. Fails fast when the Herdr CLI is missing, before any
-# lock is taken. The project configuration is initialized under the project lock
-# only; installing the integrations touches shared agent config, so it takes the
-# shared then project lock, in that order (see docs/wiki/setup/persistent-data-locks.md).
-# Returns: 0 on success, 1 when configuration or integration setup fails.
+# herdr_apply: Installs the XDG_CONFIG_HOME pane reset, then initializes the
+# project config and installs the agent integrations under the required locks.
+# Fails fast when the Herdr CLI is missing, before any lock is taken. The pane
+# reset targets the system-wide bashrc, outside the persistent-data model, so
+# it takes no lock; the project configuration is initialized under the project
+# lock only, while installing the integrations touches shared agent config, so
+# it takes the shared then project lock, in that order (see
+# docs/wiki/setup/persistent-data-locks.md).
+# Returns: 0 on success, 1 when the reset, configuration, or integration setup fails.
 herdr_apply() {
 	herdr_require_command || return 1
+	herdr_reset_xdg_config_home || return 1
 	with_project_data_lock herdr_initialize_config || return 1
 	with_shared_data_lock with_project_data_lock herdr_install_integrations
 }
 
 export -f herdr_config_path herdr_require_command herdr_initialize_config \
-	herdr_integration_current herdr_install_integrations herdr_apply
+	herdr_integration_current herdr_install_integrations herdr_reset_xdg_config_home herdr_apply
