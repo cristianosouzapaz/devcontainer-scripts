@@ -7,13 +7,18 @@ readonly _PERSISTENT_DATA_REGISTRY_SH_LOADED=1
 
 # DEVCONTAINER_CONFIG_DIR comes from loader.sh, which sources this file — see the script tree anchors there.
 _PERSISTENT_DATA_REGISTRY="${PERSISTENT_DATA_REGISTRY:-${DEVCONTAINER_CONFIG_DIR}/persistent-data.json}"
+# Registry and catalog paths last validated together, so lookups validate once.
+_PERSISTENT_DATA_REGISTRY_VALIDATED=''
 
-# persistent_data_registry_validate: Validates the persistent-data registry.
+# persistent_data_registry_validate: Validates the persistent-data registry, once
+# per registry and coding-agent catalog path.
 # Args: none.
 # Returns: 0 when valid, 1 otherwise.
 persistent_data_registry_validate() {
-	local schema_errors category_errors
+	local schema_errors category_errors agent_ids agent_ids_json validated_key
 
+	validated_key="${_PERSISTENT_DATA_REGISTRY}|${_CODING_AGENTS_CATALOG}"
+	[[ "$_PERSISTENT_DATA_REGISTRY_VALIDATED" == "$validated_key" ]] && return 0
 	if ! command -v jq >/dev/null 2>&1; then
 		log_error 'Persistent-data registry requires jq'
 		return 1
@@ -22,6 +27,8 @@ persistent_data_registry_validate() {
 		log_error "Persistent-data registry is not readable: $_PERSISTENT_DATA_REGISTRY"
 		return 1
 	fi
+	agent_ids=$(coding_agents_ids) || return 1
+	agent_ids_json=$(jq -cn --arg ids "$agent_ids" '$ids | split("\n") | map(select(length > 0))') || return 1
 
 	schema_errors=$(jq -r '
 		if (.schemaVersion | type) != "number" or .schemaVersion < 1 or (.schemaVersion | floor) != .schemaVersion then "invalid schemaVersion" else empty end,
@@ -32,7 +39,9 @@ persistent_data_registry_validate() {
 		return 1
 	fi
 
-	category_errors=$(jq -r '
+	category_errors=$(jq -r --argjson agentIds "$agent_ids_json" '
+		def safe_relative_path: type == "string" and length > 0 and (startswith("/") | not)
+			and (split("/") | all(. != "" and . != "." and . != ".."));
 		.categories as $categories |
 		if ([ $categories[].id ] | unique | length) != ($categories | length) then "duplicate category id" else empty end,
 		$categories[] |
@@ -41,8 +50,9 @@ persistent_data_registry_validate() {
 		elif (.id | type) != "string" or (.id | test("^[a-z0-9-]+$") | not) then "invalid category id"
 		elif (.scope != "shared" and .scope != "project") then "invalid scope"
 		elif (.group != "authentication" and .group != "tool") then "invalid group"
-		elif (.statusCheck != "directory" and .statusCheck != "claude" and .statusCheck != "codex" and .statusCheck != "github" and .statusCheck != "pi") then "invalid statusCheck"
-		elif (.relativePath | type) != "string" or (.relativePath | startswith("/")) or ([.relativePath | split("/")[]] | any(. == "" or . == "." or . == "..")) then "invalid relativePath"
+		elif (.statusCheck as $statusCheck | $statusCheck != "directory" and $statusCheck != "github" and ($agentIds | index($statusCheck) | not)) then "invalid statusCheck"
+		elif (.relativePath | safe_relative_path | not) then "invalid relativePath"
+		elif (.homeLink != null and (.homeLink | safe_relative_path | not)) then "invalid homeLink"
 		elif (.label | type) != "string" or (.label | length) == 0 then "invalid label"
 		elif ((.binary | type) != "string" and .binary != null) then "invalid binary"
 		elif (.resettable | type) != "boolean" then "invalid resettable"
@@ -52,7 +62,7 @@ persistent_data_registry_validate() {
 		log_error "Invalid persistent-data registry: $category_errors"
 		return 1
 	fi
-	return 0
+	_PERSISTENT_DATA_REGISTRY_VALIDATED="$validated_key"
 }
 
 # persistent_data_category: Prints the JSON record for a registered category.

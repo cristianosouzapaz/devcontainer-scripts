@@ -26,13 +26,6 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 
 # ----- CONSTANTS --------------------------------------------------------------
 
-readonly _CLAUDE_CLI_COMMAND="claude"
-readonly _CLAUDE_INSTALL_NAME="@anthropic-ai/claude-code"
-readonly _CODEX_CLI_COMMAND="codex"
-readonly _CODEX_INSTALL_NAME="@openai/codex"
-readonly _PI_CLI_COMMAND="pi"
-readonly _PI_INSTALL_NAME="@earendil-works/pi-coding-agent"
-
 # Path constants: NOT readonly — test seams per bash rules.
 _CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/root/.claude}"
 _STATUSLINE_SOURCE="${DEVCONTAINER_ASSETS_DIR}/statusline-command.sh"
@@ -47,64 +40,34 @@ _PI_DEFAULTS_CATALOG="${DEVCONTAINER_CONFIG_DIR}/pi-defaults.json"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# install_claude_cli: Installs Claude CLI via npm if not already present.
-# Fails hard on install failure.
-install_claude_cli() {
-	local exit_code
-	check_command "${_CLAUDE_CLI_COMMAND}" && {
-		log_debug "Claude CLI already installed, skipping"
-		return 0
-	}
-	start_spinner "Installing Claude CLI (${_CLAUDE_INSTALL_NAME})"
-	exit_code=0
-	spinner_stream log_debug npm install -g "${_CLAUDE_INSTALL_NAME}" || exit_code=$?
-	if [[ $exit_code -ne 0 ]]; then
-		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" "install_claude_cli" \
-			"npm install -g ${_CLAUDE_INSTALL_NAME}" "Claude CLI installation failed"
-		stop_spinner 1
-		return 1
-	fi
-	stop_spinner 0
-}
+# install_coding_agent_clis: Installs every catalog CLI via npm when absent.
+# Returns: 0 on success, 1 when an installation fails.
+install_coding_agent_clis() {
+	local agent_id cli_command label npm_package exit_code ids
+	local -a agent_ids=()
 
-# install_codex_cli: Installs Codex CLI via npm if not already present.
-# Fails hard on install failure.
-install_codex_cli() {
-	local exit_code
-	check_command "${_CODEX_CLI_COMMAND}" && {
-		log_debug "Codex CLI already installed, skipping"
-		return 0
-	}
-	start_spinner "Installing Codex CLI (${_CODEX_INSTALL_NAME})"
-	exit_code=0
-	spinner_stream log_debug npm install -g "${_CODEX_INSTALL_NAME}" || exit_code=$?
-	if [[ $exit_code -ne 0 ]]; then
-		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" "install_codex_cli" \
-			"npm install -g ${_CODEX_INSTALL_NAME}" "Codex CLI installation failed"
-		stop_spinner 1
-		return 1
-	fi
-	stop_spinner 0
-}
-
-# install_pi_cli: Installs Pi via npm if not already present.
-# Fails hard on install failure.
-install_pi_cli() {
-	local exit_code
-	check_command "${_PI_CLI_COMMAND}" && {
-		log_debug "Pi CLI already installed, skipping"
-		return 0
-	}
-	start_spinner "Installing Pi CLI (${_PI_INSTALL_NAME})"
-	exit_code=0
-	spinner_stream log_debug npm install -g "${_PI_INSTALL_NAME}" || exit_code=$?
-	if [[ $exit_code -ne 0 ]]; then
-		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" "install_pi_cli" \
-			"npm install -g ${_PI_INSTALL_NAME}" "Pi CLI installation failed"
-		stop_spinner 1
-		return 1
-	fi
-	stop_spinner 0
+	ids=$(coding_agents_ids) || return 1
+	[[ -n "$ids" ]] || return 0
+	mapfile -t agent_ids <<< "$ids"
+	for agent_id in "${agent_ids[@]}"; do
+		cli_command=$(coding_agents_field "$agent_id" command) || return 1
+		label=$(coding_agents_field "$agent_id" label) || return 1
+		npm_package=$(coding_agents_field "$agent_id" npmPackage) || return 1
+		if check_command "$cli_command"; then
+			log_debug "${label} CLI already installed, skipping"
+			continue
+		fi
+		start_spinner "Installing ${label} CLI (${npm_package})"
+		exit_code=0
+		spinner_stream log_debug npm install -g "$npm_package" || exit_code=$?
+		if [[ "$exit_code" -ne 0 ]]; then
+			push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" "install_coding_agent_clis" \
+				"npm install -g ${npm_package}" "${label} CLI installation failed"
+			stop_spinner 1
+			return 1
+		fi
+		stop_spinner 0
+	done
 }
 
 # configure_codex_auth_storage: Ensures Codex stores credentials in auth.json
@@ -217,9 +180,10 @@ configure_statusline() {
 # Package installs go through Pi so its managed npm tree is populated; settings
 # are merged so existing developer choices win over shipped defaults.
 configure_pi_defaults() {
-	local catalog_packages catalog_settings current_settings installed_packages result tmp_file package
+	local catalog_packages catalog_settings current_settings installed_packages result tmp_file package pi_command
 	local -a missing_packages=()
 
+	pi_command=$(coding_agents_field pi command) || return 1
 	if [[ ! -f "${_PI_DEFAULTS_CATALOG}" ]]; then
 		log_error "Pi defaults catalog is missing: ${_PI_DEFAULTS_CATALOG}"
 		return 1
@@ -248,7 +212,7 @@ configure_pi_defaults() {
 
 	for package in "${missing_packages[@]}"; do
 		log_detail "Installing Pi extension ${package}"
-		spinner_stream log_debug "${_PI_CLI_COMMAND}" install "${package}" || return 1
+		spinner_stream log_debug "${pi_command}" install "${package}" || return 1
 	done
 
 	if [[ -f "${_PI_SETTINGS}" ]]; then
@@ -275,14 +239,11 @@ configure_pi_defaults() {
 # idempotent and safe to re-run on container rebuilds.
 coding_agents_setup() {
 	setup_error_traps
-	install_claude_cli || return 1
+	install_coding_agent_clis || return 1
 	configure_statusline
-	install_codex_cli || return 1
 	configure_codex_auth_storage
-	install_pi_cli || return 1
 	configure_pi_defaults
 }
 
-export -f install_claude_cli install_codex_cli install_pi_cli \
-	configure_codex_auth_storage configure_pi_defaults merge_statusline_settings \
-	configure_statusline coding_agents_setup
+export -f install_coding_agent_clis configure_codex_auth_storage configure_pi_defaults \
+	merge_statusline_settings configure_statusline coding_agents_setup

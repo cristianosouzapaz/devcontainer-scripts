@@ -75,7 +75,7 @@ const isMissingFileError = (error) => error instanceof Error
  * @param {object[]} entries - Validated skill catalog entries.
  * @returns {Map<string, object[]>} Entries keyed by category.
  */
-export const groupByCategory = (entries) => {
+const groupByCategory = (entries) => {
     assertSkillEntries(entries);
     const groups = new Map();
     for (const entry of entries) {

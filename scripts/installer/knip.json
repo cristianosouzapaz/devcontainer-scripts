@@ -8,5 +8,6 @@
     "skills/local/index.js"
   ],
   "project": ["**/*.js"],
+  "ignoreDependencies": ["@inquirer/testing"],
   "ignore": ["**/templates/**"]
 }

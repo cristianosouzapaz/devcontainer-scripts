@@ -7,34 +7,26 @@ readonly _PERSISTENT_DATA_LINKS_SH_LOADED=1
 #
 # Some registered categories are reached through a fixed path in the home
 # directory because the tool that owns them has no way to be pointed at the
-# volume. Those paths live here rather than in the setup module because both the
-# setup orchestrator and bin/devcontainer-data need them: the orchestrator creates
-# the links, the CLI verifies and repairs them.
+# volume. Those paths live in the registry rather than in the setup module
+# because both the setup orchestrator and bin/devcontainer-data need them: the
+# orchestrator creates the links, the CLI verifies and repairs them.
 #
-# A category with no entry here is reached through its own configuration and has
-# no managed link at all.
+# A category with homeLink null or no homeLink is reached through its own
+# configuration and has no managed link at all.
 
-# Test seams — not readonly so tests can avoid the real home directory.
-_PERSISTENT_DATA_AGENTS_LINK="${PERSISTENT_DATA_AGENTS_LINK:-/root/.agents}"
-_PERSISTENT_DATA_CLAUDE_LINK="${PERSISTENT_DATA_CLAUDE_LINK:-/root/.claude}"
-_PERSISTENT_DATA_CODEX_LINK="${PERSISTENT_DATA_CODEX_LINK:-/root/.codex}"
-_PERSISTENT_DATA_PI_LINK="${PERSISTENT_DATA_PI_LINK:-/root/.pi}"
-_PERSISTENT_DATA_GITHUB_LINK="${PERSISTENT_DATA_GITHUB_LINK:-/root/.config/gh}"
-_PERSISTENT_DATA_PNPM_LINK="${PERSISTENT_DATA_PNPM_LINK:-/root/.local/share/pnpm}"
+# Test seam — not readonly so tests can avoid the real home directory.
+_PERSISTENT_DATA_HOME="${PERSISTENT_DATA_HOME:-/root}"
 
 # persistent_data_link_path <category_id>: Prints the managed link path of a category.
-# Reads the seam variables at call time so tests can redirect them after loading.
 # Returns: 0 and the path for a linked category, 1 for one with no managed link.
 persistent_data_link_path() {
-	case "$1" in
-	agents) printf '%s\n' "$_PERSISTENT_DATA_AGENTS_LINK" ;;
-	claude) printf '%s\n' "$_PERSISTENT_DATA_CLAUDE_LINK" ;;
-	codex) printf '%s\n' "$_PERSISTENT_DATA_CODEX_LINK" ;;
-	pi) printf '%s\n' "$_PERSISTENT_DATA_PI_LINK" ;;
-	github) printf '%s\n' "$_PERSISTENT_DATA_GITHUB_LINK" ;;
-	pnpm-store) printf '%s\n' "$_PERSISTENT_DATA_PNPM_LINK" ;;
-	*) return 1 ;;
-	esac
+	local category_id="$1" category home_link home_root
+
+	category=$(persistent_data_category "$category_id") || return 1
+	home_link=$(jq -r '.homeLink // empty' <<<"$category") || return 1
+	[[ -n "$home_link" ]] || return 1
+	home_root="${PERSISTENT_DATA_HOME:-$_PERSISTENT_DATA_HOME}"
+	printf '%s/%s\n' "$home_root" "$home_link"
 }
 
 # persistent_data_link_state <category_id>: Reports the state of a managed link

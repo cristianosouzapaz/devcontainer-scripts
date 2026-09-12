@@ -63,17 +63,15 @@ cli_category_status() {
 	local category="$1" status_check identity identity_status
 
 	status_check=$(jq -r '.statusCheck' <<<"$category")
-	case "$status_check" in
-	directory) printf '%s\n' 'directory present' ;;
-	claude | codex | github | pi)
-		identity=''
-		identity_status=0
-		identity=$(persistent_data_summary_identity "$status_check") || identity_status=$?
-		[[ "$identity_status" -eq 0 && -n "$identity" ]] || { printf '%s\n' 'not authenticated'; return 0; }
-		printf 'authenticated (%s)\n' "$identity"
-		;;
-	*) log_error "Unsupported persistent-data status check: $status_check"; return 1 ;;
-	esac
+	if [[ "$status_check" == 'directory' ]]; then
+		printf '%s\n' 'directory present'
+		return 0
+	fi
+	identity=''
+	identity_status=0
+	identity=$(persistent_data_summary_identity "$status_check") || identity_status=$?
+	[[ "$identity_status" -eq 0 && -n "$identity" ]] || { printf '%s\n' 'not authenticated'; return 0; }
+	printf 'authenticated (%s)\n' "$identity"
 }
 
 # cli_reset_category: Deletes and recreates only the requested category directory.
@@ -334,7 +332,7 @@ cli_path() {
 
 # cli_reset: Confirms and resets one declared category under its required lock.
 cli_reset() {
-	local category_id="$1" assume_yes="$2" category scope resettable
+	local category_id="$1" assume_yes="$2" category scope resettable status_check herdr_integration
 
 	category=$(cli_category_record "$category_id") || return 1
 	resettable=$(jq -r '.resettable' <<<"$category")
@@ -346,6 +344,7 @@ cli_reset() {
 		cli_confirm_reset "$category_id" || return 1
 	fi
 	scope=$(jq -r '.scope' <<<"$category")
+	status_check=$(jq -r '.statusCheck' <<<"$category")
 	if [[ "$category_id" == 'herdr' ]]; then
 		cli_reset_herdr || return 1
 	elif [[ "$scope" == 'shared' ]]; then
@@ -353,9 +352,10 @@ cli_reset() {
 	else
 		with_project_data_lock cli_reset_category "$category_id" || return 1
 	fi
-	case "$category_id" in
-	claude|codex|pi) cli_reconcile_herdr ;;
-	esac
+	if herdr_integration=$(coding_agents_field "$status_check" herdrIntegration 2>/dev/null) \
+		&& [[ "$herdr_integration" == 'true' ]]; then
+		cli_reconcile_herdr || return 1
+	fi
 }
 
 # cli_main: Parses phase-4 direct CLI commands.

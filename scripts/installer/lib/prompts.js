@@ -1,39 +1,17 @@
 import chalk from "chalk";
 import { checkbox, select, Separator } from "@inquirer/prompts";
 import { TOOLS } from "./constants.js";
-import { PROMPT_THEME, sectionHeader } from "./theme.js";
+import { formatSelectionSummary } from "./selection-summary.js";
+import { PROMPT_THEME } from "./theme.js";
 
 /**
- * @fileoverview Selection-prompt helpers shared by the installer sub-commands: the plain-text
- * confirmation summary, the edit-until-confirmed loop, target-tool selection, and the small
- * formatters that annotate picker rows. The catalog pickers themselves live in `pick-assets.js`.
+ * @fileoverview Selection-prompt helpers shared by the installer sub-commands: the
+ * edit-until-confirmed loop, target-tool selection, and the small formatters that annotate
+ * picker rows. The summary text lives in `selection-summary.js`; the catalog pickers
+ * themselves live in `pick-assets.js`.
  */
 
 const CLEAR_ON_DONE = { clearPromptOnDone: true };
-
-/**
- * Format the review shown before an installer proceeds: a section rule, then one block per
- * non-empty section — a bold title with a dim count, and its items indented one per line.
- * A `note` section (nothing is written for it, e.g. assets already installed globally) is
- * rendered dim throughout so it reads as context rather than an action.
- * @param {{title: string, items: string[], note?: boolean}[]} sections
- * @returns {string}
- */
-export const formatSelectionSummary = (sections) => {
-    const block = ({ title, items, note }) => {
-        const heading = note
-            ? chalk.dim(`${title} · ${items.length}`)
-            : `${chalk.bold(title)}${chalk.dim(` · ${items.length}`)}`;
-        return [heading, ...items.map((item) => (note ? chalk.dim(`  ${item}`) : `  ${item}`))];
-    };
-    return [
-        sectionHeader("Selection"),
-        " ",
-        ...sections
-            .filter(({ items }) => items.length > 0)
-            .flatMap((section, index) => [...(index > 0 ? [" "] : []), ...block(section)]),
-    ].join("\n");
-};
 
 /**
  * Show a selection summary and ask whether to install, edit, or cancel it. The summary lives
@@ -133,6 +111,7 @@ export const selectTargetTools = () => checkbox({
         { name: "GitHub Copilot", value: TOOLS.copilot },
         { name: "Claude Code", value: TOOLS.claude },
         { name: "Codex", value: TOOLS.codex },
+        { name: "Pi", value: TOOLS.pi },
     ],
     validate: (selected) => selected.length > 0 || "Select at least one coding agent.",
     theme: PROMPT_THEME,

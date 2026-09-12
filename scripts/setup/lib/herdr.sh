@@ -94,14 +94,23 @@ herdr_integration_current() {
 	grep -q "^${target}: current " <<<"$status_output"
 }
 
-# herdr_install_integrations: Installs each supported agent integration that is
-# not already current; a current one is left untouched.
+# herdr_install_integrations: Installs every catalog integration that is not
+# already current; a current one is left untouched.
 # Returns: 0 on success, 1 when the Herdr CLI is missing or an install fails.
 herdr_install_integrations() {
-	local target
+	local target herdr_integration ids
+	local -a agent_ids=()
 
 	herdr_require_command || return 1
-	for target in claude codex pi; do
+	ids=$(coding_agents_ids) || return 1
+	[[ -n "$ids" ]] || return 0
+	mapfile -t agent_ids <<< "$ids"
+	for target in "${agent_ids[@]}"; do
+		herdr_integration=$(coding_agents_field "$target" herdrIntegration) || return 1
+		if [[ "$herdr_integration" != 'true' ]]; then
+			log_debug "No Herdr integration declared for ${target}, skipping"
+			continue
+		fi
 		if herdr_integration_current "$target"; then
 			log_debug "Herdr ${target} integration already current, skipping"
 			continue

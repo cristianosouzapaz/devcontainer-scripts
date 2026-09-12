@@ -41,7 +41,7 @@ applyTo: "**/*.sh"
 
 - **Immutable values:** MUST declare truly immutable values (colors, symbols, fixed string literals) with `readonly`.
 - **Test seams:** MUST NOT declare with `readonly` behavioral thresholds, numeric defaults, or path constants that test code may need to override. Use the `_` prefix alone to signal they are internal.
-- **Arrays:** MUST use `declare -a` for indexed arrays and `declare -A` for associative arrays.
+- **Arrays:** MUST declare the array type — `-a` for indexed arrays and `-A` for associative arrays. Inside a function use `local -a` / `local -A`; at file scope use `declare -a` / `declare -A`.
 - **Integer arithmetic:** MUST use `var=$(( var + 1 ))` for integer assignment. MUST NOT use `expr`.
 - **Standalone arithmetic:** MUST append `|| true` when using `(( expr ))` as a standalone statement outside `if`/`while` to prevent unexpected exit under `set -e` when the expression evaluates to zero.
 

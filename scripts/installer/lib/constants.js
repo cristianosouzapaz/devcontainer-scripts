@@ -14,4 +14,5 @@ export const TOOLS = {
     copilot: "copilot",
     claude: "claude",
     codex: "codex",
+    pi: "pi",
 };

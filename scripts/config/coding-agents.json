@@ -1,0 +1,28 @@
+{
+  "agents": [
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "command": "claude",
+      "npmPackage": "@anthropic-ai/claude-code",
+      "herdrIntegration": true,
+      "loginHint": "claude auth login"
+    },
+    {
+      "id": "codex",
+      "label": "Codex CLI",
+      "command": "codex",
+      "npmPackage": "@openai/codex",
+      "herdrIntegration": true,
+      "loginHint": "codex login"
+    },
+    {
+      "id": "pi",
+      "label": "Pi",
+      "command": "pi",
+      "npmPackage": "@earendil-works/pi-coding-agent",
+      "herdrIntegration": true,
+      "loginHint": "pi"
+    }
+  ]
+}

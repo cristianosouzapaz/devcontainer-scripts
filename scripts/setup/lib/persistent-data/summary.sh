@@ -32,14 +32,8 @@ _HOSTNAME_PATH="${_HOSTNAME_PATH:-/etc/hostname}"
 # Shared physical volume shown once as the common origin (see docs/wiki/setup/library-layer.md).
 _PERSISTENT_DATA_SHARED_VOLUME="${_PERSISTENT_DATA_SHARED_VOLUME:-devcontainer-shared-data}"
 
-# Login hints keyed by the registry statusCheck token, for the "not
-# authenticated" row of an authentication category.
-declare -gA _PERSISTENT_DATA_LOGIN_HINT=(
-	[claude]="claude auth login"
-	[codex]="codex login"
-	[github]="gh auth login"
-	[pi]="pi"
-)
+# GitHub is not a coding agent, so its login hint remains local.
+readonly _PERSISTENT_DATA_GITHUB_LOGIN_HINT='gh auth login'
 
 # ----- INTERNAL HELPERS -------------------------------------------------------
 
@@ -97,10 +91,10 @@ persistent_data_summary_codex_identity() {
 	printf '%s\n' "${email:-active session}"
 }
 
-# persistent_data_summary_gh_identity: echoes the authenticated account name via
+# persistent_data_summary_github_identity: echoes the authenticated account name via
 # `gh auth status` (never by reading hosts.yml directly).
 # Returns: 0 and prints the account name if authenticated, 1 otherwise.
-persistent_data_summary_gh_identity() {
+persistent_data_summary_github_identity() {
 	local output
 	command -v gh >/dev/null 2>&1 || return 1
 	output="$(gh auth status 2>&1)" || return 1
@@ -138,14 +132,11 @@ persistent_data_summary_pi_identity() {
 # identity check for a registry statusCheck token.
 # Returns: 0 and prints the identity if authenticated, 1 otherwise.
 persistent_data_summary_identity() {
-	local status_check="$1"
-	case "$status_check" in
-	claude) persistent_data_summary_claude_identity ;;
-	codex) persistent_data_summary_codex_identity ;;
-	github) persistent_data_summary_gh_identity ;;
-	pi) persistent_data_summary_pi_identity ;;
-	*) return 1 ;;
-	esac
+	local status_check="$1" identity_function
+
+	identity_function="persistent_data_summary_${status_check}_identity"
+	declare -F "$identity_function" >/dev/null || return 1
+	"$identity_function"
 }
 
 # persistent_data_summary_render <title>: renders one TOOL/PATH/STATUS group
@@ -310,7 +301,11 @@ persistent_data_summary_print() {
 				if [[ -n "$identity" ]]; then
 					status="authenticated (${identity})"; ok="true"
 				else
-					hint="${_PERSISTENT_DATA_LOGIN_HINT[$status_check]:-}"
+					if [[ "$status_check" == 'github' ]]; then
+						hint="$_PERSISTENT_DATA_GITHUB_LOGIN_HINT"
+					else
+						hint=$(coding_agents_field "$status_check" loginHint) || return 1
+					fi
 					status="not authenticated, run: ${hint}"; ok="false"
 				fi
 			fi
@@ -340,7 +335,7 @@ persistent_data_summary_print() {
 }
 
 export -f persistent_data_summary_list_mounts persistent_data_summary_claude_identity \
-	persistent_data_summary_codex_identity persistent_data_summary_gh_identity \
+	persistent_data_summary_codex_identity persistent_data_summary_github_identity \
 	persistent_data_summary_pi_identity persistent_data_summary_identity \
 	persistent_data_summary_render \
 	persistent_data_summary_render_workspace persistent_data_summary_print
