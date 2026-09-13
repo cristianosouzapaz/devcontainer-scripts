@@ -190,26 +190,27 @@ persistent_data_summary_render() {
 }
 
 # persistent_data_summary_render_workspace <title>: renders the VOLUME/MOUNT/STATUS
-# group from pipe-delimited rows on stdin: "<ok>|<volume>|<mount>|<status>".
+# group from pipe-delimited rows on stdin: "<volume>|<mount>|<status>". A listed
+# workspace volume is always mounted, so every row carries the success symbol.
 # Same plain-text / STRUCTURED_LOGS behaviour as persistent_data_summary_render.
 # Args: $1 - group title.
 # Returns: 0 always.
 persistent_data_summary_render_workspace() {
-	local title="$1" ok volume mount status
+	local title="$1" volume mount status
 	local col_volume=6 col_mount=5
-	local -a ok_v=() vol_v=() mount_v=() status_v=()
+	local -a vol_v=() mount_v=() status_v=()
 	local i header row
 
-	while IFS='|' read -r ok volume mount status; do
-		[[ -n "$ok" ]] || continue
-		ok_v+=("$ok"); vol_v+=("$volume"); mount_v+=("$mount"); status_v+=("$status")
+	while IFS='|' read -r volume mount status; do
+		[[ -n "$volume" ]] || continue
+		vol_v+=("$volume"); mount_v+=("$mount"); status_v+=("$status")
 		((${#volume} > col_volume)) && col_volume=${#volume}
 		((${#mount} > col_mount)) && col_mount=${#mount}
 	done
 
-	((${#ok_v[@]} == 0)) && return 0
+	((${#vol_v[@]} == 0)) && return 0
 
-	log_info "${title}: ${#ok_v[@]}"
+	log_info "${title}: ${#vol_v[@]}"
 
 	if [[ "$STRUCTURED_LOGS" != "true" ]]; then
 		printf -v header '%-*s  %-*s  %s' "$col_volume" "VOLUME" "$col_mount" "MOUNT" "STATUS"
@@ -217,17 +218,13 @@ persistent_data_summary_render_workspace() {
 		log_detail "   ${header}"
 	fi
 
-	for i in "${!ok_v[@]}"; do
+	for i in "${!vol_v[@]}"; do
 		if [[ "$STRUCTURED_LOGS" == "true" ]]; then
 			row="${vol_v[$i]} -> ${mount_v[$i]} — ${status_v[$i]}"
 		else
 			printf -v row '%-*s  %-*s  %s' "$col_volume" "${vol_v[$i]}" "$col_mount" "${mount_v[$i]}" "${status_v[$i]}"
 		fi
-		if [[ "${ok_v[$i]}" == "true" ]]; then
-			log_item_success "$row"
-		else
-			log_item_warning "$row"
-		fi
+		log_item_success "$row"
 	done
 
 	return 0
@@ -247,7 +244,7 @@ persistent_data_summary_render_workspace() {
 persistent_data_summary_print() {
 	local mounts shared_root project_root shared_mounted=false project_mounted=false
 	local workspace_volume="" mount_name mount_dest
-	local category_id category group label binary status_check scope path
+	local category_id category group label binary status_check scope relative_path path
 	local identity status ok hint mounted
 	local auth_rows="" tool_rows="" workspace_rows=""
 	local -a ids=()
@@ -269,22 +266,25 @@ persistent_data_summary_print() {
 		esac
 	done <<<"$mounts"
 
+	# Validated once here: every lookup below runs in a subshell, which would lose
+	# the cached result and validate the registry again. A failure is already
+	# logged, and the lookups then fail on their own.
+	persistent_data_registry_validate || true
 	mapfile -t ids < <(persistent_data_category_ids)
 
 	for category_id in "${ids[@]}"; do
 		[[ -n "$category_id" ]] || continue
 		category="$(persistent_data_category "$category_id")" || continue
-		group="$(jq -r '.group' <<<"$category")"
-		label="$(jq -r '.label' <<<"$category")"
-		binary="$(jq -r '.binary // ""' <<<"$category")"
-		status_check="$(jq -r '.statusCheck' <<<"$category")"
-		scope="$(jq -r '.scope' <<<"$category")"
-		path="$(persistent_data_category_path "$category_id")" || continue
+		# One jq for all fields; a non-blank separator keeps an empty binary in place.
+		IFS=$'\x1f' read -r group label binary status_check scope relative_path <<<"$(
+			jq -r '[.group, .label, (.binary // ""), .statusCheck, .scope, .relativePath] | join("")' <<<"$category"
+		)"
 
+		# The registry allows only these two scopes, whose roots are resolved above.
 		if [[ "$scope" == "shared" ]]; then
-			mounted="$shared_mounted"
+			mounted="$shared_mounted"; path="$shared_root/$relative_path"
 		else
-			mounted="$project_mounted"
+			mounted="$project_mounted"; path="$project_root/$relative_path"
 		fi
 
 		if [[ "$group" == "authentication" ]]; then
@@ -321,7 +321,7 @@ persistent_data_summary_print() {
 	done
 
 	if [[ -n "$workspace_volume" ]]; then
-		workspace_rows="true|${workspace_volume}|${project_root}|available"$'\n'
+		workspace_rows="${workspace_volume}|${project_root}|available"$'\n'
 	fi
 
 	[[ "$shared_mounted" == "true" ]] &&
