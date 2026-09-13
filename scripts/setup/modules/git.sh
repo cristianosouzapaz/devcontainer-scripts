@@ -68,14 +68,10 @@ url_host() {
 	echo "$host"
 }
 
-# url_scheme <url>: Extracts the scheme (e.g. "https") from a URL. Defaults to "https".
+# url_scheme <url>: Extracts the scheme (e.g. "https") from a "scheme://" URL.
 url_scheme() {
 	local url="${1:-}"
-	if [[ "$url" == *://* ]]; then
-		echo "${url%%://*}"
-	else
-		echo "https"
-	fi
+	echo "${url%%://*}"
 }
 
 # token_env_var_name <host>: Computes the per-host token variable name.
@@ -102,9 +98,8 @@ resolve_token_for_host() {
 
 # configure_git_credentials <repo_url...>: Writes one credential store entry per unique host
 # found among the given repo URLs, resolving each host's token via resolve_token_for_host.
-# Preserves each URL's actual scheme (http/https). Hosts with no resolvable token are skipped
-# with a warning. Called with a single URL for the credential.helper bootstrap even when no
-# repo URLs are known yet (repo_url may be empty in that case).
+# Preserves each URL's actual scheme (http/https). Entries with no host (a path, an scp-style
+# address) get no line; hosts with no resolvable token are skipped with a warning.
 configure_git_credentials() {
 	if ! check_env_var GIT_USER; then
 		push_error "$DEVCONTAINER_VALIDATION_ERROR" "${LINENO}" "configure_git_credentials" "GIT_USER" "GIT_USER is not set"
@@ -118,7 +113,6 @@ configure_git_credentials() {
 		return 1
 	fi
 
-	git config --global credential.helper ''
 	git config --global credential.helper store
 	git config --global user.email "${GIT_EMAIL}"
 	git config --global user.name "${GIT_USER}"
@@ -128,7 +122,6 @@ configure_git_credentials() {
 	local url host scheme token credential_lines=""
 
 	for url in "${repo_urls[@]}"; do
-		[[ -n "$url" ]] || continue
 		host=$(url_host "$url")
 		[[ -n "$host" ]] || continue
 		[[ -v "_seen_hosts[$host]" ]] && continue
@@ -342,7 +335,7 @@ validate_same_host() {
 }
 
 # validate_token_access <repo_url>: Runs git ls-remote to confirm token access.
-# No-ops when no token is resolvable for the URL's host, VALIDATE_TOKEN != true, or url is empty.
+# No-ops when no token is resolvable for the URL's host or VALIDATE_TOKEN != true.
 # Relies on the credential store written by configure_git_credentials.
 validate_token_access() {
 	local url="${1:-}" host token
@@ -350,7 +343,6 @@ validate_token_access() {
 	token=$(resolve_token_for_host "$host")
 	[[ -n "$token" ]] || { log_debug "No resolvable GIT_CLONE_TOKEN for validation"; return 0; }
 	[[ "${VALIDATE_TOKEN}" == "true" ]] || return 0
-	[[ -n "$url" ]] || { log_debug "No repo URL — skipping token validation"; return 0; }
 	log_debug "Validating token via git ls-remote $url"
 	if git ls-remote "$url" HEAD >/dev/null 2>&1; then
 		log_item_success "Token validated"
@@ -411,7 +403,7 @@ git_setup() {
 		run_in_repo "${_WORKSPACE_DIR}/${PROJECT_NAME}" setup_repository "${_trimmed_entries[0]}" || return 1
 		run_in_repo "${_WORKSPACE_DIR}/${PROJECT_NAME}" install_dependencies || return 1
 	else
-		validate_same_host "${_trimmed_entries[@]}" || true
+		validate_same_host "${_trimmed_entries[@]}"
 		for entry in "${_trimmed_entries[@]}"; do
 			folder_name="$(repo_entry_folder_name "$entry")"
 			if [[ -v "_seen_folders[$folder_name]" ]]; then
