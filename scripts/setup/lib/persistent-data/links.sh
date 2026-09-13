@@ -42,6 +42,9 @@ persistent_data_link_path() {
 persistent_data_link_state() {
 	local category_id="$1" destination source_path current_target
 
+	# Resolved first: persistent_data_link_path fails the same way for an unknown
+	# category as for one with no managed link.
+	persistent_data_category "$category_id" >/dev/null || return 1
 	destination="$(persistent_data_link_path "$category_id")" || {
 		printf '%s\n' 'none'
 		return 0
@@ -99,10 +102,12 @@ persistent_data_link_standard_path() {
 
 # persistent_data_link_ensure <category_id>: Ensures the managed link of one
 # category, and succeeds silently for a category that has none.
-# Returns: 0 when the link is in place, 1 when it cannot be created.
+# Returns: 0 when the link is in place, 1 when the category is unknown or the
+# link cannot be created.
 persistent_data_link_ensure() {
 	local category_id="$1" destination
 
+	persistent_data_category "$category_id" >/dev/null || return 1
 	destination="$(persistent_data_link_path "$category_id")" || return 0
 	persistent_data_link_standard_path "$destination" "$category_id"
 }
