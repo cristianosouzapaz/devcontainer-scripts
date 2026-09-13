@@ -41,7 +41,6 @@ _MAX_RETRY_ATTEMPTS=3
 # Runtime state variables (not readonly as they change during execution)
 _CIRCUIT_BREAKER_OPEN="false"
 _JITTER_ENABLED="true"
-_RETRY_SUCCESS_CHECK_CMD=""
 
 # ----- FUNCTIONS --------------------------------------------------------------
 
@@ -84,14 +83,6 @@ retry_with_backoff() {
 			# success -> reset circuit breaker failure counter
 			_CIRCUIT_BREAKER_FAILURES=0
 			return 0
-		fi
-
-		# If a custom success check command is provided via env var, evaluate it
-		if [[ -n "${_RETRY_SUCCESS_CHECK_CMD}" ]]; then
-			if eval "${_RETRY_SUCCESS_CHECK_CMD}"; then
-				_CIRCUIT_BREAKER_FAILURES=0
-				return 0
-			fi
 		fi
 
 		# failed attempt

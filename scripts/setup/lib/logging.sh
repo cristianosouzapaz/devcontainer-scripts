@@ -51,28 +51,28 @@ readonly _SYMBOL_FATAL='✖'
 log_debug() {
 	# Show debug when DEBUG_MODE true or LOG_LEVEL allows DEBUG
 	if [[ "${DEBUG_MODE}" == "true" ]] || should_log "DEBUG"; then
-		log_output "DEBUG" "$*" "stderr" "detail"
+		log_output "DEBUG" "$*" "detail"
 	fi
 }
 
 # log_error: logs at ERROR level. Args: message. Returns: 0 always.
 log_error() {
-	log_output "ERROR" "$*" "stderr"
+	log_output "ERROR" "$*"
 }
 
 # log_info: logs at INFO level. Args: message. Returns: 0 always.
 log_info() {
-	log_output "INFO" "$*" "stderr"
+	log_output "INFO" "$*"
 }
 
 # log_success: logs at SUCCESS level. Args: message. Returns: 0 always.
 log_success() {
-	log_output "SUCCESS" "$*" "stderr"
+	log_output "SUCCESS" "$*"
 }
 
 # log_warning: logs at WARNING level. Args: message. Returns: 0 always.
 log_warning() {
-	log_output "WARNING" "$*" "stderr"
+	log_output "WARNING" "$*"
 }
 
 # log_detail: Logs a neutral secondary line under the preceding primary log
@@ -81,7 +81,7 @@ log_warning() {
 # Args: message - the text to log.
 # Returns: 0 always.
 log_detail() {
-	log_output "INFO" "$*" "stderr" "detail"
+	log_output "INFO" "$*" "detail"
 }
 
 # log_item_success: Logs a secondary line that is itself a conclusion (e.g.
@@ -90,7 +90,7 @@ log_detail() {
 # Args: message - the text to log.
 # Returns: 0 always.
 log_item_success() {
-	log_output "SUCCESS" "$*" "stderr" "item"
+	log_output "SUCCESS" "$*" "item"
 }
 
 # log_item_warning: Logs a secondary line that is itself a conclusion (e.g.
@@ -99,14 +99,14 @@ log_item_success() {
 # Args: message - the text to log.
 # Returns: 0 always.
 log_item_warning() {
-	log_output "WARNING" "$*" "stderr" "item"
+	log_output "WARNING" "$*" "item"
 }
 
 # log_fatal: Logs fatal error messages and exits.
 # Args: message - the text to log.
 # Returns: does not return; exits the process with status 1.
 log_fatal() {
-	log_output "FATAL" "$*" "stderr"
+	log_output "FATAL" "$*"
 	exit 1
 }
 
@@ -172,12 +172,6 @@ rotate_log_if_needed() {
 		return 0
 	fi
 
-	# remove oldest if max reached
-	if [[ "${_LOG_MAX_FILES}" -le 1 ]]; then
-		rm -f "${LOG_FILE}" 2>/dev/null || true
-		return 0
-	fi
-
 	for ((i = ${_LOG_MAX_FILES} - 1; i >= 1; i--)); do
 		if [[ -f "${LOG_FILE}.$i" ]]; then
 			mv "${LOG_FILE}.$i" "${LOG_FILE}.$((i + 1))" 2>/dev/null || true
@@ -209,15 +203,14 @@ json_quote() {
 	printf '"%s"' "$(printf "%s" "$input" | sed -e 's/\\/\\\\/g' -e 's/"/\\\"/g' -e ':a;N;s/\n/\\n/g;ta')"
 }
 
-# write_log: outputs either structured JSON or legacy formatted text.
+# write_log: outputs either structured JSON or legacy formatted text on stderr.
 # Supports multi-line messages: each non-empty line is prefixed with the
 # level symbol and color; blank lines are skipped to suppress spurious
 # empty-prefix output from tools like npm or git.
 write_log() {
 	local level="$1"
-	local message
-	local dest
-	local style
+	local message="$2"
+	local style="${3:-normal}"
 	local ts
 	local msg_quoted
 	local json
@@ -228,11 +221,6 @@ write_log() {
 	local _gray
 	local _reset
 	local _ts_prefix
-	shift
-	message="$1"
-	shift
-	dest="${1:-stdout}"
-	style="${2:-normal}"
 	if [[ -n "$LOG_FILE" ]]; then
 		rotate_log_if_needed
 	fi
@@ -244,11 +232,7 @@ write_log() {
 		if [[ -n "$LOG_FILE" ]]; then
 			printf '%s\n' "$json" >>"$LOG_FILE" 2>/dev/null || true
 		fi
-		if [[ "$dest" == "stderr" ]]; then
-			printf '%s\n' "$json" >&2
-		else
-			printf '%s\n' "$json"
-		fi
+		printf '%s\n' "$json" >&2
 	else
 		_gray="" _reset=""
 		if use_color; then
@@ -277,17 +261,10 @@ write_log() {
 			_ts_prefix=" $(printf '%b%s%b' "$_gray" "$(date -u +'%H:%M:%S')" "$_reset")"
 		fi
 
-		if [[ "$dest" == "stderr" ]]; then
-			while IFS= read -r _line; do
-				[[ -z "$_line" ]] && continue
-				printf '%s%s  %s\n' "$_prefix" "$_ts_prefix" "$_line" >&2
-			done <<< "$message"
-		else
-			while IFS= read -r _line; do
-				[[ -z "$_line" ]] && continue
-				printf '%s%s  %s\n' "$_prefix" "$_ts_prefix" "$_line"
-			done <<< "$message"
-		fi
+		while IFS= read -r _line; do
+			[[ -z "$_line" ]] && continue
+			printf '%s%s  %s\n' "$_prefix" "$_ts_prefix" "$_line" >&2
+		done <<< "$message"
 		if [[ -n "$LOG_FILE" ]]; then
 			while IFS= read -r _line; do
 				[[ -z "$_line" ]] && continue
@@ -301,8 +278,7 @@ write_log() {
 log_output() {
 	local level="$1"
 	local message="$2"
-	local dest="${3:-stdout}"
-	local style="${4:-normal}"
+	local style="${3:-normal}"
 	# Allow DEBUG messages when DEBUG_MODE is explicitly enabled
 	if [[ "$level" == "DEBUG" && "${DEBUG_MODE}" == "true" ]]; then
 		:
@@ -311,7 +287,7 @@ log_output() {
 			return 0
 		fi
 	fi
-	write_log "$level" "$message" "$dest" "$style"
+	write_log "$level" "$message" "$style"
 }
 
 export -f level_value should_log use_color rotate_log_if_needed json_quote write_log log_output log_debug log_error log_info log_success log_warning log_detail log_item_success log_item_warning log_fatal module_skip

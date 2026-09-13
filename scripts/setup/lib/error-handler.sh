@@ -100,39 +100,12 @@ dump_error_stack() {
 	done
 }
 
-# handle_error: Main trap handler that captures error context.
-# Usage: handle_error [exit_code] [lineno] [func] [cmd] [message]
-# Args:
-#   exit_code: numeric exit status to record. If omitted, the current
-#              value of `$?` at handler invocation is used.
-#   lineno: line number where the error occurred (optional)
-#   func: function name or context (optional)
-#   cmd: command string that failed (optional)
-#   message: optional human-readable message
-# Behavior:
-#   When invoked with no arguments (typical trap usage), the function
-#   collects context from `BASH_LINENO`, `FUNCNAME` and `BASH_COMMAND`.
-#   It then calls `push_error` to record the error.
+# handle_error: ERR trap handler. Records the failing command's exit status
+# with its context from `BASH_LINENO`, `FUNCNAME` and `BASH_COMMAND` via
+# `push_error`.
 handle_error() {
-	local exit_code lineno func cmd msg
-	exit_code=$?
-	if [[ "$#" -ge 1 ]]; then
-		exit_code="$1"
-		shift || true
-		lineno="${1:-0}"
-		shift || true
-		func="${1:-MAIN}"
-		shift || true
-		cmd="${1:-}"
-		shift || true
-		msg="${*:-}"
-	else
-		lineno="${BASH_LINENO[0]:-0}"
-		func="${FUNCNAME[1]:-MAIN}"
-		cmd="${BASH_COMMAND:-}"
-		msg=""
-	fi
-	push_error "$exit_code" "$lineno" "$func" "$cmd" "$msg"
+	local exit_code=$?
+	push_error "$exit_code" "${BASH_LINENO[0]:-0}" "${FUNCNAME[1]:-MAIN}" "${BASH_COMMAND:-}" ""
 }
 
 # on_sigint: Signal handler for SIGINT (Ctrl-C).

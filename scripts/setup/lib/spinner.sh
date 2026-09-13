@@ -70,7 +70,7 @@ spinner_cleanup() {
 		wait "$_SPINNER_PID" 2>/dev/null || true
 		_SPINNER_PID=""
 		printf '\r\033[K' >&2 || true
-		tput cnorm 2>/dev/null || true
+		tput cnorm >&2 2>/dev/null || true
 	fi
 	if [[ -n "$_SPINNER_LOCK_FILE" ]]; then
 		rm -f "$_SPINNER_LOCK_FILE" 2>/dev/null || true
@@ -94,7 +94,7 @@ start_spinner() {
 		return 0
 	fi
 	_SPINNER_LOCK_FILE=$(mktemp)
-	tput civis 2>/dev/null || true
+	tput civis >&2 2>/dev/null || true
 	spinner_draw "$message" "$_SPINNER_LOCK_FILE" &
 	_SPINNER_PID=$!
 	if [[ -z "$_SPINNER_CLEANUP_REGISTERED" ]]; then

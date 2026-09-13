@@ -76,61 +76,13 @@ repo_entry_folder_name() {
 	echo "${url%.git}"
 }
 
-# validate: Dispatcher for different validation types
-# Usage: validate <type> <args...>
-validate() {
-	local type="$1"
-	shift || true
-	case "$type" in
-	url)
-		validate_url "$@"
-		;;
-	file)
-		validate_file "$@"
-		;;
-	disk_space)
-		validate_disk_space "$@"
-		;;
-	json)
-		validate_json "$@"
-		;;
-	env_var_format)
-		validate_env_var_format "$@"
-		;;
-	*)
-		log_debug "Unknown validate type: $type"
-		return 2
-		;;
-	esac
-}
-
-# validate_url: validate URL format and optional reachability
-# Usage: validate_url <url> [--reachable]
+# validate_url: validate URL format (http or https)
+# Usage: validate_url <url>
 validate_url() {
 	local url="$1"
-	local reachable=false
-	if [[ "${2:-}" == "--reachable" ]]; then
-		reachable=true
-	fi
-
-	# Basic URL regex (accepts http, https)
 	if [[ ! "$url" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/.*)?$ ]]; then
 		log_debug "URL format invalid: $url"
 		return 1
-	fi
-
-	if $reachable; then
-		if check_command curl; then
-			curl -fsS --max-time 5 --head "$url" >/dev/null 2>&1 || return 1
-		else
-			# Try wget as fallback
-			if check_command wget; then
-				wget --spider --timeout=5 "$url" >/dev/null 2>&1 || return 1
-			else
-				log_debug "No HTTP client (curl/wget) available to check reachability"
-				return 2
-			fi
-		fi
 	fi
 	return 0
 }
@@ -166,20 +118,6 @@ validate_file() {
 			;;
 		esac
 	done
-	return 0
-}
-
-# validate_disk_space: ensure at least <min_mb> free on filesystem containing <path>
-# Usage: validate_disk_space <path> <min_mb>
-validate_disk_space() {
-	local path="${1:-/}" min_mb="${2:-1}" avail_mb
-	if [[ -z "$path" ]]; then path="/"; fi
-	avail_mb=$(df -P -m "$path" 2>/dev/null | awk 'END{print $4}') || avail_mb=0
-	if [[ -z "$avail_mb" ]]; then avail_mb=0; fi
-	if ((avail_mb < min_mb)); then
-		log_debug "Insufficient disk space on $path: ${avail_mb}MB available, ${min_mb}MB required"
-		return 1
-	fi
 	return 0
 }
 
@@ -237,4 +175,4 @@ validate_env_var_format() {
 	return 0
 }
 
-export -f check_command check_env_var collect_numbered_vars collect_numbered_repo_entries collect_numbered_extra_folders repo_entry_folder_name validate validate_url validate_file validate_disk_space validate_json validate_env_var_format
+export -f check_command check_env_var collect_numbered_vars collect_numbered_repo_entries collect_numbered_extra_folders repo_entry_folder_name validate_url validate_file validate_json validate_env_var_format
