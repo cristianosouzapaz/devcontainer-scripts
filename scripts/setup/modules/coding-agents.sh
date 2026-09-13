@@ -46,13 +46,13 @@ install_coding_agent_clis() {
 	local agent_id cli_command label npm_package exit_code ids
 	local -a agent_ids=()
 
-	ids=$(coding_agents_ids) || return 1
+	ids=$(coding_agents_ids)
 	[[ -n "$ids" ]] || return 0
 	mapfile -t agent_ids <<< "$ids"
 	for agent_id in "${agent_ids[@]}"; do
-		cli_command=$(coding_agents_field "$agent_id" command) || return 1
-		label=$(coding_agents_field "$agent_id" label) || return 1
-		npm_package=$(coding_agents_field "$agent_id" npmPackage) || return 1
+		cli_command=$(coding_agents_field "$agent_id" command)
+		label=$(coding_agents_field "$agent_id" label)
+		npm_package=$(coding_agents_field "$agent_id" npmPackage)
 		if check_command "$cli_command"; then
 			log_debug "${label} CLI already installed, skipping"
 			continue
@@ -129,11 +129,6 @@ configure_statusline() {
 
 	if [[ ! -f "${_STATUSLINE_SOURCE}" ]]; then
 		log_debug "Statusline source not found (${_STATUSLINE_SOURCE}), skipping"
-		return 0
-	fi
-
-	if ! check_command "jq"; then
-		log_debug "jq not available, skipping statusline configuration"
 		return 0
 	fi
 
@@ -239,6 +234,9 @@ configure_pi_defaults() {
 # idempotent and safe to re-run on container rebuilds.
 coding_agents_setup() {
 	setup_error_traps
+	# Validated here, once: the catalog lookups below run in $(...) subshells,
+	# where a validation would not be remembered and would run again each time.
+	coding_agents_validate || return 1
 	install_coding_agent_clis || return 1
 	configure_statusline
 	configure_codex_auth_storage

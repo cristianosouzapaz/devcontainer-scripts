@@ -23,7 +23,7 @@ persistent_data_create_category_directories() {
 	local category_id category_path
 
 	while IFS= read -r category_id; do
-		category_path="$(persistent_data_category_path "$category_id")" || return 1
+		category_path="$(persistent_data_category_path "$category_id")"
 		mkdir -p "$category_path" || return 1
 	done < <(persistent_data_category_ids)
 }
