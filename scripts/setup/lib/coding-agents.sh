@@ -35,11 +35,11 @@ coding_agents_validate() {
 			if type != "object" then "agent must be an object"
 			elif (has("id") and has("label") and has("command") and has("npmPackage") and has("herdrIntegration") and has("loginHint") | not) then "missing agent field"
 			elif (.id | type) != "string" or (.id | test("^[a-z0-9-]+$") | not) then "invalid agent id"
-			elif (.label | type) != "string" or length == 0 then "invalid agent label"
-			elif (.command | type) != "string" or length == 0 then "invalid agent command"
-			elif (.npmPackage | type) != "string" or length == 0 then "invalid agent npmPackage"
+			elif (.label | type) != "string" or (.label | length) == 0 then "invalid agent label"
+			elif (.command | type) != "string" or (.command | length) == 0 then "invalid agent command"
+			elif (.npmPackage | type) != "string" or (.npmPackage | length) == 0 then "invalid agent npmPackage"
 			elif (.herdrIntegration | type) != "boolean" then "invalid agent herdrIntegration"
-			elif (.loginHint | type) != "string" or length == 0 then "invalid agent loginHint"
+			elif (.loginHint | type) != "string" or (.loginHint | length) == 0 then "invalid agent loginHint"
 			else empty end
 		end
 	' "$_CODING_AGENTS_CATALOG" 2>/dev/null) || errors='invalid JSON'

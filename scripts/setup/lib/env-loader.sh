@@ -41,6 +41,7 @@ load_env_file() {
 		# only export non-empty values to avoid overwriting with blanks
 		[[ -n "$value" ]] && export "$key"="$value" && log_debug "Loaded: $key"
 	done <"$_ENV_FILE_PATH"
+	return 0
 }
 
 # persist_env_vars: Writes variables prefixed with PERSIST_ to
