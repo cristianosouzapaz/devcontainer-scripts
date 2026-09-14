@@ -45,7 +45,7 @@ herdr_initialize_config() {
 		return 1
 	fi
 	mkdir -p "$(dirname "$config_path")" || return 1
-	cp "$_HERDR_TEMPLATE" "$config_path"
+	cp "$_HERDR_TEMPLATE" "$config_path" || return 1
 	log_detail "Initialized Herdr configuration"
 }
 
@@ -55,7 +55,7 @@ herdr_initialize_config() {
 # via ordinary process env inheritance, which breaks XDG-aware tools (gh, etc.)
 # run inside a pane (see docs/wiki/setup/herdr.md). Idempotent: skips when the
 # snippet is already present, so a re-run never duplicates it.
-# Returns: 0 on success, 1 when the snippet asset is missing.
+# Returns: 0 on success, 1 when the snippet asset is missing or cannot be appended.
 herdr_reset_xdg_config_home() {
 	if [[ ! -f "$_HERDR_XDG_RESET_ASSET" ]]; then
 		log_error "Herdr XDG_CONFIG_HOME reset asset is missing: $_HERDR_XDG_RESET_ASSET"
@@ -65,7 +65,7 @@ herdr_reset_xdg_config_home() {
 		log_debug "Herdr XDG_CONFIG_HOME reset already present, skipping"
 		return 0
 	fi
-	cat "$_HERDR_XDG_RESET_ASSET" >>"$_HERDR_BASHRC_PATH"
+	cat "$_HERDR_XDG_RESET_ASSET" >>"$_HERDR_BASHRC_PATH" || return 1
 	log_detail "Installed Herdr XDG_CONFIG_HOME pane reset"
 }
 
@@ -79,39 +79,30 @@ herdr_require_command() {
 	return 1
 }
 
-# herdr_integration_current: Succeeds when `herdr integration status` reports
-# the target as current ("<target>: current (vN) (<path>)"). A missing, outdated
-# or unreadable status counts as not current, so the caller (re)installs it.
-# Arguments: $1 - integration target.
-# Returns: 0 when current, 1 otherwise.
-herdr_integration_current() {
-	local target="$1" status_output
-
-	status_output=$("$_HERDR_COMMAND" integration status 2>/dev/null) || {
-		log_debug "Herdr integration status unavailable, treating ${target} as not current"
-		return 1
-	}
-	grep -q "^${target}: current " <<<"$status_output"
-}
-
 # herdr_install_integrations: Installs every catalog integration that is not
-# already current; a current one is left untouched.
-# Returns: 0 on success, 1 when the Herdr CLI is missing or an install fails.
+# already current; a current one is left untouched. `herdr integration status`
+# is read once and reports a current target as "<target>: current (vN) (<path>)";
+# a missing, outdated or unreadable status counts as not current, so the
+# integration is (re)installed.
+# Returns: 0 on success, 1 when the Herdr CLI is missing, the catalog is invalid or an install fails.
 herdr_install_integrations() {
-	local target herdr_integration ids
+	local target herdr_integration ids status_output
 	local -a agent_ids=()
 
 	herdr_require_command || return 1
-	ids=$(coding_agents_ids) || return 1
+	# Validated in this shell, so the lookups below do not revalidate it in each $(...).
+	coding_agents_validate || return 1
+	ids=$(coding_agents_ids)
 	[[ -n "$ids" ]] || return 0
+	status_output=$("$_HERDR_COMMAND" integration status 2>/dev/null) || status_output=''
 	mapfile -t agent_ids <<< "$ids"
 	for target in "${agent_ids[@]}"; do
-		herdr_integration=$(coding_agents_field "$target" herdrIntegration) || return 1
+		herdr_integration=$(coding_agents_field "$target" herdrIntegration)
 		if [[ "$herdr_integration" != 'true' ]]; then
 			log_debug "No Herdr integration declared for ${target}, skipping"
 			continue
 		fi
-		if herdr_integration_current "$target"; then
+		if grep -q "^${target}: current " <<<"$status_output"; then
 			log_debug "Herdr ${target} integration already current, skipping"
 			continue
 		fi
@@ -136,4 +127,4 @@ herdr_apply() {
 }
 
 export -f herdr_config_path herdr_require_command herdr_initialize_config \
-	herdr_integration_current herdr_install_integrations herdr_reset_xdg_config_home herdr_apply
+	herdr_install_integrations herdr_reset_xdg_config_home herdr_apply
