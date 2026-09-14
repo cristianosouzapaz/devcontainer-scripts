@@ -2,7 +2,7 @@
     {
         "key": "documentation-sync",
         "name": "Documentation Sync",
-        "version": "2.0.0",
+        "version": "2.0.1",
         "description": "Use when editing any file in the project's documentation tree or the README, or when a change affects documented behavior (API, package, toolchain, structure): checks those docs against the codebase and keeps them from contradicting it. Run /documentation-sync audit for a full docs + README review.",
         "tags": [
             "docs",

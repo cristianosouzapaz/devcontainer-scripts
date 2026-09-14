@@ -6,11 +6,6 @@ set -euo pipefail
 # This script loads shared utilities and dynamically discovers and executes
 # all setup modules found in the modules directory.
 
-# ----- PATH AND STRUCTURE VARIABLES -------------------------------------------
-
-# Test seam — not readonly so tests can point this at a fixture file
-_VERSION_FILE="VERSION"
-
 # ----- INITIALIZATION ---------------------------------------------------------
 
 # Check for --debug flag and override DEBUG_MODE if provided
@@ -27,9 +22,10 @@ source "$SCRIPT_DIR/setup/lib/loader.sh"
 
 # ----- FUNCTIONS --------------------------------------------------------------
 
-# cleanup_temp_files: basic cleanup for ephemeral files created during setup
+# cleanup_temp_files: removes what an interrupted installer run left behind, in the same
+# temp dir install.sh stages into (${TMPDIR:-/tmp}).
 cleanup_temp_files() {
-	rm -rf /tmp/devcontainer-* 2>/dev/null || true
+	rm -rf "${TMPDIR:-/tmp}"/devcontainer-* 2>/dev/null || true
 	return 0
 }
 
@@ -45,7 +41,7 @@ main() {
 	register_cleanup cleanup_temp_files
 
 	local script_version="unknown"
-	[[ -f "$SCRIPT_DIR/$_VERSION_FILE" ]] && script_version="$(<"$SCRIPT_DIR/$_VERSION_FILE")"
+	[[ -f "$SCRIPT_DIR/VERSION" ]] && script_version="$(<"$SCRIPT_DIR/VERSION")"
 	log_info "Starting setup in $(pwd) - version ${script_version}"
 
 	load_env_file
@@ -69,6 +65,4 @@ export -f cleanup_temp_files main
 
 # ----- ENTRY POINT ------------------------------------------------------------
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-	main "$@"
-fi
+main "$@"

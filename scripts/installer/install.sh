@@ -4,9 +4,9 @@ set -euo pipefail
 # Bootstraps the installer package from the public scripts repository. Discovers every
 # source file, manifest and template by walking the entry scripts' import graph, downloads
 # them into a staging tree, verifies the tree is complete and parseable, and only then
-# copies it live and installs the npm runtime dependencies. Any failure leaves the live
-# installer directory untouched. It hands the run to its own published copy first — see
-# SELF-UPDATE below.
+# copies it live and installs the npm runtime dependencies. A fetch or verification failure
+# leaves the live installer directory untouched. It hands the run to its own published copy
+# first — see SELF-UPDATE below.
 
 # ----- CONFIGURATION -------------------------------------------------------------
 
@@ -33,10 +33,9 @@ readonly _CURL_OPTS=(
 	--connect-timeout 15 --max-time 120
 )
 
-# Safety cap on the import-graph download loop (int, default 10). Real graphs
-# settle in two or three passes; hitting this is a bug. Not readonly — a test
-# lowers it to exercise the non-convergence path.
-_MAX_GRAPH_ITERATIONS=10
+# Safety cap on the import-graph download loop (int, 10). Real graphs settle in
+# two or three passes; hitting this is a bug.
+readonly _MAX_GRAPH_ITERATIONS=10
 
 # ----- LOGGING -----------------------------------------------------------------
 # Runs before the shared logging library exists, so it writes straight to stderr.
@@ -208,16 +207,12 @@ assert_parses() {
 	done < <(find "${stage_dir}" -type f -name "${pattern}" -print0)
 }
 
-# verify_stage: Fail unless the seed files are present, every staged file parses, and
-# every referenced path was fetched. Runs before anything goes live.
+# verify_stage: Fail unless every staged JavaScript file parses as an ES module. Runs before
+# anything goes live. fetch_graph has already fetched every seed and every referenced path,
+# and parsed every JSON file.
 # Args: $1 stage_dir
 verify_stage() {
-	local stage_dir="$1" rel raw
-	local -a missing=()
-
-	for rel in "${_SEED_ENTRYPOINTS[@]}" "${_EXTRA_FILES[@]}"; do
-		[[ -f "${stage_dir}/${rel}" ]] || fail "expected file was not fetched: ${rel}"
-	done
+	local stage_dir="$1"
 
 	# package.json must be "type": "module" so `node --check` validates the ES modules in
 	# module mode; without it a truncated ESM file can pass the check.
@@ -226,14 +221,6 @@ verify_stage() {
 		|| fail 'package.json missing, invalid, or not "type": "module"'
 
 	assert_parses "${stage_dir}" '*.js' node --check
-	assert_parses "${stage_dir}" '*.json' node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))'
-
-	raw="$(required_paths "${stage_dir}")" || fail "installer dependency analysis failed"
-	while IFS= read -r rel; do
-		[[ -z "${rel}" || -e "${stage_dir}/${rel}" ]] && continue
-		missing+=("${rel}")
-	done <<< "${raw}"
-	[[ "${#missing[@]}" -eq 0 ]] || fail "referenced files missing after fetch: ${missing[*]}"
 }
 
 # ----- DEPENDENCIES ----------------------------------------------------------
@@ -357,7 +344,5 @@ export -f log warn fail cleanup download_file required_paths fetch_graph assert_
 
 # ----- ENTRY POINT ---------------------------------------------------------
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-	trap cleanup EXIT INT TERM
-	main "$@"
-fi
+trap cleanup EXIT INT TERM
+main "$@"

@@ -214,7 +214,7 @@ def check_paths(page, lines, patterns, findings):
     for number, line in prose_lines(lines):
         for span in INLINE_CODE.findall(line):
             candidate = span.strip()
-            if not PATH_CANDIDATE.match(candidate) or "://" in candidate:
+            if not PATH_CANDIDATE.match(candidate):
                 continue
             resolved = Path(candidate.rstrip("/"))
             if is_ignored(resolved, patterns) or not Path(resolved.parts[0]).is_dir():

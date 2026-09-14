@@ -32,9 +32,6 @@ _SCOPE_COUNT=0
 # The loader publishes the absolute script tree anchors this script reads below.
 source "${_SCRIPT_DIR}/setup/lib/loader.sh"
 
-# Test seam — not readonly so tests can point it at a fixture installer tree.
-_INSTALLER_DIR="${DEVCONTAINER_INSTALLER_DIR}"
-
 # ----- HELPER FUNCTIONS -----------------------------------------------------
 
 # resolve_assets_ref: Print the git ref used to fetch first-party global assets.
@@ -133,7 +130,7 @@ report_names() {
 sync_installer() {
 	local assets_ref="$1" files
 	start_spinner "Refreshing installer from devcontainer-scripts@${assets_ref}"
-	SCRIPTS_REF="${assets_ref}" INSTALLER_VERBOSE=1 run_captured bash "${_INSTALLER_DIR}/install.sh" \
+	SCRIPTS_REF="${assets_ref}" INSTALLER_VERBOSE=1 run_captured bash "${DEVCONTAINER_INSTALLER_DIR}/install.sh" \
 		|| fail_with_captured "Installer fetch failed (devcontainer-scripts@${assets_ref})"
 	spinner_cleanup
 	files="$(printf '%s\n' "${_CAPTURED}" | sed -nE 's/.*verified ([0-9]+) files.*/\1/p' | tail -n1)"
@@ -156,7 +153,7 @@ sync_scope() {
 	local heading="$1" entry="$2" fatal="$3" slow="${4:-}"
 	log_detail "${heading}"
 	if [[ "${slow}" == "slow" ]]; then start_spinner "Updating the shared skills store"; fi
-	run_captured node "${_INSTALLER_DIR}/${entry}" --global || fail_with_captured "${fatal}"
+	run_captured node "${DEVCONTAINER_INSTALLER_DIR}/${entry}" --global || fail_with_captured "${fatal}"
 	spinner_cleanup
 	report_names "${_CAPTURED}"
 	if [[ "${slow}" == "slow" ]] && printf '%s\n' "${_CAPTURED}" | grep -q 'skills update -g failed'; then
@@ -218,7 +215,7 @@ sync_claude_adapter() {
 # break persistence by replacing the managed symlink with a plain directory.
 # Returns: 0; sets _SCOPE_COUNT to how many destinations changed.
 sync_working_agreement() {
-	local canonical="${_INSTALLER_DIR}/agents/templates/global/AGENTS.md" codex_dir="${HOME}/.codex" pi_agent_dir="${HOME}/.pi/agent" result
+	local canonical="${DEVCONTAINER_INSTALLER_DIR}/agents/templates/global/AGENTS.md" codex_dir="${HOME}/.codex" pi_agent_dir="${HOME}/.pi/agent" result
 	_SCOPE_COUNT=0
 
 	log_detail "Personal working agreement"
@@ -282,7 +279,7 @@ sync_agent_assets() {
 
 	check_command node || log_fatal "node is required to sync global agent assets"
 	check_command npx || log_warning "npx not found — third-party skill sync will report failures"
-	[[ -f "${_INSTALLER_DIR}/install.sh" ]] || log_fatal "Installer not found at ${_INSTALLER_DIR}/install.sh"
+	[[ -f "${DEVCONTAINER_INSTALLER_DIR}/install.sh" ]] || log_fatal "Installer not found at ${DEVCONTAINER_INSTALLER_DIR}/install.sh"
 
 	mkdir -p "${HOME}/.agents/skills" "${HOME}/.claude/skills"
 
@@ -305,6 +302,4 @@ export -f resolve_assets_ref strip_ansi emit_captured run_captured report_warnin
 
 # ----- ENTRY POINT --------------------------------------------------------------
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-	sync_agent_assets "$@"
-fi
+sync_agent_assets "$@"
