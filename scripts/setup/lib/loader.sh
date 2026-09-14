@@ -13,29 +13,50 @@ readonly _LOADER_SH_LOADED=1
 # depends on the working directory — modules `cd` into the workspace mid-run —
 # and nothing else has to spell out a `../` hop of its own.
 
-readonly DEVCONTAINER_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+DEVCONTAINER_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly DEVCONTAINER_LIB_DIR
 readonly DEVCONTAINER_SETUP_DIR="${DEVCONTAINER_LIB_DIR%/*}"
 readonly DEVCONTAINER_SCRIPTS_DIR="${DEVCONTAINER_SETUP_DIR%/*}"
+# shellcheck disable=SC2034 # consumed by devcontainer-setup.sh
 readonly DEVCONTAINER_MODULES_DIR="${DEVCONTAINER_SETUP_DIR}/modules"
+# shellcheck disable=SC2034 # consumed by modules/coding-agents.sh and lib/herdr.sh
 readonly DEVCONTAINER_ASSETS_DIR="${DEVCONTAINER_SETUP_DIR}/assets"
+# shellcheck disable=SC2034 # consumed by lib/coding-agents.sh, lib/persistent-data/registry.sh and modules/coding-agents.sh
 readonly DEVCONTAINER_CONFIG_DIR="${DEVCONTAINER_SCRIPTS_DIR}/config"
+# shellcheck disable=SC2034 # consumed by sync-agent-assets.sh
 readonly DEVCONTAINER_INSTALLER_DIR="${DEVCONTAINER_SCRIPTS_DIR}/installer"
+# shellcheck disable=SC2034 # consumed by the Bats suite (entrypoints/, lib/loader, conventions/shellcheck)
 readonly DEVCONTAINER_BIN_DIR="${DEVCONTAINER_SCRIPTS_DIR}/bin"
 
+# shellcheck source=public/scripts/setup/lib/env-loader.sh
 source "$DEVCONTAINER_LIB_DIR/env-loader.sh"
+# shellcheck source=public/scripts/setup/lib/error-handler.sh
 source "$DEVCONTAINER_LIB_DIR/error-handler.sh"
+# shellcheck source=public/scripts/setup/lib/logging.sh
 source "$DEVCONTAINER_LIB_DIR/logging.sh"
+# shellcheck source=public/scripts/setup/lib/module-registry.sh
 source "$DEVCONTAINER_LIB_DIR/module-registry.sh"
+# shellcheck source=public/scripts/setup/lib/coding-agents.sh
 source "$DEVCONTAINER_LIB_DIR/coding-agents.sh"
+# shellcheck source=public/scripts/setup/lib/persistent-data/registry.sh
 source "$DEVCONTAINER_LIB_DIR/persistent-data/registry.sh"
+# shellcheck source=public/scripts/setup/lib/persistent-data/paths.sh
 source "$DEVCONTAINER_LIB_DIR/persistent-data/paths.sh"
+# shellcheck source=public/scripts/setup/lib/persistent-data/locks.sh
 source "$DEVCONTAINER_LIB_DIR/persistent-data/locks.sh"
+# shellcheck source=public/scripts/setup/lib/persistent-data/schema.sh
 source "$DEVCONTAINER_LIB_DIR/persistent-data/schema.sh"
+# shellcheck source=public/scripts/setup/lib/persistent-data/links.sh
 source "$DEVCONTAINER_LIB_DIR/persistent-data/links.sh"
+# shellcheck source=public/scripts/setup/lib/persistent-data/summary.sh
 source "$DEVCONTAINER_LIB_DIR/persistent-data/summary.sh"
+# shellcheck source=public/scripts/setup/lib/retry.sh
 source "$DEVCONTAINER_LIB_DIR/retry.sh"
+# shellcheck source=public/scripts/setup/lib/spinner.sh
 source "$DEVCONTAINER_LIB_DIR/spinner.sh"
+# shellcheck source=public/scripts/setup/lib/validation.sh
 source "$DEVCONTAINER_LIB_DIR/validation.sh"
+# shellcheck source=public/scripts/setup/lib/herdr.sh
 source "$DEVCONTAINER_LIB_DIR/herdr.sh"
 
 # ----- ENVIRONMENT VARIABLES --------------------------------------------------

@@ -122,6 +122,8 @@ run_module() {
 	entry="$(registry_read_meta "$module_file" 'ENTRY')"
 	log_info "Running module: ${name}"
 	_MODULE_SKIPPED=''
+	# Runtime-discovered modules are checked as separate ShellCheck gate targets.
+	# shellcheck source=/dev/null
 	source "$module_file"
 	if ! "$entry"; then
 		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" 'run_module' "$entry" "${name} failed"

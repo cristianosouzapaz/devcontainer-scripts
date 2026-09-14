@@ -9,12 +9,12 @@ readonly _VALIDATION_SH_LOADED=1
 
 # check_command: Usage: check_command <command_name>. Returns 0 if available, 1 if not.
 check_command() {
-	local cmd="$1"
-	if command -v "$cmd" >/dev/null 2>&1; then
-		log_debug "Command '$cmd' is available"
+	local cmd_name="$1"
+	if command -v "$cmd_name" >/dev/null 2>&1; then
+		log_debug "Command '$cmd_name' is available"
 		return 0
 	else
-		log_debug "Command '$cmd' is not available"
+		log_debug "Command '$cmd_name' is not available"
 		return 1
 	fi
 }

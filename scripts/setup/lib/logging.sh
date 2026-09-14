@@ -168,11 +168,11 @@ rotate_log_if_needed() {
 		return 0
 	fi
 	size=$(stat -c%s "${LOG_FILE}" 2>/dev/null || echo 0)
-	if ((size < ${_LOG_MAX_SIZE})); then
+	if ((size < _LOG_MAX_SIZE)); then
 		return 0
 	fi
 
-	for ((i = ${_LOG_MAX_FILES} - 1; i >= 1; i--)); do
+	for ((i = _LOG_MAX_FILES - 1; i >= 1; i--)); do
 		if [[ -f "${LOG_FILE}.$i" ]]; then
 			mv "${LOG_FILE}.$i" "${LOG_FILE}.$((i + 1))" 2>/dev/null || true
 		fi

@@ -98,7 +98,7 @@ retry_with_backoff() {
 
 	# On permanent failure, increment circuit breaker failures and maybe open it
 	(( _CIRCUIT_BREAKER_FAILURES++ )) || true
-	if ((_CIRCUIT_BREAKER_FAILURES >= ${_CIRCUIT_BREAKER_THRESHOLD})); then
+	if ((_CIRCUIT_BREAKER_FAILURES >= _CIRCUIT_BREAKER_THRESHOLD)); then
 		_CIRCUIT_BREAKER_OPEN="true"
 		push_error 1 "${LINENO}" "retry_with_backoff" "${cmd[*]}" "Circuit breaker opened after repeated failures"
 		return 2

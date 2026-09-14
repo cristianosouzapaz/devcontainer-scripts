@@ -18,8 +18,11 @@ readonly _ERROR_HANDLER_SH_LOADED=1
 # ----- ERROR CODE CONSTANTS ---------------------------------------------------
 
 readonly DEVCONTAINER_FATAL_ERROR=1
+# shellcheck disable=SC2034 # consumed by modules/git.sh
 readonly DEVCONTAINER_VALIDATION_ERROR=2
+# shellcheck disable=SC2034 # consumed by modules/git.sh
 readonly DEVCONTAINER_AUTH_ERROR=4
+# shellcheck disable=SC2034 # consumed by modules/ngrok.sh
 readonly DEVCONTAINER_NETWORK_ERROR=8
 
 # ----- INTERNAL STATE ---------------------------------------------------------
