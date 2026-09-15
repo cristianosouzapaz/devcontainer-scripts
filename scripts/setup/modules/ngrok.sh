@@ -32,7 +32,7 @@ readonly -a _NGROK_CONFIG_COMMAND=(config add-authtoken)
 ngrok_setup() {
 	local exit_code
 	setup_error_traps
-	register_cleanup 'unset NGROK_AUTHTOKEN'
+	register_module_cleanup 'unset NGROK_AUTHTOKEN'
 
 	check_command ngrok || {
 		log_debug "ngrok not installed"

@@ -82,7 +82,7 @@ ssh_signing_setup() {
 	local ssh_keygen_path
 
 	setup_error_traps
-	register_cleanup 'unset GIT_SIGNING_KEY'
+	register_module_cleanup 'unset GIT_SIGNING_KEY'
 
 	if [[ "${SSH_SIGNING:-}" != "true" ]]; then
 		log_debug "SSH_SIGNING is not true; ssh-signing was not selected during project init"

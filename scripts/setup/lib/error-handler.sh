@@ -31,6 +31,7 @@ readonly DEVCONTAINER_NETWORK_ERROR=8
 
 declare -a _ERROR_STACK=()
 declare -a _CLEANUP_HANDLERS=()
+declare -a _MODULE_CLEANUP_HANDLERS=()
 _ERROR_LAST_DEPTH=0
 _ERROR_LAST_CODE=0
 _ERROR_LAST_LINE=0
@@ -63,6 +64,42 @@ run_cleanup_handlers() {
 			rc=0
 		fi
 	done
+	return 0
+}
+
+# register_module_cleanup: register a cleanup handler scoped to the current module, kept apart
+# from the process-wide registry above. run_module (setup/lib/module-registry.sh) runs these
+# handlers right after the module's entry function returns — success, failure or skip alike —
+# then clears the list, so a module's own secrets (a clone token, an auth token, a signing key)
+# never reach the next module. on_exit also runs any handler still pending, as a backstop for a
+# signal or a fatal exit mid-module.
+# Usage: register_module_cleanup handler_name_or_command
+register_module_cleanup() {
+	local handler="$1"
+	_MODULE_CLEANUP_HANDLERS+=("$handler")
+}
+
+# run_module_cleanup_handlers: execute all module-scoped cleanup handlers in LIFO order,
+# exactly like run_cleanup_handlers. Failures are recorded via push_error but do not stop
+# subsequent handlers. Clears the registry afterward so each handler runs at most once.
+run_module_cleanup_handlers() {
+	local i handler rc
+	if [[ "${#_MODULE_CLEANUP_HANDLERS[@]}" -eq 0 ]]; then
+		return 0
+	fi
+	for ((i = ${#_MODULE_CLEANUP_HANDLERS[@]} - 1; i >= 0; i--)); do
+		handler="${_MODULE_CLEANUP_HANDLERS[$i]}"
+		if declare -F "$handler" >/dev/null 2>&1; then
+			"$handler" || rc=$?
+		else
+			eval "$handler" || rc=$?
+		fi
+		if [[ -n "${rc:-}" && "$rc" -ne 0 ]]; then
+			push_error "$rc" "${LINENO}" "MODULE_CLEANUP:${handler}" "${handler}" "cleanup failed"
+			rc=0
+		fi
+	done
+	_MODULE_CLEANUP_HANDLERS=()
 	return 0
 }
 
@@ -155,7 +192,10 @@ on_sigterm() {
 #           and the stack is non-empty. Always returns 0 so it never
 #           blocks the EXIT trap chain.
 on_exit() {
-	# Always attempt to run registered cleanup handlers first.
+	# Backstop: a signal or fatal exit mid-module can leave module cleanups pending, since
+	# run_module normally runs them right after the entry function returns.
+	run_module_cleanup_handlers || true
+	# Always attempt to run registered (process-wide) cleanup handlers next.
 	run_cleanup_handlers || true
 
 	if [[ "${DUMP_ERROR_STACK}" == "true" && "${#_ERROR_STACK[@]}" -gt 0 ]]; then
@@ -180,4 +220,4 @@ setup_error_traps() {
 	trap 'on_sigterm' TERM
 }
 
-export -f push_error dump_error_stack handle_error setup_error_traps on_sigint on_sigterm on_exit register_cleanup run_cleanup_handlers
+export -f push_error dump_error_stack handle_error setup_error_traps on_sigint on_sigterm on_exit register_cleanup run_cleanup_handlers register_module_cleanup run_module_cleanup_handlers

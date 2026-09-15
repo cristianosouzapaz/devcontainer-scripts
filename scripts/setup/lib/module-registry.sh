@@ -131,6 +131,9 @@ run_module() {
 	set +e
 	"$entry"
 	result=$?
+	# Module-scoped cleanups (a clone token, an auth token, a signing key, ...) run right
+	# after the entry returns, whatever its status, before the next module runs.
+	run_module_cleanup_handlers || true
 	if "$errexit"; then set -e; else set +e; fi
 	if [[ "$result" -ne 0 ]]; then
 		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" 'run_module' "$entry" "${name} failed"

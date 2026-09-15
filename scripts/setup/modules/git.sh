@@ -46,14 +46,23 @@ _WORKSPACE_DIR="${_WORKSPACE_DIR:-/workspace}"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# cleanup_sensitive_data: Unsets GIT_CLONE_TOKEN and any per-host GIT_CLONE_TOKEN_* vars;
-# removes the credentials file when CLEAN_CREDENTIALS=true.
-cleanup_sensitive_data() {
+# unset_clone_tokens: Unsets GIT_CLONE_TOKEN and any per-host GIT_CLONE_TOKEN_* vars.
+# Registered as a module-scoped cleanup (register_module_cleanup): run_module runs it right
+# after git_setup returns, whatever its outcome, so no later module's environment sees a
+# clone token (#99).
+unset_clone_tokens() {
 	local var_name
 	unset GIT_CLONE_TOKEN
 	for var_name in "${!GIT_CLONE_TOKEN_@}"; do
 		unset "$var_name"
 	done
+	return 0
+}
+
+# remove_credentials_store: Removes the credentials file when CLEAN_CREDENTIALS=true.
+# Registered as a process-wide cleanup (register_cleanup), unlike unset_clone_tokens: the
+# store removal stays on the exit trap, unchanged by #99.
+remove_credentials_store() {
 	[[ "$CLEAN_CREDENTIALS" == "true" ]] && rm -f "$_GIT_CREDENTIALS_FILE"
 	return 0
 }
@@ -255,9 +264,41 @@ install_dependencies() {
 	return 0
 }
 
+# install_dependencies_without_tokens: Runs install_dependencies with GIT_CLONE_TOKEN and every
+# GIT_CLONE_TOKEN_* removed from the environment, so a package-manager lifecycle script from the
+# cloned repository (arbitrary code) never sees a clone credential; every value is restored
+# afterward, since a later repository (multi-repo) still needs its own token resolved. Not a
+# subshell: install_dependencies records failures in the shared error stack (see run_in_repo),
+# which a subshell would discard.
+# Returns: install_dependencies's own exit code.
+install_dependencies_without_tokens() {
+	local rc=0 var_name
+	local -a token_vars=()
+	local -A saved_tokens=()
+
+	[[ -n "${GIT_CLONE_TOKEN:-}" ]] && token_vars+=("GIT_CLONE_TOKEN")
+	for var_name in "${!GIT_CLONE_TOKEN_@}"; do
+		token_vars+=("$var_name")
+	done
+	for var_name in "${token_vars[@]}"; do
+		saved_tokens["$var_name"]="${!var_name}"
+		unset "$var_name"
+	done
+
+	install_dependencies || rc=$?
+
+	for var_name in "${token_vars[@]}"; do
+		export "$var_name=${saved_tokens[$var_name]}"
+	done
+	return "$rc"
+}
+
 # setup_repository <resolved_url>: Two cases: (1) .git exists → optionally fast-forward merge;
 # (2) no token resolvable for resolved_url's host → skip; otherwise clones from resolved_url.
-# The caller must cd to the target directory before calling this function.
+# A failed `git init`, `git remote add` or `git fetch` in case (2) removes the `.git` this
+# attempt created and fails the module, naming resolved_url; a checkout conflict after a
+# successful fetch stays a warning. The caller must cd to the target directory before calling
+# this function.
 setup_repository() {
 	local resolved_url="${1:-}"
 	local current_branch fetch_output merge_output
@@ -302,10 +343,24 @@ setup_repository() {
 	fi
 
 	start_spinner "Cloning repository from $resolved_url"
-	spinner_stream log_debug git init -b "$DEFAULT_BRANCH"
-	git remote add origin "$resolved_url"
-	spinner_stream log_debug git fetch origin
+	local clone_rc=0 clone_step="git init -b $DEFAULT_BRANCH"
+	spinner_stream log_debug git init -b "$DEFAULT_BRANCH" || clone_rc=$?
+	if [[ $clone_rc -eq 0 ]]; then
+		clone_step="git remote add origin $resolved_url"
+		git remote add origin "$resolved_url" || clone_rc=$?
+	fi
+	if [[ $clone_rc -eq 0 ]]; then
+		clone_step="git fetch origin"
+		spinner_stream log_debug git fetch origin || clone_rc=$?
+	fi
 	spinner_cleanup
+
+	if [[ $clone_rc -ne 0 ]]; then
+		push_error "$DEVCONTAINER_NETWORK_ERROR" "${LINENO}" "setup_repository" "$clone_step" "Failed to clone repository from ${resolved_url}"
+		log_error "Failed to clone repository from ${resolved_url}"
+		rm -rf ./.git
+		return 1
+	fi
 
 	# Try to checkout without overwriting existing local config files
 	local checkout_output
@@ -384,7 +439,8 @@ git_setup() {
 	local -A _seen_folders=()
 	local deps_failed=false
 	setup_error_traps
-	register_cleanup cleanup_sensitive_data
+	register_module_cleanup unset_clone_tokens
+	register_cleanup remove_credentials_store
 	# A rejected token must fail the clone, not prompt on a lifecycle hook's terminal.
 	export GIT_TERMINAL_PROMPT=0
 
@@ -401,7 +457,7 @@ git_setup() {
 		validate_token_access "${_trimmed_entries[0]}" || return 1
 		mkdir -p "${_WORKSPACE_DIR}/${PROJECT_NAME}"
 		run_in_repo "${_WORKSPACE_DIR}/${PROJECT_NAME}" setup_repository "${_trimmed_entries[0]}" || return 1
-		run_in_repo "${_WORKSPACE_DIR}/${PROJECT_NAME}" install_dependencies || return 1
+		run_in_repo "${_WORKSPACE_DIR}/${PROJECT_NAME}" install_dependencies_without_tokens || return 1
 	else
 		validate_same_host "${_trimmed_entries[@]}"
 		for entry in "${_trimmed_entries[@]}"; do
@@ -414,7 +470,7 @@ git_setup() {
 			validate_token_access "$entry" || return 1
 			mkdir -p "${_WORKSPACE_DIR}/${folder_name}"
 			run_in_repo "${_WORKSPACE_DIR}/${folder_name}" setup_repository "$entry" || return 1
-			run_in_repo "${_WORKSPACE_DIR}/${folder_name}" install_dependencies || deps_failed=true
+			run_in_repo "${_WORKSPACE_DIR}/${folder_name}" install_dependencies_without_tokens || deps_failed=true
 		done
 		if [[ "$deps_failed" == true ]]; then
 			return 1
@@ -422,4 +478,4 @@ git_setup() {
 	fi
 }
 
-export -f run_in_repo cleanup_sensitive_data url_host url_scheme token_env_var_name resolve_token_for_host configure_git_credentials detect_package_manager install_dependencies setup_repository validate_same_host validate_token_access git_setup
+export -f run_in_repo unset_clone_tokens remove_credentials_store url_host url_scheme token_env_var_name resolve_token_for_host configure_git_credentials detect_package_manager install_dependencies install_dependencies_without_tokens setup_repository validate_same_host validate_token_access git_setup
