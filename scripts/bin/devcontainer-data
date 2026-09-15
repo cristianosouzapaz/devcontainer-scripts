@@ -107,10 +107,12 @@ cli_reset_herdr_locked() {
 	herdr_initialize_config
 }
 
-# cli_reset_herdr: Resets the project Herdr configuration, then reapplies the agent integrations.
+# cli_reset_herdr: Requires Herdr before touching data or taking a lock, then resets
+# the project Herdr configuration and reapplies the agent integrations.
 # The reset and reinitialization run under the project lock; reinstalling the integrations touches
 # shared agent config and takes the shared then project lock (see docs/wiki/setup/persistent-data-locks.md).
 cli_reset_herdr() {
+	herdr_require_command || return 1
 	with_project_data_lock cli_reset_herdr_locked || return 1
 	with_shared_data_lock with_project_data_lock herdr_install_integrations
 }
