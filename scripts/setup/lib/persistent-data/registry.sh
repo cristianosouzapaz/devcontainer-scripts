@@ -80,6 +80,24 @@ persistent_data_category() {
 	printf '%s\n' "$category"
 }
 
+# persistent_data_category_fields: Prints requested fields joined with a unit separator.
+# Args: category id, followed by field names in output order.
+# Returns: 0 when found (null or absent fields are empty), 1 otherwise.
+persistent_data_category_fields() {
+	local category_id="$1"
+
+	shift
+	persistent_data_registry_validate || return 1
+	jq -er --arg id "$category_id" '
+		.categories[] | select(.id == $id) | . as $category |
+		[$ARGS.positional[] | $category[.] | if . == null then "" else tostring end] |
+		join("\u001f")
+	' "$_PERSISTENT_DATA_REGISTRY" --args "$@" || {
+		log_error "Unknown persistent-data category: $category_id"
+		return 1
+	}
+}
+
 # persistent_data_category_ids: Prints registered category IDs in registry order.
 # Args: none.
 # Returns: 0 when the registry is valid, 1 otherwise.
@@ -88,4 +106,4 @@ persistent_data_category_ids() {
 	jq -r '.categories[].id' "$_PERSISTENT_DATA_REGISTRY"
 }
 
-export -f persistent_data_registry_validate persistent_data_category persistent_data_category_ids
+export -f persistent_data_registry_validate persistent_data_category persistent_data_category_fields persistent_data_category_ids

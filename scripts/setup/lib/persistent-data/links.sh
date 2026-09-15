@@ -20,10 +20,9 @@ _PERSISTENT_DATA_HOME="${PERSISTENT_DATA_HOME:-/root}"
 # persistent_data_link_path <category_id>: Prints the managed link path of a category.
 # Returns: 0 and the path for a linked category, 1 for one with no managed link.
 persistent_data_link_path() {
-	local category_id="$1" category home_link home_root
+	local category_id="$1" home_link home_root
 
-	category=$(persistent_data_category "$category_id") || return 1
-	home_link=$(jq -r '.homeLink // empty' <<<"$category") || return 1
+	home_link=$(persistent_data_category_fields "$category_id" homeLink) || return 1
 	[[ -n "$home_link" ]] || return 1
 	home_root="${PERSISTENT_DATA_HOME:-$_PERSISTENT_DATA_HOME}"
 	printf '%s/%s\n' "$home_root" "$home_link"
@@ -42,14 +41,13 @@ persistent_data_link_path() {
 persistent_data_link_state() {
 	local category_id="$1" destination source_path current_target
 
-	# Resolved first: persistent_data_link_path fails the same way for an unknown
-	# category as for one with no managed link.
-	persistent_data_category "$category_id" >/dev/null || return 1
+	# Resolve the category path first: persistent_data_link_path fails both for an
+	# unknown category and for one with no managed link.
+	source_path="$(persistent_data_category_path "$category_id")" || return 1
 	destination="$(persistent_data_link_path "$category_id")" || {
 		printf '%s\n' 'none'
 		return 0
 	}
-	source_path="$(persistent_data_category_path "$category_id")" || return 1
 
 	if [[ -L "$destination" ]]; then
 		current_target="$(readlink "$destination")"
