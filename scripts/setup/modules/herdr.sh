@@ -23,7 +23,6 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 # which guards on the Herdr command before taking any lock.
 # Returns: 0 on success, 1 when configuration or integration setup fails.
 herdr_setup() {
-	setup_error_traps
 	herdr_apply
 }
 

@@ -44,11 +44,10 @@ persistent_data_initialize() {
 persistent_data_setup() {
 	local category_id
 
-	setup_error_traps
-	persistent_data_registry_validate || return 1
-	persistent_data_initialize || return 1
+	persistent_data_registry_validate
+	persistent_data_initialize
 	while IFS= read -r category_id; do
-		persistent_data_link_ensure "$category_id" || return 1
+		persistent_data_link_ensure "$category_id"
 	done < <(persistent_data_category_ids)
 }
 

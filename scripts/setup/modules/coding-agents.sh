@@ -238,11 +238,10 @@ configure_pi_defaults() {
 # CLI is installed and its persistent defaults are configured. Every step is
 # idempotent and safe to re-run on container rebuilds.
 coding_agents_setup() {
-	setup_error_traps
 	# Validated here, once: the catalog lookups below run in $(...) subshells,
 	# where a validation would not be remembered and would run again each time.
-	coding_agents_validate || return 1
-	install_coding_agent_clis || return 1
+	coding_agents_validate
+	install_coding_agent_clis
 	configure_statusline
 	configure_codex_auth_storage
 	configure_pi_defaults

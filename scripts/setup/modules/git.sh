@@ -208,10 +208,13 @@ install_dependencies() {
 	case "$pm" in
 		pnpm)
 			skip_fallback=false
-			pnpm config set store-dir /root/.local/share/pnpm/store >/dev/null 2>&1
+			# Best-effort config, output already discarded: a failure here must not abort
+			# the module before the install attempt below runs its own failure handling
+			# (including the REQUIRE_DEPENDENCY_INSTALL=false warning path).
+			pnpm config set store-dir /root/.local/share/pnpm/store >/dev/null 2>&1 || true
 			# Widen the network retry budget for slow registries: 5 retries, 120s cap.
-			pnpm config set fetch-retries 5 >/dev/null 2>&1
-			pnpm config set fetch-retry-maxtimeout 120000 >/dev/null 2>&1
+			pnpm config set fetch-retries 5 >/dev/null 2>&1 || true
+			pnpm config set fetch-retry-maxtimeout 120000 >/dev/null 2>&1 || true
 			if [[ -f "pnpm-lock.yaml" ]]; then
 				exit_code=0
 				spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --frozen-lockfile --force || exit_code=$?
@@ -422,7 +425,12 @@ run_in_repo() {
 
 	previous_dir="$(pwd)"
 	cd "$dir" || return 1
-	"$@" || rc=$?
+	# Bare call: under live errexit a failure here stops the process, and restoring
+	# previous_dir is moot because the subshell's cwd dies with it. When the caller
+	# instead tests run_in_repo with `||`/`if`, errexit is off for this call tree, so
+	# the status is captured below and the cd back to previous_dir still runs.
+	"$@"
+	rc=$?
 	cd "$previous_dir" || return 1
 	return "$rc"
 }
@@ -438,7 +446,6 @@ git_setup() {
 	local entry folder_name
 	local -A _seen_folders=()
 	local deps_failed=false
-	setup_error_traps
 	register_module_cleanup unset_clone_tokens
 	register_cleanup remove_credentials_store
 	# A rejected token must fail the clone, not prompt on a lifecycle hook's terminal.
@@ -451,13 +458,13 @@ git_setup() {
 		return 0
 	fi
 
-	configure_git_credentials "${_trimmed_entries[@]}" || return 1
+	configure_git_credentials "${_trimmed_entries[@]}"
 
 	if [[ "${#_trimmed_entries[@]}" -eq 1 ]]; then
-		validate_token_access "${_trimmed_entries[0]}" || return 1
+		validate_token_access "${_trimmed_entries[0]}"
 		mkdir -p "${_WORKSPACE_DIR}/${PROJECT_NAME}"
-		run_in_repo "${_WORKSPACE_DIR}/${PROJECT_NAME}" setup_repository "${_trimmed_entries[0]}" || return 1
-		run_in_repo "${_WORKSPACE_DIR}/${PROJECT_NAME}" install_dependencies_without_tokens || return 1
+		run_in_repo "${_WORKSPACE_DIR}/${PROJECT_NAME}" setup_repository "${_trimmed_entries[0]}"
+		run_in_repo "${_WORKSPACE_DIR}/${PROJECT_NAME}" install_dependencies_without_tokens
 	else
 		validate_same_host "${_trimmed_entries[@]}"
 		for entry in "${_trimmed_entries[@]}"; do
@@ -467,9 +474,12 @@ git_setup() {
 				continue
 			fi
 			_seen_folders["$folder_name"]=1
-			validate_token_access "$entry" || return 1
+			validate_token_access "$entry"
 			mkdir -p "${_WORKSPACE_DIR}/${folder_name}"
-			run_in_repo "${_WORKSPACE_DIR}/${folder_name}" setup_repository "$entry" || return 1
+			run_in_repo "${_WORKSPACE_DIR}/${folder_name}" setup_repository "$entry"
+			# install_dependencies_without_tokens's own failure must not stop the other
+			# repositories: multi-repo keeps processing and fails the module only after
+			# every entry has been attempted (see the deps_failed check below).
 			run_in_repo "${_WORKSPACE_DIR}/${folder_name}" install_dependencies_without_tokens || deps_failed=true
 		done
 		if [[ "$deps_failed" == true ]]; then

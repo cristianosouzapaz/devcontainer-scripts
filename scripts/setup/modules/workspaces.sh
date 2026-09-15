@@ -52,7 +52,6 @@ workspaces_setup() {
 	local -a _extra_folders=()
 	local url folder_name workspace_file
 	local -a _folders=()
-	setup_error_traps
 
 	collect_numbered_repo_entries _entries
 	collect_numbered_extra_folders _extra_folders

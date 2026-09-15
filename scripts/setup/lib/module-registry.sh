@@ -53,6 +53,30 @@ registry_validate_meta() {
 	done
 }
 
+# registry_module_exit: Module subshell EXIT handler; stops the spinner and writes
+# only state added by the module as NUL-delimited kind/value pairs to run_module's
+# state file. Reads run_module's locals through dynamic scope: state_file,
+# error_start, module_cleanup_start and cleanup_start.
+registry_module_exit() {
+	local status=$? record
+	trap - ERR
+	set +e
+	spinner_cleanup
+	{
+		printf 'skip\0%s\0' "${_MODULE_SKIPPED:-}"
+		for record in "${_ERROR_STACK[@]:$error_start}"; do
+			printf 'error\0%s\0' "$record"
+		done
+		for record in "${_MODULE_CLEANUP_HANDLERS[@]:$module_cleanup_start}"; do
+			printf 'module-cleanup\0%s\0' "$record"
+		done
+		for record in "${_CLEANUP_HANDLERS[@]:$cleanup_start}"; do
+			printf 'cleanup\0%s\0' "$record"
+		done
+	} >"$state_file"
+	return "$status"
+}
+
 # ----- PUBLIC FUNCTIONS -------------------------------------------------------
 
 # discover_modules <modules_dir>: Validates and topologically orders modules.
@@ -113,10 +137,12 @@ discover_modules() {
 }
 
 # run_module <module_file>: Sources the module file and calls its declared entry function.
-# Returns: the entry function's exit code.
+# Returns: 0 for success or skip, 1 for failure.
 run_module() {
 	local module_file="$1"
-	local name entry result errexit=false
+	local name entry result state_file kind record errexit=false
+	local error_start module_cleanup_start cleanup_start
+	local _MODULE_WAITING=false
 
 	[[ "$-" != *e* ]] || errexit=true
 
@@ -124,18 +150,49 @@ run_module() {
 	entry="$(registry_read_meta "$module_file" 'ENTRY')"
 	log_info "Running module: ${name}"
 	_MODULE_SKIPPED=''
+	state_file=$(mktemp) || {
+		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" 'run_module' "$entry" "${name} failed"
+		return 1
+	}
 	# Runtime-discovered modules are checked as separate ShellCheck gate targets.
 	# shellcheck source=/dev/null
 	source "$module_file"
-	# Keep ERR active in the entry while retaining the caller's exit policy.
+	error_start=${#_ERROR_STACK[@]}
+	module_cleanup_start=${#_MODULE_CLEANUP_HANDLERS[@]}
+	cleanup_start=${#_CLEANUP_HANDLERS[@]}
+	# The parent must capture the bare subshell's status without recording its ERR.
 	set +e
-	"$entry"
+	_MODULE_WAITING=true
+	(
+		_MODULE_WAITING=false
+		set -eEuo pipefail
+		shopt -s inherit_errexit
+		trap 'handle_error' ERR
+		trap 'registry_module_exit' EXIT
+		trap 'on_sigint' INT
+		trap 'on_sigterm' TERM
+		"$entry"
+	)
 	result=$?
+	_MODULE_WAITING=false
+	# Read data, never shell syntax. NUL records preserve embedded newlines.
+	if [[ -f "$state_file" && -r "$state_file" ]]; then
+		while IFS= read -r -d '' kind && IFS= read -r -d '' record; do
+			case "$kind" in
+				skip) _MODULE_SKIPPED=$record ;;
+				error) _ERROR_STACK+=("$record") ;;
+				module-cleanup) _MODULE_CLEANUP_HANDLERS+=("$record") ;;
+				cleanup) _CLEANUP_HANDLERS+=("$record") ;;
+			esac
+		done <"$state_file"
+	fi
+	rm -f "$state_file"
 	# Module-scoped cleanups (a clone token, an auth token, a signing key, ...) run right
-	# after the entry returns, whatever its status, before the next module runs.
+	# after the subshell ends, whatever its status, before the next module runs.
 	run_module_cleanup_handlers || true
 	if "$errexit"; then set -e; else set +e; fi
 	if [[ "$result" -ne 0 ]]; then
+		log_error "${name} failed"
 		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" 'run_module' "$entry" "${name} failed"
 		return 1
 	fi
@@ -180,4 +237,4 @@ run_all_modules() {
 	fi
 }
 
-export -f registry_read_meta registry_validate_meta discover_modules run_module run_all_modules
+export -f registry_module_exit registry_read_meta registry_validate_meta discover_modules run_module run_all_modules

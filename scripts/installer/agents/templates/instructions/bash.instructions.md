@@ -58,13 +58,15 @@ applyTo: "**/*.sh"
 
 ## Error Handling
 
-- **Trap registry:** MUST use a centralized trap registry in module entry functions to register `ERR`, `EXIT`, `INT`, and `TERM` traps.
+- **Trap registry:** The orchestrator/registry MUST own `ERR`, `EXIT`, `INT`, and `TERM` traps. Module entries MUST NOT install traps.
 - **Cleanup registration:** MUST register cleanup logic via a dedicated cleanup registration function. MUST NOT set `trap` directly inside modules.
 - **Cleanup return:** Cleanup handlers MUST always `return 0` so they never block subsequent cleanup execution.
 - **Intentional suppression:** MAY use `|| true` to intentionally suppress errors for non-critical commands.
 - **No silent propagation:** MUST NOT use `|| true` to silence errors that should be propagated or logged.
 - **Sensitive cleanup:** MUST register sensitive variable cleanup as a cleanup handler, not performed inline.
 - **ERR needs errtrace:** An `ERR` trap MUST be paired with `set -E`. Without it Bash does not run the trap inside functions or subshells, so a failure there is never recorded.
+- **Errexit inheritance:** Module subshells MUST enable `shopt -s inherit_errexit` alongside `set -eEuo pipefail`.
+- **Whole steps:** Call a whole step bare under live errexit; `|| return 1` exempts its call tree.
 - **Signal handlers exit:** An `INT` or `TERM` handler MUST end with `exit` (130 for `INT`, 143 for `TERM`). A handler that returns resumes the script at the next command, so the signal no longer stops the run. Cleanups belong to the `EXIT` trap, which the `exit` triggers.
 - **Conditional context:** A command tested by `if`, `while`, `!`, `||` or `&&` runs its whole call tree with `set -e` and the `ERR` trap off. MUST NOT call a function that runs a whole step (a module entry, a module plan) in such a context: turn `errexit` off, call it bare, read `$?`, then restore `errexit` to its previous state.
 
@@ -94,6 +96,7 @@ applyTo: "**/*.sh"
   - ✓ `exit_code=0; cmd || exit_code=$?`
   - ✗ `cmd` then `exit_code=$?` on the next line
   - Exception: with `errexit` explicitly turned off around the call (the *Conditional context* rule), a bare call followed by `exit_code=$?` is required.
+  - Exception: a helper that must finalize after running a whole step (restore a directory, release a lock) calls it bare and captures on the next line (`"$@"` then `rc=$?`): under live errexit a failure stops the process and the finalization is moot; under a caller's `if`/`||` the status is captured and the finalization runs.
 
 ## Module Structure
 

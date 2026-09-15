@@ -49,7 +49,13 @@ with_persistent_data_lock() {
 	fi
 	locks_held_before="$_PERSISTENT_DATA_LOCKS_HELD"
 	_PERSISTENT_DATA_LOCKS_HELD="$_PERSISTENT_DATA_LOCKS_HELD $scope"
-	"$@" || command_status=$?
+	# Bare call: under live errexit a failure here stops the process, and restoring
+	# _PERSISTENT_DATA_LOCKS_HELD/releasing the lock is moot — the flock is released
+	# when the fd closes on exit. When the caller instead tests with_persistent_data_lock
+	# with `||`/`if`, errexit is off for this call tree, so the status is captured below
+	# and the lock/state restoration below still runs.
+	"$@"
+	command_status=$?
 	_PERSISTENT_DATA_LOCKS_HELD="$locks_held_before"
 	flock -u "$lock_fd"
 	exec {lock_fd}>&-

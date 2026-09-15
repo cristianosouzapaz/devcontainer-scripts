@@ -69,10 +69,10 @@ run_cleanup_handlers() {
 
 # register_module_cleanup: register a cleanup handler scoped to the current module, kept apart
 # from the process-wide registry above. run_module (setup/lib/module-registry.sh) runs these
-# handlers right after the module's entry function returns — success, failure or skip alike —
+# handlers in the parent right after the module's subshell ends — success, failure or skip alike —
 # then clears the list, so a module's own secrets (a clone token, an auth token, a signing key)
 # never reach the next module. on_exit also runs any handler still pending, as a backstop for a
-# signal or a fatal exit mid-module.
+# signal delivered to the parent mid-module.
 # Usage: register_module_cleanup handler_name_or_command
 register_module_cleanup() {
 	local handler="$1"
@@ -155,6 +155,8 @@ dump_error_stack() {
 # including skipped propagation, updates the tracked depth, caller site and status.
 handle_error() {
 	local exit_code=$?
+	# The registry imports the origin from the child, not the subshell command.
+	[[ "${_MODULE_WAITING:-false}" != true ]] || return 0
 	local depth=${#FUNCNAME[@]}
 	if [[ "$depth" -ne $(( _ERROR_LAST_DEPTH - 1 )) ||
 		"${BASH_LINENO[0]:-0}" != "$_ERROR_LAST_LINE" ||
@@ -193,7 +195,7 @@ on_sigterm() {
 #           blocks the EXIT trap chain.
 on_exit() {
 	# Backstop: a signal or fatal exit mid-module can leave module cleanups pending, since
-	# run_module normally runs them right after the entry function returns.
+	# run_module normally runs them in the parent after the module subshell ends.
 	run_module_cleanup_handlers || true
 	# Always attempt to run registered (process-wide) cleanup handlers next.
 	run_cleanup_handlers || true

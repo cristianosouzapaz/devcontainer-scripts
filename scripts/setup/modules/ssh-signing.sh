@@ -81,7 +81,6 @@ configure_git_signing() {
 ssh_signing_setup() {
 	local ssh_keygen_path
 
-	setup_error_traps
 	register_module_cleanup 'unset GIT_SIGNING_KEY'
 
 	if [[ "${SSH_SIGNING:-}" != "true" ]]; then
