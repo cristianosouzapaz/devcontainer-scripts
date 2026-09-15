@@ -5,7 +5,8 @@ readonly _ENV_LOADER_SH_LOADED=1
 
 # Environment file loader - Loads and persists variables from mounted .env file
 #
-# Usage in .env:
+# Usage in .env: split at the first =, trim surrounding whitespace and trailing CR,
+# then remove one matching quote pair; all other value content is literal (no inline comments).
 #   PERSIST_CONTEXT7_API_KEY=your-key   # persisted as CONTEXT7_API_KEY
 #   GIT_CLONE_TOKEN=secret                          # available during setup only; global fallback
 #   GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM=secret       # per-host override, see git.sh
@@ -28,12 +29,22 @@ load_env_file() {
 
 	log_info "Loading environment from .env file"
 
-	local key
-	local value
-	while IFS='=' read -r key value || [[ -n "$key" ]]; do
-		# normalize and trim
-		key=$(echo "$key" | tr -d '\r' | xargs)
-		value=$(echo "$value" | tr -d '\r' | xargs)
+	local line key value
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		[[ "$line" == *=* ]] || continue
+		key="${line%%=*}"
+		value="${line#*=}"
+
+		# Trim surrounding whitespace, including a trailing CR.
+		key="${key#"${key%%[![:space:]]*}"}"
+		key="${key%"${key##*[![:space:]]}"}"
+		value="${value#"${value%%[![:space:]]*}"}"
+		value="${value%"${value##*[![:space:]]}"}"
+
+		if [[ "${#value}" -ge 2 && "${value:0:1}" == "${value: -1}" &&
+			( "${value:0:1}" == '"' || "${value:0:1}" == "'" ) ]]; then
+			value="${value:1:${#value}-2}"
+		fi
 
 		# skip empty keys and comments
 		[[ -z "$key" || "$key" =~ ^# ]] && continue
