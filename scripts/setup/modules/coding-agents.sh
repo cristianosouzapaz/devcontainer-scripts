@@ -175,8 +175,14 @@ configure_statusline() {
 # Package installs go through Pi so its managed npm tree is populated; settings
 # are merged so existing developer choices win over shipped defaults.
 configure_pi_defaults() {
-	local catalog_packages catalog_settings current_settings installed_packages result tmp_file package pi_command
+	local catalog_packages catalog_settings current_settings installed_packages result tmp_file package pi_command ids
 	local -a missing_packages=()
+
+	ids=$(coding_agents_ids) || return 1
+	if ! grep -Fxq pi <<< "$ids"; then
+		log_debug 'Pi agent is absent from the catalog, skipping Pi defaults'
+		return 0
+	fi
 
 	pi_command=$(coding_agents_field pi command) || return 1
 	if [[ ! -f "${_PI_DEFAULTS_CATALOG}" ]]; then
