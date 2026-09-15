@@ -43,16 +43,15 @@ _PI_DEFAULTS_CATALOG="${DEVCONTAINER_CONFIG_DIR}/pi-defaults.json"
 # install_coding_agent_clis: Installs every catalog CLI via npm when absent.
 # Returns: 0 on success, 1 when an installation fails.
 install_coding_agent_clis() {
-	local agent_id cli_command label npm_package exit_code ids
+	local agent_id cli_command label npm_package exit_code ids fields
 	local -a agent_ids=()
 
 	ids=$(coding_agents_ids)
 	[[ -n "$ids" ]] || return 0
 	mapfile -t agent_ids <<< "$ids"
 	for agent_id in "${agent_ids[@]}"; do
-		cli_command=$(coding_agents_field "$agent_id" command)
-		label=$(coding_agents_field "$agent_id" label)
-		npm_package=$(coding_agents_field "$agent_id" npmPackage)
+		fields=$(coding_agents_fields "$agent_id" command label npmPackage)
+		IFS=$'\x1f' read -r cli_command label npm_package <<<"$fields"
 		if check_command "$cli_command"; then
 			log_debug "${label} CLI already installed, skipping"
 			continue

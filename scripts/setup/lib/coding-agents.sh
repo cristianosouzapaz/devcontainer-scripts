@@ -71,4 +71,20 @@ coding_agents_field() {
 	printf '%s\n' "$value"
 }
 
-export -f coding_agents_validate coding_agents_ids coding_agents_field
+# coding_agents_fields: Prints agent fields in requested order, joined by unit separators.
+# Args: $1 - agent id; remaining arguments - field names.
+# Returns: 0 when all fields are found and non-null, 1 otherwise with no output.
+coding_agents_fields() {
+	local agent_id="$1" fields
+
+	coding_agents_validate || return 1
+	shift
+	fields=$(jq -er --arg id "$agent_id" --args '
+		.agents[] | select(.id == $id) | . as $agent |
+		[$ARGS.positional[] | $agent[.]] |
+		select(all(. != null)) | map(tostring) | join("\u001f")
+	' "$@" <"$_CODING_AGENTS_CATALOG") || return 1
+	printf '%s\n' "$fields"
+}
+
+export -f coding_agents_validate coding_agents_ids coding_agents_field coding_agents_fields
