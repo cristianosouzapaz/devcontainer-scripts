@@ -116,7 +116,9 @@ discover_modules() {
 # Returns: the entry function's exit code.
 run_module() {
 	local module_file="$1"
-	local name entry
+	local name entry result errexit=false
+
+	[[ "$-" != *e* ]] || errexit=true
 
 	name="$(registry_read_meta "$module_file" 'NAME')"
 	entry="$(registry_read_meta "$module_file" 'ENTRY')"
@@ -125,7 +127,12 @@ run_module() {
 	# Runtime-discovered modules are checked as separate ShellCheck gate targets.
 	# shellcheck source=/dev/null
 	source "$module_file"
-	if ! "$entry"; then
+	# Keep ERR active in the entry while retaining the caller's exit policy.
+	set +e
+	"$entry"
+	result=$?
+	if "$errexit"; then set -e; else set +e; fi
+	if [[ "$result" -ne 0 ]]; then
 		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" 'run_module' "$entry" "${name} failed"
 		return 1
 	fi
@@ -140,7 +147,9 @@ run_module() {
 # Returns: 0 on success, 1 for an invalid plan or failed module.
 run_all_modules() {
 	local modules_dir="$1"
-	local count module completed=0 skipped=0
+	local count module completed=0 skipped=0 result errexit=false
+
+	[[ "$-" != *e* ]] || errexit=true
 
 	discover_modules "$modules_dir" || return 1
 	count="${#DISCOVERED_MODULES[@]}"
@@ -150,7 +159,11 @@ run_all_modules() {
 	fi
 	log_info "Discovered ${count} module(s)"
 	for module in "${DISCOVERED_MODULES[@]}"; do
-		run_module "$module" || return 1
+		set +e
+		run_module "$module"
+		result=$?
+		if "$errexit"; then set -e; else set +e; fi
+		[[ "$result" -eq 0 ]] || return 1
 		if [[ "${_MODULE_SKIPPED:-}" == 'true' ]]; then
 			(( skipped++ )) || true
 		else

@@ -13,7 +13,9 @@ readonly _ERROR_HANDLER_SH_LOADED=1
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 
 # This module uses the following configuration variables:
-# - DUMP_ERROR_STACK
+#
+# DUMP_ERROR_STACK        Print the error stack on exit (true/false)
+#                         Default: true (set by loader.sh)
 
 # ----- ERROR CODE CONSTANTS ---------------------------------------------------
 
@@ -29,6 +31,9 @@ readonly DEVCONTAINER_NETWORK_ERROR=8
 
 declare -a _ERROR_STACK=()
 declare -a _CLEANUP_HANDLERS=()
+_ERROR_LAST_DEPTH=0
+_ERROR_LAST_CODE=0
+_ERROR_LAST_LINE=0
 
 # ----- FUNCTIONS --------------------------------------------------------------
 
@@ -70,7 +75,9 @@ run_cleanup_handlers() {
 #   cmd: command string that failed or triggered the error
 #   message: optional human-readable message
 # Returns:
-#   Appends a serialized error entry to the `_ERROR_STACK` array.
+#   Appends a serialized error entry to the `_ERROR_STACK` array, and records
+#   the caller's depth, call site and status so `handle_error` does not record
+#   the same failure again as it propagates to that call site.
 push_error() {
 	local code="${1:-$DEVCONTAINER_FATAL_ERROR}"
 	shift || true
@@ -82,6 +89,9 @@ push_error() {
 	shift || true
 	local msg="${*:-}"
 	_ERROR_STACK+=("${code}|${lineno}|${func}|${cmd}|${msg}")
+	_ERROR_LAST_DEPTH=${#FUNCNAME[@]}
+	_ERROR_LAST_LINE=${BASH_LINENO[1]:-0}
+	_ERROR_LAST_CODE=$code
 }
 
 # dump_error_stack: Print all errors currently stored in the error stack.
@@ -103,28 +113,38 @@ dump_error_stack() {
 	done
 }
 
-# handle_error: ERR trap handler. Records the failing command's exit status
-# with its context from `BASH_LINENO`, `FUNCNAME` and `BASH_COMMAND` via
-# `push_error`.
+# handle_error: ERR trap handler. Records the failing command with its context.
+# Skips only the same status one frame up at the tracked caller site; every ERR,
+# including skipped propagation, updates the tracked depth, caller site and status.
 handle_error() {
 	local exit_code=$?
-	push_error "$exit_code" "${BASH_LINENO[0]:-0}" "${FUNCNAME[1]:-MAIN}" "${BASH_COMMAND:-}" ""
+	local depth=${#FUNCNAME[@]}
+	if [[ "$depth" -ne $(( _ERROR_LAST_DEPTH - 1 )) ||
+		"${BASH_LINENO[0]:-0}" != "$_ERROR_LAST_LINE" ||
+		"$exit_code" != "$_ERROR_LAST_CODE" ]]; then
+		push_error "$exit_code" "${BASH_LINENO[0]:-0}" "${FUNCNAME[1]:-MAIN}" "${BASH_COMMAND:-}" ""
+	fi
+	_ERROR_LAST_DEPTH=$depth
+	_ERROR_LAST_LINE=${BASH_LINENO[1]:-0}
+	_ERROR_LAST_CODE=$exit_code
 }
 
 # on_sigint: Signal handler for SIGINT (Ctrl-C).
 # Usage: on_sigint
 # Args: none
-# Behavior: records a SIGINT entry on the `_ERROR_STACK` with code 130.
+# Behavior: records SIGINT, then exits with 130; EXIT runs cleanups and dumps errors.
 on_sigint() {
 	push_error 130 "${LINENO}" "SIGINT" "SIGINT received"
+	exit 130
 }
 
 # on_sigterm: Signal handler for SIGTERM.
 # Usage: on_sigterm
 # Args: none
-# Behavior: records a SIGTERM entry on the `_ERROR_STACK` with code 143.
+# Behavior: records SIGTERM, then exits with 143; EXIT runs cleanups and dumps errors.
 on_sigterm() {
 	push_error 143 "${LINENO}" "SIGTERM" "SIGTERM received"
+	exit 143
 }
 
 # on_exit: EXIT trap handler invoked when the script exits.
@@ -147,11 +167,13 @@ on_exit() {
 # setup_error_traps: Install standard error and signal traps.
 # Usage: setup_error_traps
 # Args: none
-# Behavior: wires `handle_error` to `ERR`, `on_exit` to `EXIT`, and
-#           signal handlers for `INT` and `TERM` to their respective
-#           handlers. Call this once during script initialization to
-#           enable the error handler system.
+# Behavior: enables ERR inheritance in functions and subshells; wires
+#           `handle_error` to `ERR`, `on_exit` to `EXIT`, and signal handlers
+#           for `INT` and `TERM` to their respective handlers, ending the run
+#           with 130/143 after EXIT cleanup. Call this once during script
+#           initialization to enable the error handler system.
 setup_error_traps() {
+	set -E
 	trap 'handle_error' ERR
 	trap 'on_exit' EXIT
 	trap 'on_sigint' INT

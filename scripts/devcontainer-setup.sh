@@ -40,7 +40,7 @@ main() {
 	setup_error_traps
 	register_cleanup cleanup_temp_files
 
-	local script_version="unknown"
+	local script_version="unknown" result errexit=false
 	[[ -f "$SCRIPT_DIR/VERSION" ]] && script_version="$(<"$SCRIPT_DIR/VERSION")"
 	log_info "Starting setup in $(pwd) - version ${script_version}"
 
@@ -52,7 +52,12 @@ main() {
 		log_debug "Context: $(pwd)"
 	fi
 
-	if ! run_all_modules "$DEVCONTAINER_MODULES_DIR"; then
+	[[ "$-" != *e* ]] || errexit=true
+	set +e
+	run_all_modules "$DEVCONTAINER_MODULES_DIR"
+	result=$?
+	if "$errexit"; then set -e; else set +e; fi
+	if [[ "$result" -ne 0 ]]; then
 		log_fatal "One or more setup modules failed"
 	fi
 
