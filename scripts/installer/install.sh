@@ -1,17 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-# Bootstraps the installer package from the public scripts repository. Discovers every
-# source file, manifest and template by walking the entry scripts' import graph, downloads
-# them into a staging tree, verifies the tree is complete and parseable, and only then
-# copies it live and installs the npm runtime dependencies. A fetch or verification failure
-# leaves the live installer directory untouched. It hands the run to its own published copy
-# first — see SELF-UPDATE below.
+# Bootstraps the installer package from the public scripts repository: downloads every
+# file the entry scripts' import graph reaches into a staging tree, verifies the tree,
+# then copies it live and installs the npm runtime dependencies. A fetch or verification
+# failure leaves the live installer directory untouched. It runs before the shared
+# logging library exists, so it logs straight to stderr.
 
-# ----- CONFIGURATION -------------------------------------------------------------
+# ----- CONFIGURATION ----------------------------------------------------------
 
-# The entry scripts the VS Code tasks run. Everything else is discovered from their
-# import graph, so this is the only list kept in step with the package layout by hand.
+# why: every other file is discovered from their import graph, so this is the only hand-kept list
 readonly _SEED_ENTRYPOINTS=(
 	"agents/index.js"
 	"configs/index.js"
@@ -20,9 +18,7 @@ readonly _SEED_ENTRYPOINTS=(
 	"agent-md/index.js"
 )
 
-# Required, but not reachable from the import graph. The global working agreement is a
-# plain template no entry script imports: sync-agent-assets.sh copies it out of the
-# refreshed installer tree, which is what keeps it updatable without an image rebuild.
+# why: required but unreachable from the import graph; sync-agent-assets.sh copies AGENTS.md out of this tree
 readonly _EXTRA_FILES=("package.json" "agents/templates/global/AGENTS.md")
 
 readonly _RUNTIME_DEPS=("@inquirer/core" "@inquirer/prompts" "chalk" "consola")
@@ -33,54 +29,50 @@ readonly _CURL_OPTS=(
 	--connect-timeout 15 --max-time 120
 )
 
-# Safety cap on the import-graph download loop (int, 10). Real graphs settle in
-# two or three passes; hitting this is a bug.
+# why: real graphs settle in two or three passes, so reaching this cap is a bug
 readonly _MAX_GRAPH_ITERATIONS=10
 
-# ----- LOGGING -----------------------------------------------------------------
-# Runs before the shared logging library exists, so it writes straight to stderr.
+# ----- LOGGING ----------------------------------------------------------------
 
-# log: Progress line to stderr, silenced unless INSTALLER_VERBOSE is non-empty — the
-# bootstrap is a quiet prerequisite of the `node …/index.js` tasks, and only the
-# global-asset sync opts in, to parse "verified N files" out of the captured output.
+# log <message...>: writes a progress line to stderr when INSTALLER_VERBOSE is non-empty
+# Notes: the bootstrap is a quiet prerequisite of the node …/index.js tasks; only the
+#   global-asset sync opts in, to parse "verified N files" out of the captured output.
 log() {
 	[[ -n "${INSTALLER_VERBOSE:-}" ]] || return 0
 	printf '[install.sh] %s\n' "$*" >&2
 }
 
-# warn: Print a problem the run carried on past. Not gated on INSTALLER_VERBOSE — a
-# degraded run must say so, or a silent fallback reads as a clean one.
+# warn <message...>: writes a warning to stderr
+# Notes: not gated on INSTALLER_VERBOSE: a degraded run must say so, or a silent
+#   fallback reads as a clean one.
 warn() {
 	printf '[install.sh] WARNING: %s\n' "$*" >&2
 }
 
-# fail: Print a fatal message to stderr and exit non-zero.
+# fail <message...>: writes an error to stderr and exits 1
 fail() {
 	printf '[install.sh] ERROR: %s\n' "$*" >&2
 	exit 1
 }
 
-# ----- CLEANUP ---------------------------------------------------------------
+# ----- CLEANUP ----------------------------------------------------------------
 
 _STAGE_DIR=""
 _BOOTSTRAP_DIR=""
 
-# cleanup: Remove the staging directory and the self-update scratch directory. Always
-# returns 0 so it never blocks exit.
+# cleanup: removes the staging and the self-update scratch directories
 cleanup() {
 	[[ -n "${_STAGE_DIR}" && -d "${_STAGE_DIR}" ]] && rm -rf "${_STAGE_DIR}"
 	[[ -n "${_BOOTSTRAP_DIR}" && -d "${_BOOTSTRAP_DIR}" ]] && rm -rf "${_BOOTSTRAP_DIR}"
 	return 0
 }
 
-# ----- DOWNLOAD ------------------------------------------------------------
+# ----- DOWNLOAD ---------------------------------------------------------------
 
-# download_file: Fetch one repo-relative path into the staging tree, writing through a
-# temp file so a failed or empty transfer never leaves a partial file behind. curl's output
-# is captured, not printed: every retry repeats the same line, so only the last one survives,
-# as the reason on the fatal message.
-# Args: $1 base_url, $2 stage_dir, $3 repo-relative path
-# Returns: 0 on success; fatal otherwise.
+# download_file <base_url> <stage_dir> <rel_path>: downloads one repo-relative path into the staging tree, exiting on failure
+# Notes: writes through a temp file, so a failed or empty transfer never leaves a partial
+#   file. curl's output is captured, not printed: every retry repeats the same line, so
+#   only the last one is kept, as the reason on the fatal message.
 download_file() {
 	local base_url="$1" stage_dir="$2" rel="$3"
 	local url="${base_url}/${rel}" dest="${stage_dir}/${rel}" tmp err rc=0
@@ -97,14 +89,12 @@ download_file() {
 	fail "download failed: ${url}${err:+ — ${err##*$'\n'}}"
 }
 
-# ----- DEPENDENCY GRAPH --------------------------------------------------------
+# ----- DEPENDENCY GRAPH -------------------------------------------------------
 
-# required_paths: Print every repo-relative path referenced by the staged .js and .json
-# files — resolved relative imports, file `new URL("./...")` references, and manifest
-# `templateFile`s — sorted and de-duplicated. Directory `new URL()` references are
-# intentionally ignored: they are bases for later reads, not files to download. Analysis runs in node, so JS/JSON
-# formatting is irrelevant; an invalid staged JSON file aborts the run.
-# Args: $1 stage_dir
+# required_paths <stage_dir>: prints every repo-relative path the staged .js and .json files reference, sorted and de-duplicated
+# Notes: covers relative imports, file new URL("./...") references and manifest
+#   templateFile and resources entries. A directory new URL() is a base for later reads,
+#   not a file to download, so it is skipped. An invalid staged JSON file exits 1.
 required_paths() {
 	local stage_dir="$1"
 	# shellcheck disable=SC2016  # the single-quoted body is a JS program, not a shell string
@@ -164,10 +154,7 @@ required_paths() {
 	' "${stage_dir}"
 }
 
-# fetch_graph: Download the seed files, then resolve and download everything they
-# reference until the set is closed.
-# Args: $1 base_url, $2 stage_dir
-# Returns: 0 on success; fatal if analysis fails or the graph does not converge.
+# fetch_graph <base_url> <stage_dir>: downloads the seed files, then everything they reference until nothing new is referenced, exiting on failure or when the graph does not converge
 fetch_graph() {
 	local base_url="$1" stage_dir="$2" rel raw pending
 
@@ -192,11 +179,9 @@ fetch_graph() {
 	fail "installer dependency graph did not converge after ${_MAX_GRAPH_ITERATIONS} passes"
 }
 
-# ----- VERIFICATION ------------------------------------------------------------
+# ----- VERIFICATION -----------------------------------------------------------
 
-# assert_parses: Fail unless every file matching <pattern> under <stage_dir> is accepted
-# by the checker command, which is invoked with the file path as its final argument.
-# Args: $1 stage_dir, $2 find name pattern, $3.. checker command
+# assert_parses <stage_dir> <pattern> <checker...>: exits unless the checker, given the file path as its last argument, accepts every file matching the find name pattern
 assert_parses() {
 	local stage_dir="$1" pattern="$2" file
 	shift 2
@@ -207,15 +192,12 @@ assert_parses() {
 	done < <(find "${stage_dir}" -type f -name "${pattern}" -print0)
 }
 
-# verify_stage: Fail unless every staged JavaScript file parses as an ES module. Runs before
-# anything goes live. fetch_graph has already fetched every seed and every referenced path,
-# and parsed every JSON file.
-# Args: $1 stage_dir
+# verify_stage <stage_dir>: exits unless every staged JavaScript file parses as an ES module
+# Notes: package.json must be "type": "module" for node --check to check module syntax;
+#   without it a truncated ES module can pass.
 verify_stage() {
 	local stage_dir="$1"
 
-	# package.json must be "type": "module" so `node --check` validates the ES modules in
-	# module mode; without it a truncated ESM file can pass the check.
 	node -e 'process.exit(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).type === "module" ? 0 : 1)' \
 		"${stage_dir}/package.json" >/dev/null 2>&1 \
 		|| fail 'package.json missing, invalid, or not "type": "module"'
@@ -223,11 +205,9 @@ verify_stage() {
 	assert_parses "${stage_dir}" '*.js' node --check
 }
 
-# ----- DEPENDENCIES ----------------------------------------------------------
+# ----- DEPENDENCIES -----------------------------------------------------------
 
-# install_dependencies: Run `npm install` (prod deps only), surfacing its output only on
-# failure, then confirm each runtime dependency resolved.
-# Args: $1 installer_dir
+# install_dependencies <installer_dir>: runs npm install for production dependencies, showing its output only on failure, then exits unless every runtime dependency resolved
 install_dependencies() {
 	local installer_dir="$1" log_file dep
 	log_file="$(mktemp)"
@@ -244,22 +224,15 @@ install_dependencies() {
 	done
 }
 
-# ----- SELF-UPDATE -----------------------------------------------------------
+# ----- SELF-UPDATE ------------------------------------------------------------
 
-# This script is the one file the import graph cannot reach — it is what walks the graph — so
-# a fix here would otherwise wait for an image rebuild, and a bootstrap too broken to download
-# anything would stay broken until then. The published copy is fetched first and handed the
-# run when it differs.
-#
-# It never overwrites the copy in the image, which stays the known-good fallback: a bad
-# publish is undone by publishing a fix, not by rebuilding every image.
-
-# self_update: Hand the run to the published copy of this script when it differs from this
-# one. A candidate that cannot be fetched, is empty, does not parse, or fails is discarded.
-# _INSTALLER_SELF_UPDATED stops the candidate fetching one of its own; _INSTALLER_DIR carries
-# the target directory it cannot derive from its temporary path.
-# Args: $1 base_url, $2 installer_dir
+# self_update <base_url> <installer_dir>: hands the run to the published copy of this script when it differs from this one
 # Returns: 0 when this process should carry on; exits 0 once a candidate has done the run.
+# Notes: the import graph cannot reach this script, which walks it, so a fix here would
+#   otherwise wait for an image rebuild. The image copy is never overwritten and stays the
+#   known-good fallback: a candidate that cannot be fetched, is empty, does not parse or
+#   fails is discarded. _INSTALLER_SELF_UPDATED stops the candidate updating itself;
+#   _INSTALLER_DIR carries the target directory it cannot derive from its temp path.
 self_update() {
 	local base_url="$1" installer_dir="$2" candidate output err status=0
 
@@ -285,32 +258,27 @@ self_update() {
 	log "self-update: running the published install.sh"
 	_INSTALLER_SELF_UPDATED=1 _INSTALLER_DIR="${installer_dir}" bash "${candidate}" >"${output}" 2>&1 || status=$?
 	if [[ "${status}" -ne 0 ]]; then
-		# A discarded candidate's errors describe a run that did not happen, so they stay
-		# behind the verbose gate; the fallback itself is always reported.
+		# why: a discarded candidate's errors describe a run that did not happen
 		[[ -z "${INSTALLER_VERBOSE:-}" ]] || cat "${output}" >&2
 		warn "the published install.sh failed (exit ${status}) — continued with the bundled one"
 		return 0
 	fi
 
-	# The candidate did the real work, so its output is this run's output.
 	cat "${output}" >&2
 	exit 0
 }
 
-# ----- CORE SETUP ----------------------------------------------------------
+# ----- CORE SETUP -------------------------------------------------------------
 
-# installer_base_url: Print the raw-content base URL for an installer ref. The public
-# repository is this repository's `public/` subtree published at its root, so the
-# installer sits at `scripts/installer` there and not under a `public/` prefix.
-# Args: $1 - git ref.
-# Returns: 0, URL on stdout.
+# installer_base_url <ref>: prints the raw-content base URL of the installer at a git ref
+# Notes: the public repository is this repository's public/ subtree published at its
+#   root, so the path carries no public/ prefix.
 installer_base_url() {
 	local scripts_ref="$1"
 	printf 'https://raw.githubusercontent.com/cristianosouzapaz/devcontainer-scripts/%s/scripts/installer\n' "${scripts_ref}"
 }
 
-# main: Fetches, verifies and installs the whole installer package.
-# Returns: 0 on success; fatal on any missing prerequisite, download or verification failure.
+# main: fetches, verifies and installs the whole installer package, exiting on any failure
 main() {
 	local installer_dir base_url scripts_ref
 
@@ -342,7 +310,7 @@ main() {
 export -f log warn fail cleanup download_file required_paths fetch_graph assert_parses \
 	verify_stage install_dependencies self_update installer_base_url main
 
-# ----- ENTRY POINT ---------------------------------------------------------
+# ----- ENTRY POINT ------------------------------------------------------------
 
 trap cleanup EXIT INT TERM
 main "$@"

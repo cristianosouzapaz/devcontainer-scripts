@@ -1,29 +1,23 @@
 #!/bin/bash
 set -euo pipefail
 
-# DevContainer Setup Orchestrator
-#
-# This script loads shared utilities and dynamically discovers and executes
-# all setup modules found in the modules directory.
+# Setup orchestrator: loads the shared utilities, then runs every setup module found in
+# the modules directory in dependency order.
 
 # ----- INITIALIZATION ---------------------------------------------------------
 
-# Check for --debug flag and override DEBUG_MODE if provided
 [[ "${1:-}" == "--debug" ]] && DEBUG_MODE=true
 
-# Resolve script directory (either local workspace mount or container copy)
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
-# The loader publishes the absolute script tree anchors (DEVCONTAINER_LIB_DIR, DEVCONTAINER_MODULES_DIR, …)
-# used below, so this is the only path this script has to spell out itself.
+# why: the loader publishes the script tree anchors, so this is the only path spelled out here
 source "$SCRIPT_DIR/setup/lib/loader.sh"
 
 # ----- FUNCTIONS --------------------------------------------------------------
 
-# cleanup_temp_files: removes what an interrupted installer run left behind, in the same
-# temp dir install.sh stages into (${TMPDIR:-/tmp}).
+# cleanup_temp_files: removes the devcontainer-* directories an interrupted installer run left in ${TMPDIR:-/tmp}
 cleanup_temp_files() {
 	rm -rf "${TMPDIR:-/tmp}"/devcontainer-* 2>/dev/null || true
 	return 0
@@ -31,11 +25,7 @@ cleanup_temp_files() {
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# main: Orchestrates the full devcontainer setup sequence.
-# Installs error traps, registers temp-file cleanup, loads environment
-# variables, and runs all discovered modules in dependency order.
-# Exits fatally if any module fails.
-# Returns: 0 on success (does not return on fatal module failure).
+# main: runs the full setup (error traps, environment, every module in dependency order, persistent-data summary), exiting when a module fails
 main() {
 	setup_error_traps
 	register_cleanup cleanup_temp_files

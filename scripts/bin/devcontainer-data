@@ -5,34 +5,27 @@ set -euo pipefail
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
-# Resolved through readlink so the command still finds the script tree when it is
-# invoked through a symlink on PATH.
+# why: readlink -f, so a symlink on PATH still finds the script tree
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 BOOTSTRAP_LIB_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")/../setup/lib" && pwd)"
 source "$BOOTSTRAP_LIB_DIR/loader.sh"
 
 # ----- INTERNAL HELPERS -------------------------------------------------------
 
-# cli_usage: Logs the supported persistent-data command syntax.
+# cli_usage: logs the supported command syntax
 cli_usage() {
 	log_info 'Usage: devcontainer-data {list|status|path <id>|repair|reset <id> [--yes]|interactive}'
 }
 
-# cli_category_fields: Prints scope, relative path, label, identity, resettable
-# and Herdr integration fields, joined by unit separators with empty fields preserved.
-# Args: category id. Returns: 0 when found, 1 otherwise.
+# cli_category_fields <category_id>: prints scope, relative path, label, identity, resettable and Herdr integration, joined by unit separators with empty fields kept
 cli_category_fields() {
 	provisioning_fields all "$1" scope relativePath label identity resettable herdrIntegration
 }
 
-# cli_link_problem: Prints a description of a category's managed link when that
-# link is not in place, naming the path and the target it should have. A broken
-# link makes the tool that owns the path lose its configuration, which its own
-# status command reports as "not authenticated" — so this takes precedence over
-# cli_category_status wherever a category status is rendered.
-# Args: $1 - category id.
-# Returns: 0 and the description when the link needs repair, 1 when it is in
-# place or the category has no managed link.
+# cli_link_problem <category_id>: prints what is wrong with the category's managed link, naming the path and its expected target
+# Returns: 1 when the link is in place or the category has no managed link.
+# Notes: a broken link makes the tool that owns the path lose its configuration, which
+#   its status command reports as "not authenticated", so callers check this first.
 cli_link_problem() {
 	local category_id="$1" state destination source_path
 
@@ -48,7 +41,7 @@ cli_link_problem() {
 	esac
 }
 
-# cli_category_status: Prints the status specific to a declared identity probe.
+# cli_category_status <probe>: prints the identity the probe reports, "not authenticated", or "directory present" when there is no probe
 cli_category_status() {
 	local probe="$1" identity identity_status
 
@@ -63,7 +56,9 @@ cli_category_status() {
 	printf 'authenticated (%s)\n' "$identity"
 }
 
-# cli_reset_category: Deletes and recreates only the requested category directory.
+# cli_reset_category <category_id>: deletes and recreates the category directory
+# Notes: the removal runs inside the parent entered with cd -P and re-checked, so a
+#   parent swapped for a symlink after the realpath check is refused, not followed.
 cli_reset_category() {
 	local category_id="$1" fields scope relative_path root category_path root_path category_path_real
 	local category_parent category_name category_parent_real category_parent_current
@@ -98,28 +93,28 @@ cli_reset_category() {
 	log_success "Reset persistent-data category: $category_id"
 }
 
-# cli_reset_herdr_locked: Clears the project Herdr data and restores its initial configuration.
+# cli_reset_herdr_locked: clears the project Herdr data and restores its initial configuration
 cli_reset_herdr_locked() {
 	cli_reset_category herdr || return 1
 	herdr_initialize_config
 }
 
-# cli_reset_herdr: Requires Herdr before touching data or taking a lock, then resets
-# the project Herdr configuration and reapplies the agent integrations.
-# The reset and reinitialization run under the project lock; reinstalling the integrations touches
-# shared agent config and takes the shared then project lock (see docs/wiki/setup/persistent-data-locks.md).
+# cli_reset_herdr: resets the project Herdr configuration and reinstalls the agent integrations
+# Notes: checks for Herdr before touching data or taking a lock. The integrations touch
+#   shared agent config, so they run under the shared then the project lock (see
+#   docs/wiki/setup/persistent-data-locks.md).
 cli_reset_herdr() {
 	herdr_require_command || return 1
 	with_project_data_lock cli_reset_herdr_locked || return 1
 	with_shared_data_lock with_project_data_lock herdr_install_integrations
 }
 
-# cli_reconcile_herdr: Restores integrations affected by resetting shared agent config.
+# cli_reconcile_herdr: restores the Herdr integrations a reset of shared agent config removed
 cli_reconcile_herdr() {
 	herdr_apply
 }
 
-# cli_confirm_reset: Asks the user to confirm a destructive category reset.
+# cli_confirm_reset <category_id>: asks the user to type yes before a destructive reset
 cli_confirm_reset() {
 	local category_id="$1" reply
 
@@ -135,9 +130,9 @@ cli_confirm_reset() {
 	fi
 }
 
-# ----- INTERACTIVE MENU ------------------------------------------------------
+# ----- INTERACTIVE MENU -------------------------------------------------------
 
-# cli_resettable_category_ids: Prints registry category IDs whose resettable flag is true.
+# cli_resettable_category_ids: prints the registry category ids whose resettable flag is true
 cli_resettable_category_ids() {
 	local category_id fields resettable
 	while IFS= read -r category_id; do
@@ -147,7 +142,7 @@ cli_resettable_category_ids() {
 	done < <(provisioning_ids all)
 }
 
-# cli_interactive_overview: Prints the compact persistent-data snapshot shown before the menu.
+# cli_interactive_overview: logs the compact persistent-data snapshot shown before the menu
 cli_interactive_overview() {
 	local category_id fields scope relative_path label probe root status link_problem
 
@@ -178,8 +173,7 @@ cli_interactive_overview() {
 	done < <(provisioning_ids all)
 }
 
-# cli_interactive_path: Prompts for a registry category and prints its path,
-# re-prompting on an unknown id and returning on a blank line.
+# cli_interactive_path: prompts for a category and logs its path, re-prompting on an unknown id and returning on a blank line
 cli_interactive_path() {
 	local category_id ids resolved
 
@@ -195,8 +189,7 @@ cli_interactive_path() {
 	done
 }
 
-# cli_interactive_reset: Prompts for a resettable category and runs the confirmed
-# reset, re-prompting on an unknown id and returning on a blank line.
+# cli_interactive_reset: prompts for a resettable category and runs the confirmed reset, re-prompting on an unknown id and returning on a blank line
 cli_interactive_reset() {
 	local category_id ids_list ids all_ids
 
@@ -217,7 +210,7 @@ cli_interactive_reset() {
 	cli_reset "$category_id" false
 }
 
-# cli_interactive_menu: Runs the main action loop until the user quits.
+# cli_interactive_menu: runs the action menu until the user quits
 cli_interactive_menu() {
 	local action
 
@@ -245,7 +238,7 @@ cli_interactive_menu() {
 
 # ----- COMMANDS ---------------------------------------------------------------
 
-# cli_interactive: Runs the terminal menu, reusing only the direct commands.
+# cli_interactive: runs the terminal menu, built only from the direct commands
 cli_interactive() {
 	if [[ ! -t 0 ]]; then
 		log_error 'Interactive mode requires a terminal'
@@ -255,7 +248,7 @@ cli_interactive() {
 	cli_interactive_menu
 }
 
-# cli_list: Lists all declared persistent-data categories.
+# cli_list: prints every declared category as id, scope and label, tab-separated
 cli_list() {
 	local category_id fields scope label
 
@@ -266,7 +259,7 @@ cli_list() {
 	done < <(provisioning_ids all)
 }
 
-# cli_status: Lists location, availability, mount, and status for every category.
+# cli_status: prints every category's path, availability, mount and status, tab-separated
 cli_status() {
 	local category_id fields scope relative_path probe root category_path available mounted status link_problem
 
@@ -292,13 +285,11 @@ cli_status() {
 	done < <(provisioning_ids all)
 }
 
-# cli_repair: Re-asserts every managed link that is not already in place.
-# The links are the one part of the layout nothing re-checks after setup: they
-# are created once from postCreateCommand and stay lost for the life of the
-# container if anything removes one. Repair is delegated to
-# persistent_data_link_ensure, so a path holding real data is refused here
-# exactly as it is during setup, and a category with no managed link is skipped.
-# Returns: 0 when every link is in place, 1 when one could not be repaired.
+# cli_repair: re-creates every managed link that is not in place
+# Notes: nothing else re-checks the links after setup: they are created once from
+#   postCreateCommand and stay lost for the life of the container if removed. The repair
+#   goes through persistent_data_link_ensure, so a path holding real data is refused
+#   exactly as it is during setup.
 cli_repair() {
 	local category_id state destination failed=false
 
@@ -317,12 +308,12 @@ cli_repair() {
 	return 0
 }
 
-# cli_path: Prints a category's registered absolute path.
+# cli_path <category_id>: prints the category's registered absolute path
 cli_path() {
 	persistent_data_category_path "$1"
 }
 
-# cli_reset: Confirms and resets one declared category under its required lock.
+# cli_reset <category_id> <assume_yes>: confirms, then resets the category under the lock its scope requires
 cli_reset() {
 	local category_id="$1" assume_yes="$2" fields scope resettable herdr_integration
 
@@ -347,7 +338,7 @@ cli_reset() {
 	fi
 }
 
-# cli_main: Parses phase-4 direct CLI commands.
+# cli_main <subcommand> [args...]: runs one subcommand, logging the usage on a malformed call
 cli_main() {
 	local subcommand="${1:-}" category_id assume_yes=false
 

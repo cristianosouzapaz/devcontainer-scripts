@@ -15,10 +15,8 @@ readonly _PERSISTENT_DATA_SUMMARY_SH_LOADED=1
 
 # Documented in README.md#configuration-variables:
 # - STRUCTURED_LOGS
-#
-# Read from the tools' own environment:
-# - CODEX_HOME: Codex state directory holding auth.json (default ~/.codex)
-# - PI_CODING_AGENT_DIR: Pi agent directory holding auth.json (default ~/.pi/agent)
+# - CODEX_HOME: Codex's own state directory holding auth.json (default ~/.codex)
+# - PI_CODING_AGENT_DIR: Pi's own agent directory holding auth.json (default ~/.pi/agent)
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 

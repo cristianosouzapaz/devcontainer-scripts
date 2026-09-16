@@ -1,56 +1,42 @@
 #!/bin/bash
 set -euo pipefail
 
-# Sync Global Agent Assets
-#
-# Refreshes the machine-wide agent skills/commands store that every devcontainer on
-# this host shares — the `agents` category of the shared `devcontainer-shared-data`
-# volume, surfaced at ~/.agents via a managed symlink:
-#
-#   1. re-fetch the installer from devcontainer-scripts@<ref>
-#   2. first-party instruction/prompt skills  → agents/index.js --global
-#   3. first-party local skills               → skills/local/index.js --global
-#   4. curated third-party skills             → skills/index.js --global
-#
-# Each installer reads its own `*.global.json` manifest, so this script passes no
-# asset names. Idempotent: safe to re-run whenever an upstream template changes.
-#
-# Ref precedence for step 1: AGENT_ASSETS_REF -> SCRIPTS_REF -> main. A project
-# pinned to a feature branch via SCRIPTS_REF therefore does not push that branch's
-# first-party assets into the shared volume unless AGENT_ASSETS_REF opts in.
+# Refreshes the machine-wide agent skills, commands and working agreement shared by every
+# devcontainer on this host, the agents category of the devcontainer-shared-data volume
+# linked at ~/.agents: re-fetches the installer, then runs each installer's --global
+# entry, which reads its own *.global.json manifest. Safe to re-run.
 
-# ----- PATH AND STRUCTURE VARIABLES -----------------------------------------
+# ----- PATH AND STRUCTURE VARIABLES -------------------------------------------
 
 _SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-# Set by run_captured / report_names for the caller to read back.
 _CAPTURED=""
 _SCOPE_COUNT=0
 
-# ----- SHARED UTILITIES LOADING -------------------------------------------------
+# ----- SHARED UTILITIES LOADING -----------------------------------------------
 
-# The loader publishes the absolute script tree anchors this script reads below.
+# why: the loader publishes the script tree anchors this script reads
 source "${_SCRIPT_DIR}/setup/lib/loader.sh"
 
-# ----- HELPER FUNCTIONS -----------------------------------------------------
+# ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# resolve_assets_ref: Print the git ref used to fetch first-party global assets.
-# Precedence: AGENT_ASSETS_REF, then SCRIPTS_REF, then "main".
-# Returns: 0, ref on stdout.
+# resolve_assets_ref: prints the git ref for first-party global assets: AGENT_ASSETS_REF, then SCRIPTS_REF, then main
+# Notes: AGENT_ASSETS_REF comes first so a project pinned to a feature branch through
+#   SCRIPTS_REF pushes that branch's assets into the shared volume only when it opts in.
 resolve_assets_ref() {
 	echo "${AGENT_ASSETS_REF:-${SCRIPTS_REF:-main}}"
 }
 
-# strip_ansi: Copy stdin to stdout with ANSI escape sequences removed, so the
-# `consola`-styled installer output can be parsed and re-rendered in this
-# script's own log style.
+# strip_ansi: copies stdin to stdout without ANSI escape sequences
+# Notes: lets the consola-styled installer output be parsed and re-rendered in this
+#   script's own log style.
 strip_ansi() {
 	sed -E $'s/\x1b\\[[0-9;]*[a-zA-Z]//g'
 }
 
-# emit_captured: Render captured output as detail lines. The text is third-party, so it is
-# passed through verbatim apart from its own ANSI styling, which would fight this script's.
-# Args: $1 - captured output.
+# emit_captured <captured>: logs each non-empty line of captured output as a detail line
+# Notes: the text is third-party, so it is passed through verbatim apart from its ANSI
+#   styling, which would fight this script's.
 emit_captured() {
 	local captured="$1" line
 
@@ -60,21 +46,20 @@ emit_captured() {
 	done < <(printf '%s\n' "${captured}" | strip_ansi)
 }
 
-# run_captured: Run a command with its combined output collected in _CAPTURED. Nothing is
-# rendered here: a failing step is still inside a spinner, so the caller decides when the
-# output can be shown without cutting across it.
-# Args: $@ - command and arguments.
-# Returns: the command's exit code.
+# run_captured <command...>: runs the command and sets _CAPTURED to its combined output
+# Returns: the command's exit status.
+# Notes: nothing is logged here: a failing step is still inside a spinner, so the caller
+#   decides when the output can be shown without cutting across it.
 run_captured() {
 	local rc=0
 	_CAPTURED="$("$@" 2>&1)" || rc=$?
 	return "${rc}"
 }
 
-# report_warnings: Surface a step's warning lines as warning items. Captured output is
-# otherwise shown only when a step fails, so a step that succeeded while degrading — the
-# bootstrap falling back to its bundled copy — would read as clean indefinitely.
-# Args: $1 - captured output.
+# report_warnings <captured>: logs each WARNING: line of captured output as a warning item
+# Notes: captured output is otherwise shown only when a step fails, so a step that
+#   succeeded while degrading (the bootstrap falling back to its bundled copy) would
+#   read as clean.
 report_warnings() {
 	local captured="$1" line
 
@@ -84,11 +69,9 @@ report_warnings() {
 	done < <(printf '%s\n' "${captured}" | strip_ansi | grep 'WARNING: ' || true)
 }
 
-# fail_with_captured: End the run on a failed step — stop the spinner, show the step's own
-# output, then fail. In that order: the output is only legible once the spinner has
-# released the line.
-# Args: $1 - fatal message.
-# Returns: does not return; exits the process with status 1.
+# fail_with_captured <message>: stops the spinner, logs the step's captured output, then exits through log_fatal
+# Notes: in that order because the output is legible only once the spinner has released
+#   the line.
 fail_with_captured() {
 	local message="$1"
 
@@ -97,11 +80,9 @@ fail_with_captured() {
 	log_fatal "${message}"
 }
 
-# report_names: Render the assets an installer touched as an indented list and
-# set _SCOPE_COUNT to how many there were. Names come from the `… synced: a, b`
-# summary the first-party installers print, or from `<name> added` lines
-# otherwise; an empty result reports "already up to date".
-# Args: $1 - captured installer output.
+# report_names <captured>: logs the assets an installer touched as items and sets _SCOPE_COUNT to their number
+# Notes: names come from the "… synced: a, b" summary the first-party installers print,
+#   else from "<name> added" lines; none at all logs "already up to date".
 report_names() {
 	local captured="$1" clean summary name
 	local -a names=()
@@ -125,8 +106,7 @@ report_names() {
 	done
 }
 
-# sync_installer: Re-fetch the installer for the given ref. Fatal on failure.
-# Args: $1 - assets ref.
+# sync_installer <assets_ref>: re-fetches the installer at the ref, exiting on failure
 sync_installer() {
 	local assets_ref="$1" files
 	start_spinner "Refreshing installer from devcontainer-scripts@${assets_ref}"
@@ -138,17 +118,15 @@ sync_installer() {
 	report_warnings "${_CAPTURED}"
 }
 
-# count_label: "<n> <word>", pluralised with a trailing "s" unless n is 1.
+# count_label <n> <word>: prints "<n> <word>", with a trailing s unless n is 1
 count_label() {
 	local n="$1" word="$2" suffix="s"
 	if [[ "${n}" -eq 1 ]]; then suffix=""; fi
 	printf '%s %s%s' "${n}" "${word}" "${suffix}"
 }
 
-# sync_scope: Run one installer's --global entry and list what it touched under
-# the heading. Fatal (with the captured log) on failure.
-# Args: $1 heading, $2 index.js path, $3 fatal message,
-#       $4 "slow" to wrap the run in a spinner and check the skills-CLI refresh.
+# sync_scope <heading> <entry> <fatal_message> [slow]: runs one installer's --global entry and logs what it touched under the heading, exiting on failure
+# Notes: "slow" wraps the run in a spinner and checks the skills CLI refresh.
 sync_scope() {
 	local heading="$1" entry="$2" fatal="$3" slow="${4:-}"
 	log_detail "${heading}"
@@ -161,10 +139,8 @@ sync_scope() {
 	fi
 }
 
-# sync_file_if_changed: Copy src to dest only when their contents differ, so an
-# already-current destination is left untouched and keeps its mtime.
-# Args: $1 - source path, $2 - destination path.
-# Returns: 0; prints "unchanged" or "updated" to stdout.
+# sync_file_if_changed <src> <dest>: copies src to dest only when their contents differ, printing "unchanged" or "updated"
+# Notes: an already-current destination is left untouched, so it keeps its mtime.
 sync_file_if_changed() {
 	local src="$1" dest="$2"
 	if [[ -f "${dest}" ]] && cmp -s "${src}" "${dest}"; then
@@ -175,19 +151,15 @@ sync_file_if_changed() {
 	printf 'updated\n'
 }
 
-# claude_md_with_import: Prints the import line, a blank line, then the CLAUDE.md content.
-# Args: $1 - import line; $2 - path to CLAUDE.md.
+# claude_md_with_import <import_line> <claude_md>: prints the import line, a blank line, then the CLAUDE.md content
 claude_md_with_import() {
 	printf '%s\n\n' "$1"
 	cat -- "$2"
 }
 
-# sync_claude_adapter: Ensure a CLAUDE.md file's first line imports the
-# canonical working agreement, without disturbing any content the user already
-# keeps there. Claude Code does not read AGENTS.md itself — it reads CLAUDE.md
-# and expands `@path` imports at session start.
-# Args: $1 - path to CLAUDE.md.
-# Returns: 0; prints "created", "updated", or "unchanged" to stdout.
+# sync_claude_adapter <claude_md>: makes CLAUDE.md import the working agreement, keeping its content, and prints "created", "updated" or "unchanged"
+# Notes: Claude Code does not read AGENTS.md; it reads CLAUDE.md and expands @path
+#   imports at session start.
 sync_claude_adapter() {
 	local claude_md="$1" import_line="@~/.agents/AGENTS.md"
 
@@ -206,16 +178,11 @@ sync_claude_adapter() {
 	printf 'updated\n'
 }
 
-# sync_working_agreement: Install the canonical machine-wide working agreement
-# to ~/.agents/AGENTS.md, then update each supported coding-agent adapter so the
-# tools load it at session start. The source is the installer tree that
-# sync_installer just refreshed, not the copy baked into the image, so editing
-# the agreement takes effect on the next sync without an image rebuild.
-# Idempotent: an already-current destination is left untouched and reported as up
-# to date. Adapters under managed persistent-data links are written only when
-# their parent directory already exists; creating those directories here would
-# break persistence by replacing the managed symlink with a plain directory.
-# Returns: 0; sets _SCOPE_COUNT to how many destinations changed.
+# sync_working_agreement: installs the working agreement to ~/.agents/AGENTS.md and each supported agent adapter, and sets _SCOPE_COUNT to the number of destinations changed
+# Notes: the source is the installer tree sync_installer just refreshed, not the image
+#   copy, so an edit takes effect on the next sync without an image rebuild. An adapter
+#   under a managed persistent-data link is written only when its parent directory
+#   exists: creating it here would replace the managed symlink with a plain directory.
 sync_working_agreement() {
 	local canonical="${DEVCONTAINER_INSTALLER_DIR}/agents/templates/global/AGENTS.md" codex_dir="${HOME}/.codex" pi_agent_dir="${HOME}/.pi/agent" result
 	_SCOPE_COUNT=0
@@ -264,11 +231,9 @@ sync_working_agreement() {
 	fi
 }
 
-# ----- CORE -----------------------------------------------------------------
+# ----- CORE -------------------------------------------------------------------
 
-# sync_agent_assets: Fetch the installer, then run every --global scope in order,
-# rendering the run as one tree with a closing summary. Fatal on a missing
-# prerequisite or any failing step.
+# sync_agent_assets: fetches the installer, then runs every --global scope in order and logs a closing summary, exiting on a missing prerequisite or a failing step
 sync_agent_assets() {
 	local assets_ref started n_cmd n_local n_ext n_agreement
 	setup_error_traps
@@ -276,7 +241,7 @@ sync_agent_assets() {
 
 	assets_ref="$(resolve_assets_ref)"
 
-	# Before the prerequisite checks, so their detail lines have a primary line to nest under.
+	# why: logged before the prerequisite checks, so their detail lines nest under it
 	log_info "Syncing global agent assets · devcontainer-scripts@${assets_ref}"
 
 	check_command node || log_fatal "node is required to sync global agent assets"
@@ -302,6 +267,6 @@ export -f resolve_assets_ref strip_ansi emit_captured run_captured report_warnin
 	fail_with_captured report_names count_label sync_installer sync_scope \
 	sync_file_if_changed sync_claude_adapter sync_working_agreement sync_agent_assets
 
-# ----- ENTRY POINT --------------------------------------------------------------
+# ----- ENTRY POINT ------------------------------------------------------------
 
 sync_agent_assets "$@"

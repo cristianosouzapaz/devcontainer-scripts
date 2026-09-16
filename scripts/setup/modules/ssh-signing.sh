@@ -21,9 +21,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 # Documented in README.md#configuration-variables:
 # - GIT_SIGNING_KEY
 # - SSH_SIGNING
-#
-# Set by the SSH agent forwarding:
-# - SSH_AUTH_SOCK: path of the forwarded agent socket
+# - SSH_AUTH_SOCK: path of the agent socket the SSH agent forwarding sets
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
