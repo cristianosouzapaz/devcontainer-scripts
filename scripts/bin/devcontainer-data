@@ -18,14 +18,11 @@ cli_usage() {
 	log_info 'Usage: devcontainer-data {list|status|path <id>|repair|reset <id> [--yes]|interactive}'
 }
 
-# cli_category_fields: Prints the scope, relative path, label, status check and
-# resettable flag of a known category, separated by the unit separator, read with
-# one jq so an empty field keeps its place.
+# cli_category_fields: Prints scope, relative path, label, identity, resettable
+# and Herdr integration fields, joined by unit separators with empty fields preserved.
+# Args: category id. Returns: 0 when found, 1 otherwise.
 cli_category_fields() {
-	local category_id="$1" category
-
-	category=$(persistent_data_category "$category_id") || return 1
-	jq -r '[.scope, .relativePath, .label, .statusCheck, (.resettable | tostring)] | join("")' <<<"$category"
+	provisioning_fields all "$1" scope relativePath label identity resettable herdrIntegration
 }
 
 # cli_link_problem: Prints a description of a category's managed link when that
@@ -51,17 +48,17 @@ cli_link_problem() {
 	esac
 }
 
-# cli_category_status: Prints the status specific to a registry status check.
+# cli_category_status: Prints the status specific to a declared identity probe.
 cli_category_status() {
-	local status_check="$1" identity identity_status
+	local probe="$1" identity identity_status
 
-	if [[ "$status_check" == 'directory' ]]; then
+	if [[ -z "$probe" ]]; then
 		printf '%s\n' 'directory present'
 		return 0
 	fi
 	identity=''
 	identity_status=0
-	identity=$(persistent_data_summary_identity "$status_check") || identity_status=$?
+	identity=$(persistent_data_summary_identity "$probe") || identity_status=$?
 	[[ "$identity_status" -eq 0 && -n "$identity" ]] || { printf '%s\n' 'not authenticated'; return 0; }
 	printf 'authenticated (%s)\n' "$identity"
 }
@@ -145,20 +142,20 @@ cli_resettable_category_ids() {
 	local category_id fields resettable
 	while IFS= read -r category_id; do
 		fields=$(cli_category_fields "$category_id")
-		IFS=$'\x1f' read -r _ _ _ _ resettable <<<"$fields"
+		IFS=$'\x1f' read -r _ _ _ _ resettable _ <<<"$fields"
 		[[ "$resettable" == 'true' ]] && printf '%s\n' "$category_id"
-	done < <(persistent_data_category_ids)
+	done < <(provisioning_ids all)
 }
 
 # cli_interactive_overview: Prints the compact persistent-data snapshot shown before the menu.
 cli_interactive_overview() {
-	local category_id fields scope relative_path label status_check root status link_problem
+	local category_id fields scope relative_path label probe root status link_problem
 
 	log_info 'Persistent data'
 	log_detail 'Shared volume: devcontainer-shared-data'
 	while IFS= read -r category_id; do
 		fields=$(cli_category_fields "$category_id")
-		IFS=$'\x1f' read -r scope relative_path label status_check _ <<<"$fields"
+		IFS=$'\x1f' read -r scope relative_path label probe _ <<<"$fields"
 		root=$(persistent_data_root "$scope")
 		if ! mountpoint -q "$root"; then
 			log_item_warning "$label · not mounted"
@@ -172,13 +169,13 @@ cli_interactive_overview() {
 			log_item_warning "$label · $link_problem"
 			continue
 		fi
-		status=$(cli_category_status "$status_check")
+		status=$(cli_category_status "$probe")
 		[[ "$status" == 'directory present' ]] && status='available'
 		case "$status" in
 		authenticated*|available) log_item_success "$label · $status" ;;
 		*) log_item_warning "$label · $status" ;;
 		esac
-	done < <(persistent_data_category_ids)
+	done < <(provisioning_ids all)
 }
 
 # cli_interactive_path: Prompts for a registry category and prints its path,
@@ -186,7 +183,7 @@ cli_interactive_overview() {
 cli_interactive_path() {
 	local category_id ids resolved
 
-	ids=$(persistent_data_category_ids | paste -sd , - | sed 's/,/, /g')
+	ids=$(provisioning_ids all | paste -sd , - | sed 's/,/, /g')
 	while true; do
 		log_info "Select category [${ids}], or blank to go back:"
 		read -r category_id </dev/tty || return 0
@@ -204,7 +201,7 @@ cli_interactive_reset() {
 	local category_id ids_list ids all_ids
 
 	ids_list=$(cli_resettable_category_ids)
-	all_ids=$(persistent_data_category_ids)
+	all_ids=$(provisioning_ids all)
 	ids=$(paste -sd , - <<<"$ids_list" | sed 's/,/, /g')
 	while true; do
 		log_info "Select category [${ids}], or blank to go back:"
@@ -266,16 +263,16 @@ cli_list() {
 		fields=$(cli_category_fields "$category_id")
 		IFS=$'\x1f' read -r scope _ label _ <<<"$fields"
 		printf '%s\t%s\t%s\n' "$category_id" "$scope" "$label"
-	done < <(persistent_data_category_ids)
+	done < <(provisioning_ids all)
 }
 
 # cli_status: Lists location, availability, mount, and status for every category.
 cli_status() {
-	local category_id fields scope relative_path status_check root category_path available mounted status link_problem
+	local category_id fields scope relative_path probe root category_path available mounted status link_problem
 
 	while IFS= read -r category_id; do
 		fields=$(cli_category_fields "$category_id")
-		IFS=$'\x1f' read -r scope relative_path _ status_check _ <<<"$fields"
+		IFS=$'\x1f' read -r scope relative_path _ probe _ <<<"$fields"
 		root=$(persistent_data_root "$scope")
 		category_path="$root/$relative_path"
 		available=false
@@ -289,10 +286,10 @@ cli_status() {
 		elif link_problem=$(cli_link_problem "$category_id"); then
 			status="$link_problem"
 		else
-			status=$(cli_category_status "$status_check")
+			status=$(cli_category_status "$probe")
 		fi
 		printf '%s\t%s\tavailable=%s\tmounted=%s\t%s\n' "$category_id" "$category_path" "$available" "$mounted" "$status"
-	done < <(persistent_data_category_ids)
+	done < <(provisioning_ids all)
 }
 
 # cli_repair: Re-asserts every managed link that is not already in place.
@@ -314,7 +311,7 @@ cli_repair() {
 		else
 			failed=true
 		fi
-	done < <(persistent_data_category_ids)
+	done < <(provisioning_ids all)
 
 	[[ "$failed" == true ]] && return 1
 	return 0
@@ -327,10 +324,10 @@ cli_path() {
 
 # cli_reset: Confirms and resets one declared category under its required lock.
 cli_reset() {
-	local category_id="$1" assume_yes="$2" fields scope status_check resettable herdr_integration
+	local category_id="$1" assume_yes="$2" fields scope resettable herdr_integration
 
 	fields=$(cli_category_fields "$category_id") || return 1
-	IFS=$'\x1f' read -r scope _ _ status_check resettable <<<"$fields"
+	IFS=$'\x1f' read -r scope _ _ _ resettable herdr_integration <<<"$fields"
 	if [[ "$resettable" != true ]]; then
 		log_error "Persistent-data category cannot be reset: $category_id"
 		return 1
@@ -345,8 +342,7 @@ cli_reset() {
 	else
 		with_project_data_lock cli_reset_category "$category_id" || return 1
 	fi
-	if herdr_integration=$(coding_agents_field "$status_check" herdrIntegration 2>/dev/null) \
-		&& [[ "$herdr_integration" == 'true' ]]; then
+	if [[ "$herdr_integration" == 'true' ]]; then
 		cli_reconcile_herdr || return 1
 	fi
 }
@@ -355,10 +351,6 @@ cli_reset() {
 cli_main() {
 	local subcommand="${1:-}" category_id assume_yes=false
 
-	# Validated here, in this shell: every lookup below runs in a subshell, which
-	# would lose the cached result and validate the catalog again.
-	coding_agents_validate || return 1
-	persistent_data_registry_validate || return 1
 	case "$subcommand" in
 	list) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_list ;;
 	status) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_status ;;

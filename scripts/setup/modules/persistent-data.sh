@@ -25,7 +25,7 @@ persistent_data_create_category_directories() {
 	while IFS= read -r category_id; do
 		category_path="$(persistent_data_category_path "$category_id")"
 		mkdir -p "$category_path" || return 1
-	done < <(persistent_data_category_ids)
+	done < <(provisioning_ids all)
 }
 
 # persistent_data_initialize: Initializes schema markers and category directories.
@@ -44,11 +44,10 @@ persistent_data_initialize() {
 persistent_data_setup() {
 	local category_id
 
-	persistent_data_registry_validate
 	persistent_data_initialize
 	while IFS= read -r category_id; do
 		persistent_data_link_ensure "$category_id"
-	done < <(persistent_data_category_ids)
+	done < <(provisioning_ids all)
 }
 
 export -f persistent_data_create_category_directories \

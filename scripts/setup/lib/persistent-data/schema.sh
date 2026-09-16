@@ -5,8 +5,6 @@ readonly _PERSISTENT_DATA_SCHEMA_SH_LOADED=1
 
 # Schema markers for persistent-data roots.
 
-_PERSISTENT_DATA_SCHEMA_VERSION=1
-
 # persistent_data_schema_marker: Prints the schema marker for a scope.
 # Args: shared or project.
 # Returns: 0 when recognized, 1 otherwise.
@@ -25,14 +23,15 @@ persistent_data_schema_marker() {
 # Args: shared or project.
 # Returns: 0 and one of empty, data, valid, or invalid; 1 for an unknown scope.
 persistent_data_schema_state() {
-	local scope="$1" root marker marker_dir lock_file entries
+	local scope="$1" root marker marker_dir lock_file entries version
 
 	root=$(persistent_data_root "$scope") || return 1
 	marker=$(persistent_data_schema_marker "$scope") || return 1
 	marker_dir=$(dirname "$marker")
 	lock_file=$(persistent_data_lock_path "$scope") || return 1
 	if [[ -f "$marker" ]]; then
-		if cmp -s <(printf '%s\n' "$_PERSISTENT_DATA_SCHEMA_VERSION") "$marker"; then
+		version=$(provisioning_layout_version) || return 1
+		if cmp -s <(printf '%s\n' "$version") "$marker"; then
 			printf '%s\n' 'valid'
 		else
 			printf '%s\n' 'invalid'
@@ -54,7 +53,7 @@ persistent_data_schema_state() {
 # Args: shared or project.
 # Returns: 0 when compatible, 1 when the area holds unrecognized data or an invalid marker.
 persistent_data_schema_initialize() {
-	local scope="$1" state marker marker_dir
+	local scope="$1" state marker marker_dir version
 
 	state=$(persistent_data_schema_state "$scope") || return 1
 	case "$state" in
@@ -71,7 +70,8 @@ persistent_data_schema_initialize() {
 	marker=$(persistent_data_schema_marker "$scope") || return 1
 	marker_dir=$(dirname "$marker")
 	mkdir -p "$marker_dir" || return 1
-	printf '%s\n' "$_PERSISTENT_DATA_SCHEMA_VERSION" >"$marker"
+	version=$(provisioning_layout_version) || return 1
+	printf '%s\n' "$version" >"$marker"
 }
 
 export -f persistent_data_schema_marker persistent_data_schema_state persistent_data_schema_initialize

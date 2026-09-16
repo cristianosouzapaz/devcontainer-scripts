@@ -11,8 +11,8 @@ readonly _PERSISTENT_DATA_SUMMARY_SH_LOADED=1
 #   persistent_data_summary_print - Logs the shared physical volume once as the
 #   common origin, then three groups sourced from the central persistent-data registry
 #   and the container's own mounts:
-#       Authentication data  (group=authentication)
-#       Persistent tool data (group=tool)
+#       Authentication data  (identity present)
+#       Persistent tool data (identity absent)
 #       Workspace data        (the <project>-data volume on /workspace)
 #   Authentication rows carry the tool's own
 #   login status (via its status command, never
@@ -31,9 +31,6 @@ _HOSTNAME_PATH="${_HOSTNAME_PATH:-/etc/hostname}"
 
 # Shared physical volume shown once as the common origin (see docs/wiki/setup/library-layer.md).
 _PERSISTENT_DATA_SHARED_VOLUME="${_PERSISTENT_DATA_SHARED_VOLUME:-devcontainer-shared-data}"
-
-# GitHub is not a coding agent, so its login hint remains local.
-readonly _PERSISTENT_DATA_GITHUB_LOGIN_HINT='gh auth login'
 
 # ----- INTERNAL HELPERS -------------------------------------------------------
 
@@ -128,13 +125,13 @@ persistent_data_summary_pi_identity() {
 	printf '%s\n' "$ready_providers"
 }
 
-# persistent_data_summary_identity <status-check>: dispatches to the tool-specific
-# identity check for a registry statusCheck token.
+# persistent_data_summary_identity <identity>: dispatches to the tool-specific
+# identity check for a registry identity token.
 # Returns: 0 and prints the identity if authenticated, 1 otherwise.
 persistent_data_summary_identity() {
-	local status_check="$1" identity_function
+	local probe="$1" identity_function
 
-	identity_function="persistent_data_summary_${status_check}_identity"
+	identity_function="persistent_data_summary_${probe}_identity"
 	declare -F "$identity_function" >/dev/null || return 1
 	"$identity_function"
 }
@@ -235,7 +232,7 @@ persistent_data_summary_render_workspace() {
 # persistent_data_summary_print: Logs the registry-driven persistent-data
 # summary — the shared volume line, then the Authentication data, Persistent
 # tool data, and Workspace data groups. Categories come from the central
-# registry (persistent_data_category_ids); their mount state comes from the
+# registry (provisioning_ids all); their mount state comes from the
 # container's own `docker inspect` mounts. An authentication category whose CLI
 # binary isn't installed is omitted entirely (keeps unselected optional tools
 # out of the summary). Silently does nothing without Docker access.
@@ -244,7 +241,7 @@ persistent_data_summary_render_workspace() {
 persistent_data_summary_print() {
 	local mounts shared_root project_root shared_mounted=false project_mounted=false
 	local workspace_volume="" mount_name mount_dest
-	local category_id category group label binary status_check scope relative_path path
+	local category_id fields label binary probe scope relative_path path
 	local identity status ok hint mounted
 	local auth_rows="" tool_rows="" workspace_rows=""
 	local -a ids=()
@@ -266,19 +263,12 @@ persistent_data_summary_print() {
 		esac
 	done <<<"$mounts"
 
-	# Validated once here: every lookup below runs in a subshell, which would lose
-	# the cached result and validate the registry again. A failure is already
-	# logged, and the lookups then fail on their own.
-	persistent_data_registry_validate || true
-	mapfile -t ids < <(persistent_data_category_ids)
+	mapfile -t ids < <(provisioning_ids all)
 
 	for category_id in "${ids[@]}"; do
 		[[ -n "$category_id" ]] || continue
-		category="$(persistent_data_category "$category_id")" || continue
-		# One jq for all fields; a non-blank separator keeps an empty binary in place.
-		IFS=$'\x1f' read -r group label binary status_check scope relative_path <<<"$(
-			jq -r '[.group, .label, (.binary // ""), .statusCheck, .scope, .relativePath] | join("")' <<<"$category"
-		)"
+		fields=$(provisioning_fields all "$category_id" label binary identity loginHint scope relativePath) || continue
+		IFS=$'\x1f' read -r label binary probe hint scope relative_path <<<"$fields"
 
 		# The registry allows only these two scopes, whose roots are resolved above.
 		if [[ "$scope" == "shared" ]]; then
@@ -287,7 +277,7 @@ persistent_data_summary_print() {
 			mounted="$project_mounted"; path="$project_root/$relative_path"
 		fi
 
-		if [[ "$group" == "authentication" ]]; then
+		if [[ -n "$probe" ]]; then
 			# Every registered authentication category is listed. A missing CLI
 			# reports "not installed" (a distinct state from "not authenticated"
 			# and "not mounted"), never a false "not authenticated".
@@ -297,15 +287,10 @@ persistent_data_summary_print() {
 				status="not mounted"; ok="false"
 			else
 				identity=""
-				identity="$(persistent_data_summary_identity "$status_check")" || identity=""
+				identity="$(persistent_data_summary_identity "$probe")" || identity=""
 				if [[ -n "$identity" ]]; then
 					status="authenticated (${identity})"; ok="true"
 				else
-					if [[ "$status_check" == 'github' ]]; then
-						hint="$_PERSISTENT_DATA_GITHUB_LOGIN_HINT"
-					else
-						hint=$(coding_agents_field "$status_check" loginHint) || return 1
-					fi
 					status="not authenticated, run: ${hint}"; ok="false"
 				fi
 			fi

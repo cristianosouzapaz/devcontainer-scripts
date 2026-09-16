@@ -10,8 +10,8 @@ set -euo pipefail
 #
 # Installs and configures the supported coding-agent CLIs. Agent-specific
 # configuration lives in the smallest helper that owns the relevant tool; the
-# entry point wires those helpers in install order. Every step is idempotent and
-# safe to re-run on a container rebuild.
+# entry point installs and configures each agent in document order. Every step
+# is idempotent and safe to re-run on a container rebuild.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -22,7 +22,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 # This module uses the following configuration variables:
 # - CLAUDE_CONFIG_DIR (optional, defaults to the persistent-data managed /root/.claude link)
 # - CODEX_HOME (optional, defaults to the persistent-data managed /root/.codex link)
-# - PI_CODING_AGENT_DIR (optional, defaults to the persistent-data managed /root/.pi/agent link)
+# - PERSISTENT_DATA_HOME (optional path, defaults to /root): home for declarative defaults
 
 # ----- CONSTANTS --------------------------------------------------------------
 
@@ -34,45 +34,17 @@ _STATUSLINE_SETTINGS="${_CLAUDE_CONFIG_DIR}/settings.json"
 _STATUSLINE_HASH_FILE="${_CLAUDE_CONFIG_DIR}/.statusline-hash"
 _CODEX_CONFIG_DIR="${CODEX_HOME:-/root/.codex}"
 _CODEX_SETTINGS="${_CODEX_CONFIG_DIR}/config.toml"
-_PI_CONFIG_DIR="${PI_CODING_AGENT_DIR:-/root/.pi/agent}"
-_PI_SETTINGS="${_PI_CONFIG_DIR}/settings.json"
-_PI_DEFAULTS_CATALOG="${DEVCONTAINER_CONFIG_DIR}/pi-defaults.json"
+_PERSISTENT_DATA_HOME="${PERSISTENT_DATA_HOME:-/root}"
+# DEVCONTAINER_ASSETS_DIR is readonly, so a declared defaultsAsset is
+# resolved against this seam instead.
+_CODING_AGENTS_ASSETS_DIR="${DEVCONTAINER_ASSETS_DIR}"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# install_coding_agent_clis: Installs every catalog CLI via npm when absent.
-# Returns: 0 on success, 1 when an installation fails.
-install_coding_agent_clis() {
-	local agent_id cli_command label npm_package exit_code ids fields
-	local -a agent_ids=()
-
-	ids=$(coding_agents_ids)
-	[[ -n "$ids" ]] || return 0
-	mapfile -t agent_ids <<< "$ids"
-	for agent_id in "${agent_ids[@]}"; do
-		fields=$(coding_agents_fields "$agent_id" command label npmPackage)
-		IFS=$'\x1f' read -r cli_command label npm_package <<<"$fields"
-		if check_command "$cli_command"; then
-			log_debug "${label} CLI already installed, skipping"
-			continue
-		fi
-		start_spinner "Installing ${label} CLI (${npm_package})"
-		exit_code=0
-		spinner_stream log_debug npm install -g "$npm_package" || exit_code=$?
-		if [[ "$exit_code" -ne 0 ]]; then
-			push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" "install_coding_agent_clis" \
-				"npm install -g ${npm_package}" "${label} CLI installation failed"
-			stop_spinner 1
-			return 1
-		fi
-		stop_spinner 0
-	done
-}
-
-# configure_codex_auth_storage: Ensures Codex stores credentials in auth.json
+# configure_codex: Ensures Codex stores credentials in auth.json
 # under CODEX_HOME, which is mounted on a persistent Docker volume. Rewrites only
 # the top-level cli_auth_credentials_store setting and preserves all other config.
-configure_codex_auth_storage() {
+configure_codex() {
 	local tmp_file
 
 	mkdir -p "${_CODEX_CONFIG_DIR}"
@@ -119,10 +91,10 @@ merge_statusline_settings() {
 	log_debug "Merged statusLine into ${_STATUSLINE_SETTINGS}"
 }
 
-# configure_statusline: Deploys statusline-command.sh to the Claude config dir
+# configure_claude: Deploys statusline-command.sh to the Claude config dir
 # and ensures settings.json contains the statusLine key.
 # Uses sha256sum hash to detect changes; re-applies only when needed.
-configure_statusline() {
+configure_claude() {
 	local sha_output source_hash stored_hash
 	local hash_differs=false dest_missing=false settings_missing=false
 
@@ -170,82 +142,102 @@ configure_statusline() {
 	fi
 }
 
-# configure_pi_defaults: Applies the Pi default package catalog and settings.
-# Package installs go through Pi so its managed npm tree is populated; settings
-# are merged so existing developer choices win over shipped defaults.
-configure_pi_defaults() {
-	local catalog_packages catalog_settings current_settings installed_packages result tmp_file package pi_command ids
+# apply_agent_defaults: Fills missing settings without overwriting developer choices.
+# Args: agent id. Returns: 0 on success or malformed existing JSON, nonzero on failure.
+apply_agent_defaults() {
+	local fields config_file defaults_asset defaults current_settings result tmp_file
+
+	fields=$(provisioning_fields agents "$1" configFile defaultsAsset)
+	IFS=$'\x1f' read -r config_file defaults_asset <<<"$fields"
+	[[ -n "$config_file" && -n "$defaults_asset" ]] || return 0
+	defaults_asset="${_CODING_AGENTS_ASSETS_DIR}/$defaults_asset"
+	if ! defaults=$(jq -cse 'select(length == 1 and (.[0] | type == "object")) | .[0]' "$defaults_asset" 2>/dev/null); then
+		log_error "Defaults asset is missing or invalid: $defaults_asset"
+		return 1
+	fi
+	config_file="${_PERSISTENT_DATA_HOME}/$config_file"
+	if [[ -f "$config_file" ]]; then
+		if ! jq -e . "$config_file" >/dev/null 2>&1; then
+			log_item_warning "$config_file is malformed — skipping default settings merge"
+			return 0
+		fi
+		current_settings=$(<"$config_file")
+	else
+		current_settings='{}'
+	fi
+	# Avoid even an identical rewrite: it would change the file's mtime.
+	result=$(jq --argjson defaults "$defaults" \
+		'. as $current | $defaults * . | select(. != $current)' <<<"$current_settings")
+	[[ -n "$result" ]] || return 0
+	mkdir -p "$(dirname "$config_file")"
+	tmp_file=$(mktemp)
+	printf '%s\n' "$result" >"$tmp_file"
+	mv "$tmp_file" "$config_file"
+}
+
+# configure_pi: Installs only packages absent from Pi's own settings.
+configure_pi() {
+	local fields pi_command config_file packages package current_settings missing
 	local -a missing_packages=()
 
-	ids=$(coding_agents_ids) || return 1
-	if ! grep -Fxq pi <<< "$ids"; then
-		log_debug 'Pi agent is absent from the catalog, skipping Pi defaults'
+	fields=$(provisioning_fields agents pi command configFile packages)
+	IFS=$'\x1f' read -r pi_command config_file packages <<<"$fields"
+	[[ -n "$packages" ]] || return 0
+	config_file="${_PERSISTENT_DATA_HOME}/$config_file"
+	if [[ -f "$config_file" ]] && ! jq -e . "$config_file" >/dev/null 2>&1; then
+		log_item_warning 'Pi settings.json is malformed — skipping Pi packages'
 		return 0
 	fi
-
-	pi_command=$(coding_agents_field pi command) || return 1
-	if [[ ! -f "${_PI_DEFAULTS_CATALOG}" ]]; then
-		log_error "Pi defaults catalog is missing: ${_PI_DEFAULTS_CATALOG}"
-		return 1
+	current_settings='{}'
+	if [[ -f "$config_file" ]]; then
+		current_settings=$(<"$config_file")
 	fi
-	if ! jq -e '(.packages | type == "array") and (.settings | type == "object")' "${_PI_DEFAULTS_CATALOG}" >/dev/null 2>&1; then
-		log_error "Pi defaults catalog is invalid: ${_PI_DEFAULTS_CATALOG}"
-		return 1
-	fi
-	if [[ -f "${_PI_SETTINGS}" ]] && ! jq -e . "${_PI_SETTINGS}" >/dev/null 2>&1; then
-		log_item_warning "Pi settings.json is malformed — skipping Pi defaults"
-		return 0
-	fi
-
-	mkdir -p "${_PI_CONFIG_DIR}"
-	catalog_packages=$(jq -c '.packages' "${_PI_DEFAULTS_CATALOG}")
-	catalog_settings=$(jq -c '.settings' "${_PI_DEFAULTS_CATALOG}")
-	if [[ -f "${_PI_SETTINGS}" ]]; then
-		current_settings=$(< "${_PI_SETTINGS}")
-	else
-		current_settings='{}'
-	fi
-	installed_packages=$(jq -c '.packages // []' <<< "${current_settings}")
-	# -n: no input document; without it jq blocks on the caller's open stdin.
-	mapfile -t missing_packages < <(jq -nr --argjson catalog "${catalog_packages}" \
-		--argjson installed "${installed_packages}" '$catalog - $installed | .[]')
-
+	# Compute the whole set difference once; -n keeps jq off the caller's stdin.
+	missing=$(jq -nr --argjson installed "$current_settings" --argjson catalog "$packages" \
+		'$catalog - ($installed.packages // []) | .[]')
+	[[ -n "$missing" ]] || return 0
+	mapfile -t missing_packages <<<"$missing"
 	for package in "${missing_packages[@]}"; do
 		log_detail "Installing Pi extension ${package}"
-		spinner_stream log_debug "${pi_command}" install "${package}" || return 1
+		spinner_stream log_debug "$pi_command" install "$package"
 	done
-
-	if [[ -f "${_PI_SETTINGS}" ]]; then
-		current_settings=$(< "${_PI_SETTINGS}")
-	else
-		current_settings='{}'
-	fi
-	# Rewriting an up-to-date file would still bump its mtime and break idempotency.
-	if jq -e --argjson defaults "${catalog_settings}" '($defaults * .) == .' <<< "${current_settings}" >/dev/null; then
-		log_debug "Pi default settings already applied, skipping"
-		return 0
-	fi
-	result=$(jq --argjson defaults "${catalog_settings}" '$defaults * .' <<< "${current_settings}") || return 1
-	tmp_file=$(mktemp)
-	printf '%s\n' "${result}" > "${tmp_file}"
-	mv "${tmp_file}" "${_PI_SETTINGS}"
-	log_debug "Merged Pi default settings into ${_PI_SETTINGS}"
 }
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# coding_agents_setup: Module entry point. Ensures each supported coding-agent
-# CLI is installed and its persistent defaults are configured. Every step is
-# idempotent and safe to re-run on container rebuilds.
+# coding_agents_setup: Installs and configures each declared agent in document order.
+# Args: none. Returns: 0 on success; the first unhandled failure stops the module.
 coding_agents_setup() {
-	# Validated here, once: the catalog lookups below run in $(...) subshells,
-	# where a validation would not be remembered and would run again each time.
-	coding_agents_validate
-	install_coding_agent_clis
-	configure_statusline
-	configure_codex_auth_storage
-	configure_pi_defaults
+	local agent_id cli_command label npm_package exit_code ids fields configure
+	local -a agent_ids=()
+
+	ids=$(provisioning_ids agents)
+	[[ -n "$ids" ]] || return 0
+	mapfile -t agent_ids <<<"$ids"
+	for agent_id in "${agent_ids[@]}"; do
+		fields=$(provisioning_fields agents "$agent_id" command label npmPackage)
+		IFS=$'\x1f' read -r cli_command label npm_package <<<"$fields"
+		if check_command "$cli_command"; then
+			log_debug "${label} CLI already installed, skipping"
+		else
+			start_spinner "Installing ${label} CLI (${npm_package})"
+			exit_code=0
+			spinner_stream log_debug npm install -g "$npm_package" || exit_code=$?
+			if [[ "$exit_code" -ne 0 ]]; then
+				push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" 'coding_agents_setup' \
+					"npm install -g ${npm_package}" "${label} CLI installation failed"
+				stop_spinner 1
+				return 1
+			fi
+			stop_spinner 0
+		fi
+		apply_agent_defaults "$agent_id"
+		configure="configure_${agent_id}"
+		if declare -F "$configure" >/dev/null; then
+			"$configure"
+		fi
+	done
 }
 
-export -f install_coding_agent_clis configure_codex_auth_storage configure_pi_defaults \
-	merge_statusline_settings configure_statusline coding_agents_setup
+export -f configure_codex configure_claude configure_pi apply_agent_defaults \
+	merge_statusline_settings coding_agents_setup

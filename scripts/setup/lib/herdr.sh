@@ -90,14 +90,12 @@ herdr_install_integrations() {
 	local -a agent_ids=()
 
 	herdr_require_command || return 1
-	# Validated in this shell, so the lookups below do not revalidate it in each $(...).
-	coding_agents_validate || return 1
-	ids=$(coding_agents_ids)
+	ids=$(provisioning_ids agents)
 	[[ -n "$ids" ]] || return 0
 	status_output=$("$_HERDR_COMMAND" integration status 2>/dev/null) || status_output=''
 	mapfile -t agent_ids <<< "$ids"
 	for target in "${agent_ids[@]}"; do
-		herdr_integration=$(coding_agents_field "$target" herdrIntegration)
+		herdr_integration=$(provisioning_fields agents "$target" herdrIntegration)
 		if [[ "$herdr_integration" != 'true' ]]; then
 			log_debug "No Herdr integration declared for ${target}, skipping"
 			continue

@@ -1,0 +1,75 @@
+{
+  "persistentDataLayoutVersion": 1,
+  "agents": [
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "command": "claude",
+      "npmPackage": "@anthropic-ai/claude-code",
+      "herdrIntegration": true,
+      "loginHint": "claude auth login",
+      "relativePath": "config/claude",
+      "homeLink": ".claude"
+    },
+    {
+      "id": "codex",
+      "label": "Codex CLI",
+      "command": "codex",
+      "npmPackage": "@openai/codex",
+      "herdrIntegration": true,
+      "loginHint": "codex login",
+      "relativePath": "config/codex",
+      "homeLink": ".codex"
+    },
+    {
+      "id": "pi",
+      "label": "Pi",
+      "command": "pi",
+      "npmPackage": "@earendil-works/pi-coding-agent",
+      "herdrIntegration": true,
+      "loginHint": "pi",
+      "relativePath": "config/pi",
+      "homeLink": ".pi",
+      "packages": [
+        "npm:pi-web-access",
+        "npm:pi-subagents",
+        "npm:@tian.zuo/pi-background-terminals"
+      ],
+      "configFile": ".pi/agent/settings.json",
+      "defaultsAsset": "pi-settings.json"
+    }
+  ],
+  "categories": [
+    {
+      "id": "agents",
+      "scope": "shared",
+      "relativePath": "agents",
+      "homeLink": ".agents",
+      "label": "Agents"
+    },
+    {
+      "id": "github",
+      "scope": "shared",
+      "relativePath": "config/github",
+      "homeLink": ".config/gh",
+      "label": "GitHub CLI",
+      "identity": "github",
+      "binary": "gh",
+      "loginHint": "gh auth login"
+    },
+    {
+      "id": "herdr",
+      "scope": "project",
+      "relativePath": ".config/herdr",
+      "homeLink": null,
+      "label": "Herdr"
+    },
+    {
+      "id": "pnpm-store",
+      "scope": "project",
+      "relativePath": ".cache/pnpm",
+      "homeLink": ".local/share/pnpm",
+      "label": "pnpm store"
+    }
+  ]
+}

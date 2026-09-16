@@ -28,7 +28,7 @@ persistent_data_root() {
 persistent_data_category_path() {
 	local category_id="$1" fields scope relative_path root
 
-	fields=$(persistent_data_category_fields "$category_id" scope relativePath) || return 1
+	fields=$(provisioning_fields all "$category_id" scope relativePath) || return 1
 	IFS=$'\x1f' read -r scope relative_path <<<"$fields"
 	root=$(persistent_data_root "$scope") || return 1
 	printf '%s/%s\n' "$root" "$relative_path"
