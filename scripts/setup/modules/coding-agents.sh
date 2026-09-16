@@ -41,12 +41,26 @@ _CODING_AGENTS_ASSETS_DIR="${DEVCONTAINER_ASSETS_DIR}"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
+# codex_settings_with_file_storage: Prints config.toml with file credential storage set.
+# TOML keys after a table header belong to that table, so the setting leads the
+# file to stay a root-level key; every other line of an existing file follows.
+# Returns: 0 on success, grep's status (2) when the existing file cannot be read.
+codex_settings_with_file_storage() {
+	local rc=0
+
+	printf '%s\n' 'cli_auth_credentials_store = "file"'
+	[[ -f "${_CODEX_SETTINGS}" ]] || return 0
+	printf '\n'
+	# grep exits 1 when no other line is left, which is fine; 2 is a read error,
+	# which must stop the rewrite or the developer's configuration is lost.
+	grep -Ev '^cli_auth_credentials_store[[:space:]]*=' "${_CODEX_SETTINGS}" || rc=$?
+	[[ "$rc" -le 1 ]] || return "$rc"
+}
+
 # configure_codex: Ensures Codex stores credentials in auth.json
 # under CODEX_HOME, which is mounted on a persistent Docker volume. Rewrites only
 # the top-level cli_auth_credentials_store setting and preserves all other config.
 configure_codex() {
-	local tmp_file
-
 	mkdir -p "${_CODEX_CONFIG_DIR}"
 	if [[ -f "${_CODEX_SETTINGS}" ]] \
 		&& grep -Eq '^cli_auth_credentials_store[[:space:]]*=[[:space:]]*"file"[[:space:]]*(#.*)?$' "${_CODEX_SETTINGS}"; then
@@ -54,22 +68,14 @@ configure_codex() {
 		return 0
 	fi
 
-	tmp_file=$(mktemp)
-	# TOML keys after a table header belong to that table. Keep this setting at the
-	# start of the file so it is always a root-level Codex configuration key.
-	printf '%s\n' 'cli_auth_credentials_store = "file"' > "${tmp_file}"
-	if [[ -f "${_CODEX_SETTINGS}" ]]; then
-		printf '\n' >> "${tmp_file}"
-		grep -Ev '^cli_auth_credentials_store[[:space:]]*=' "${_CODEX_SETTINGS}" >> "${tmp_file}" || true
-	fi
-	mv "${tmp_file}" "${_CODEX_SETTINGS}"
+	atomic_write "${_CODEX_SETTINGS}" codex_settings_with_file_storage
 	log_detail "Configured Codex credentials for persistent file storage"
 }
 
 # merge_statusline_settings: Merges the statusLine key into settings.json.
 # Skips with log_warning when the file exists but contains malformed JSON.
 merge_statusline_settings() {
-	local current_settings result tmp_file
+	local current_settings result
 	if [[ -f "${_STATUSLINE_SETTINGS}" ]]; then
 		if ! jq -e . "${_STATUSLINE_SETTINGS}" > /dev/null 2>&1; then
 			log_item_warning "settings.json is malformed — skipping statusline settings merge"
@@ -85,9 +91,7 @@ merge_statusline_settings() {
 		log_item_warning "jq failed to generate statusLine settings — skipping"
 		return 0
 	}
-	tmp_file=$(mktemp)
-	printf '%s\n' "${result}" > "${tmp_file}"
-	mv "${tmp_file}" "${_STATUSLINE_SETTINGS}"
+	atomic_write "${_STATUSLINE_SETTINGS}" printf '%s\n' "${result}"
 	log_debug "Merged statusLine into ${_STATUSLINE_SETTINGS}"
 }
 
@@ -130,8 +134,8 @@ configure_claude() {
 	log_detail "Configuring Claude Code status line"
 
 	if [[ "${hash_differs}" == 'true' ]] || [[ "${dest_missing}" == 'true' ]]; then
-		cp "${_STATUSLINE_SOURCE}" "${_STATUSLINE_DEST}"
-		printf '%s\n' "${source_hash}" > "${_STATUSLINE_HASH_FILE}"
+		atomic_write "${_STATUSLINE_DEST}" cat "${_STATUSLINE_SOURCE}"
+		atomic_write "${_STATUSLINE_HASH_FILE}" printf '%s\n' "${source_hash}"
 		log_debug "Updated statusline script (${source_hash})"
 	fi
 
@@ -145,7 +149,7 @@ configure_claude() {
 # apply_agent_defaults: Fills missing settings without overwriting developer choices.
 # Args: agent id. Returns: 0 on success or malformed existing JSON, nonzero on failure.
 apply_agent_defaults() {
-	local fields config_file defaults_asset defaults current_settings result tmp_file
+	local fields config_file defaults_asset defaults current_settings result
 
 	fields=$(provisioning_fields agents "$1" configFile defaultsAsset)
 	IFS=$'\x1f' read -r config_file defaults_asset <<<"$fields"
@@ -170,9 +174,7 @@ apply_agent_defaults() {
 		'. as $current | $defaults * . | select(. != $current)' <<<"$current_settings")
 	[[ -n "$result" ]] || return 0
 	mkdir -p "$(dirname "$config_file")"
-	tmp_file=$(mktemp)
-	printf '%s\n' "$result" >"$tmp_file"
-	mv "$tmp_file" "$config_file"
+	atomic_write "$config_file" printf '%s\n' "$result"
 }
 
 # configure_pi: Installs only packages absent from Pi's own settings.
@@ -239,5 +241,5 @@ coding_agents_setup() {
 	done
 }
 
-export -f configure_codex configure_claude configure_pi apply_agent_defaults \
+export -f codex_settings_with_file_storage configure_codex configure_claude configure_pi apply_agent_defaults \
 	merge_statusline_settings coding_agents_setup

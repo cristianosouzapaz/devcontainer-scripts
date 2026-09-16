@@ -94,7 +94,9 @@ workspaces_setup() {
 	_folders+=("${_extra_folders[@]}")
 
 	log_detail "Generating workspace file: ${workspace_file}"
-	build_workspace_json "${_folders[@]}" > "$workspace_file"
+	# Atomic: a partial file left by a failed build would pass the "already exists"
+	# check on every later run.
+	atomic_write "$workspace_file" build_workspace_json "${_folders[@]}"
 	log_item_success "Workspace file generated: ${workspace_file}"
 }
 

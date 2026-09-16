@@ -71,7 +71,7 @@ persistent_data_schema_initialize() {
 	marker_dir=$(dirname "$marker")
 	mkdir -p "$marker_dir" || return 1
 	version=$(provisioning_layout_version) || return 1
-	printf '%s\n' "$version" >"$marker"
+	atomic_write "$marker" printf '%s\n' "$version"
 }
 
 export -f persistent_data_schema_marker persistent_data_schema_state persistent_data_schema_initialize

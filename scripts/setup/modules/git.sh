@@ -147,7 +147,7 @@ configure_git_credentials() {
 	done
 
 	if [[ -n "$credential_lines" ]]; then
-		printf '%s' "$credential_lines" >"$_GIT_CREDENTIALS_FILE"
+		atomic_write "$_GIT_CREDENTIALS_FILE" printf '%s' "$credential_lines"
 		chmod 600 "$_GIT_CREDENTIALS_FILE"
 	fi
 	log_item_success "Git credentials configured"

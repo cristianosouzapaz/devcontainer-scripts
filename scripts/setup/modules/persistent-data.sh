@@ -20,12 +20,17 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 
 # persistent_data_create_category_directories: Creates every registered category directory.
 persistent_data_create_category_directories() {
-	local category_id category_path
+	local ids category_id category_path
+	local -a category_ids=()
 
-	while IFS= read -r category_id; do
+	# Captured, not read from < <(…): a process substitution's status is never seen.
+	ids=$(provisioning_ids all) || return 1
+	[[ -n "$ids" ]] || return 0
+	mapfile -t category_ids <<<"$ids"
+	for category_id in "${category_ids[@]}"; do
 		category_path="$(persistent_data_category_path "$category_id")"
 		mkdir -p "$category_path" || return 1
-	done < <(provisioning_ids all)
+	done
 }
 
 # persistent_data_initialize: Initializes schema markers and category directories.
@@ -42,12 +47,16 @@ persistent_data_initialize() {
 # (see setup/lib/persistent-data/links.sh) is skipped.
 # Returns: 0 on success, 1 for incompatible or unmanaged data.
 persistent_data_setup() {
-	local category_id
+	local ids category_id
+	local -a category_ids=()
 
 	persistent_data_initialize
-	while IFS= read -r category_id; do
+	ids=$(provisioning_ids all)
+	[[ -n "$ids" ]] || return 0
+	mapfile -t category_ids <<<"$ids"
+	for category_id in "${category_ids[@]}"; do
 		persistent_data_link_ensure "$category_id"
-	done < <(provisioning_ids all)
+	done
 }
 
 export -f persistent_data_create_category_directories \

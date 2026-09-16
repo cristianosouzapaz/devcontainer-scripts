@@ -45,7 +45,7 @@ herdr_initialize_config() {
 		return 1
 	fi
 	mkdir -p "$(dirname "$config_path")" || return 1
-	cp "$_HERDR_TEMPLATE" "$config_path" || return 1
+	atomic_write "$config_path" cat "$_HERDR_TEMPLATE" || return 1
 	log_detail "Initialized Herdr configuration"
 }
 

@@ -28,6 +28,8 @@ readonly DEVCONTAINER_INSTALLER_DIR="${DEVCONTAINER_SCRIPTS_DIR}/installer"
 # shellcheck disable=SC2034 # consumed by the Bats suite (entrypoints/, lib/loader, conventions/shellcheck)
 readonly DEVCONTAINER_BIN_DIR="${DEVCONTAINER_SCRIPTS_DIR}/bin"
 
+# shellcheck source=public/scripts/setup/lib/atomic-write.sh
+source "$DEVCONTAINER_LIB_DIR/atomic-write.sh"
 # shellcheck source=public/scripts/setup/lib/env-loader.sh
 source "$DEVCONTAINER_LIB_DIR/env-loader.sh"
 # shellcheck source=public/scripts/setup/lib/error-handler.sh

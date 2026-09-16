@@ -171,8 +171,15 @@ sync_file_if_changed() {
 		printf 'unchanged\n'
 		return 0
 	fi
-	cp "${src}" "${dest}"
+	atomic_write "${dest}" cat -- "${src}"
 	printf 'updated\n'
+}
+
+# claude_md_with_import: Prints the import line, a blank line, then the CLAUDE.md content.
+# Args: $1 - import line; $2 - path to CLAUDE.md.
+claude_md_with_import() {
+	printf '%s\n\n' "$1"
+	cat -- "$2"
 }
 
 # sync_claude_adapter: Ensure a CLAUDE.md file's first line imports the
@@ -182,10 +189,10 @@ sync_file_if_changed() {
 # Args: $1 - path to CLAUDE.md.
 # Returns: 0; prints "created", "updated", or "unchanged" to stdout.
 sync_claude_adapter() {
-	local claude_md="$1" import_line="@~/.agents/AGENTS.md" tmp
+	local claude_md="$1" import_line="@~/.agents/AGENTS.md"
 
 	if [[ ! -f "${claude_md}" ]]; then
-		printf '%s\n' "${import_line}" > "${claude_md}"
+		atomic_write "${claude_md}" printf '%s\n' "${import_line}"
 		printf 'created\n'
 		return 0
 	fi
@@ -195,12 +202,7 @@ sync_claude_adapter() {
 		return 0
 	fi
 
-	tmp="$(mktemp -p "$(dirname -- "${claude_md}")")"
-	{
-		printf '%s\n\n' "${import_line}"
-		cat -- "${claude_md}"
-	} > "${tmp}"
-	mv "${tmp}" "${claude_md}"
+	atomic_write "${claude_md}" claude_md_with_import "${import_line}" "${claude_md}"
 	printf 'updated\n'
 }
 
