@@ -5,13 +5,12 @@ readonly _LOADER_SH_LOADED=1
 
 # Single entry point for the shared utility layer: modules source this, never an
 # individual shared file. Also sets the container's environment-variable defaults.
+#
+# The one place that knows the layout of the script tree: every anchor is absolute
+# and derived from this file's own location, so nothing downstream depends on the
+# working directory (modules cd into the workspace mid-run) or spells out a ../ hop.
 
 # ----- SCRIPT TREE ANCHORS ----------------------------------------------------
-#
-# The one place that knows the layout of the script tree. Every path below is
-# absolute and derived from this file's own location, so nothing downstream
-# depends on the working directory — modules `cd` into the workspace mid-run —
-# and nothing else has to spell out a `../` hop of its own.
 
 DEVCONTAINER_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly DEVCONTAINER_LIB_DIR
@@ -59,83 +58,29 @@ source "$DEVCONTAINER_LIB_DIR/validation.sh"
 # shellcheck source=public/scripts/setup/lib/herdr.sh
 source "$DEVCONTAINER_LIB_DIR/herdr.sh"
 
-# ----- ENVIRONMENT VARIABLES --------------------------------------------------
+# ----- CONFIGURATION VARIABLES ------------------------------------------------
 
-# AGENT_ASSETS_REF       devcontainer-scripts git ref that sync-agent-assets.sh fetches the
-#                         machine-wide first-party agent assets from. Falls back to SCRIPTS_REF,
-#                         then "main". Not used by the setup modules.
-#                         Default: (empty -> SCRIPTS_REF -> main)
-#
-# AUTO_UPDATE             Automatically fetch and pull updates from remote repository (true/false)
-#                         Default: false
-#
-# CLEAN_CREDENTIALS       Remove git credentials after setup (true/false)
-#                         Default: false
-#
-# DEBUG_MODE              Enable debug output during setup (true/false)
-#                         Default: false (can pass --debug flag)
-#
-# DEFAULT_BRANCH          Git branch to checkout and work with
-#                         Default: main
-#
-# DUMP_ERROR_STACK        Print error stack trace when exiting (true/false)
-#                         Default: true
-#
-# EXTRA_FOLDER_N          Numbered extra workspace folder names (EXTRA_FOLDER_1, EXTRA_FOLDER_2, …),
-#                         each already bind-mounted by devcontainer.json at /workspace/<name>.
-#                         Read by workspaces.sh to add extra roots to the .code-workspace file.
-#                         Default: (none)
-#
-# GIT_CLONE_TOKEN         Global fallback token for authenticating git clone/fetch against any
-#                         HTTP(S) git host. A host with its own GIT_CLONE_TOKEN_<HOST> variable
-#                         uses that instead. Set in ~/.config/.env on the host; unset again at
-#                         the end of setup when CLEAN_CREDENTIALS is true.
-#                         Default: (empty)
-#
-# GIT_SIGNING_KEY         SSH public key used for commit signing (e.g. "ssh-ed25519 AAAA...")
-#                         Set in ~/.config/.env on the host. Required for SSH commit signing
-#                         via the forwarded 1Password SSH agent socket.
-#                         Default: (empty)
-#
-# GIT_EMAIL               Email for git configuration (required)
-#
-# GIT_USER                Git username for git configuration and repository URLs (required)
-#
-# LOG_FILE                Path to log file (if empty, logs to stdout/stderr only)
-#                         Default: (empty)
-#
-# LOG_LEVEL               Minimum log level: DEBUG, INFO, SUCCESS, WARNING, ERROR, FATAL
-#                         Default: INFO
-#
-# NGROK_AUTHTOKEN         Authentication token for the ngrok tunnel. The ngrok module skips
-#                         itself when this is empty. Set in ~/.config/.env on the host.
-#                         Default: (empty)
-#
-# REPO_SOURCE             Where to clone from. Repo name is taken from the workspace folder,
-#                         except when a full URL is provided.
-#                         Owner shorthand (e.g. "myorg") → github.com/myorg/<folder>.git
-#                         Base URL (e.g. "https://gitlab.com/myorg") → <base>/<folder>.git
-#                         Full URL (e.g. "https://github.com/org/repo.git") → used as-is
-#                         Default: (auto-constructed from GIT_USER)
-#
-# REQUIRE_DEPENDENCY_INSTALL  Fail container setup when the git module cannot install the
-#                         project's dependencies (true/false). When false, a failed install
-#                         is logged as a warning and setup continues.
-#                         Default: false
-#
-# SSH_SIGNING             Enable SSH commit signing via Docker Desktop SSH agent forwarding (true/false)
-#                         Default: true
-#
-# STRUCTURED_LOGS         Output logs in JSON format (true/false)
-#                         Default: false
-#
-# VALIDATE_TOKEN          Validate git token connectivity on startup (true/false)
-#                         Default: true
-#
-# PERSIST_<NAME>          Any variable in the .env file whose name begins with PERSIST_ is written
-#                         to /etc/environment (with the prefix stripped) by persist_env_vars during
-#                         setup, making <NAME> available to all container processes at runtime.
-#                         Example: PERSIST_CONTEXT7_API_KEY=xxx → CONTEXT7_API_KEY in /etc/environment
+# Documented in README.md#configuration-variables:
+# - AGENT_ASSETS_REF
+# - AUTO_UPDATE
+# - CLEAN_CREDENTIALS
+# - DEBUG_MODE
+# - DEFAULT_BRANCH
+# - DUMP_ERROR_STACK
+# - EXTRA_FOLDER_N
+# - GIT_CLONE_TOKEN
+# - GIT_SIGNING_KEY
+# - GIT_EMAIL
+# - GIT_USER
+# - LOG_FILE
+# - LOG_LEVEL
+# - NGROK_AUTHTOKEN
+# - REPO_SOURCE
+# - REQUIRE_DEPENDENCY_INSTALL
+# - SSH_SIGNING
+# - STRUCTURED_LOGS
+# - VALIDATE_TOKEN
+# - PERSIST_<NAME>
 
 AGENT_ASSETS_REF="${AGENT_ASSETS_REF:-}"
 AUTO_UPDATE="${AUTO_UPDATE:-false}"

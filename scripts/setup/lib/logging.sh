@@ -3,19 +3,17 @@
 [[ -n "${_LOGGING_SH_LOADED:-}" ]] && return 0
 readonly _LOGGING_SH_LOADED=1
 
-# Shared logging functions for all setup scripts
-#
-# This module provides consistent logging functions (debug, info, success, warning, error, fatal)
-# with support for log levels, log rotation, structured JSON output, and optional debug mode.
+# Leveled logging for every setup script: symbol-prefixed, optionally colored lines
+# on stderr, optional JSON output, and an optional rotated log file.
 
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 
-# This module uses the following configuration variables:
+# Documented in README.md#configuration-variables:
 # - DEBUG_MODE
 # - LOG_FILE
 # - LOG_LEVEL
 # - STRUCTURED_LOGS
-# - NO_COLOR (community standard: https://no-color.org — non-empty value disables color)
+# - NO_COLOR
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
@@ -42,75 +40,57 @@ readonly _SYMBOL_FATAL='✖'
 
 # ----- FUNCTIONS --------------------------------------------------------------
 
-# log_debug: Logs debug messages if DEBUG_MODE is true. Uses the "detail"
-# style (tree bar, no symbol) since debug output is always secondary detail
-# nested under whatever primary line it explains — never a conclusion on
-# its own.
-# Args: message - the text to log.
-# Returns: 0 always.
+# log_debug <message>: logs at DEBUG level as a detail line, when DEBUG_MODE is true or LOG_LEVEL allows it
+# Notes: uses the detail style (tree bar, no symbol) because debug output always explains
+#   the primary line above it and is never a conclusion on its own.
 log_debug() {
-	# Show debug when DEBUG_MODE true or LOG_LEVEL allows DEBUG
 	if [[ "${DEBUG_MODE}" == "true" ]] || should_log "DEBUG"; then
 		log_output "DEBUG" "$*" "detail"
 	fi
 }
 
-# log_error: logs at ERROR level. Args: message. Returns: 0 always.
+# log_error <message>: logs at ERROR level
 log_error() {
 	log_output "ERROR" "$*"
 }
 
-# log_info: logs at INFO level. Args: message. Returns: 0 always.
+# log_info <message>: logs at INFO level
 log_info() {
 	log_output "INFO" "$*"
 }
 
-# log_success: logs at SUCCESS level. Args: message. Returns: 0 always.
+# log_success <message>: logs at SUCCESS level
 log_success() {
 	log_output "SUCCESS" "$*"
 }
 
-# log_warning: logs at WARNING level. Args: message. Returns: 0 always.
+# log_warning <message>: logs at WARNING level
 log_warning() {
 	log_output "WARNING" "$*"
 }
 
-# log_detail: Logs a neutral secondary line under the preceding primary log
-# line (tree bar, no symbol). For process sub-steps or column headers that
-# carry no status of their own. Shares INFO's visibility threshold.
-# Args: message - the text to log.
-# Returns: 0 always.
+# log_detail <message>: logs a neutral detail line (tree bar, no symbol) under the preceding primary line, at INFO visibility
 log_detail() {
 	log_output "INFO" "$*" "detail"
 }
 
-# log_item_success: Logs a secondary line that is itself a conclusion (e.g.
-# one row of an enumerated list), indented under a primary with its own
-# success symbol/color.
-# Args: message - the text to log.
-# Returns: 0 always.
+# log_item_success <message>: logs an indented line that is itself a success conclusion, such as one row of a list
 log_item_success() {
 	log_output "SUCCESS" "$*" "item"
 }
 
-# log_item_warning: Logs a secondary line that is itself a conclusion (e.g.
-# one row of an enumerated list), indented under a primary with its own
-# warning symbol/color.
-# Args: message - the text to log.
-# Returns: 0 always.
+# log_item_warning <message>: logs an indented line that is itself a warning conclusion, such as one row of a list
 log_item_warning() {
 	log_output "WARNING" "$*" "item"
 }
 
-# log_fatal: Logs fatal error messages and exits.
-# Args: message - the text to log.
-# Returns: does not return; exits the process with status 1.
+# log_fatal <message>: logs at FATAL level and exits the process with status 1
 log_fatal() {
 	log_output "FATAL" "$*"
 	exit 1
 }
 
-# Map log level names to numeric priorities
+# level_value <level>: prints the numeric priority of a level name, INFO's for an unknown name
 level_value() {
 	case "$1" in
 	DEBUG) echo 10 ;;
@@ -123,14 +103,12 @@ level_value() {
 	esac
 }
 
-# module_skip: marks the current module as having nothing to do;
-# call this before returning 0 when prerequisite conditions are absent.
+# module_skip: sets _MODULE_SKIPPED so the current module is reported as having nothing to do; call it before returning 0 when a prerequisite is absent
 module_skip() {
 	_MODULE_SKIPPED="true"
 }
 
-# should_log: determine if a message at given level should be logged
-# Return 0 if given level should be logged according to LOG_LEVEL
+# should_log <level>: succeeds when a message at <level> passes LOG_LEVEL
 should_log() {
 	local min
 	local want
@@ -143,20 +121,17 @@ should_log() {
 	fi
 }
 
-# use_color: determines whether ANSI color codes should be emitted. Honors
-# the NO_COLOR community standard (a non-empty value disables color). No TTY
-# check: setup runs as postCreateCommand, which never attaches a real pty,
-# yet its output is still rendered (and colorized) live in the editor's UI —
-# auto-disabling on "not a TTY" would silently kill color in the only
-# environment that matters here. LOG_FILE output is unaffected either way;
-# it never carries color codes.
-# Returns: 0 if color should be used, 1 otherwise.
+# use_color: succeeds when log output should carry ANSI color, i.e. NO_COLOR is empty
+# Notes: no TTY check: setup runs as postCreateCommand, which never attaches a pty,
+#   yet the editor renders its output live and in color, so disabling color off a TTY
+#   would kill it in the only environment that matters. LOG_FILE output never carries
+#   color either way.
 use_color() {
 	[[ -n "${NO_COLOR:-}" ]] && return 1
 	return 0
 }
 
-# rotate_log_if_needed: rotate log files when exceeding LOG_MAX_SIZE
+# rotate_log_if_needed: rotates LOG_FILE once it reaches _LOG_MAX_SIZE, keeping _LOG_MAX_FILES - 1 rotated files
 rotate_log_if_needed() {
 	local size
 	local i
@@ -180,14 +155,13 @@ rotate_log_if_needed() {
 	if [[ -f "${LOG_FILE}" ]]; then
 		mv "${LOG_FILE}" "${LOG_FILE}.1" 2>/dev/null || true
 	fi
-	# Trim beyond max files
 	maxp=$(( _LOG_MAX_FILES + 0 ))
 	if [[ -f "${LOG_FILE}.$maxp" ]]; then
 		rm -f "${LOG_FILE}.$maxp" 2>/dev/null || true
 	fi
 }
 
-# json_quote: helper to produce JSON-safe string via jq when available
+# json_quote <string>: prints the string as a quoted JSON string
 json_quote() {
 	local input="$1"
 	local res
@@ -199,14 +173,12 @@ json_quote() {
 			return 0
 		fi
 	fi
-	# fallback: escape quotes and backslashes
 	printf '"%s"' "$(printf "%s" "$input" | sed -e 's/\\/\\\\/g' -e 's/"/\\\"/g' -e ':a;N;s/\n/\\n/g;ta')"
 }
 
-# write_log: outputs either structured JSON or legacy formatted text on stderr.
-# Supports multi-line messages: each non-empty line is prefixed with the
-# level symbol and color; blank lines are skipped to suppress spurious
-# empty-prefix output from tools like npm or git.
+# write_log <level> <message> [normal|detail|item]: writes the message to stderr, and to LOG_FILE when set, as JSON or as symbol-prefixed text
+# Notes: each non-empty line of a multi-line message gets its own prefix; blank lines
+#   are skipped so tools like npm or git print no empty prefixed lines.
 write_log() {
 	local level="$1"
 	local message="$2"
@@ -274,12 +246,11 @@ write_log() {
 	fi
 }
 
-# log_output: public wrapper that checks level filtering
+# log_output <level> <message> [normal|detail|item]: writes the message when <level> passes LOG_LEVEL, or is DEBUG with DEBUG_MODE true
 log_output() {
 	local level="$1"
 	local message="$2"
 	local style="${3:-normal}"
-	# Allow DEBUG messages when DEBUG_MODE is explicitly enabled
 	if [[ "$level" == "DEBUG" && "${DEBUG_MODE}" == "true" ]]; then
 		:
 	else

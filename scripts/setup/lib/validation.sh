@@ -3,11 +3,12 @@
 [[ -n "${_VALIDATION_SH_LOADED:-}" ]] && return 0
 readonly _VALIDATION_SH_LOADED=1
 
-# Validation utility functions for checking commands and environment variables
+# Checks commands, environment variables, URLs, files and JSON, and collects
+# numbered configuration variables.
 
 # ----- VALIDATION FUNCTIONS ---------------------------------------------------
 
-# check_command: Usage: check_command <command_name>. Returns 0 if available, 1 if not.
+# check_command <command_name>: succeeds when the command is available
 check_command() {
 	local cmd_name="$1"
 	if command -v "$cmd_name" >/dev/null 2>&1; then
@@ -19,7 +20,7 @@ check_command() {
 	fi
 }
 
-# check_env_var: Usage: check_env_var <var_name>. Returns 0 if set and non-empty, 1 if not.
+# check_env_var <var_name>: succeeds when the variable is set and non-empty
 check_env_var() {
 	local var_name="$1"
 	if [[ -n "${!var_name:-}" ]]; then
@@ -31,10 +32,8 @@ check_env_var() {
 	fi
 }
 
-# collect_numbered_vars <nameref> <prefix> [fallback_var]: Populates an array with values
-# read from <prefix>_1, <prefix>_2, … until the first unset or empty variable. If none are
-# set and fallback_var is given and non-empty, appends that single value instead.
-# Shared implementation behind collect_numbered_repo_entries and collect_numbered_extra_folders.
+# collect_numbered_vars <nameref> <prefix> [fallback_var]: appends <prefix>_1, <prefix>_2, … up to the first unset or empty one to the array <nameref>
+# Notes: when none is set, appends the value of fallback_var instead, if given and non-empty.
 collect_numbered_vars() {
 	local -n _out_vals="$1"
 	local prefix="$2" fallback_var="${3:-}"
@@ -53,31 +52,23 @@ collect_numbered_vars() {
 	fi
 }
 
-# collect_numbered_repo_entries <nameref> [fallback_var]: Populates an array with clone
-# URLs from REPO_SOURCE_1, REPO_SOURCE_2, … Used by both git.sh (fallback: REPO_SOURCE)
-# and workspaces.sh (no fallback).
+# collect_numbered_repo_entries <nameref> [fallback_var]: appends the clone URLs REPO_SOURCE_1, REPO_SOURCE_2, … to the array <nameref>
 collect_numbered_repo_entries() {
 	collect_numbered_vars "$1" "REPO_SOURCE" "${2:-}"
 }
 
-# collect_numbered_extra_folders <nameref>: Populates an array with extra workspace folder
-# names from EXTRA_FOLDER_1, EXTRA_FOLDER_2, … Used by workspaces.sh to add extra
-# bind-mounted roots to the .code-workspace file.
+# collect_numbered_extra_folders <nameref>: appends the folder names EXTRA_FOLDER_1, EXTRA_FOLDER_2, … to the array <nameref>
 collect_numbered_extra_folders() {
 	collect_numbered_vars "$1" "EXTRA_FOLDER"
 }
 
-# repo_entry_folder_name <url>: Extracts the last path segment without the .git extension.
-# Used by both git.sh and workspaces.sh to derive the workspace folder name from a clone URL.
-# Examples: https://github.com/org/repo.git → repo
-#           https://gitlab.com/myorg/my-app  → my-app
+# repo_entry_folder_name <url>: prints the URL's last path segment without .git (https://gitlab.com/org/my-app.git → my-app)
 repo_entry_folder_name() {
 	local url="${1##*/}"
 	echo "${url%.git}"
 }
 
-# validate_url: validate URL format (http or https)
-# Usage: validate_url <url>
+# validate_url <url>: succeeds when the URL is http or https with a host, an optional port and an optional path
 validate_url() {
 	local url="$1"
 	if [[ ! "$url" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/.*)?$ ]]; then
@@ -87,8 +78,7 @@ validate_url() {
 	return 0
 }
 
-# validate_file: check existence, readability, writability, executability
-# Usage: validate_file <path> [--readable] [--writable] [--executable]
+# validate_file <path> [--readable] [--writable] [--executable]: succeeds when the path exists and has every requested permission
 validate_file() {
 	local path="$1" opt
 	shift || true
@@ -121,8 +111,7 @@ validate_file() {
 	return 0
 }
 
-# validate_json: check JSON syntax of a file or stdin (-)
-# Usage: validate_json <file|- >
+# validate_json <file|->: succeeds when the file, or stdin for - or an empty argument, is valid JSON
 validate_json() {
 	local target="$1"
 	if [[ "$target" == "-" || -z "$target" ]]; then
@@ -147,8 +136,8 @@ json.load(f)" >/dev/null 2>&1 || return 1
 	return 0
 }
 
-# validate_env_var_format: simple format checks for env vars
-# Usage: validate_env_var_format <var_name> <type>
+# validate_env_var_format <var_name> <type>: succeeds when the variable is non-empty and matches <type> (email or url)
+# Returns: 1 when it is empty or does not match, 2 for an unknown type.
 validate_env_var_format() {
 	local var_name="$1"
 	local vtype="$2"

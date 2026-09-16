@@ -8,9 +8,8 @@ set -euo pipefail
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
-# Initializes the project's Herdr configuration and coding-agent integrations.
-# Guards on the Herdr command, then applies the locked config + integration
-# sequence (see setup/lib/herdr.sh).
+# Initializes the project's Herdr configuration and coding-agent integrations
+# through the shared herdr_apply sequence.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -18,10 +17,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# herdr_setup: Registers the module's error traps, then runs the locked
-# config + integration apply sequence (herdr_apply, see setup/lib/herdr.sh),
-# which guards on the Herdr command before taking any lock.
-# Returns: 0 on success, 1 when configuration or integration setup fails.
+# herdr_setup: module entry; runs herdr_apply
 herdr_setup() {
 	herdr_apply
 }

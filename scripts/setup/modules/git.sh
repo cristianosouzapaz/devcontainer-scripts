@@ -8,12 +8,9 @@ set -euo pipefail
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
-# Initializes or updates the project's Git repositories in the container
-# workspace: configures credentials, validates token access on any HTTP(S) Git
-# host (GitHub, GitLab, Gitea, Bitbucket, …) resolving one clone token per host
-# (see GIT_CLONE_TOKEN_<HOST>) so repos from different hosts can be mixed, then
-# clones or fetches each repo and installs dependencies with the detected
-# package manager (pnpm, npm, or yarn).
+# Clones or updates the project's Git repositories in the workspace and installs
+# their dependencies. One clone token is resolved per host (GIT_CLONE_TOKEN_<HOST>,
+# then GIT_CLONE_TOKEN), so repositories from different HTTP(S) hosts can be mixed.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -21,12 +18,12 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 
-# This module uses the following configuration variables:
+# Documented in README.md#configuration-variables:
 # - AUTO_UPDATE
 # - CLEAN_CREDENTIALS
 # - DEFAULT_BRANCH
-# - GIT_CLONE_TOKEN (from .config/.env) — global fallback token
-# - GIT_CLONE_TOKEN_<HOST> (from .config/.env) — per-host override, e.g. GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM
+# - GIT_CLONE_TOKEN
+# - GIT_CLONE_TOKEN_<HOST>
 # - GIT_EMAIL
 # - GIT_USER
 # - PROJECT_NAME
@@ -35,21 +32,18 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 # - REQUIRE_DEPENDENCY_INSTALL
 # - VALIDATE_TOKEN
 
-# ----- CONSTANTS --------------------------------------------------------------
+# ----- INTERNAL CONSTANTS -----------------------------------------------------
 
 readonly _GIT_CREDENTIALS_FILE="$HOME/.git-credentials"
 
-# Test seams — not readonly so tests can override them
-# _PKG_INSTALL_TIMEOUT: per-attempt dependency-install timeout, in seconds.
 _PKG_INSTALL_TIMEOUT="${_PKG_INSTALL_TIMEOUT:-300}"
 _WORKSPACE_DIR="${_WORKSPACE_DIR:-/workspace}"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# unset_clone_tokens: Unsets GIT_CLONE_TOKEN and any per-host GIT_CLONE_TOKEN_* vars.
-# Registered as a module-scoped cleanup (register_module_cleanup): run_module runs it right
-# after git_setup returns, whatever its outcome, so no later module's environment sees a
-# clone token (#99).
+# unset_clone_tokens: unsets GIT_CLONE_TOKEN and every GIT_CLONE_TOKEN_<HOST>
+# Notes: registered as a module cleanup, so run_module runs it right after git_setup
+#   ends, whatever its outcome, and no later module sees a clone token.
 unset_clone_tokens() {
 	local var_name
 	unset GIT_CLONE_TOKEN
@@ -59,16 +53,13 @@ unset_clone_tokens() {
 	return 0
 }
 
-# remove_credentials_store: Removes the credentials file when CLEAN_CREDENTIALS=true.
-# Registered as a process-wide cleanup (register_cleanup), unlike unset_clone_tokens: the
-# store removal stays on the exit trap, unchanged by #99.
+# remove_credentials_store: removes the git credentials file on exit when CLEAN_CREDENTIALS is true
 remove_credentials_store() {
 	[[ "$CLEAN_CREDENTIALS" == "true" ]] && rm -f "$_GIT_CREDENTIALS_FILE"
 	return 0
 }
 
-# url_host <url>: Extracts "host[:port]" from a URL of any scheme (https://, http://, ...).
-# Prints an empty string when the URL has no recognisable "scheme://" prefix.
+# url_host <url>: prints the host[:port] of a scheme:// URL, or an empty line for any other address
 url_host() {
 	local url="${1:-}" host
 	[[ "$url" == *://* ]] || { echo ""; return 0; }
@@ -77,24 +68,20 @@ url_host() {
 	echo "$host"
 }
 
-# url_scheme <url>: Extracts the scheme (e.g. "https") from a "scheme://" URL.
+# url_scheme <url>: prints the scheme of a scheme:// URL
 url_scheme() {
 	local url="${1:-}"
 	echo "${url%%://*}"
 }
 
-# token_env_var_name <host>: Computes the per-host token variable name.
-# Normalizes the host to uppercase, replacing every non-alphanumeric character with "_".
-# Example: gitlab.example.com -> GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM
+# token_env_var_name <host>: prints the per-host token variable name (gitlab.example.com → GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM)
 token_env_var_name() {
 	local host="${1:-}" normalized
 	normalized=$(printf '%s' "${host^^}" | tr -c 'A-Z0-9' '_')
 	echo "GIT_CLONE_TOKEN_${normalized}"
 }
 
-# resolve_token_for_host <host>: Resolves the clone token for a given host.
-# Priority: host-specific GIT_CLONE_TOKEN_<HOST> > global GIT_CLONE_TOKEN fallback.
-# Prints an empty string when neither is set.
+# resolve_token_for_host <host>: prints GIT_CLONE_TOKEN_<HOST>, else GIT_CLONE_TOKEN, else an empty line
 resolve_token_for_host() {
 	local host="${1:-}" var_name
 	var_name=$(token_env_var_name "$host")
@@ -105,10 +92,9 @@ resolve_token_for_host() {
 	fi
 }
 
-# configure_git_credentials <repo_url...>: Writes one credential store entry per unique host
-# found among the given repo URLs, resolving each host's token via resolve_token_for_host.
-# Preserves each URL's actual scheme (http/https). Entries with no host (a path, an scp-style
-# address) get no line; hosts with no resolvable token are skipped with a warning.
+# configure_git_credentials <repo_url...>: sets git's identity and writes one credential store entry per host among the URLs, keeping each URL's scheme
+# Notes: an address with no scheme:// host (a path, an scp-style address) gets no
+#   entry; a host with no resolvable token is skipped with a warning.
 configure_git_credentials() {
 	if ! check_env_var GIT_USER; then
 		push_error "$DEVCONTAINER_VALIDATION_ERROR" "${LINENO}" "configure_git_credentials" "GIT_USER" "GIT_USER is not set"
@@ -153,12 +139,8 @@ configure_git_credentials() {
 	log_item_success "Git credentials configured"
 }
 
-# detect_package_manager: Prints the package manager to use for the current project.
-# Priority: packageManager field in package.json >
-#           lock file presence (pnpm-lock.yaml > package-lock.json > yarn.lock) > npm default.
-# Logs a warning when multiple lock files are detected.
+# detect_package_manager: prints the package manager from package.json's packageManager, else from the lock file (pnpm > npm > yarn, warning when several exist), else npm
 detect_package_manager() {
-	# 1. packageManager field in package.json (Node.js standard)
 	local declared_pm
 	declared_pm=$(node -e "try{const p=JSON.parse(require('fs').readFileSync('package.json','utf8'));if(p.packageManager){const m=p.packageManager.match(/^(\w+)@/);if(m)console.log(m[1]);}}catch(e){}" 2>/dev/null || true)
 	if [[ -n "$declared_pm" ]]; then
@@ -167,7 +149,6 @@ detect_package_manager() {
 		return 0
 	fi
 
-	# 2. Lock file detection — warn when multiple are present
 	local -a found_locks=()
 	[[ -f "pnpm-lock.yaml" ]]    && found_locks+=("pnpm-lock.yaml")
 	[[ -f "package-lock.json" ]] && found_locks+=("package-lock.json")
@@ -181,20 +162,26 @@ detect_package_manager() {
 	[[ -f "package-lock.json" ]] && echo "npm"  && return 0
 	[[ -f "yarn.lock" ]]         && echo "yarn" && return 0
 
-	# 3. Safe default
 	log_debug "No lock file found, defaulting to npm"
 	echo "npm"
 }
 
-# install_dependencies: Skips when package.json is absent.
-# Detects the package manager via detect_package_manager and runs the appropriate install.
-# When pnpm is used, the store is set to an absolute path outside the workspace (persisted
-# by the persistent-data module) and the network retry budget is widened for slow registries.
-# Each install attempt is bounded by _PKG_INSTALL_TIMEOUT seconds. Pnpm receives --force so
-# a persisted, incompatible node_modules directory is recreated without an interactive prompt;
-# its unfrozen fallback is skipped when the frozen-lockfile attempt times out (exit code 124).
-# A failed install is logged as a warning and returns 0 unless REQUIRE_DEPENDENCY_INSTALL=true,
-# which restores the fatal push_error / non-zero return.
+# configure_pnpm: points the pnpm store outside the workspace and widens the network retry budget (5 retries, 120s cap)
+# Notes: best effort with output discarded: a failure must not abort the module before
+#   the install attempt runs its own failure handling, including the warning path when
+#   REQUIRE_DEPENDENCY_INSTALL is false. The persistent-data module persists the store.
+configure_pnpm() {
+	pnpm config set store-dir /root/.local/share/pnpm/store >/dev/null 2>&1 || true
+	pnpm config set fetch-retries 5 >/dev/null 2>&1 || true
+	pnpm config set fetch-retry-maxtimeout 120000 >/dev/null 2>&1 || true
+}
+
+# install_dependencies: installs the current directory's dependencies with the detected package manager, skipping without package.json
+# Returns: 0 also for a failed install, unless REQUIRE_DEPENDENCY_INSTALL is true.
+# Notes: each attempt is bounded by _PKG_INSTALL_TIMEOUT seconds. pnpm gets --force so
+#   a persisted, incompatible node_modules is recreated without an interactive prompt,
+#   and its unfrozen fallback is skipped when the frozen-lockfile attempt timed out
+#   (exit code 124).
 install_dependencies() {
 	[[ -f "package.json" ]] || {
 		log_debug "No package.json found, skipping dependency installation"
@@ -208,13 +195,7 @@ install_dependencies() {
 	case "$pm" in
 		pnpm)
 			skip_fallback=false
-			# Best-effort config, output already discarded: a failure here must not abort
-			# the module before the install attempt below runs its own failure handling
-			# (including the REQUIRE_DEPENDENCY_INSTALL=false warning path).
-			pnpm config set store-dir /root/.local/share/pnpm/store >/dev/null 2>&1 || true
-			# Widen the network retry budget for slow registries: 5 retries, 120s cap.
-			pnpm config set fetch-retries 5 >/dev/null 2>&1 || true
-			pnpm config set fetch-retry-maxtimeout 120000 >/dev/null 2>&1 || true
+			configure_pnpm
 			if [[ -f "pnpm-lock.yaml" ]]; then
 				exit_code=0
 				spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --frozen-lockfile --force || exit_code=$?
@@ -267,13 +248,11 @@ install_dependencies() {
 	return 0
 }
 
-# install_dependencies_without_tokens: Runs install_dependencies with GIT_CLONE_TOKEN and every
-# GIT_CLONE_TOKEN_* removed from the environment, so a package-manager lifecycle script from the
-# cloned repository (arbitrary code) never sees a clone credential; every value is restored
-# afterward, since a later repository (multi-repo) still needs its own token resolved. Not a
-# subshell: install_dependencies records failures in the shared error stack (see run_in_repo),
-# which a subshell would discard.
-# Returns: install_dependencies's own exit code.
+# install_dependencies_without_tokens: runs install_dependencies with every clone token removed from the environment, then restores them
+# Notes: a package-manager lifecycle script from the cloned repository is arbitrary
+#   code and must never see a clone credential; the tokens come back because a later
+#   repository still needs its own. Not a subshell: install_dependencies records
+#   failures in the shared error stack, which a subshell would discard.
 install_dependencies_without_tokens() {
 	local rc=0 var_name
 	local -a token_vars=()
@@ -296,18 +275,16 @@ install_dependencies_without_tokens() {
 	return "$rc"
 }
 
-# setup_repository <resolved_url>: Two cases: (1) .git exists → optionally fast-forward merge;
-# (2) no token resolvable for resolved_url's host → skip; otherwise clones from resolved_url.
-# A failed `git init`, `git remote add` or `git fetch` in case (2) removes the `.git` this
-# attempt created and fails the module, naming resolved_url; a checkout conflict after a
-# successful fetch stays a warning. The caller must cd to the target directory before calling
-# this function.
+# setup_repository <resolved_url>: in the current directory, fast-forwards an existing repository when AUTO_UPDATE is true, or clones resolved_url
+# Notes: the clone is skipped with a warning when no token resolves for the URL's
+#   host, since it cannot succeed without credentials. A failed git init, remote add
+#   or fetch removes the .git this attempt created and fails the module; a checkout
+#   conflict after a successful fetch stays a warning.
 setup_repository() {
 	local resolved_url="${1:-}"
 	local current_branch fetch_output merge_output
 	log_detail "Checking repository status in $(pwd)"
 
-	# CASE 1: Repo exists (volume with previous clone)
 	if [[ -d ".git" ]]; then
 		log_detail "Existing repository detected"
 		if [[ "${AUTO_UPDATE}" == "true" ]]; then
@@ -336,7 +313,6 @@ setup_repository() {
 		return 0
 	fi
 
-	# CASE 2: Skip if no token resolvable for this host — cannot clone without credentials
 	local resolved_host resolved_token
 	resolved_host=$(url_host "$resolved_url")
 	resolved_token=$(resolve_token_for_host "$resolved_host")
@@ -365,8 +341,8 @@ setup_repository() {
 		return 1
 	fi
 
-	# Try to checkout without overwriting existing local config files
 	local checkout_output
+	# why: no --force, so existing local config files are never overwritten
 	if checkout_output=$(git checkout "$DEFAULT_BRANCH" 2>&1); then
 		log_debug "${checkout_output}"
 		log_item_success "Repository initialized"
@@ -376,9 +352,8 @@ setup_repository() {
 	fi
 }
 
-# validate_same_host <url...>: Informational only — logs when a multi-repo setup spans more
-# than one host. Multi-host setups are fully supported (each host resolves its own token via
-# resolve_token_for_host); this is not a constraint, just a heads-up for the log.
+# validate_same_host <url...>: warns when the repository URLs span more than one host
+# Notes: informational only; each host resolves its own token, so mixed hosts work.
 validate_same_host() {
 	local first_host="" host url
 
@@ -392,9 +367,7 @@ validate_same_host() {
 	done
 }
 
-# validate_token_access <repo_url>: Runs git ls-remote to confirm token access.
-# No-ops when no token is resolvable for the URL's host or VALIDATE_TOKEN != true.
-# Relies on the credential store written by configure_git_credentials.
+# validate_token_access <repo_url>: confirms access with git ls-remote through the credential store, when VALIDATE_TOKEN is true and a token resolves for the URL's host
 validate_token_access() {
 	local url="${1:-}" host token
 	host=$(url_host "$url")
@@ -413,34 +386,30 @@ validate_token_access() {
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# run_in_repo: Runs a command with the working directory set to a repository folder,
-# restoring the previous working directory afterwards. Not a subshell: setup_repository
-# and install_dependencies record failures in the shared error stack, which a subshell
-# would discard.
-# Args: $1 - repository directory, $@ - command and arguments.
-# Returns: the command's exit code, or 1 when a directory change fails.
+# run_in_repo <dir> <command...>: runs the command in dir, then returns to the previous directory
+# Returns: the command's status, or 1 when a directory change fails.
+# Notes: not a subshell: setup_repository and install_dependencies record failures in
+#   the shared error stack, which a subshell would discard. The command runs bare and
+#   its status is read on the next line: under live errexit a failure stops the
+#   process and the directory no longer matters; under a caller's if or ||, errexit
+#   is off, so the status is captured and the cd back still runs.
 run_in_repo() {
 	local dir="$1"; shift
 	local previous_dir rc=0
 
 	previous_dir="$(pwd)"
 	cd "$dir" || return 1
-	# Bare call: under live errexit a failure here stops the process, and restoring
-	# previous_dir is moot because the subshell's cwd dies with it. When the caller
-	# instead tests run_in_repo with `||`/`if`, errexit is off for this call tree, so
-	# the status is captured below and the cd back to previous_dir still runs.
 	"$@"
 	rc=$?
 	cd "$previous_dir" || return 1
 	return "$rc"
 }
 
-# git_setup: Module entry point. Collects repository URLs from REPO_SOURCE_N env vars,
-# configures git credentials, validates token access, then clones or updates each repository.
-# Single-repo (one entry): operates in _WORKSPACE_DIR/<PROJECT_NAME>.
-# Multi-repo (two or more entries): loops over all entries, skipping duplicate folder names.
-# A dependency-install failure only aborts the module when REQUIRE_DEPENDENCY_INSTALL=true
-# (see install_dependencies), and in multi-repo only after every repo has been attempted.
+# git_setup: module entry; writes credentials, then clones or updates each REPO_SOURCE_N repository and installs its dependencies, skipping when none is set
+# Notes: one repository lives in _WORKSPACE_DIR/<PROJECT_NAME>; two or more each get
+#   the folder named after their URL, a repeated folder name being skipped. A
+#   dependency-install failure fails the module only when REQUIRE_DEPENDENCY_INSTALL
+#   is true, and in multi-repo only after every repository has been attempted.
 git_setup() {
 	local -a _trimmed_entries=()
 	local entry folder_name
@@ -448,7 +417,7 @@ git_setup() {
 	local deps_failed=false
 	register_module_cleanup unset_clone_tokens
 	register_cleanup remove_credentials_store
-	# A rejected token must fail the clone, not prompt on a lifecycle hook's terminal.
+	# why: a rejected token must fail the clone, not prompt on a lifecycle hook's terminal
 	export GIT_TERMINAL_PROMPT=0
 
 	collect_numbered_repo_entries _trimmed_entries REPO_SOURCE
@@ -477,9 +446,6 @@ git_setup() {
 			validate_token_access "$entry"
 			mkdir -p "${_WORKSPACE_DIR}/${folder_name}"
 			run_in_repo "${_WORKSPACE_DIR}/${folder_name}" setup_repository "$entry"
-			# install_dependencies_without_tokens's own failure must not stop the other
-			# repositories: multi-repo keeps processing and fails the module only after
-			# every entry has been attempted (see the deps_failed check below).
 			run_in_repo "${_WORKSPACE_DIR}/${folder_name}" install_dependencies_without_tokens || deps_failed=true
 		done
 		if [[ "$deps_failed" == true ]]; then
@@ -488,4 +454,4 @@ git_setup() {
 	fi
 }
 
-export -f run_in_repo unset_clone_tokens remove_credentials_store url_host url_scheme token_env_var_name resolve_token_for_host configure_git_credentials detect_package_manager install_dependencies install_dependencies_without_tokens setup_repository validate_same_host validate_token_access git_setup
+export -f run_in_repo unset_clone_tokens remove_credentials_store url_host url_scheme token_env_var_name resolve_token_for_host configure_git_credentials detect_package_manager configure_pnpm install_dependencies install_dependencies_without_tokens setup_repository validate_same_host validate_token_access git_setup

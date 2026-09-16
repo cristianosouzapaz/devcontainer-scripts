@@ -10,17 +10,15 @@ readonly _ATOMIC_WRITE_SH_LOADED=1
 
 # ----- FUNCTIONS --------------------------------------------------------------
 
-# atomic_write: Replaces a file with a command's standard output, in one rename.
-# Usage: atomic_write <target> <command...>
-# The temp file is created next to the target (resolved through a symlink, so the
-# link survives): the targets live on persistent-data volumes, where a mv from
-# /tmp would be a copy, not a rename. An existing target keeps its mode; a new one
-# gets the mode a plain redirect would give it. Anything but a regular file (a
-# device, a FIFO, a directory) is refused, never replaced. The command runs in a
-# condition, so its own status decides, not errexit inside it.
-# Returns: 0 on success; the command's status, or 1 for a refused target, a
-# temp-file or a rename failure — the target is then untouched and no temp file
-# is left behind.
+# atomic_write <target> <command...>: replaces <target> with the command's stdout in one rename
+# Returns: the command's status, or 1 for a refused target, a temp-file or a rename
+#   failure; the target is then untouched and no temp file is left behind.
+# Notes: the temp file is created next to the target, resolved through a symlink so
+#   the link survives: the targets live on persistent-data volumes, where a mv from
+#   /tmp would be a copy, not a rename. An existing target keeps its mode; a new one
+#   gets the mode a plain redirect would give it. Anything but a regular file (a
+#   device, a FIFO, a directory) is refused, never replaced. The command runs in a
+#   condition, so its own status decides, not errexit inside it.
 atomic_write() {
 	local target tmp_file rc=0
 

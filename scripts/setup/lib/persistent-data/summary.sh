@@ -3,39 +3,31 @@
 [[ -n "${_PERSISTENT_DATA_SUMMARY_SH_LOADED:-}" ]] && return 0
 readonly _PERSISTENT_DATA_SUMMARY_SH_LOADED=1
 
-# Persistent-data summary - Prints a readable, registry-driven view of the
-# logical persistent-data categories at the end of setup, grouped by purpose,
-# plus the project workspace volume.
+# Logs a registry-driven summary of the persistent-data categories at the end of
+# setup: the shared volume once, then authentication data, persistent tool data and
+# the workspace volume.
 #
-# Provides one public function:
-#   persistent_data_summary_print - Logs the shared physical volume once as the
-#   common origin, then three groups sourced from the central persistent-data registry
-#   and the container's own mounts:
-#       Authentication data  (identity present)
-#       Persistent tool data (identity absent)
-#       Workspace data        (the <project>-data volume on /workspace)
-#   Authentication rows carry the tool's own
-#   login status (via its status command, never
-#   by reading credential files); tool rows only
-#   report path availability. A category whose
-#   scope root isn't mounted shows "not mounted".
+# Mounts come from `docker inspect` on the container's own ID, so without Docker
+# access the summary is silently skipped. Categories come only from the provisioning
+# document; no second list of categories or volumes is kept here.
+
+# ----- CONFIGURATION VARIABLES ------------------------------------------------
+
+# Documented in README.md#configuration-variables:
+# - STRUCTURED_LOGS
 #
-# Mount data comes from `docker inspect` against the container's own ID (read
-# from /etc/hostname); the function silently does nothing without Docker access.
-# It keeps NO second hardcoded list of categories or volumes — the registry is
-# the only category authority.
+# Read from the tools' own environment:
+# - CODEX_HOME: Codex state directory holding auth.json (default ~/.codex)
+# - PI_CODING_AGENT_DIR: Pi agent directory holding auth.json (default ~/.pi/agent)
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
 _HOSTNAME_PATH="${_HOSTNAME_PATH:-/etc/hostname}"
-
-# Shared physical volume shown once as the common origin (see docs/wiki/setup/library-layer.md).
 _PERSISTENT_DATA_SHARED_VOLUME="${_PERSISTENT_DATA_SHARED_VOLUME:-devcontainer-shared-data}"
 
 # ----- INTERNAL HELPERS -------------------------------------------------------
 
-# Print "<volume-name>|<destination>" for every named volume mounted on the
-# current container, or nothing if docker/the socket is unavailable.
+# persistent_data_summary_list_mounts: prints "<volume>|<destination>" for each named volume mounted on this container, nothing without Docker access
 persistent_data_summary_list_mounts() {
 	local container_id
 
@@ -48,9 +40,8 @@ persistent_data_summary_list_mounts() {
 {{end}}{{end}}' 2>/dev/null || true
 }
 
-# persistent_data_summary_claude_identity: echoes the authenticated account's email
-# via `claude auth status` (never by reading .credentials.json directly).
-# Returns: 0 and prints the email if authenticated, 1 otherwise.
+# persistent_data_summary_claude_identity: prints the account email from claude auth status, failing when not authenticated
+# Notes: asks the CLI rather than reading .credentials.json.
 persistent_data_summary_claude_identity() {
 	local output
 	command -v claude >/dev/null 2>&1 || return 1
@@ -58,14 +49,10 @@ persistent_data_summary_claude_identity() {
 	sed -n 's/^Email: //p' <<<"$output"
 }
 
-# persistent_data_summary_codex_identity: echoes the ChatGPT account email backing the
-# stored Codex login. `codex login status` confirms a session exists but exposes
-# no account identifier, so the email is read from the id_token JWT in
-# ~/.codex/auth.json (CODEX_HOME). Falls back to a neutral "active session"
-# description when the session is active but no email can be extracted — e.g. an
-# API-key login, which has no id_token.
-# Returns: 0 and prints the email (or "active session") if authenticated,
-# 1 otherwise.
+# persistent_data_summary_codex_identity: prints the ChatGPT account email behind the Codex login, or "active session", failing when not logged in
+# Notes: codex login status confirms a session but exposes no account, so the email
+#   is decoded from the id_token JWT in $CODEX_HOME/auth.json; an API-key login has
+#   no id_token and prints "active session".
 persistent_data_summary_codex_identity() {
 	local auth_file="${CODEX_HOME:-$HOME/.codex}/auth.json"
 	local id_token payload email
@@ -88,9 +75,8 @@ persistent_data_summary_codex_identity() {
 	printf '%s\n' "${email:-active session}"
 }
 
-# persistent_data_summary_github_identity: echoes the authenticated account name via
-# `gh auth status` (never by reading hosts.yml directly).
-# Returns: 0 and prints the account name if authenticated, 1 otherwise.
+# persistent_data_summary_github_identity: prints the account name from gh auth status, failing when not authenticated
+# Notes: asks the CLI rather than reading hosts.yml.
 persistent_data_summary_github_identity() {
 	local output
 	command -v gh >/dev/null 2>&1 || return 1
@@ -98,10 +84,8 @@ persistent_data_summary_github_identity() {
 	sed -n 's/.*Logged in to [^ ]* account \([^ ]*\).*/\1/p' <<<"$output" | head -1
 }
 
-# persistent_data_summary_pi_identity: echoes ready Pi providers by asking Pi to
-# check each provider found in its stored auth file. Readiness comes from Pi's
-# JSON payload, not the command's exit status.
-# Returns: 0 and prints providers if authenticated, 1 otherwise.
+# persistent_data_summary_pi_identity: prints the providers in Pi's auth file that pi auth check reports ready, failing when none is
+# Notes: readiness comes from the JSON payload, not the command's exit status.
 persistent_data_summary_pi_identity() {
 	local auth_file="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json"
 	local provider output status ready_providers=""
@@ -125,9 +109,7 @@ persistent_data_summary_pi_identity() {
 	printf '%s\n' "$ready_providers"
 }
 
-# persistent_data_summary_identity <identity>: dispatches to the tool-specific
-# identity check for a registry identity token.
-# Returns: 0 and prints the identity if authenticated, 1 otherwise.
+# persistent_data_summary_identity <identity>: prints the result of the persistent_data_summary_<identity>_identity check, failing for an unknown identity or when not authenticated
 persistent_data_summary_identity() {
 	local probe="$1" identity_function
 
@@ -136,15 +118,17 @@ persistent_data_summary_identity() {
 	"$identity_function"
 }
 
-# persistent_data_summary_render <title>: renders one TOOL/PATH/STATUS group
-# from pipe-delimited rows on stdin: "<ok>|<tool>|<category>|<path>|<status>"
-# where <ok> is "true" (success symbol) or "false" (warning symbol) and
-# <category> is the registry id, surfaced only in the STRUCTURED_LOGS sentence
-# as a stable parsing key. Plain-text mode prints an aligned column table under
-# an indented header; STRUCTURED_LOGS mode drops the header and emits one
-# self-contained sentence per row. Emits nothing at all for an empty group.
-# Args: $1 - group title.
-# Returns: 0 always.
+# persistent_data_summary_log_header <header>: logs a table header aligned with the rows below it
+# Notes: indented by 3 spaces because the detail prefix (tree bar) is 3 columns
+#   narrower than the item prefix (tree bar, 2 spaces, symbol) the rows carry.
+persistent_data_summary_log_header() {
+	log_detail "   $1"
+}
+
+# persistent_data_summary_render <title>: logs one TOOL/PATH/STATUS group from "<ok>|<tool>|<category>|<path>|<status>" rows on stdin, nothing for an empty group
+# Notes: <ok> true picks the success symbol, false the warning one. Plain text logs an
+#   aligned table under a header; STRUCTURED_LOGS drops the header and logs one
+#   self-contained sentence per row, where the category id is a stable parsing key.
 persistent_data_summary_render() {
 	local title="$1" ok tool category path status
 	local col_tool=4 col_path=4
@@ -165,9 +149,7 @@ persistent_data_summary_render() {
 
 	if [[ "$STRUCTURED_LOGS" != "true" ]]; then
 		printf -v header '%-*s  %-*s  %s' "$col_tool" "TOOL" "$col_path" "PATH" "STATUS"
-		# 3 leading spaces: the "detail" tree-bar prefix is one column narrower
-		# than the "item" tree-bar + symbol prefix used for the rows below.
-		log_detail "   ${header}"
+		persistent_data_summary_log_header "$header"
 	fi
 
 	for i in "${!ok_v[@]}"; do
@@ -186,12 +168,8 @@ persistent_data_summary_render() {
 	return 0
 }
 
-# persistent_data_summary_render_workspace <title>: renders the VOLUME/MOUNT/STATUS
-# group from pipe-delimited rows on stdin: "<volume>|<mount>|<status>". A listed
-# workspace volume is always mounted, so every row carries the success symbol.
-# Same plain-text / STRUCTURED_LOGS behaviour as persistent_data_summary_render.
-# Args: $1 - group title.
-# Returns: 0 always.
+# persistent_data_summary_render_workspace <title>: logs the VOLUME/MOUNT/STATUS group from "<volume>|<mount>|<status>" rows on stdin, like persistent_data_summary_render
+# Notes: a listed workspace volume is always mounted, so every row is a success.
 persistent_data_summary_render_workspace() {
 	local title="$1" volume mount status
 	local col_volume=6 col_mount=5
@@ -211,8 +189,7 @@ persistent_data_summary_render_workspace() {
 
 	if [[ "$STRUCTURED_LOGS" != "true" ]]; then
 		printf -v header '%-*s  %-*s  %s' "$col_volume" "VOLUME" "$col_mount" "MOUNT" "STATUS"
-		# 3 leading spaces — see the matching note in persistent_data_summary_render.
-		log_detail "   ${header}"
+		persistent_data_summary_log_header "$header"
 	fi
 
 	for i in "${!vol_v[@]}"; do
@@ -227,17 +204,12 @@ persistent_data_summary_render_workspace() {
 	return 0
 }
 
-# ----- PUBLIC FUNCTIONS -----------------------------------------------------
+# ----- PUBLIC FUNCTIONS -------------------------------------------------------
 
-# persistent_data_summary_print: Logs the registry-driven persistent-data
-# summary — the shared volume line, then the Authentication data, Persistent
-# tool data, and Workspace data groups. Categories come from the central
-# registry (provisioning_ids all); their mount state comes from the
-# container's own `docker inspect` mounts. An authentication category whose CLI
-# binary isn't installed is omitted entirely (keeps unselected optional tools
-# out of the summary). Silently does nothing without Docker access.
-# Args: none
-# Returns: 0 always
+# persistent_data_summary_print: logs the shared volume line, then the Authentication data, Persistent tool data and Workspace data groups
+# Notes: an authentication category whose CLI is missing reports "not installed",
+#   distinct from "not authenticated" and "not mounted", never a false "not
+#   authenticated".
 persistent_data_summary_print() {
 	local mounts shared_root project_root shared_mounted=false project_mounted=false
 	local workspace_volume="" mount_name mount_dest
@@ -270,7 +242,7 @@ persistent_data_summary_print() {
 		fields=$(provisioning_fields all "$category_id" label binary identity loginHint scope relativePath) || continue
 		IFS=$'\x1f' read -r label binary probe hint scope relative_path <<<"$fields"
 
-		# The registry allows only these two scopes, whose roots are resolved above.
+		# why: provisioning_validate allows only the shared and project scopes
 		if [[ "$scope" == "shared" ]]; then
 			mounted="$shared_mounted"; path="$shared_root/$relative_path"
 		else
@@ -278,9 +250,6 @@ persistent_data_summary_print() {
 		fi
 
 		if [[ -n "$probe" ]]; then
-			# Every registered authentication category is listed. A missing CLI
-			# reports "not installed" (a distinct state from "not authenticated"
-			# and "not mounted"), never a false "not authenticated".
 			if [[ -n "$binary" ]] && ! command -v "$binary" >/dev/null 2>&1; then
 				status="not installed"; ok="false"
 			elif [[ "$mounted" != "true" ]]; then
@@ -322,5 +291,5 @@ persistent_data_summary_print() {
 export -f persistent_data_summary_list_mounts persistent_data_summary_claude_identity \
 	persistent_data_summary_codex_identity persistent_data_summary_github_identity \
 	persistent_data_summary_pi_identity persistent_data_summary_identity \
-	persistent_data_summary_render \
+	persistent_data_summary_log_header persistent_data_summary_render \
 	persistent_data_summary_render_workspace persistent_data_summary_print

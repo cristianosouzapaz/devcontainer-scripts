@@ -3,16 +3,18 @@
 [[ -n "${_PERSISTENT_DATA_LOCKS_SH_LOADED:-}" ]] && return 0
 readonly _PERSISTENT_DATA_LOCKS_SH_LOADED=1
 
-# Bounded locks for persistent-data structural changes.
+# Bounded flock locks that serialize structural changes to persistent data, taken shared before project.
+
+# ----- INTERNAL CONSTANTS -----------------------------------------------------
 
 _PERSISTENT_DATA_LOCK_TIMEOUT="${PERSISTENT_DATA_LOCK_TIMEOUT:-30}"
 
-# Space-padded list of scopes currently held by this shell, to enforce acquisition order.
+# why: tracks the scopes this shell holds, to enforce the shared-before-project order
 _PERSISTENT_DATA_LOCKS_HELD=''
 
-# persistent_data_lock_path: Prints the lock-file path for a scope.
-# Args: shared or project.
-# Returns: 0 when recognized, 1 otherwise.
+# ----- FUNCTIONS --------------------------------------------------------------
+
+# persistent_data_lock_path <shared|project>: prints the lock file path of a scope
 persistent_data_lock_path() {
 	local root
 
@@ -20,9 +22,13 @@ persistent_data_lock_path() {
 	printf '%s\n' "$root/.persistent-data.lock"
 }
 
-# with_persistent_data_lock: Runs a command while holding the scope's bounded lock.
-# Args: scope, command and its arguments.
-# Returns: wrapped command status, or 1 when the lock cannot be acquired.
+# with_persistent_data_lock <shared|project> <command...>: runs the command while holding the scope's lock, waiting at most _PERSISTENT_DATA_LOCK_TIMEOUT seconds
+# Returns: the command's status, or 1 when the lock cannot be acquired or the shared
+#   lock is requested while the project lock is held.
+# Notes: the command runs bare and its status is read on the next line: under live
+#   errexit a failure stops the process, and the fd closing on exit releases the
+#   lock; under a caller's if or ||, errexit is off, so the status is captured and
+#   the lock and the held-scope list are still restored.
 with_persistent_data_lock() {
 	local scope="$1" lock_file lock_dir lock_fd command_status=0 locks_held_before
 	shift || true
@@ -49,11 +55,6 @@ with_persistent_data_lock() {
 	fi
 	locks_held_before="$_PERSISTENT_DATA_LOCKS_HELD"
 	_PERSISTENT_DATA_LOCKS_HELD="$_PERSISTENT_DATA_LOCKS_HELD $scope"
-	# Bare call: under live errexit a failure here stops the process, and restoring
-	# _PERSISTENT_DATA_LOCKS_HELD/releasing the lock is moot — the flock is released
-	# when the fd closes on exit. When the caller instead tests with_persistent_data_lock
-	# with `||`/`if`, errexit is off for this call tree, so the status is captured below
-	# and the lock/state restoration below still runs.
 	"$@"
 	command_status=$?
 	_PERSISTENT_DATA_LOCKS_HELD="$locks_held_before"
@@ -62,16 +63,12 @@ with_persistent_data_lock() {
 	return "$command_status"
 }
 
-# with_shared_data_lock: Runs a command while holding the shared-data lock.
-# Args: command and its arguments.
-# Returns: wrapped command status, or 1 when the lock cannot be acquired.
+# with_shared_data_lock <command...>: runs the command while holding the shared-data lock
 with_shared_data_lock() {
 	with_persistent_data_lock shared "$@"
 }
 
-# with_project_data_lock: Runs a command while holding the project-data lock.
-# Args: command and its arguments.
-# Returns: wrapped command status, or 1 when the lock cannot be acquired.
+# with_project_data_lock <command...>: runs the command while holding the project-data lock
 with_project_data_lock() {
 	with_persistent_data_lock project "$@"
 }

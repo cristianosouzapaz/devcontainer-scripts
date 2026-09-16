@@ -3,14 +3,16 @@
 [[ -n "${_PERSISTENT_DATA_PATHS_SH_LOADED:-}" ]] && return 0
 readonly _PERSISTENT_DATA_PATHS_SH_LOADED=1
 
-# Paths resolved from the persistent-data registry.
+# Resolves persistent-data scope roots and category paths from the provisioning document.
+
+# ----- INTERNAL CONSTANTS -----------------------------------------------------
 
 _PERSISTENT_DATA_SHARED_ROOT="${PERSISTENT_DATA_SHARED_ROOT:-/var/lib/devcontainer}"
 _PERSISTENT_DATA_PROJECT_ROOT="${PERSISTENT_DATA_PROJECT_ROOT:-/workspace}"
 
-# persistent_data_root: Prints the root for a persistent-data scope.
-# Args: shared or project.
-# Returns: 0 when recognized, 1 otherwise.
+# ----- FUNCTIONS --------------------------------------------------------------
+
+# persistent_data_root <shared|project>: prints the root directory of a persistent-data scope
 persistent_data_root() {
 	case "$1" in
 	shared) printf '%s\n' "$_PERSISTENT_DATA_SHARED_ROOT" ;;
@@ -22,9 +24,7 @@ persistent_data_root() {
 	esac
 }
 
-# persistent_data_category_path: Prints the absolute path for a registered category.
-# Args: category id.
-# Returns: 0 when found, 1 otherwise.
+# persistent_data_category_path <category_id>: prints the absolute path of a registered category
 persistent_data_category_path() {
 	local category_id="$1" fields scope relative_path root
 

@@ -3,12 +3,13 @@
 [[ -n "${_PROVISIONING_SH_LOADED:-}" ]] && return 0
 readonly _PROVISIONING_SH_LOADED=1
 
-# Provisioning document access for coding agents and persistent-data categories.
+# Reads and validates the provisioning document that lists the coding agents and the
+# persistent-data categories.
 
-# DEVCONTAINER_PROVISIONING (optional path): overrides provisioning.json under
-# DEVCONTAINER_CONFIG_DIR, which loader.sh publishes.
+# ----- INTERNAL CONSTANTS -----------------------------------------------------
+
 _DEVCONTAINER_PROVISIONING="${DEVCONTAINER_PROVISIONING:-${DEVCONTAINER_CONFIG_DIR}/provisioning.json}"
-# Shared entry derivations; preserve an explicit false reset guard.
+# why: tests .resettable against null, since // true would also replace an explicit false
 # shellcheck disable=SC2016 # jq variables, not shell expansions.
 readonly _PROVISIONING_ENTRY_FILTER='
 	(if $section == "all" then "agents", "categories" else $section end) as $source |
@@ -17,9 +18,9 @@ readonly _PROVISIONING_ENTRY_FILTER='
 	if .resettable == null then .resettable = true else . end
 '
 
-# provisioning_validate: Validates the whole document as written, without caching.
-# Args: none.
-# Returns: 0 when valid, 1 otherwise, logging the offending entry and field.
+# ----- FUNCTIONS --------------------------------------------------------------
+
+# provisioning_validate: validates the whole document as written, without caching, logging the offending entries and fields
 provisioning_validate() {
 	local errors
 
@@ -91,9 +92,7 @@ provisioning_validate() {
 	return 0
 }
 
-# provisioning_ids: Prints section IDs in document order.
-# Args: $1 - agents, categories or all.
-# Returns: 0 on success, 1 for an unknown section or read failure.
+# provisioning_ids <agents|categories|all>: prints the entry IDs of a section in document order
 provisioning_ids() {
 	local section="$1"
 
@@ -107,9 +106,7 @@ provisioning_ids() {
 	jq -r --arg section "$section" '(if $section == "all" then .agents[], .categories[] else .[$section][] end) | .id' "$_DEVCONTAINER_PROVISIONING" || return 1
 }
 
-# provisioning_entry: Prints one compact JSON entry with conventional fields filled in.
-# Args: $1 - agents, categories or all; $2 - entry id.
-# Returns: 0 when found, 1 otherwise.
+# provisioning_entry <agents|categories|all> <id>: prints one entry as compact JSON, with the conventional fields filled in
 provisioning_entry() {
 	local section="$1" id="$2" entry
 
@@ -129,9 +126,7 @@ provisioning_entry() {
 	printf '%s\n' "$entry"
 }
 
-# provisioning_fields: Prints requested fields joined by unit separators.
-# Args: $1 - agents, categories or all; $2 - entry id; remaining arguments - fields.
-# Returns: 0 when found (null or absent fields are empty), 1 otherwise.
+# provisioning_fields <agents|categories|all> <id> <field...>: prints the requested fields of an entry joined by unit separators, a null or absent field as empty
 provisioning_fields() {
 	local section="$1" id="$2"
 
@@ -152,9 +147,7 @@ provisioning_fields() {
 	}
 }
 
-# provisioning_layout_version: Prints the persistent-data layout version.
-# Args: none.
-# Returns: 0 on success, nonzero on read failure.
+# provisioning_layout_version: prints the persistent-data layout version
 provisioning_layout_version() {
 	jq -r '.persistentDataLayoutVersion' "$_DEVCONTAINER_PROVISIONING"
 }

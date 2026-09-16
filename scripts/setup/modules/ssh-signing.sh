@@ -8,10 +8,9 @@ set -euo pipefail
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
-# Opt-in: configures Git SSH commit signing, and only when SSH_SIGNING=true and
-# SSH_AUTH_SOCK points to a valid socket. VS Code forwards the host SSH agent
-# automatically, so any host agent (1Password, OpenSSH, Keychain, …) works
-# inside the container and the private key never leaves the agent.
+# Opt-in: configures Git SSH commit signing when SSH_SIGNING is true and SSH_AUTH_SOCK
+# is a socket. VS Code forwards the host SSH agent, so any host agent (1Password,
+# OpenSSH, Keychain) works inside the container and the private key never leaves it.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -19,22 +18,21 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 
-# This module uses the following configuration variables:
-# - GIT_SIGNING_KEY (from .config/.env)
-# - SSH_AUTH_SOCK   (standard Unix variable, set by the SSH agent / VS Code forwarding)
+# Documented in README.md#configuration-variables:
+# - GIT_SIGNING_KEY
 # - SSH_SIGNING
+#
+# Set by the SSH agent forwarding:
+# - SSH_AUTH_SOCK: path of the forwarded agent socket
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# is_valid_socket: Checks whether the configured SSH agent endpoint is a Unix socket.
-# Arguments: none; reads SSH_AUTH_SOCK.
-# Returns: 0 when SSH_AUTH_SOCK points to a socket, 1 otherwise.
+# is_valid_socket: succeeds when SSH_AUTH_SOCK points to a Unix socket
 is_valid_socket() {
 	[[ -S "${SSH_AUTH_SOCK:-}" ]]
 }
 
-# is_signing_configured <ssh_keygen_path>
-# Returns 0 if git is already configured for SSH signing with the expected values.
+# is_signing_configured <ssh_keygen_path>: succeeds when git's global config already signs commits over SSH with this ssh-keygen and, when set, GIT_SIGNING_KEY
 is_signing_configured() {
 	local ssh_keygen_path="$1"
 	local configured_format configured_program configured_commit_signing configured_signing_key
@@ -54,9 +52,9 @@ is_signing_configured() {
 	return 0
 }
 
-# configure_git_signing <ssh_keygen_path>
-# Writes the same 3-4 settings is_signing_configured checks (signingkey only
-# when GIT_SIGNING_KEY is set), so the two stay in lockstep by construction.
+# configure_git_signing <ssh_keygen_path>: writes git's global SSH signing settings, user.signingkey only when GIT_SIGNING_KEY is set
+# Notes: writes exactly the settings is_signing_configured checks, so the two stay in
+#   lockstep.
 configure_git_signing() {
 	local ssh_keygen_path="$1"
 
@@ -73,11 +71,8 @@ configure_git_signing() {
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# ssh_signing_setup: Module entry point.
-# Fails if ssh-keygen is unavailable. Delegates to configure_git_signing
-# only when not already correctly set; clears GIT_SIGNING_KEY on exit.
-# Arguments: none.
-# Returns: 0 on success or skip; 1 when ssh-keygen is unavailable.
+# ssh_signing_setup: module entry; configures SSH commit signing unless already in place, skipping when SSH_SIGNING is not true or no agent socket is forwarded, failing without ssh-keygen
+# Notes: a module cleanup unsets GIT_SIGNING_KEY, so it never reaches the next module.
 ssh_signing_setup() {
 	local ssh_keygen_path
 

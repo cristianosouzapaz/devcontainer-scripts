@@ -8,10 +8,8 @@ set -euo pipefail
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
-# Installs and configures the supported coding-agent CLIs. Agent-specific
-# configuration lives in the smallest helper that owns the relevant tool; the
-# entry point installs and configures each agent in document order. Every step
-# is idempotent and safe to re-run on a container rebuild.
+# Installs and configures the coding-agent CLIs declared in the provisioning
+# document, in document order. Every step is safe to re-run on a container rebuild.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -19,14 +17,12 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 
-# This module uses the following configuration variables:
-# - CLAUDE_CONFIG_DIR (optional, defaults to the persistent-data managed /root/.claude link)
-# - CODEX_HOME (optional, defaults to the persistent-data managed /root/.codex link)
-# - PERSISTENT_DATA_HOME (optional path, defaults to /root): home for declarative defaults
+# - CLAUDE_CONFIG_DIR: Claude Code config directory (default /root/.claude, the managed persistent-data link)
+# - CODEX_HOME: Codex config directory (default /root/.codex, the managed persistent-data link)
+# - PERSISTENT_DATA_HOME: home directory the agents' configFile paths resolve against (default /root)
 
-# ----- CONSTANTS --------------------------------------------------------------
+# ----- INTERNAL CONSTANTS -----------------------------------------------------
 
-# Path constants: NOT readonly — test seams per bash rules.
 _CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/root/.claude}"
 _STATUSLINE_SOURCE="${DEVCONTAINER_ASSETS_DIR}/statusline-command.sh"
 _STATUSLINE_DEST="${_CLAUDE_CONFIG_DIR}/statusline-command.sh"
@@ -35,31 +31,28 @@ _STATUSLINE_HASH_FILE="${_CLAUDE_CONFIG_DIR}/.statusline-hash"
 _CODEX_CONFIG_DIR="${CODEX_HOME:-/root/.codex}"
 _CODEX_SETTINGS="${_CODEX_CONFIG_DIR}/config.toml"
 _PERSISTENT_DATA_HOME="${PERSISTENT_DATA_HOME:-/root}"
-# DEVCONTAINER_ASSETS_DIR is readonly, so a declared defaultsAsset is
-# resolved against this seam instead.
+# why: DEVCONTAINER_ASSETS_DIR is readonly, so tests point defaultsAsset elsewhere through this seam
 _CODING_AGENTS_ASSETS_DIR="${DEVCONTAINER_ASSETS_DIR}"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# codex_settings_with_file_storage: Prints config.toml with file credential storage set.
-# TOML keys after a table header belong to that table, so the setting leads the
-# file to stay a root-level key; every other line of an existing file follows.
-# Returns: 0 on success, grep's status (2) when the existing file cannot be read.
+# codex_settings_with_file_storage: prints config.toml with cli_auth_credentials_store set to "file" and every other line kept
+# Returns: grep's status 2 when the existing file cannot be read.
+# Notes: the setting leads the file so it stays a root-level key: TOML keys after a
+#   table header belong to that table. grep exiting 1 only means no other line is
+#   left; a read error must stop the rewrite, or the developer's configuration is lost.
 codex_settings_with_file_storage() {
 	local rc=0
 
 	printf '%s\n' 'cli_auth_credentials_store = "file"'
 	[[ -f "${_CODEX_SETTINGS}" ]] || return 0
 	printf '\n'
-	# grep exits 1 when no other line is left, which is fine; 2 is a read error,
-	# which must stop the rewrite or the developer's configuration is lost.
 	grep -Ev '^cli_auth_credentials_store[[:space:]]*=' "${_CODEX_SETTINGS}" || rc=$?
 	[[ "$rc" -le 1 ]] || return "$rc"
 }
 
-# configure_codex: Ensures Codex stores credentials in auth.json
-# under CODEX_HOME, which is mounted on a persistent Docker volume. Rewrites only
-# the top-level cli_auth_credentials_store setting and preserves all other config.
+# configure_codex: sets Codex credential storage to auth.json under CODEX_HOME, rewriting only that top-level setting
+# Notes: CODEX_HOME is on a persistent volume, so file storage keeps the login across rebuilds.
 configure_codex() {
 	mkdir -p "${_CODEX_CONFIG_DIR}"
 	if [[ -f "${_CODEX_SETTINGS}" ]] \
@@ -72,8 +65,7 @@ configure_codex() {
 	log_detail "Configured Codex credentials for persistent file storage"
 }
 
-# merge_statusline_settings: Merges the statusLine key into settings.json.
-# Skips with log_warning when the file exists but contains malformed JSON.
+# merge_statusline_settings: sets the statusLine command in Claude's settings.json, warning and skipping when the file is malformed JSON
 merge_statusline_settings() {
 	local current_settings result
 	if [[ -f "${_STATUSLINE_SETTINGS}" ]]; then
@@ -95,9 +87,11 @@ merge_statusline_settings() {
 	log_debug "Merged statusLine into ${_STATUSLINE_SETTINGS}"
 }
 
-# configure_claude: Deploys statusline-command.sh to the Claude config dir
-# and ensures settings.json contains the statusLine key.
-# Uses sha256sum hash to detect changes; re-applies only when needed.
+# configure_claude: deploys the statusline script and sets the statusLine key, only when the shipped script changed or a piece is missing
+# Notes: a missing deployed copy is restored, but an existing one is never compared, so
+#   a developer's edits survive until the shipped version changes. Restoring a deleted
+#   copy leaves settings.json alone: the merge overwrites the statusLine key, which may
+#   hold a developer's custom command.
 configure_claude() {
 	local sha_output source_hash stored_hash
 	local hash_differs=false dest_missing=false settings_missing=false
@@ -116,8 +110,6 @@ configure_claude() {
 	fi
 
 	[[ "${source_hash}" != "${stored_hash}" ]] && hash_differs=true
-	# A missing deployed copy is restored; an existing one is never compared,
-	# so a developer's edits survive until the shipped version changes.
 	[[ ! -f "${_STATUSLINE_DEST}" ]] && dest_missing=true
 
 	if [[ ! -f "${_STATUSLINE_SETTINGS}" ]] \
@@ -139,15 +131,14 @@ configure_claude() {
 		log_debug "Updated statusline script (${source_hash})"
 	fi
 
-	# Restoring a deleted copy leaves settings.json alone: the merge overwrites
-	# the statusLine key, which may hold a developer's custom command.
 	if [[ "${settings_missing}" == 'true' ]] || [[ "${hash_differs}" == 'true' ]]; then
 		merge_statusline_settings
 	fi
 }
 
-# apply_agent_defaults: Fills missing settings without overwriting developer choices.
-# Args: agent id. Returns: 0 on success or malformed existing JSON, nonzero on failure.
+# apply_agent_defaults <agent_id>: merges the agent's defaultsAsset into its configFile, filling only missing settings
+# Notes: a malformed existing configFile is warned about and left alone. An identical
+#   result is not rewritten, since that would still change the file's mtime.
 apply_agent_defaults() {
 	local fields config_file defaults_asset defaults current_settings result
 
@@ -169,7 +160,6 @@ apply_agent_defaults() {
 	else
 		current_settings='{}'
 	fi
-	# Avoid even an identical rewrite: it would change the file's mtime.
 	result=$(jq --argjson defaults "$defaults" \
 		'. as $current | $defaults * . | select(. != $current)' <<<"$current_settings")
 	[[ -n "$result" ]] || return 0
@@ -177,7 +167,7 @@ apply_agent_defaults() {
 	atomic_write "$config_file" printf '%s\n' "$result"
 }
 
-# configure_pi: Installs only packages absent from Pi's own settings.
+# configure_pi: installs the catalog Pi packages missing from Pi's settings.json, skipping when that file is malformed
 configure_pi() {
 	local fields pi_command config_file packages package current_settings missing
 	local -a missing_packages=()
@@ -194,7 +184,7 @@ configure_pi() {
 	if [[ -f "$config_file" ]]; then
 		current_settings=$(<"$config_file")
 	fi
-	# Compute the whole set difference once; -n keeps jq off the caller's stdin.
+	# why: -n keeps jq off the caller's stdin
 	missing=$(jq -nr --argjson installed "$current_settings" --argjson catalog "$packages" \
 		'$catalog - ($installed.packages // []) | .[]')
 	[[ -n "$missing" ]] || return 0
@@ -207,8 +197,7 @@ configure_pi() {
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# coding_agents_setup: Installs and configures each declared agent in document order.
-# Args: none. Returns: 0 on success; the first unhandled failure stops the module.
+# coding_agents_setup: module entry; installs each declared agent CLI missing from PATH, then applies its defaults and its configure_<id> step, in document order
 coding_agents_setup() {
 	local agent_id cli_command label npm_package exit_code ids fields configure
 	local -a agent_ids=()

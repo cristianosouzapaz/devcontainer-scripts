@@ -3,13 +3,8 @@
 [[ -n "${_ENV_LOADER_SH_LOADED:-}" ]] && return 0
 readonly _ENV_LOADER_SH_LOADED=1
 
-# Environment file loader - Loads and persists variables from mounted .env file
-#
-# Usage in .env: split at the first =, trim surrounding whitespace and trailing CR,
-# then remove one matching quote pair; all other value content is literal (no inline comments).
-#   PERSIST_CONTEXT7_API_KEY=your-key   # persisted as CONTEXT7_API_KEY
-#   GIT_CLONE_TOKEN=secret                          # available during setup only; global fallback
-#   GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM=secret       # per-host override, see git.sh
+# Loads variables from the mounted .env file into the setup shell and persists the
+# PERSIST_* ones for every container process.
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
@@ -18,9 +13,12 @@ _ETC_ENVIRONMENT_PATH="${_ETC_ENVIRONMENT_PATH:-/etc/environment}"
 
 # ----- FUNCTIONS --------------------------------------------------------------
 
-# load_env_file: Reads key=value pairs from $_ENV_FILE_PATH and exports them
-# into the current shell for use during setup.
-# Args: none. Returns: 0 on success (including when file is absent).
+# load_env_file: exports the key=value pairs of $_ENV_FILE_PATH into the current shell
+# Notes: a line splits at the first =; key and value are trimmed of surrounding
+#   whitespace, a trailing CR included, then one matching quote pair is removed from
+#   the value; the rest is literal, with no inline comments. Empty keys and # lines
+#   are skipped. An empty value is not exported, so a blank never overwrites a set
+#   variable. An absent file is not an error.
 load_env_file() {
 	[[ -f "$_ENV_FILE_PATH" ]] || {
 		log_info "No .env file found"
@@ -35,7 +33,6 @@ load_env_file() {
 		key="${line%%=*}"
 		value="${line#*=}"
 
-		# Trim surrounding whitespace, including a trailing CR.
 		key="${key#"${key%%[![:space:]]*}"}"
 		key="${key%"${key##*[![:space:]]}"}"
 		value="${value#"${value%%[![:space:]]*}"}"
@@ -46,21 +43,15 @@ load_env_file() {
 			value="${value:1:${#value}-2}"
 		fi
 
-		# skip empty keys and comments
 		[[ -z "$key" || "$key" =~ ^# ]] && continue
 
-		# only export non-empty values to avoid overwriting with blanks
 		[[ -n "$value" ]] && export "$key"="$value" && log_debug "Loaded: $key"
 	done <"$_ENV_FILE_PATH"
 	return 0
 }
 
-# persist_env_vars: Writes variables prefixed with PERSIST_ to
-# $_ETC_ENVIRONMENT_PATH (default /etc/environment), stripping the prefix so
-# they are available to all container processes after setup. Existing entries
-# for the same key are replaced (idempotent).
-# Must be called after load_env_file so PERSIST_* vars are in the environment.
-# Args: none. Returns: 0 always.
+# persist_env_vars: writes each PERSIST_<KEY> variable to $_ETC_ENVIRONMENT_PATH as <KEY>, replacing an existing entry
+# Notes: runs after load_env_file, which puts the PERSIST_* variables in the environment.
 persist_env_vars() {
 	local line key stripped value
 	local -a persist_keys=()

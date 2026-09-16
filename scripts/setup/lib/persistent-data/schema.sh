@@ -3,11 +3,11 @@
 [[ -n "${_PERSISTENT_DATA_SCHEMA_SH_LOADED:-}" ]] && return 0
 readonly _PERSISTENT_DATA_SCHEMA_SH_LOADED=1
 
-# Schema markers for persistent-data roots.
+# Schema version markers that tie each persistent-data root to the provisioning layout version.
 
-# persistent_data_schema_marker: Prints the schema marker for a scope.
-# Args: shared or project.
-# Returns: 0 when recognized, 1 otherwise.
+# ----- FUNCTIONS --------------------------------------------------------------
+
+# persistent_data_schema_marker <shared|project>: prints the schema marker path of a scope
 persistent_data_schema_marker() {
 	local root
 
@@ -19,9 +19,10 @@ persistent_data_schema_marker() {
 	fi
 }
 
-# persistent_data_schema_state: Prints the compatibility state of a persistent-data scope.
-# Args: shared or project.
-# Returns: 0 and one of empty, data, valid, or invalid; 1 for an unknown scope.
+# persistent_data_schema_state <shared|project>: prints the compatibility state of a scope: empty, data, valid or invalid
+# Notes: empty holds nothing beyond the marker directory and lock file; data holds
+#   content without a marker; valid and invalid carry a marker that does or does not
+#   match the layout version.
 persistent_data_schema_state() {
 	local scope="$1" root marker marker_dir lock_file entries version
 
@@ -49,9 +50,7 @@ persistent_data_schema_state() {
 	fi
 }
 
-# persistent_data_schema_initialize: Initializes an empty scope or verifies its marker.
-# Args: shared or project.
-# Returns: 0 when compatible, 1 when the area holds unrecognized data or an invalid marker.
+# persistent_data_schema_initialize <shared|project>: writes the layout marker into an empty scope, failing when the scope holds unmarked data or a mismatched marker
 persistent_data_schema_initialize() {
 	local scope="$1" state marker marker_dir version
 

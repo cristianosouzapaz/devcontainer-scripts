@@ -3,10 +3,9 @@
 [[ -n "${_HERDR_SH_LOADED:-}" ]] && return 0
 readonly _HERDR_SH_LOADED=1
 
-# Reusable Herdr configuration helpers: config path resolution, initial config
-# copy, integration install, and the locked apply sequence. Shared by the herdr
-# setup module and bin/devcontainer-data. The discoverable module keeps only its
-# MODULE_* metadata and the herdr_setup entry point.
+# Herdr configuration helpers: config path, initial config, pane XDG reset,
+# integration install, and the locked apply sequence. They live in lib/ because both
+# the herdr setup module and bin/devcontainer-data run them.
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
@@ -17,9 +16,9 @@ _HERDR_XDG_RESET_ASSET="${HERDR_XDG_RESET_ASSET:-${DEVCONTAINER_ASSETS_DIR}/herd
 _HERDR_BASHRC_PATH="${HERDR_BASHRC_PATH:-/etc/bash.bashrc}"
 _HERDR_XDG_RESET_MARKER='devcontainer-herdr-xdg-reset'
 
-# ----- HELPER FUNCTIONS -----------------------------------------------------
+# ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# herdr_config_path: Prints the Herdr configuration file path.
+# herdr_config_path: prints the Herdr config file path, HERDR_CONFIG_PATH or config.toml in the herdr persistent-data category
 herdr_config_path() {
 	local category_path
 
@@ -31,7 +30,7 @@ herdr_config_path() {
 	printf '%s/config.toml\n' "$category_path"
 }
 
-# herdr_initialize_config: Copies the initial config only when the user has none.
+# herdr_initialize_config: copies the config template to the config path, only when no config exists there
 herdr_initialize_config() {
 	local config_path
 
@@ -49,13 +48,11 @@ herdr_initialize_config() {
 	log_detail "Initialized Herdr configuration"
 }
 
-# herdr_reset_xdg_config_home: Appends the XDG_CONFIG_HOME pane-reset snippet to the
-# system-wide bashrc, once. The public wrapper narrows XDG_CONFIG_HOME for the
-# herdr server process, and every pane it spawns afterwards inherits that value
-# via ordinary process env inheritance, which breaks XDG-aware tools (gh, etc.)
-# run inside a pane (see docs/wiki/setup/herdr.md). Idempotent: skips when the
-# snippet is already present, so a re-run never duplicates it.
-# Returns: 0 on success, 1 when the snippet asset is missing or cannot be appended.
+# herdr_reset_xdg_config_home: appends the XDG_CONFIG_HOME pane-reset snippet to the system-wide bashrc, once
+# Notes: the public wrapper narrows XDG_CONFIG_HOME for the herdr server, and every
+#   pane it spawns inherits that value, which breaks XDG-aware tools such as gh run
+#   inside a pane. The snippet's marker is checked first, so a re-run never
+#   duplicates it.
 herdr_reset_xdg_config_home() {
 	if [[ ! -f "$_HERDR_XDG_RESET_ASSET" ]]; then
 		log_error "Herdr XDG_CONFIG_HOME reset asset is missing: $_HERDR_XDG_RESET_ASSET"
@@ -69,22 +66,19 @@ herdr_reset_xdg_config_home() {
 	log_detail "Installed Herdr XDG_CONFIG_HOME pane reset"
 }
 
-# herdr_require_command: Fails with a user-facing message when the Herdr CLI is
-# unavailable. Guarded at every boundary that runs the binary so no caller — the
-# setup module or bin/devcontainer-data — can reach it unchecked.
-# Returns: 0 when the command resolves, 1 otherwise.
+# herdr_require_command: succeeds when the Herdr CLI resolves, logging an error otherwise
+# Notes: checked at every boundary that runs the binary, so neither the setup module
+#   nor bin/devcontainer-data can reach it unchecked.
 herdr_require_command() {
 	check_command "$_HERDR_COMMAND" && return 0
 	log_error "Herdr command is unavailable: $_HERDR_COMMAND"
 	return 1
 }
 
-# herdr_install_integrations: Installs every catalog integration that is not
-# already current; a current one is left untouched. `herdr integration status`
-# is read once and reports a current target as "<target>: current (vN) (<path>)";
-# a missing, outdated or unreadable status counts as not current, so the
-# integration is (re)installed.
-# Returns: 0 on success, 1 when the Herdr CLI is missing, the catalog is invalid or an install fails.
+# herdr_install_integrations: installs each catalog agent's Herdr integration that is not already current
+# Notes: `herdr integration status` is read once and reports a current target as
+#   "<target>: current (vN) (<path>)"; a missing, outdated or unreadable status
+#   counts as not current, so the integration is (re)installed.
 herdr_install_integrations() {
 	local target herdr_integration ids status_output
 	local -a agent_ids=()
@@ -108,15 +102,12 @@ herdr_install_integrations() {
 	done
 }
 
-# herdr_apply: Installs the XDG_CONFIG_HOME pane reset, then initializes the
-# project config and installs the agent integrations under the required locks.
-# Fails fast when the Herdr CLI is missing, before any lock is taken. The pane
-# reset targets the system-wide bashrc, outside the persistent-data model, so
-# it takes no lock; the project configuration is initialized under the project
-# lock only, while installing the integrations touches shared agent config, so
-# it takes the shared then project lock, in that order (see
-# docs/wiki/setup/persistent-data-locks.md).
-# Returns: 0 on success, 1 when the reset, configuration, or integration setup fails.
+# herdr_apply: installs the pane reset, then initializes the project config and installs the agent integrations under their locks
+# Notes: fails fast when the Herdr CLI is missing, before any lock is taken. The pane
+#   reset targets the system-wide bashrc, outside the persistent-data model, so it
+#   takes no lock; the config is project data, so it takes the project lock; the
+#   integrations touch shared agent config, so they take the shared then the project
+#   lock, in that order.
 herdr_apply() {
 	herdr_require_command || return 1
 	herdr_reset_xdg_config_home || return 1

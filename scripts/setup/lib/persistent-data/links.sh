@@ -3,22 +3,23 @@
 [[ -n "${_PERSISTENT_DATA_LINKS_SH_LOADED:-}" ]] && return 0
 readonly _PERSISTENT_DATA_LINKS_SH_LOADED=1
 
-# Managed home-directory links for persistent-data categories.
-#
-# Some registered categories are reached through a fixed path in the home
-# directory because the tool that owns them has no way to be pointed at the
-# volume. Those paths live in the registry rather than in the setup module
-# because both the setup orchestrator and bin/devcontainer-data need them: the
-# orchestrator creates the links, the CLI verifies and repairs them.
-#
-# A category with homeLink null or no homeLink is reached through its own
-# configuration and has no managed link at all.
+# Managed home-directory links for persistent-data categories whose owning tool
+# cannot be pointed at the volume. They live in lib/ because the setup orchestrator
+# creates them and bin/devcontainer-data verifies and repairs them. A category
+# without a homeLink has no managed link.
 
-# Test seam — not readonly so tests can avoid the real home directory.
+# ----- CONFIGURATION VARIABLES ------------------------------------------------
+
+# - PERSISTENT_DATA_HOME: home directory the managed links live under (default /root)
+
+# ----- INTERNAL CONSTANTS -----------------------------------------------------
+
 _PERSISTENT_DATA_HOME="${PERSISTENT_DATA_HOME:-/root}"
 
-# persistent_data_link_path <category_id>: Prints the managed link path of a category.
-# Returns: 0 and the path for a linked category, 1 for one with no managed link.
+# ----- FUNCTIONS --------------------------------------------------------------
+
+# persistent_data_link_path <category_id>: prints the managed link path of a category
+# Returns: 1 also for a category with no managed link.
 persistent_data_link_path() {
 	local category_id="$1" home_link home_root
 
@@ -28,21 +29,16 @@ persistent_data_link_path() {
 	printf '%s/%s\n' "$home_root" "$home_link"
 }
 
-# persistent_data_link_state <category_id>: Reports the state of a managed link
-# without touching it. The read-only counterpart of
-# persistent_data_link_standard_path, which decides the same cases in order to act.
-# Prints one of:
-#   none      - the category has no managed link
-#   ok        - the link exists and points at the category directory
-#   missing   - nothing exists at the link path
-#   foreign   - a symlink pointing somewhere other than the category directory
-#   unmanaged - a file or a non-empty directory sits at the link path
-# Returns: 0 when a state was determined, 1 when the category is unknown.
+# persistent_data_link_state <category_id>: prints the state of a category's managed link without touching it: none, ok, missing, foreign or unmanaged
+# Notes: the read-only counterpart of persistent_data_link_standard_path, deciding the
+#   same cases. ok points at the category directory, foreign is a symlink elsewhere,
+#   unmanaged is a file or directory at the link path; an empty directory counts as
+#   unmanaged, since only persistent_data_link_standard_path may replace one. The
+#   category path is resolved first because persistent_data_link_path fails both for
+#   an unknown category and for one with no managed link.
 persistent_data_link_state() {
 	local category_id="$1" destination source_path current_target
 
-	# Resolve the category path first: persistent_data_link_path fails both for an
-	# unknown category and for one with no managed link.
 	source_path="$(persistent_data_category_path "$category_id")" || return 1
 	destination="$(persistent_data_link_path "$category_id")" || {
 		printf '%s\n' 'none'
@@ -59,15 +55,13 @@ persistent_data_link_state() {
 		return 0
 	fi
 	if [[ -e "$destination" ]]; then
-		# An empty directory counts as unmanaged here; only
-		# persistent_data_link_standard_path may replace one, and it says so.
 		printf '%s\n' 'unmanaged'
 		return 0
 	fi
 	printf '%s\n' 'missing'
 }
 
-# persistent_data_link_standard_path <destination> <category_id>: Ensures a managed link.
+# persistent_data_link_standard_path <destination> <category_id>: links destination to the category directory, replacing only an empty directory and refusing a foreign symlink or unmanaged data
 persistent_data_link_standard_path() {
 	local destination="$1"
 	local category_id="$2"
@@ -98,10 +92,7 @@ persistent_data_link_standard_path() {
 	ln -s "$source_path" "$destination"
 }
 
-# persistent_data_link_ensure <category_id>: Ensures the managed link of one
-# category, and succeeds silently for a category that has none.
-# Returns: 0 when the link is in place, 1 when the category is unknown or the
-# link cannot be created.
+# persistent_data_link_ensure <category_id>: ensures the managed link of a category, succeeding without action for a category that has none
 persistent_data_link_ensure() {
 	local category_id="$1" destination
 

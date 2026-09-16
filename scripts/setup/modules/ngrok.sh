@@ -8,8 +8,8 @@ set -euo pipefail
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
-# Opt-in: configures the ngrok authentication token, and only when
-# NGROK_AUTHTOKEN is set. Absent the token the module skips silently.
+# Opt-in: configures the ngrok authentication token when ngrok is installed and
+# NGROK_AUTHTOKEN is set, and skips otherwise.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -17,18 +17,17 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 
-# This module uses the following configuration variables:
-# - NGROK_AUTHTOKEN (from .config/.env)
+# Documented in README.md#configuration-variables:
+# - NGROK_AUTHTOKEN
 
-# ----- CONSTANTS --------------------------------------------------------------
+# ----- INTERNAL CONSTANTS -----------------------------------------------------
 
 readonly -a _NGROK_CONFIG_COMMAND=(config add-authtoken)
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# ngrok_setup: Module entry point.
-# Skips when ngrok is not installed or NGROK_AUTHTOKEN is unset.
-# Applies the authtoken with retry/backoff; clears NGROK_AUTHTOKEN on exit.
+# ngrok_setup: module entry; applies NGROK_AUTHTOKEN to the ngrok config with retries, skipping when ngrok or the token is missing
+# Notes: a module cleanup unsets the token, so it never reaches the next module.
 ngrok_setup() {
 	local exit_code
 	register_module_cleanup 'unset NGROK_AUTHTOKEN'

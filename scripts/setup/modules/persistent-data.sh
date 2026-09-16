@@ -8,9 +8,9 @@ set -euo pipefail
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
-# Runs before every other module: initializes the persistent-data storage
-# layout and creates the managed home-directory links declared by the registry
-# link layer, so later modules write straight into the persistent volumes.
+# Runs before every other module: initializes the persistent-data storage layout
+# and the managed home-directory links, so later modules write straight into the
+# persistent volumes.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -18,12 +18,12 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# persistent_data_create_category_directories: Creates every registered category directory.
+# persistent_data_create_category_directories: creates the directory of every registered category
 persistent_data_create_category_directories() {
 	local ids category_id category_path
 	local -a category_ids=()
 
-	# Captured, not read from < <(…): a process substitution's status is never seen.
+	# why: captured, not read from < <(...), whose failure status is never seen
 	ids=$(provisioning_ids all) || return 1
 	[[ -n "$ids" ]] || return 0
 	mapfile -t category_ids <<<"$ids"
@@ -33,7 +33,7 @@ persistent_data_create_category_directories() {
 	done
 }
 
-# persistent_data_initialize: Initializes schema markers and category directories.
+# persistent_data_initialize: writes or checks the schema marker of each scope, then creates the category directories, each step under its locks
 persistent_data_initialize() {
 	with_shared_data_lock persistent_data_schema_initialize shared || return 1
 	with_project_data_lock persistent_data_schema_initialize project || return 1
@@ -42,10 +42,7 @@ persistent_data_initialize() {
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# persistent_data_setup: Initializes storage and creates the standard managed links.
-# Walks the registry in declaration order; a category with no managed link
-# (see setup/lib/persistent-data/links.sh) is skipped.
-# Returns: 0 on success, 1 for incompatible or unmanaged data.
+# persistent_data_setup: module entry; initializes storage, then ensures each category's managed link in document order
 persistent_data_setup() {
 	local ids category_id
 	local -a category_ids=()

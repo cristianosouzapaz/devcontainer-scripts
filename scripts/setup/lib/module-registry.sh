@@ -3,12 +3,12 @@
 [[ -n "${_MODULE_REGISTRY_SH_LOADED:-}" ]] && return 0
 readonly _MODULE_REGISTRY_SH_LOADED=1
 
-# Module Registry - Dynamic dependency-aware discovery and execution of setup modules
+# Discovers setup modules from their MODULE_* metadata, orders them by MODULE_AFTER,
+# and runs each entry in its own strict-mode subshell.
 
 # ----- INTERNAL HELPERS -------------------------------------------------------
 
-# registry_read_meta <file> <key>
-# Read a MODULE_* metadata value from a file without sourcing it.
+# registry_read_meta <file> <key>: prints the MODULE_<key> metadata value of a module file, without sourcing it
 registry_read_meta() {
 	local file="$1"
 	local key="$2"
@@ -16,8 +16,7 @@ registry_read_meta() {
 	sed -n "s/^# MODULE_${key}=\"\(.*\)\"$/\1/p" "$file" | head -1
 }
 
-# registry_validate_meta <file>
-# Validate required metadata and the module filename without sourcing the file.
+# registry_validate_meta <file>: checks a module's metadata and filename without sourcing it, logging the first problem found
 registry_validate_meta() {
 	local file="$1"
 	local key value name after file_name dependency
@@ -53,10 +52,10 @@ registry_validate_meta() {
 	done
 }
 
-# registry_module_exit: Module subshell EXIT handler; stops the spinner and writes
-# only state added by the module as NUL-delimited kind/value pairs to run_module's
-# state file. Reads run_module's locals through dynamic scope: state_file,
-# error_start, module_cleanup_start and cleanup_start.
+# registry_module_exit: module subshell EXIT handler; stops the spinner and writes the state the module added to run_module's state file
+# Notes: the state is NUL-delimited kind/value pairs, so embedded newlines survive.
+#   Reads run_module's locals through dynamic scope: state_file, error_start,
+#   module_cleanup_start and cleanup_start.
 registry_module_exit() {
 	local status=$? record
 	trap - ERR
@@ -79,8 +78,7 @@ registry_module_exit() {
 
 # ----- PUBLIC FUNCTIONS -------------------------------------------------------
 
-# discover_modules <modules_dir>: Validates and topologically orders modules.
-# Returns: 0 with DISCOVERED_MODULES populated, 1 when the module plan is invalid.
+# discover_modules <modules_dir>: sets DISCOVERED_MODULES to the validated module files in dependency order, ties broken by name
 discover_modules() {
 	local modules_dir="$1"
 	local file name dependency candidate selected_name
@@ -91,8 +89,7 @@ discover_modules() {
 	for file in "$modules_dir"/*.sh; do
 		[[ -f "$file" ]] || continue
 		registry_validate_meta "$file" || return 1
-		# The filename must equal MODULE_NAME, so two files in this directory can never
-		# claim the same identifier — validate_meta rejects the second one first.
+		# why: no duplicate-name check, registry_validate_meta ties each name to its unique filename
 		name="$(registry_read_meta "$file" 'NAME')"
 		module_files["$name"]="$file"
 		module_after["$name"]="$(registry_read_meta "$file" 'AFTER')"
@@ -136,8 +133,12 @@ discover_modules() {
 	done
 }
 
-# run_module <module_file>: Sources the module file and calls its declared entry function.
+# run_module <module_file>: sources the module and runs its entry in a strict-mode subshell, then imports the state it added and runs its module cleanups
 # Returns: 0 for success or skip, 1 for failure.
+# Notes: errexit is off around the bare subshell so the parent captures its status
+#   without recording the subshell's ERR, then restored. The state comes back as data
+#   read from a file, never shell syntax. Module cleanups run right after the
+#   subshell, whatever its status, before the next module runs.
 run_module() {
 	local module_file="$1"
 	local name entry result state_file kind record errexit=false
@@ -154,13 +155,12 @@ run_module() {
 		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" 'run_module' "$entry" "${name} failed"
 		return 1
 	}
-	# Runtime-discovered modules are checked as separate ShellCheck gate targets.
+	# why: modules are discovered at run time and checked as separate ShellCheck targets
 	# shellcheck source=/dev/null
 	source "$module_file"
 	error_start=${#_ERROR_STACK[@]}
 	module_cleanup_start=${#_MODULE_CLEANUP_HANDLERS[@]}
 	cleanup_start=${#_CLEANUP_HANDLERS[@]}
-	# The parent must capture the bare subshell's status without recording its ERR.
 	set +e
 	_MODULE_WAITING=true
 	(
@@ -175,7 +175,6 @@ run_module() {
 	)
 	result=$?
 	_MODULE_WAITING=false
-	# Read data, never shell syntax. NUL records preserve embedded newlines.
 	if [[ -f "$state_file" && -r "$state_file" ]]; then
 		while IFS= read -r -d '' kind && IFS= read -r -d '' record; do
 			case "$kind" in
@@ -187,8 +186,6 @@ run_module() {
 		done <"$state_file"
 	fi
 	rm -f "$state_file"
-	# Module-scoped cleanups (a clone token, an auth token, a signing key, ...) run right
-	# after the subshell ends, whatever its status, before the next module runs.
 	run_module_cleanup_handlers || true
 	if "$errexit"; then set -e; else set +e; fi
 	if [[ "$result" -ne 0 ]]; then
@@ -203,8 +200,7 @@ run_module() {
 	fi
 }
 
-# run_all_modules <modules_dir>: Validates the complete module plan before running it.
-# Returns: 0 on success, 1 for an invalid plan or failed module.
+# run_all_modules <modules_dir>: validates the whole module plan, then runs each module in order, stopping at the first failure
 run_all_modules() {
 	local modules_dir="$1"
 	local count module completed=0 skipped=0 result errexit=false
