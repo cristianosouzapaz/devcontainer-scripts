@@ -15,7 +15,7 @@ readonly _LOGGING_SH_LOADED=1
 # - LOG_FILE
 # - LOG_LEVEL
 # - STRUCTURED_LOGS
-# - NO_COLOR (community standard: https://no-color.org — presence, any value, disables color)
+# - NO_COLOR (community standard: https://no-color.org — non-empty value disables color)
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
@@ -144,15 +144,15 @@ should_log() {
 }
 
 # use_color: determines whether ANSI color codes should be emitted. Honors
-# the NO_COLOR community standard (presence of the variable, regardless of
-# value, disables color). No TTY check: setup runs as postCreateCommand,
-# which never attaches a real pty, yet its output is still rendered (and
-# colorized) live in the editor's UI — auto-disabling on "not a TTY" would
-# silently kill color in the only environment that matters here. LOG_FILE
-# output is unaffected either way; it never carries color codes.
+# the NO_COLOR community standard (a non-empty value disables color). No TTY
+# check: setup runs as postCreateCommand, which never attaches a real pty,
+# yet its output is still rendered (and colorized) live in the editor's UI —
+# auto-disabling on "not a TTY" would silently kill color in the only
+# environment that matters here. LOG_FILE output is unaffected either way;
+# it never carries color codes.
 # Returns: 0 if color should be used, 1 otherwise.
 use_color() {
-	[[ -n "${NO_COLOR+x}" ]] && return 1
+	[[ -n "${NO_COLOR:-}" ]] && return 1
 	return 0
 }
 
