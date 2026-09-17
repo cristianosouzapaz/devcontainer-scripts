@@ -6,78 +6,56 @@ applyTo: "**/*.{js,mjs,cjs,jsx}"
 
 # JavaScript Rules
 
-## Naming And Bindings
+## Scope and Structure
 
-- **File and folder names:** MUST use `kebab-case`.
-- **Classes and React components:** MUST use `PascalCase`.
-- **Variables and functions:** MUST use `camelCase`.
-- **Unused parameters:** MUST prefix intentionally unused parameters with `_`. MUST NOT use the underscore prefix for any other purpose.
-- **Const only:** MUST use `const` for every variable declaration. MUST NOT use `let` or `var`.
-  - ✓ `const users = records.map(toUser);`
-  - ✗ `let users = records.map(toUser);`
+- **S1:** Each JavaScript file MUST use one import/export system.
+- **S2:** CommonJS files MUST begin with a top-level `"use strict"` directive.
+- **S3:** Each JavaScript file MUST have one primary responsibility.
+- **S4:** Declarations that depend on other declarations MUST follow their dependencies.
 
-## Modules
+## Naming
 
-- **Module system:** MUST preserve the module system established by the project. MUST NOT mix ESM and CommonJS syntax in the same file.
-- **CommonJS strict mode:** CommonJS files MUST begin with a top-level `"use strict"` directive. ESM files and browser module scripts MUST NOT add it solely for strictness.
-  - ✓ `"use strict"; const load = require("./load.cjs");`
-  - ✗ `import { load } from "./load.js"; const config = require("./config.cjs");`
-- **ESM and CommonJS globals:** ESM files MUST NOT use `require`, `exports`, `module.exports`, `__filename`, or `__dirname`.
-- **Node built-ins:** Node.js ESM files MUST import built-in modules with the `node:` prefix.
-  - ✓ `import { readFile } from "node:fs/promises";`
-  - ✗ `import { readFile } from "fs/promises";`
-- **Node relative imports:** Node.js ESM files MUST include the file extension in every relative import specifier.
-  - ✓ `import { parseConfig } from "./parse-config.js";`
-  - ✗ `import { parseConfig } from "./parse-config";`
+- **N1:** JavaScript file and directory names MUST use `kebab-case`.
+- **N2:** Class names MUST use `PascalCase`.
+- **N3:** Variable and function names MUST use `camelCase`.
+- **N4:** Intentionally unused parameters MUST begin with an underscore.
+- **N5:** Identifiers other than intentionally unused parameters MUST NOT begin with an underscore.
 
-## Values And State
+## Code Design
 
-- **Strict equality:** MUST use `===` and `!==`. MUST NOT use `==` or `!=`.
-  - ✓ `if (status === "ready") start();`
-  - ✗ `if (status == "ready") start();`
-- **External input:** MUST validate every externally sourced value before relying on its type, container shape, required own properties, or numeric range. MUST use `Array.isArray()`, `Number.isFinite()`, and `Number.isSafeInteger()` when they apply.
-  - ✓ `if (!Array.isArray(value)) throw new TypeError("Expected an array.");`
-  - ✗ `return value.map(parseItem);`
-- **Type assertions:** MUST NOT use a JSDoc type assertion to make an untyped or externally sourced value appear valid. Runtime validation MUST establish the returned shape; when normalization is needed, MUST return a newly constructed validated value.
-  - ✓ `return { names, records };`
-  - ✗ `return /** @type {{ names: string[], records: object[] }} */ (value);`
-- **Untrusted keys:** MUST use `Object.hasOwn()` when validating keys on untrusted objects. MUST NOT call an object's `hasOwnProperty()` method.
-  - ✓ `if (Object.hasOwn(config, "port")) connect(config.port);`
-  - ✗ `if (config.hasOwnProperty("port")) connect(config.port);`
-- **Global state:** MUST NOT read undeclared globals or assign native/read-only globals.
-- **Caller-owned data:** MUST NOT reassign a parameter or write, delete, or update a property reachable from a parameter. MUST return a new value instead. Locally created objects, arrays, `Map` instances, and `Set` instances are exempt.
-  - ✓ `const withUser = (users, user) => [...users, user];`
-  - ✗ `const addUser = (users, user) => { users.push(user); return users; };`
+- **C1:** Variables whose bindings are not reassigned MUST use `const`.
+- **C2:** Variables whose bindings are reassigned MUST use `let`.
+- **C3:** JavaScript code MUST NOT use `var` declarations.
+- **C4:** Equality comparisons MUST use strict equality operators.
+- **C5:** Values from outside the function's trust boundary MUST be validated before use.
+- **C6:** Own properties on untrusted objects MUST be checked with `Object.hasOwn()`.
+- **C7:** JSDoc type assertions MUST NOT replace runtime validation of externally sourced values.
+- **C8:** Functions MUST NOT mutate caller-owned data reachable through their parameters.
+- **C9:** JavaScript code MUST NOT read undeclared global variables.
+- **C10:** JavaScript code MUST NOT assign to native read-only globals.
 
-## External Effects
+## Behavior and Reliability
 
-- **Explicit external effects:** A function that reads or writes the filesystem, network, process, or process-wide configuration MUST declare every such effect, its target, and its failure behavior in JSDoc. It MUST receive each target explicitly. Functions without a declared external-effect contract MUST NOT perform external effects. External-effect functions MUST NOT mutate their parameters.
-  - ✓ `/** Writes content to destPath. @throws If the destination cannot be written. */`
-  - ✗ `const save = (path, content) => writeFileSync(path, content);`
+- **B1:** Functions that access a filesystem, network, process, or process-wide configuration MUST receive each effect target explicitly.
+- **B2:** Functions that access a filesystem, network, process, or process-wide configuration MUST document each effect and its failure behavior in JSDoc.
+- **B3:** Functions without an external-effect contract MUST NOT access a filesystem, network, process, or process-wide configuration.
+- **B4:** Promises whose results are used by a caller MUST be awaited or returned.
+- **B5:** Promises that are not awaited or returned MUST have an explicit rejection handler.
+- **B6:** An async function MUST NOT be used as a `new Promise()` executor.
+- **B7:** Catch blocks MUST identify the failure conditions they handle.
+- **B8:** Catch blocks MUST rethrow failures they do not recognize.
+- **B9:** Code that replaces an error with another error MUST preserve the original error as its cause.
+- **B10:** Code that acquires a resource MUST release it on every exit path.
 
-## Asynchronous Work And Errors
+## Documentation
 
-- **Promise handling:** Every Promise MUST be returned, awaited, or given an explicit rejection handler. MUST NOT use an `async` function as a `new Promise()` executor.
-  - ✓ `const config = await readConfig();`
-  - ✗ `new Promise(async (resolve) => resolve(await readConfig()));`
-- **Recognized failures:** A `catch` block MUST handle only failures it recognizes and MUST rethrow every other failure.
-  - ✓ `catch (error) { if (error.code === "ENOENT") return null; throw error; }`
-  - ✗ `catch { return null; }`
-- **Error translation:** Code that translates an error MUST preserve its original value with `new Error(message, { cause })`.
-  - ✓ `throw new Error("Could not load config.", { cause: error });`
-  - ✗ `throw new Error("Could not load config.");`
-- **Resource cleanup:** Acquired resources MUST be released on every exit path with `try`/`finally`, or with `using`/`await using` when the target runtime supports them.
-  - ✓ `try { return await handle.readFile(); } finally { await handle.close(); }`
-  - ✗ `return await handle.readFile();`
-
-## File Structure And Documentation
-
-- **Examples:** MUST use generic names and contexts. MUST NOT reference the current repository, its files, paths, modules, products, or domain terminology.
-- **Single responsibility:** Each file MUST have one responsibility.
-- **Declaration order:** MUST declare dependencies before dependents. Within a related group, callees MUST appear before callers.
-- **Public contracts:** Every exported function, class, and non-literal value MUST have JSDoc that describes its contract, inputs, result, and relevant failures. JSDoc MUST match the implemented behavior.
-  - ✓ `/** Loads and validates the project configuration. @returns {Promise<object>} The validated configuration. */`
-  - ✗ `/** Loads config. */`
-- **Comments:** Comments MUST document a non-obvious invariant, constraint, or reason. MUST NOT paraphrase code, record edit history, or be the only enforcement of a runtime contract.
-  - ✓ `// The lock is written last so an interrupted install is never recorded as complete.`
-  - ✗ `// Write the lock file.`
+- **D1:** Comments MUST document non-obvious constraints or reasons.
+- **D2:** Comments MUST NOT paraphrase adjacent code.
+- **D3:** Comments MUST NOT record edit history, tasks, or issue references.
+- **D4:** Documentation comments MUST immediately precede the declaration they document.
+- **D5:** Each JSDoc block MUST document one declaration.
+- **D6:** Exported functions MUST have JSDoc.
+- **D7:** Exported classes MUST have JSDoc.
+- **D8:** JSDoc for exported functions MUST describe their contract, parameters, return value, and relevant failures.
+- **D9:** JSDoc MUST match the documented declaration's behavior.
+- **D10:** Comments MUST NOT be the only enforcement of a runtime contract.

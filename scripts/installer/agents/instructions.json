@@ -2,7 +2,7 @@
     {
         "name": "Bash Rules",
         "filename": "bash.instructions.md",
-        "version": "1.8.0",
+        "version": "2.0.0",
         "tags": [
             "language"
         ],
@@ -11,7 +11,7 @@
     {
         "name": "JavaScript Rules",
         "filename": "javascript.instructions.md",
-        "version": "1.0.3",
+        "version": "2.0.0",
         "tags": [
             "language"
         ],
@@ -29,7 +29,7 @@
     {
         "name": "Documentation Rules",
         "filename": "documentation.instructions.md",
-        "version": "1.2.0",
+        "version": "2.0.0",
         "tags": [
             "docs"
         ],
@@ -38,7 +38,7 @@
     {
         "name": "Next.js Rules",
         "filename": "nextjs.instructions.md",
-        "version": "1.1.1",
+        "version": "1.2.0",
         "tags": [
             "framework"
         ],
@@ -47,7 +47,7 @@
     {
         "name": "TypeScript Rules",
         "filename": "typescript.instructions.md",
-        "version": "1.1.1",
+        "version": "2.0.0",
         "tags": [
             "language"
         ],

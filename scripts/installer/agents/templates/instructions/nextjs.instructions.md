@@ -1,31 +1,36 @@
 ---
 name: "Next.js Rules"
-description: "Use when building Next.js pages, layouts, components, and mutations. Covers Server Components, Promise streaming, Server Actions, accessibility, and image handling."
+description: "Use when building Next.js pages, layouts, components, route handlers, and mutations. Covers rendering boundaries, streaming, Server Actions, HTTP routes, accessibility, and images."
 applyTo: "**/*.{ts,tsx}"
 ---
 
 # Next.js Rules
 
-## Components And Data Fetching
+## Scope and Structure
 
-- **Server Component async:** MUST use Server Components for async data fetching.
-- **Client Component async:** MUST NOT make Client Components async.
-- **Promise streaming:** SHOULD prefer passing unresolved `Promise` values from Server Components to Client Components rather than awaiting all data before rendering.
-- **Promise unwrapping:** MUST unwrap those promises in Client Components with `React.use()` inside `<Suspense>` boundaries.
-  - ✓ `const data = React.use(dataPromise)` inside `<Suspense fallback={<Skeleton />}>`
-  - ✗ `const data = await fetchData()` in a Client Component
-- **No premature await:** MUST NOT await all data in the Server Component before rendering when streaming can preserve responsiveness.
+- **S1:** Route files MUST follow the framework's file-system conventions.
+- **S2:** Client Components MUST declare their client boundary at the file boundary.
 
-## Server Actions And Routes
+## Code Design
 
-- **Action prefix:** MUST prefix every exported server action with `ACTION_`.
-- **Mutations:** MUST use Server Actions for data mutations and server-side business logic.
-- **API routes:** MUST NOT use API routes unless strictly necessary (e.g. third-party webhooks).
+- **C1:** Server Components MUST perform data access that does not require browser APIs or event handlers.
+- **C2:** Client Components MUST NOT be declared async.
+- **C3:** Server Components MUST pass unresolved promises when independent UI can render before the data resolves.
+- **C4:** Client Components MUST unwrap streamed promises inside a Suspense boundary.
+- **C5:** Server Components MUST NOT await independent data before rendering UI that does not depend on that data.
 
-## Accessibility And Media
+## Behavior and Reliability
 
-- **Semantic HTML:** MUST use semantic HTML elements.
-- **ARIA attributes:** MUST add the ARIA attributes required by the interaction and labeling model.
-- **Images:** MUST use the Next.js `<Image>` component for images. MUST NOT use plain `<img>` tags.
-  - ✓ `<Image src={src} alt="Description" width={400} height={300} />`
-  - ✗ `<img src={src} alt="Description" />`
+- **B1:** Server Actions MUST validate every argument before using it.
+- **B2:** Server Actions MUST authorize the caller before changing protected data.
+- **B3:** Server Actions MUST handle mutations initiated by application UI.
+- **B4:** Route handlers MUST handle requests that require an HTTP interface.
+- **B5:** Route handlers MUST validate request inputs before using them.
+
+## Framework and Runtime
+
+- **F1:** Application content images MUST use the framework's image component.
+- **F2:** Non-decorative images MUST provide an accessible text alternative.
+- **F3:** Decorative images MUST be marked as decorative to assistive technologies.
+- **F4:** Interactive controls MUST have an accessible name.
+- **F5:** Rendered UI MUST use semantic HTML elements for its structure.
