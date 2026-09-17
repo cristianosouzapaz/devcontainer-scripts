@@ -5,6 +5,7 @@ set -euo pipefail
 # MODULE_DESCRIPTION="Initializes project Herdr configuration and agent integrations"
 # MODULE_ENTRY="herdr_setup"
 # MODULE_AFTER="persistent-data,coding-agents"
+# MODULE_SECRETS=""
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #

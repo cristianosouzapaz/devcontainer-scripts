@@ -1,5 +1,4 @@
-#!/bin/bash
-
+# shellcheck shell=bash
 [[ -n "${_SPINNER_SH_LOADED:-}" ]] && return 0
 readonly _SPINNER_SH_LOADED=1
 
@@ -22,6 +21,8 @@ _SPINNER_PID=""
 _SPINNER_MESSAGE=""
 _SPINNER_CLEANUP_REGISTERED=""
 _SPINNER_LOCK_FILE=""
+_SPINNER_EXIT_FILE=""
+_SPINNER_EXIT_CLEANUP_REGISTERED=""
 
 # spinner_active: succeeds when the spinner should animate, i.e. STRUCTURED_LOGS is not true
 spinner_active() {
@@ -61,13 +62,23 @@ spinner_cleanup() {
 		wait "$_SPINNER_PID" 2>/dev/null || true
 		_SPINNER_PID=""
 		printf '\r\033[K' >&2 || true
-		tput cnorm >&2 2>/dev/null || true
+		if command -v tput >/dev/null 2>&1; then
+			tput cnorm >&2 2>/dev/null || true
+		fi
 	fi
 	if [[ -n "$_SPINNER_LOCK_FILE" ]]; then
 		rm -f "$_SPINNER_LOCK_FILE" 2>/dev/null || true
 		_SPINNER_LOCK_FILE=""
 	fi
 	return 0
+}
+
+# spinner_exit_file_cleanup: removes the command-status file when setup exits before spinner_stream can do so
+spinner_exit_file_cleanup() {
+	if [[ -n "$_SPINNER_EXIT_FILE" ]]; then
+		rm -f "$_SPINNER_EXIT_FILE" 2>/dev/null || true
+		_SPINNER_EXIT_FILE=""
+	fi
 }
 
 # start_spinner <message>: starts the spinner in the background, or logs the message once when STRUCTURED_LOGS is on
@@ -81,7 +92,9 @@ start_spinner() {
 		return 0
 	fi
 	_SPINNER_LOCK_FILE=$(mktemp)
-	tput civis >&2 2>/dev/null || true
+	if command -v tput >/dev/null 2>&1; then
+		tput civis >&2 2>/dev/null || true
+	fi
 	spinner_draw "$message" "$_SPINNER_LOCK_FILE" &
 	_SPINNER_PID=$!
 	if [[ -z "$_SPINNER_CLEANUP_REGISTERED" ]]; then
@@ -111,9 +124,8 @@ stop_spinner() {
 #   /dev/null so a prompting CLI fails on EOF instead of blocking on the lifecycle
 #   hook's open, silent stdin.
 spinner_stream() {
-	local log_function="$1"
+	local log_function="$1" line was_active will_log exit_file exit_code lock_file
 	shift
-	local line was_active will_log exit_file exit_code lock_file
 
 	was_active="$_SPINNER_PID"
 	lock_file="$_SPINNER_LOCK_FILE"
@@ -123,6 +135,11 @@ spinner_stream() {
 	fi
 
 	exit_file=$(mktemp)
+	_SPINNER_EXIT_FILE="$exit_file"
+	if [[ -z "$_SPINNER_EXIT_CLEANUP_REGISTERED" ]]; then
+		register_cleanup spinner_exit_file_cleanup
+		_SPINNER_EXIT_CLEANUP_REGISTERED=true
+	fi
 
 	while IFS= read -r line; do
 		if [[ -n "$was_active" && "$will_log" == "true" ]]; then
@@ -138,6 +155,7 @@ spinner_stream() {
 
 	exit_code=$(<"$exit_file")
 	rm -f "$exit_file"
+	_SPINNER_EXIT_FILE=""
 
 	return "$exit_code"
 }

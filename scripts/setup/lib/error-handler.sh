@@ -1,5 +1,4 @@
-#!/bin/bash
-
+# shellcheck shell=bash
 [[ -n "${_ERROR_HANDLER_SH_LOADED:-}" ]] && return 0
 readonly _ERROR_HANDLER_SH_LOADED=1
 
@@ -96,15 +95,16 @@ run_module_cleanup_handlers() {
 #   also records the caller's depth, call site and status, so handle_error does not
 #   record the same failure again as it propagates to that call site.
 push_error() {
-	local code="${1:-$DEVCONTAINER_FATAL_ERROR}"
+	local code lineno func cmd msg
+	code="${1:-$DEVCONTAINER_FATAL_ERROR}"
 	shift || true
-	local lineno="${1:-0}"
+	lineno="${1:-0}"
 	shift || true
-	local func="${1:-MAIN}"
+	func="${1:-MAIN}"
 	shift || true
-	local cmd="${1:-}"
+	cmd="${1:-}"
 	shift || true
-	local msg="${*:-}"
+	msg="${*:-}"
 	_ERROR_STACK+=("${code}|${lineno}|${func}|${cmd}|${msg}")
 	_ERROR_LAST_DEPTH=${#FUNCNAME[@]}
 	_ERROR_LAST_LINE=${BASH_LINENO[1]:-0}
@@ -113,10 +113,11 @@ push_error() {
 
 # dump_error_stack: logs each _ERROR_STACK entry as a numbered error line with its code, lineno, func, cmd and message
 dump_error_stack() {
+	local i entry code lineno func cmd msg line
+
 	if [[ "${#_ERROR_STACK[@]}" -eq 0 ]]; then
 		return 0
 	fi
-	local i entry code lineno func cmd msg line
 	for i in "${!_ERROR_STACK[@]}"; do
 		entry="${_ERROR_STACK[$i]}"
 		IFS='|' read -r code lineno func cmd msg <<<"$entry"
@@ -132,9 +133,9 @@ dump_error_stack() {
 #   module subshell: the registry imports the origin from the child, not the subshell
 #   command.
 handle_error() {
-	local exit_code=$?
-	[[ "${_MODULE_WAITING:-false}" != true ]] || return 0
-	local depth=${#FUNCNAME[@]}
+	local exit_code=$? depth
+	[[ "${module_waiting:-false}" != true ]] || return 0
+	depth=${#FUNCNAME[@]}
 	if [[ "$depth" -ne $(( _ERROR_LAST_DEPTH - 1 )) ||
 		"${BASH_LINENO[0]:-0}" != "$_ERROR_LAST_LINE" ||
 		"$exit_code" != "$_ERROR_LAST_CODE" ]]; then

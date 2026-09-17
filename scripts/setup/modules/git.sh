@@ -5,6 +5,7 @@ set -euo pipefail
 # MODULE_DESCRIPTION="Configures git credentials, validates token, clones or updates repositories"
 # MODULE_ENTRY="git_setup"
 # MODULE_AFTER="persistent-data"
+# MODULE_SECRETS="GIT_CLONE_TOKEN GIT_CLONE_TOKEN_*"
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
@@ -96,6 +97,10 @@ resolve_token_for_host() {
 # Notes: an address with no scheme:// host (a path, an scp-style address) gets no
 #   entry; a host with no resolvable token is skipped with a warning.
 configure_git_credentials() {
+	local -a repo_urls=("$@")
+	local -A seen_hosts=()
+	local url host scheme token credential_lines=""
+
 	if ! check_env_var GIT_USER; then
 		push_error "$DEVCONTAINER_VALIDATION_ERROR" "${LINENO}" "configure_git_credentials" "GIT_USER" "GIT_USER is not set"
 		log_error "GIT_USER is required for git configuration"
@@ -112,15 +117,11 @@ configure_git_credentials() {
 	git config --global user.email "${GIT_EMAIL}"
 	git config --global user.name "${GIT_USER}"
 
-	local -a repo_urls=("$@")
-	local -A _seen_hosts=()
-	local url host scheme token credential_lines=""
-
 	for url in "${repo_urls[@]}"; do
 		host=$(url_host "$url")
 		[[ -n "$host" ]] || continue
-		[[ -v "_seen_hosts[$host]" ]] && continue
-		_seen_hosts["$host"]=1
+		[[ -v "seen_hosts[$host]" ]] && continue
+		seen_hosts["$host"]=1
 
 		token=$(resolve_token_for_host "$host")
 		if [[ -z "$token" ]]; then
@@ -141,15 +142,17 @@ configure_git_credentials() {
 
 # detect_package_manager: prints the package manager from package.json's packageManager, else from the lock file (pnpm > npm > yarn, warning when several exist), else npm
 detect_package_manager() {
-	local declared_pm
-	declared_pm=$(node -e "try{const p=JSON.parse(require('fs').readFileSync('package.json','utf8'));if(p.packageManager){const m=p.packageManager.match(/^(\w+)@/);if(m)console.log(m[1]);}}catch(e){}" 2>/dev/null || true)
+	local declared_pm=""
+	local -a found_locks=()
+	if check_command node; then
+		declared_pm=$(node -e "try{const p=JSON.parse(require('fs').readFileSync('package.json','utf8'));if(p.packageManager){const m=p.packageManager.match(/^(\w+)@/);if(m)console.log(m[1]);}}catch(e){}" 2>/dev/null || true)
+	fi
 	if [[ -n "$declared_pm" ]]; then
 		log_debug "Package manager declared in package.json: ${declared_pm}"
 		echo "$declared_pm"
 		return 0
 	fi
 
-	local -a found_locks=()
 	[[ -f "pnpm-lock.yaml" ]]    && found_locks+=("pnpm-lock.yaml")
 	[[ -f "package-lock.json" ]] && found_locks+=("package-lock.json")
 	[[ -f "yarn.lock" ]]         && found_locks+=("yarn.lock")
@@ -183,12 +186,13 @@ configure_pnpm() {
 #   and its unfrozen fallback is skipped when the frozen-lockfile attempt timed out
 #   (exit code 124).
 install_dependencies() {
+	local pm exit_code skip_fallback
+
 	[[ -f "package.json" ]] || {
 		log_debug "No package.json found, skipping dependency installation"
 		return 0
 	}
 
-	local pm exit_code skip_fallback
 	pm="$(detect_package_manager)"
 	start_spinner "Installing dependencies with ${pm}"
 
@@ -282,7 +286,8 @@ install_dependencies_without_tokens() {
 #   conflict after a successful fetch stays a warning.
 setup_repository() {
 	local resolved_url="${1:-}"
-	local current_branch fetch_output merge_output
+	local current_branch fetch_output merge_output resolved_host resolved_token
+	local clone_rc=0 clone_step="git init -b $DEFAULT_BRANCH" checkout_output
 	log_detail "Checking repository status in $(pwd)"
 
 	if [[ -d ".git" ]]; then
@@ -313,7 +318,6 @@ setup_repository() {
 		return 0
 	fi
 
-	local resolved_host resolved_token
 	resolved_host=$(url_host "$resolved_url")
 	resolved_token=$(resolve_token_for_host "$resolved_host")
 	if [[ -z "$resolved_token" ]]; then
@@ -322,7 +326,6 @@ setup_repository() {
 	fi
 
 	start_spinner "Cloning repository from $resolved_url"
-	local clone_rc=0 clone_step="git init -b $DEFAULT_BRANCH"
 	spinner_stream log_debug git init -b "$DEFAULT_BRANCH" || clone_rc=$?
 	if [[ $clone_rc -eq 0 ]]; then
 		clone_step="git remote add origin $resolved_url"
@@ -341,7 +344,6 @@ setup_repository() {
 		return 1
 	fi
 
-	local checkout_output
 	# why: no --force, so existing local config files are never overwritten
 	if checkout_output=$(git checkout "$DEFAULT_BRANCH" 2>&1); then
 		log_debug "${checkout_output}"
@@ -394,8 +396,8 @@ validate_token_access() {
 #   process and the directory no longer matters; under a caller's if or ||, errexit
 #   is off, so the status is captured and the cd back still runs.
 run_in_repo() {
-	local dir="$1"; shift
-	local previous_dir rc=0
+	local dir="$1" previous_dir rc=0
+	shift
 
 	previous_dir="$(pwd)"
 	cd "$dir" || return 1
@@ -415,7 +417,6 @@ git_setup() {
 	local entry folder_name
 	local -A _seen_folders=()
 	local deps_failed=false
-	register_module_cleanup unset_clone_tokens
 	register_cleanup remove_credentials_store
 	# why: a rejected token must fail the clone, not prompt on a lifecycle hook's terminal
 	export GIT_TERMINAL_PROMPT=0

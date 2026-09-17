@@ -27,13 +27,15 @@ cleanup_temp_files() {
 
 # main: runs the full setup (error traps, environment, every module in dependency order, persistent-data summary), exiting when a module fails
 main() {
+	local script_version="unknown" result errexit=false
+
 	setup_error_traps
 	register_cleanup cleanup_temp_files
 
-	local script_version="unknown" result errexit=false
 	[[ -f "$SCRIPT_DIR/VERSION" ]] && script_version="$(<"$SCRIPT_DIR/VERSION")"
 	log_info "Starting setup in $(pwd) - version ${script_version}"
 
+	discover_modules "$DEVCONTAINER_MODULES_DIR"
 	load_env_file
 	persist_env_vars
 

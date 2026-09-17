@@ -5,6 +5,7 @@ set -euo pipefail
 # MODULE_DESCRIPTION="Generates the VS Code .code-workspace file for multi-repo and/or extra-folder containers"
 # MODULE_ENTRY="workspaces_setup"
 # MODULE_AFTER="git"
+# MODULE_SECRETS=""
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #

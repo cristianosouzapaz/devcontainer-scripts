@@ -5,6 +5,7 @@ set -euo pipefail
 # MODULE_DESCRIPTION="Installs and configures the supported coding agent CLIs"
 # MODULE_ENTRY="coding_agents_setup"
 # MODULE_AFTER="persistent-data"
+# MODULE_SECRETS=""
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #

@@ -5,6 +5,7 @@ set -euo pipefail
 # MODULE_DESCRIPTION="Configures git SSH commit signing via SSH agent"
 # MODULE_ENTRY="ssh_signing_setup"
 # MODULE_AFTER="git"
+# MODULE_SECRETS="GIT_SIGNING_KEY"
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
@@ -70,11 +71,9 @@ configure_git_signing() {
 # ----- CORE SETUP -------------------------------------------------------------
 
 # ssh_signing_setup: module entry; configures SSH commit signing unless already in place, skipping when SSH_SIGNING is not true or no agent socket is forwarded, failing without ssh-keygen
-# Notes: a module cleanup unsets GIT_SIGNING_KEY, so it never reaches the next module.
+# Notes: the registry injects the key only into this module's subshell.
 ssh_signing_setup() {
 	local ssh_keygen_path
-
-	register_module_cleanup 'unset GIT_SIGNING_KEY'
 
 	if [[ "${SSH_SIGNING:-}" != "true" ]]; then
 		log_debug "SSH_SIGNING is not true; ssh-signing was not selected during project init"

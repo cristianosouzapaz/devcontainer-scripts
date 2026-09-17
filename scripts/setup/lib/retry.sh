@@ -1,5 +1,4 @@
-#!/bin/bash
-
+# shellcheck shell=bash
 [[ -n "${_RETRY_SH_LOADED:-}" ]] && return 0
 readonly _RETRY_SH_LOADED=1
 
@@ -28,16 +27,15 @@ _CIRCUIT_BREAKER_OPEN="false"
 # Notes: the breaker opens after _CIRCUIT_BREAKER_THRESHOLD consecutive failed calls
 #   and stays open for the rest of the run.
 retry_command() {
-	local max_attempts=${1:-${_MAX_RETRY_ATTEMPTS}}
-	local backoff=${2:-${_DEFAULT_INITIAL_BACKOFF}}
+	local max_attempts=${1:-${_MAX_RETRY_ATTEMPTS}} backoff=${2:-${_DEFAULT_INITIAL_BACKOFF}}
+	local -a cmd=("${@:3}")
+	local attempt=1
 	shift 2
-	local -a cmd=("$@")
 
 	if [[ "${_CIRCUIT_BREAKER_OPEN}" == "true" ]]; then
 		return 2
 	fi
 
-	local attempt=1
 	while ((attempt <= max_attempts)); do
 		if "${cmd[@]}"; then
 			_CIRCUIT_BREAKER_FAILURES=0

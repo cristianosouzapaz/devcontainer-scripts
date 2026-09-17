@@ -5,6 +5,7 @@ set -euo pipefail
 # MODULE_DESCRIPTION="Configures ngrok authentication token if NGROK_AUTHTOKEN is set"
 # MODULE_ENTRY="ngrok_setup"
 # MODULE_AFTER="workspaces"
+# MODULE_SECRETS="NGROK_AUTHTOKEN"
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
@@ -27,10 +28,9 @@ readonly -a _NGROK_CONFIG_COMMAND=(config add-authtoken)
 # ----- CORE SETUP -------------------------------------------------------------
 
 # ngrok_setup: module entry; applies NGROK_AUTHTOKEN to the ngrok config with retries, skipping when ngrok or the token is missing
-# Notes: a module cleanup unsets the token, so it never reaches the next module.
+# Notes: the registry injects the token only into this module's subshell.
 ngrok_setup() {
 	local exit_code
-	register_module_cleanup 'unset NGROK_AUTHTOKEN'
 
 	check_command ngrok || {
 		log_debug "ngrok not installed"

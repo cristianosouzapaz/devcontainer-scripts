@@ -1,5 +1,4 @@
-#!/bin/bash
-
+# shellcheck shell=bash
 [[ -n "${_VALIDATION_SH_LOADED:-}" ]] && return 0
 readonly _VALIDATION_SH_LOADED=1
 
@@ -118,6 +117,7 @@ validate_json() {
 		if check_command jq; then
 			jq -e . >/dev/null 2>&1 || return 1
 		else
+			check_command python || return 1
 			python -c 'import sys,json; json.load(sys.stdin)' >/dev/null 2>&1 || return 1
 		fi
 		return 0
@@ -129,6 +129,7 @@ validate_json() {
 	if check_command jq; then
 		jq -e . "$target" >/dev/null 2>&1 || return 1
 	else
+		check_command python || return 1
 		python -c "import json,sys
 f=open('$target')
 json.load(f)" >/dev/null 2>&1 || return 1

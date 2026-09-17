@@ -1,5 +1,4 @@
-#!/bin/bash
-
+# shellcheck shell=bash
 [[ -n "${_LOADER_SH_LOADED:-}" ]] && return 0
 readonly _LOADER_SH_LOADED=1
 

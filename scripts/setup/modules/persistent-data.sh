@@ -5,6 +5,7 @@ set -euo pipefail
 # MODULE_DESCRIPTION="Initializes persistent-data storage and managed tool paths"
 # MODULE_ENTRY="persistent_data_setup"
 # MODULE_AFTER=""
+# MODULE_SECRETS=""
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
