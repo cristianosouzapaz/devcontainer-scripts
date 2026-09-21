@@ -19,8 +19,6 @@ readonly DEVCONTAINER_SCRIPTS_DIR="${DEVCONTAINER_SETUP_DIR%/*}"
 readonly DEVCONTAINER_MODULES_DIR="${DEVCONTAINER_SETUP_DIR}/modules"
 # shellcheck disable=SC2034 # consumed by modules/coding-agents.sh and lib/herdr.sh
 readonly DEVCONTAINER_ASSETS_DIR="${DEVCONTAINER_SETUP_DIR}/assets"
-# shellcheck disable=SC2034 # consumed by lib/provisioning.sh and modules/coding-agents.sh
-readonly DEVCONTAINER_CONFIG_DIR="${DEVCONTAINER_SCRIPTS_DIR}/config"
 # shellcheck disable=SC2034 # consumed by sync-agent-assets.sh
 readonly DEVCONTAINER_INSTALLER_DIR="${DEVCONTAINER_SCRIPTS_DIR}/installer"
 # shellcheck disable=SC2034 # consumed by the Bats suite (entrypoints/, lib/loader, conventions/shellcheck)
@@ -36,8 +34,8 @@ source "$DEVCONTAINER_LIB_DIR/error-handler.sh"
 source "$DEVCONTAINER_LIB_DIR/logging.sh"
 # shellcheck source=public/scripts/setup/lib/module-registry.sh
 source "$DEVCONTAINER_LIB_DIR/module-registry.sh"
-# shellcheck source=public/scripts/setup/lib/provisioning.sh
-source "$DEVCONTAINER_LIB_DIR/provisioning.sh"
+# shellcheck source=public/scripts/setup/lib/inventory.sh
+source "$DEVCONTAINER_LIB_DIR/inventory.sh"
 # shellcheck source=public/scripts/setup/lib/persistent-data/paths.sh
 source "$DEVCONTAINER_LIB_DIR/persistent-data/paths.sh"
 # shellcheck source=public/scripts/setup/lib/persistent-data/locks.sh

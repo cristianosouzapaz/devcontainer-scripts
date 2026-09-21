@@ -1,0 +1,132 @@
+{
+  "persistentDataLayoutVersion": 1,
+  "agents": [
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "command": "claude",
+      "npmPackage": "@anthropic-ai/claude-code",
+      "herdrIntegration": true,
+      "loginHint": "claude auth login",
+      "relativePath": "config/claude",
+      "homeLink": ".claude",
+      "assets": [
+        {
+          "id": "statusline",
+          "type": "managed-file",
+          "source": "claude/statusline-command.sh",
+          "target": "statusline-command.sh"
+        }
+      ]
+    },
+    {
+      "id": "codex",
+      "label": "Codex CLI",
+      "command": "codex",
+      "npmPackage": "@openai/codex",
+      "herdrIntegration": true,
+      "loginHint": "codex login",
+      "relativePath": "config/codex",
+      "homeLink": ".codex",
+      "assets": [
+        {
+          "id": "config",
+          "type": "merge-toml",
+          "source": "codex/config.toml",
+          "target": "config.toml"
+        }
+      ]
+    },
+    {
+      "id": "pi",
+      "label": "Pi",
+      "command": "pi",
+      "npmPackage": "@earendil-works/pi-coding-agent",
+      "herdrIntegration": true,
+      "loginHint": "pi",
+      "relativePath": "config/pi",
+      "homeLink": ".pi",
+      "assets": [
+        {
+          "id": "settings",
+          "type": "merge-json",
+          "source": "pi/settings.json",
+          "target": "agent/settings.json"
+        },
+        {
+          "id": "pi-web-access",
+          "type": "package",
+          "source": "npm:pi-web-access"
+        },
+        {
+          "id": "pi-subagents",
+          "type": "package",
+          "source": "npm:pi-subagents"
+        },
+        {
+          "id": "pi-background-terminals",
+          "type": "package",
+          "source": "npm:@tian.zuo/pi-background-terminals"
+        },
+        {
+          "id": "herdr-summary",
+          "type": "managed-file",
+          "source": "pi/extensions/herdr-summary.ts",
+          "target": "agent/extensions/herdr-summary.ts"
+        }
+      ]
+    }
+  ],
+  "categories": [
+    {
+      "id": "agents",
+      "scope": "shared",
+      "relativePath": "agents",
+      "homeLink": ".agents",
+      "label": "Agents"
+    },
+    {
+      "id": "github",
+      "scope": "shared",
+      "relativePath": "config/github",
+      "homeLink": ".config/gh",
+      "label": "GitHub CLI",
+      "identity": "github",
+      "binary": "gh",
+      "loginHint": "gh auth login"
+    },
+    {
+      "id": "herdr",
+      "scope": "project",
+      "relativePath": ".config/herdr",
+      "homeLink": null,
+      "label": "Herdr",
+      "assets": [
+        {
+          "id": "config",
+          "type": "seed-file",
+          "source": "herdr/config.toml",
+          "target": "config.toml"
+        },
+        {
+          "id": "usagebar",
+          "type": "package",
+          "source": "senna-lang/herdr-agent-usage"
+        },
+        {
+          "id": "xdg-reset",
+          "type": "append-once",
+          "source": "herdr/xdg-reset.sh",
+          "target": "/etc/bash.bashrc"
+        }
+      ]
+    },
+    {
+      "id": "pnpm-store",
+      "scope": "project",
+      "relativePath": ".cache/pnpm",
+      "homeLink": ".local/share/pnpm",
+      "label": "pnpm store"
+    }
+  ]
+}

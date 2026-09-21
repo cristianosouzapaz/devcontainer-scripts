@@ -74,4 +74,4 @@ RUN set -eux; \
 # created project volume already has them before any lifecycle command runs.
 ARG PROJECT_NAME="project-name"
 RUN mkdir -p "/workspace/${PROJECT_NAME}" /workspace/.metadata \
-    && jq -r '.persistentDataLayoutVersion' /opt/devcontainer/config/provisioning.json > /workspace/.metadata/.schema-version
+    && jq -r '.persistentDataLayoutVersion' /opt/devcontainer/inventory.json > /workspace/.metadata/.schema-version

@@ -19,7 +19,7 @@ cli_usage() {
 
 # cli_category_fields <category_id>: prints scope, relative path, label, identity, resettable and Herdr integration, joined by unit separators with empty fields kept
 cli_category_fields() {
-	provisioning_fields all "$1" scope relativePath label identity resettable herdrIntegration
+	inventory_fields all "$1" scope relativePath label identity resettable herdrIntegration
 }
 
 # cli_link_problem <category_id>: prints what is wrong with the category's managed link, naming the path and its expected target
@@ -139,7 +139,7 @@ cli_resettable_category_ids() {
 		fields=$(cli_category_fields "$category_id")
 		IFS=$'\x1f' read -r _ _ _ _ resettable _ <<<"$fields"
 		[[ "$resettable" == 'true' ]] && printf '%s\n' "$category_id"
-	done < <(provisioning_ids all)
+	done < <(inventory_ids all)
 }
 
 # cli_interactive_overview: logs the compact persistent-data snapshot shown before the menu
@@ -170,14 +170,14 @@ cli_interactive_overview() {
 		authenticated*|available) log_item_success "$label · $status" ;;
 		*) log_item_warning "$label · $status" ;;
 		esac
-	done < <(provisioning_ids all)
+	done < <(inventory_ids all)
 }
 
 # cli_interactive_path: prompts for a category and logs its path, re-prompting on an unknown id and returning on a blank line
 cli_interactive_path() {
 	local category_id ids resolved
 
-	ids=$(provisioning_ids all | paste -sd , - | sed 's/,/, /g')
+	ids=$(inventory_ids all | paste -sd , - | sed 's/,/, /g')
 	while true; do
 		log_info "Select category [${ids}], or blank to go back:"
 		read -r category_id </dev/tty || return 0
@@ -194,7 +194,7 @@ cli_interactive_reset() {
 	local category_id ids_list ids all_ids
 
 	ids_list=$(cli_resettable_category_ids)
-	all_ids=$(provisioning_ids all)
+	all_ids=$(inventory_ids all)
 	ids=$(paste -sd , - <<<"$ids_list" | sed 's/,/, /g')
 	while true; do
 		log_info "Select category [${ids}], or blank to go back:"
@@ -256,7 +256,7 @@ cli_list() {
 		fields=$(cli_category_fields "$category_id")
 		IFS=$'\x1f' read -r scope _ label _ <<<"$fields"
 		printf '%s\t%s\t%s\n' "$category_id" "$scope" "$label"
-	done < <(provisioning_ids all)
+	done < <(inventory_ids all)
 }
 
 # cli_status: prints every category's path, availability, mount and status, tab-separated
@@ -282,7 +282,7 @@ cli_status() {
 			status=$(cli_category_status "$probe")
 		fi
 		printf '%s\t%s\tavailable=%s\tmounted=%s\t%s\n' "$category_id" "$category_path" "$available" "$mounted" "$status"
-	done < <(provisioning_ids all)
+	done < <(inventory_ids all)
 }
 
 # cli_repair: re-creates every managed link that is not in place
@@ -302,7 +302,7 @@ cli_repair() {
 		else
 			failed=true
 		fi
-	done < <(provisioning_ids all)
+	done < <(inventory_ids all)
 
 	[[ "$failed" == true ]] && return 1
 	return 0

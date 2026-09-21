@@ -2,7 +2,7 @@
 [[ -n "${_PERSISTENT_DATA_SCHEMA_SH_LOADED:-}" ]] && return 0
 readonly _PERSISTENT_DATA_SCHEMA_SH_LOADED=1
 
-# Schema version markers that tie each persistent-data root to the provisioning layout version.
+# Schema version markers that tie each persistent-data root to the inventory layout version.
 
 # ----- FUNCTIONS --------------------------------------------------------------
 
@@ -30,7 +30,7 @@ persistent_data_schema_state() {
 	marker_dir=$(dirname "$marker")
 	lock_file=$(persistent_data_lock_path "$scope") || return 1
 	if [[ -f "$marker" ]]; then
-		version=$(provisioning_layout_version) || return 1
+		version=$(inventory_layout_version) || return 1
 		if cmp -s <(printf '%s\n' "$version") "$marker"; then
 			printf '%s\n' 'valid'
 		else
@@ -68,7 +68,7 @@ persistent_data_schema_initialize() {
 	marker=$(persistent_data_schema_marker "$scope") || return 1
 	marker_dir=$(dirname "$marker")
 	mkdir -p "$marker_dir" || return 1
-	version=$(provisioning_layout_version) || return 1
+	version=$(inventory_layout_version) || return 1
 	atomic_write "$marker" printf '%s\n' "$version"
 }
 

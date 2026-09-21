@@ -7,6 +7,12 @@
 
 input=$(cat)
 
+# why: usage reporting must never change or delay the developer's rendered status line
+plugin_root=$(herdr plugin list --plugin usagebar --json 2>/dev/null | jq -r '((if type == "array" then .[0] else .plugins[0] end).plugin_root // empty)' 2>/dev/null)
+if [[ -n "${plugin_root}" ]]; then
+    printf '%s' "${input}" | bash "${plugin_root}/bin/run-statusline.sh" >/dev/null 2>&1 || true
+fi
+
 readonly _COLOR_RESET=$'\033[0m'
 readonly _COLOR_DIM=$'\033[2m'
 readonly _COLOR_BOLD=$'\033[1m'

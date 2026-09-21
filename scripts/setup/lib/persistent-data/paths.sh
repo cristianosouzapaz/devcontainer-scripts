@@ -2,7 +2,7 @@
 [[ -n "${_PERSISTENT_DATA_PATHS_SH_LOADED:-}" ]] && return 0
 readonly _PERSISTENT_DATA_PATHS_SH_LOADED=1
 
-# Resolves persistent-data scope roots and category paths from the provisioning document.
+# Resolves persistent-data scope roots and category paths from the inventory.
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
@@ -27,7 +27,7 @@ persistent_data_root() {
 persistent_data_category_path() {
 	local category_id="$1" fields scope relative_path root
 
-	fields=$(provisioning_fields all "$category_id" scope relativePath) || return 1
+	fields=$(inventory_fields all "$category_id" scope relativePath) || return 1
 	IFS=$'\x1f' read -r scope relative_path <<<"$fields"
 	root=$(persistent_data_root "$scope") || return 1
 	printf '%s/%s\n' "$root" "$relative_path"

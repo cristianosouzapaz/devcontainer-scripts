@@ -25,7 +25,7 @@ persistent_data_create_category_directories() {
 	local -a category_ids=()
 
 	# why: captured, not read from < <(...), whose failure status is never seen
-	ids=$(provisioning_ids all) || return 1
+	ids=$(inventory_ids all) || return 1
 	[[ -n "$ids" ]] || return 0
 	mapfile -t category_ids <<<"$ids"
 	for category_id in "${category_ids[@]}"; do
@@ -49,7 +49,7 @@ persistent_data_setup() {
 	local -a category_ids=()
 
 	persistent_data_initialize
-	ids=$(provisioning_ids all)
+	ids=$(inventory_ids all)
 	[[ -n "$ids" ]] || return 0
 	mapfile -t category_ids <<<"$ids"
 	for category_id in "${category_ids[@]}"; do

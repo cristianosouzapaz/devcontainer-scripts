@@ -22,7 +22,7 @@ _PERSISTENT_DATA_HOME="${PERSISTENT_DATA_HOME:-/root}"
 persistent_data_link_path() {
 	local category_id="$1" home_link home_root
 
-	home_link=$(provisioning_fields all "$category_id" homeLink) || return 1
+	home_link=$(inventory_fields all "$category_id" homeLink) || return 1
 	[[ -n "$home_link" ]] || return 1
 	home_root="${PERSISTENT_DATA_HOME:-$_PERSISTENT_DATA_HOME}"
 	printf '%s/%s\n' "$home_root" "$home_link"
@@ -95,7 +95,7 @@ persistent_data_link_standard_path() {
 persistent_data_link_ensure() {
 	local category_id="$1" destination
 
-	provisioning_entry all "$category_id" >/dev/null || return 1
+	inventory_entry all "$category_id" >/dev/null || return 1
 	destination="$(persistent_data_link_path "$category_id")" || return 0
 	persistent_data_link_standard_path "$destination" "$category_id"
 }

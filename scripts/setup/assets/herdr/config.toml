@@ -1,0 +1,33 @@
+onboarding = false
+
+[theme]
+name = "nord"
+
+[ui]
+status_indicators = "symbols"
+
+[ui.sidebar.spaces]
+row_gap = 0
+rows = [
+  ["state_icon", { token = "branch", bold = true }, "git_status"],
+]
+
+[ui.sidebar.agents]
+row_gap = 0
+rows = [
+  ["state_icon", { token = "agent", bold = true }],
+  ["$limit"],
+  ["$cache_high", { token = "$cache_mid", fg = "#e0af68" }, { token = "$cache_low", fg = "#f7768e" }],
+  ["$context"],
+]
+
+[ui.sidebar.agents.rows_by_agent]
+pi = [
+  ["state_icon", "$summary"],
+  ["$limit"],
+  ["$cache_high", { token = "$cache_mid", fg = "#e0af68" }, { token = "$cache_low", fg = "#f7768e" }],
+  ["$context"],
+]
+
+[terminal]
+new_cwd = "current"

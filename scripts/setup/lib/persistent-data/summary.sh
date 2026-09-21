@@ -7,8 +7,8 @@ readonly _PERSISTENT_DATA_SUMMARY_SH_LOADED=1
 # the workspace volume.
 #
 # Mounts come from `docker inspect` on the container's own ID, so without Docker
-# access the summary is silently skipped. Categories come only from the provisioning
-# document; no second list of categories or volumes is kept here.
+# access the summary is silently skipped. Categories come only from the inventory;
+# no second list of categories or volumes is kept here.
 
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 
@@ -232,14 +232,14 @@ persistent_data_summary_print() {
 		esac
 	done <<<"$mounts"
 
-	mapfile -t ids < <(provisioning_ids all)
+	mapfile -t ids < <(inventory_ids all)
 
 	for category_id in "${ids[@]}"; do
 		[[ -n "$category_id" ]] || continue
-		fields=$(provisioning_fields all "$category_id" label binary identity loginHint scope relativePath) || continue
+		fields=$(inventory_fields all "$category_id" label binary identity loginHint scope relativePath) || continue
 		IFS=$'\x1f' read -r label binary probe hint scope relative_path <<<"$fields"
 
-		# why: provisioning_validate allows only the shared and project scopes
+		# why: inventory_validate allows only the shared and project scopes
 		if [[ "$scope" == "shared" ]]; then
 			mounted="$shared_mounted"; path="$shared_root/$relative_path"
 		else

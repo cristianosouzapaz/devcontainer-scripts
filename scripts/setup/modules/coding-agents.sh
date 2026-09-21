@@ -9,190 +9,264 @@ set -euo pipefail
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
-# Installs and configures the coding-agent CLIs declared in the provisioning
-# document, in document order. Every step is safe to re-run on a container rebuild.
+# Installs and configures the coding-agent CLIs declared in the inventory,
+# in document order. Each catalogued asset is written the way its type
+# prescribes, under the owning entry's persistent-data category, and every step is
+# safe to re-run on a container rebuild.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 
-# ----- CONFIGURATION VARIABLES ------------------------------------------------
-
-# - CLAUDE_CONFIG_DIR: Claude Code config directory (default /root/.claude, the managed persistent-data link)
-# - CODEX_HOME: Codex config directory (default /root/.codex, the managed persistent-data link)
-# - PERSISTENT_DATA_HOME: home directory the agents' configFile paths resolve against (default /root)
-
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
-_CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/root/.claude}"
-_STATUSLINE_SOURCE="${DEVCONTAINER_ASSETS_DIR}/statusline-command.sh"
-_STATUSLINE_DEST="${_CLAUDE_CONFIG_DIR}/statusline-command.sh"
-_STATUSLINE_SETTINGS="${_CLAUDE_CONFIG_DIR}/settings.json"
-_STATUSLINE_HASH_FILE="${_CLAUDE_CONFIG_DIR}/.statusline-hash"
-_CODEX_CONFIG_DIR="${CODEX_HOME:-/root/.codex}"
-_CODEX_SETTINGS="${_CODEX_CONFIG_DIR}/config.toml"
-_PERSISTENT_DATA_HOME="${PERSISTENT_DATA_HOME:-/root}"
-# why: DEVCONTAINER_ASSETS_DIR is readonly, so tests point defaultsAsset elsewhere through this seam
+# why: DEVCONTAINER_ASSETS_DIR is readonly, so tests point catalogued assets elsewhere through this seam
 _CODING_AGENTS_ASSETS_DIR="${DEVCONTAINER_ASSETS_DIR}"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# codex_settings_with_file_storage: prints config.toml with cli_auth_credentials_store set to "file" and every other line kept
-# Returns: grep's status 2 when the existing file cannot be read.
-# Notes: the setting leads the file so it stays a root-level key: TOML keys after a
-#   table header belong to that table. grep exiting 1 only means no other line is
-#   left; a read error must stop the rewrite, or the developer's configuration is lost.
-codex_settings_with_file_storage() {
-	local rc=0
-
-	printf '%s\n' 'cli_auth_credentials_store = "file"'
-	[[ -f "${_CODEX_SETTINGS}" ]] || return 0
-	printf '\n'
-	grep -Ev '^cli_auth_credentials_store[[:space:]]*=' "${_CODEX_SETTINGS}" || rc=$?
-	[[ "$rc" -le 1 ]] || return "$rc"
+# agent_asset <agent_id> <asset_id>: prints the agent's catalogued asset as compact JSON, empty when it declares none under that id
+agent_asset() {
+	inventory_assets agents "$1" | jq -c --arg id "$2" 'select(.id == $id)'
 }
 
-# configure_codex: sets Codex credential storage to auth.json under CODEX_HOME, rewriting only that top-level setting
-# Notes: CODEX_HOME is on a persistent volume, so file storage keeps the login across rebuilds.
-configure_codex() {
-	mkdir -p "${_CODEX_CONFIG_DIR}"
-	if [[ -f "${_CODEX_SETTINGS}" ]] \
-		&& grep -Eq '^cli_auth_credentials_store[[:space:]]*=[[:space:]]*"file"[[:space:]]*(#.*)?$' "${_CODEX_SETTINGS}"; then
-		log_debug "Codex credential storage already configured for file persistence, skipping"
+# asset_source <asset_json>: prints the shipped file the asset is written from
+# Returns: 1 with the path logged when the shipped file is missing, so every asset kind
+#   reports a missing source the same way.
+asset_source() {
+	local source
+
+	source="${_CODING_AGENTS_ASSETS_DIR}/$(jq -r '.source' <<<"$1")"
+	if [[ ! -f "${source}" ]]; then
+		log_error "Catalogued asset source is missing: ${source}"
+		return 1
+	fi
+	printf '%s\n' "${source}"
+}
+
+# asset_target <entry_id> <asset_json>: prints the absolute path the asset is written to
+# Notes: every target resolves under the owning entry's persistent-data category, the one
+#   base that exists for agents and categories alike. The managed home link points at that
+#   directory, so a CLI reading through the link sees the file this module wrote.
+asset_target() {
+	local category_path
+
+	category_path=$(persistent_data_category_path "$1") || return 1
+	printf '%s/%s\n' "${category_path}" "$(jq -r '.target' <<<"$2")"
+}
+
+# deploy_managed_file <source> <destination> <changed_var>: writes a managed asset when the shipped file changed, setting <changed_var> to whether it did
+# Notes: the fingerprint of the last deployed version lives next to the destination, as
+#   .<basename>.sha256, so nothing has to be declared for it. A destination without that
+#   state file is adopted — the shipped fingerprint is recorded and the file is left
+#   alone — because state and destination are written together, so a destination without
+#   state can only come from outside this module, where overwriting would lose data.
+deploy_managed_file() {
+	local source="$1" destination="$2" source_hash hash_file stored_hash=''
+	local -n _managed_changed="$3"
+
+	_managed_changed=false
+	hash_file="${destination%/*}/.${destination##*/}.sha256"
+	source_hash="$(sha256sum "${source}")"
+	source_hash="${source_hash%% *}"
+	if [[ -f "${hash_file}" ]]; then
+		stored_hash="$(< "${hash_file}")"
+	fi
+	mkdir -p "${destination%/*}"
+	if [[ ! -f "${hash_file}" && -f "${destination}" ]]; then
+		atomic_write "${hash_file}" printf '%s\n' "${source_hash}"
+		log_debug "Adopted an unmanaged ${destination}"
 		return 0
 	fi
-
-	atomic_write "${_CODEX_SETTINGS}" codex_settings_with_file_storage
-	log_detail "Configured Codex credentials for persistent file storage"
+	if [[ "${source_hash}" == "${stored_hash}" && -f "${destination}" ]]; then
+		return 0
+	fi
+	atomic_write "${destination}" cat "${source}"
+	atomic_write "${hash_file}" printf '%s\n' "${source_hash}"
+	[[ "${source_hash}" != "${stored_hash}" ]] && _managed_changed=true
+	return 0
 }
 
-# merge_statusline_settings: sets the statusLine command in Claude's settings.json, warning and skipping when the file is malformed JSON
-merge_statusline_settings() {
-	local current_settings result
-	if [[ -f "${_STATUSLINE_SETTINGS}" ]]; then
-		if ! jq -e . "${_STATUSLINE_SETTINGS}" > /dev/null 2>&1; then
-			log_item_warning "settings.json is malformed — skipping statusline settings merge"
+# merge_json_asset <source> <destination>: fills in the JSON settings the developer has not set, existing values winning
+merge_json_asset() {
+	local source="$1" destination="$2" defaults current_settings result
+
+	if ! defaults=$(jq -cse 'select(length == 1 and (.[0] | type == "object")) | .[0]' "${source}" 2>/dev/null); then
+		log_error "Catalogued asset is not a JSON object: ${source}"
+		return 1
+	fi
+	if [[ -f "${destination}" ]]; then
+		if ! jq -e . "${destination}" >/dev/null 2>&1; then
+			log_item_warning "${destination} is malformed — skipping default settings merge"
 			return 0
 		fi
-		current_settings=$(< "${_STATUSLINE_SETTINGS}")
+		current_settings=$(<"${destination}")
 	else
 		current_settings='{}'
 	fi
-	result=$(jq --arg cmd "bash ${_STATUSLINE_DEST}" \
+	result=$(jq --argjson defaults "${defaults}" '. as $current | $defaults * . | select(. != $current)' <<<"${current_settings}")
+	[[ -n "${result}" ]] || return 0
+	mkdir -p "${destination%/*}"
+	atomic_write "${destination}" printf '%s\n' "${result}"
+}
+
+# merge_statusline_settings <settings_file> <statusline_path>: sets the statusLine command in Claude's settings.json, warning and skipping when the file is malformed JSON
+merge_statusline_settings() {
+	local settings_file="$1" statusline_path="$2" current_settings result
+
+	if [[ -f "${settings_file}" ]]; then
+		if ! jq -e . "${settings_file}" > /dev/null 2>&1; then
+			log_item_warning "settings.json is malformed — skipping statusline settings merge"
+			return 0
+		fi
+		current_settings=$(< "${settings_file}")
+	else
+		current_settings='{}'
+	fi
+	result=$(jq --arg cmd "bash ${statusline_path}" \
 		'. + {"statusLine": {"type": "command", "command": $cmd}}' \
 		<<< "${current_settings}") || {
 		log_item_warning "jq failed to generate statusLine settings — skipping"
 		return 0
 	}
-	atomic_write "${_STATUSLINE_SETTINGS}" printf '%s\n' "${result}"
-	log_debug "Merged statusLine into ${_STATUSLINE_SETTINGS}"
+	mkdir -p "${settings_file%/*}"
+	atomic_write "${settings_file}" printf '%s\n' "${result}"
+	log_debug "Merged statusLine into ${settings_file}"
 }
 
-# configure_claude: deploys the statusline script and sets the statusLine key, only when the shipped script changed or a piece is missing
-# Notes: a missing deployed copy is restored, but an existing one is never compared, so
-#   a developer's edits survive until the shipped version changes. Restoring a deleted
-#   copy leaves settings.json alone: the merge overwrites the statusLine key, which may
-#   hold a developer's custom command.
-configure_claude() {
-	local sha_output source_hash stored_hash
-	local hash_differs=false dest_missing=false settings_missing=false
+# codex_settings_with_defaults <defaults_file> <config_file>: prints the Codex configuration with the catalogued root-level defaults filled in and file credential storage enforced
+# Returns: grep's status when the existing configuration cannot be read, so the caller
+#   aborts before replacing it.
+# Notes: the credential line and the defaults lead the output, so a root-level key can
+#   never land inside an existing [table]. The "already set" probe covers only the
+#   root-level region, above the first table header, so a same-named key inside a table
+#   does not mask a default the developer has not actually set.
+codex_settings_with_defaults() {
+	local defaults_file="$1" config_file="$2" existing='' root_keys='' line key rc=0
 
-	if [[ ! -f "${_STATUSLINE_SOURCE}" ]]; then
-		log_debug "Statusline source not found (${_STATUSLINE_SOURCE}), skipping"
+	printf '%s\n' 'cli_auth_credentials_store = "file"'
+	if [[ -f "${config_file}" ]]; then
+		existing=$(grep -Ev '^cli_auth_credentials_store[[:space:]]*=' "${config_file}") || rc=$?
+		[[ "${rc}" -le 1 ]] || return "${rc}"
+		root_keys=$(sed -n '/^[[:space:]]*\[/q; s/^\([A-Za-z_][A-Za-z0-9_-]*\)[[:space:]]*=.*/\1/p' <<<"${existing}")
+	fi
+	while IFS= read -r line; do
+		[[ "${line}" =~ ^([A-Za-z_][A-Za-z0-9_-]*)[[:space:]]*= ]] || continue
+		key="${BASH_REMATCH[1]}"
+		if grep -qxF "${key}" <<<"${root_keys}"; then
+			continue
+		fi
+		printf '%s\n' "${line}"
+	done < "${defaults_file}"
+	[[ -z "${existing}" ]] || printf '%s\n' "${existing}"
+}
+
+# apply_agent_defaults <agent_id>: merges every catalogued merge-json asset of the agent
+apply_agent_defaults() {
+	local agent_id="$1" assets asset source destination
+
+	assets=$(inventory_assets agents "${agent_id}") || return 1
+	[[ -n "${assets}" ]] || return 0
+	while IFS= read -r asset; do
+		[[ -n "${asset}" ]] || continue
+		[[ "$(jq -r '.type' <<<"${asset}")" == 'merge-json' ]] || continue
+		source=$(asset_source "${asset}")
+		destination=$(asset_target "${agent_id}" "${asset}")
+		merge_json_asset "${source}" "${destination}"
+	done <<<"${assets}"
+}
+
+# configure_claude: deploys the catalogued statusline script and points the statusLine key at it
+# Notes: the key is merged again only when the shipped script changed or the key is
+#   missing, so a developer's custom command survives a restored copy of the script.
+configure_claude() {
+	local asset source statusline_path settings_file changed=false settings_missing=false
+
+	asset=$(agent_asset claude statusline)
+	if [[ -z "${asset}" ]]; then
+		log_debug 'No Claude statusline asset declared, skipping'
 		return 0
 	fi
-
-	sha_output=$(sha256sum "${_STATUSLINE_SOURCE}")
-	source_hash="${sha_output%% *}"
-
-	stored_hash=""
-	if [[ -f "${_STATUSLINE_HASH_FILE}" ]]; then
-		stored_hash=$(< "${_STATUSLINE_HASH_FILE}")
-	fi
-
-	[[ "${source_hash}" != "${stored_hash}" ]] && hash_differs=true
-	[[ ! -f "${_STATUSLINE_DEST}" ]] && dest_missing=true
-
-	if [[ ! -f "${_STATUSLINE_SETTINGS}" ]] \
-		|| ! jq -e '.statusLine' "${_STATUSLINE_SETTINGS}" > /dev/null 2>&1; then
+	source=$(asset_source "${asset}")
+	statusline_path=$(asset_target claude "${asset}")
+	settings_file="$(persistent_data_category_path claude)/settings.json"
+	if [[ ! -f "${settings_file}" ]] || ! jq -e '.statusLine' "${settings_file}" > /dev/null 2>&1; then
 		settings_missing=true
 	fi
-
-	if [[ "${hash_differs}" == 'false' ]] && [[ "${dest_missing}" == 'false' ]] \
-		&& [[ "${settings_missing}" == 'false' ]]; then
-		log_debug "Statusline already configured and up to date, skipping"
+	deploy_managed_file "${source}" "${statusline_path}" changed
+	if [[ "${changed}" == 'false' && "${settings_missing}" == 'false' ]]; then
+		log_debug 'Statusline already configured and up to date, skipping'
 		return 0
 	fi
-
-	log_detail "Configuring Claude Code status line"
-
-	if [[ "${hash_differs}" == 'true' ]] || [[ "${dest_missing}" == 'true' ]]; then
-		atomic_write "${_STATUSLINE_DEST}" cat "${_STATUSLINE_SOURCE}"
-		atomic_write "${_STATUSLINE_HASH_FILE}" printf '%s\n' "${source_hash}"
-		log_debug "Updated statusline script (${source_hash})"
-	fi
-
-	if [[ "${settings_missing}" == 'true' ]] || [[ "${hash_differs}" == 'true' ]]; then
-		merge_statusline_settings
-	fi
+	log_detail 'Configuring Claude Code status line'
+	merge_statusline_settings "${settings_file}" "${statusline_path}"
 }
 
-# apply_agent_defaults <agent_id>: merges the agent's defaultsAsset into its configFile, filling only missing settings
-# Notes: a malformed existing configFile is warned about and left alone. An identical
-#   result is not rewritten, since that would still change the file's mtime.
-apply_agent_defaults() {
-	local fields config_file defaults_asset defaults current_settings result
+# configure_codex: merges the catalogued Codex defaults and enforces file credential storage
+# Notes: the configuration lives on a persistent volume, so the merged result survives
+#   rebuilds; it is rewritten only when it would actually change.
+configure_codex() {
+	local asset source config_file current desired
 
-	fields=$(provisioning_fields agents "$1" configFile defaultsAsset)
-	IFS=$'\x1f' read -r config_file defaults_asset <<<"$fields"
-	[[ -n "$config_file" && -n "$defaults_asset" ]] || return 0
-	defaults_asset="${_CODING_AGENTS_ASSETS_DIR}/$defaults_asset"
-	if ! defaults=$(jq -cse 'select(length == 1 and (.[0] | type == "object")) | .[0]' "$defaults_asset" 2>/dev/null); then
-		log_error "Defaults asset is missing or invalid: $defaults_asset"
-		return 1
+	asset=$(agent_asset codex config)
+	if [[ -z "${asset}" ]]; then
+		log_debug 'No Codex config asset declared, skipping defaults'
+		return 0
 	fi
-	config_file="${_PERSISTENT_DATA_HOME}/$config_file"
-	if [[ -f "$config_file" ]]; then
-		if ! jq -e . "$config_file" >/dev/null 2>&1; then
-			log_item_warning "$config_file is malformed — skipping default settings merge"
-			return 0
-		fi
-		current_settings=$(<"$config_file")
-	else
-		current_settings='{}'
+	source=$(asset_source "${asset}")
+	config_file=$(asset_target codex "${asset}")
+	mkdir -p "${config_file%/*}"
+	desired=$(codex_settings_with_defaults "${source}" "${config_file}")
+	if [[ -f "${config_file}" ]]; then
+		current=$(<"${config_file}")
+		[[ "${current}" == "${desired}" ]] && return 0
 	fi
-	result=$(jq --argjson defaults "$defaults" \
-		'. as $current | $defaults * . | select(. != $current)' <<<"$current_settings")
-	[[ -n "$result" ]] || return 0
-	mkdir -p "$(dirname "$config_file")"
-	atomic_write "$config_file" printf '%s\n' "$result"
+	atomic_write "${config_file}" printf '%s\n' "${desired}"
+	log_detail 'Configured Codex settings from catalogued defaults'
 }
 
-# configure_pi: installs the catalog Pi packages missing from Pi's settings.json, skipping when that file is malformed
+# configure_pi: deploys Pi's catalogued managed files and installs the catalogued packages Pi does not carry yet
 configure_pi() {
-	local fields pi_command config_file packages package current_settings missing
-	local -a missing_packages=()
+	local pi_command assets asset settings_asset settings_file source destination changed=false
+	local current_settings missing package
+	local -a packages=() missing_packages=()
 
-	fields=$(provisioning_fields agents pi command configFile packages)
-	IFS=$'\x1f' read -r pi_command config_file packages <<<"$fields"
-	[[ -n "$packages" ]] || return 0
-	config_file="${_PERSISTENT_DATA_HOME}/$config_file"
-	if [[ -f "$config_file" ]] && ! jq -e . "$config_file" >/dev/null 2>&1; then
+	pi_command=$(inventory_fields agents pi command)
+	assets=$(inventory_assets agents pi) || return 1
+	while IFS= read -r asset; do
+		[[ -n "${asset}" ]] || continue
+		case "$(jq -r '.type' <<<"${asset}")" in
+		package) packages+=("$(jq -r '.source' <<<"${asset}")") ;;
+		managed-file)
+			source=$(asset_source "${asset}")
+			destination=$(asset_target pi "${asset}")
+			deploy_managed_file "${source}" "${destination}" changed
+			;;
+		esac
+	done <<<"${assets}"
+	settings_asset=$(agent_asset pi settings)
+	if [[ -z "${settings_asset}" ]]; then
+		log_debug 'No Pi settings asset declared, skipping Pi packages'
+		return 0
+	fi
+	settings_file=$(asset_target pi "${settings_asset}")
+	if [[ -f "${settings_file}" ]] && ! jq -e . "${settings_file}" >/dev/null 2>&1; then
 		log_item_warning 'Pi settings.json is malformed — skipping Pi packages'
 		return 0
 	fi
+	[[ ${#packages[@]} -gt 0 ]] || return 0
 	current_settings='{}'
-	if [[ -f "$config_file" ]]; then
-		current_settings=$(<"$config_file")
+	if [[ -f "${settings_file}" ]]; then
+		current_settings=$(<"${settings_file}")
 	fi
 	# why: -n keeps jq off the caller's stdin
-	missing=$(jq -nr --argjson installed "$current_settings" --argjson catalog "$packages" \
+	missing=$(jq -nr --argjson installed "${current_settings}" --argjson catalog "$(printf '%s\n' "${packages[@]}" | jq -R . | jq -s .)" \
 		'$catalog - ($installed.packages // []) | .[]')
-	[[ -n "$missing" ]] || return 0
-	mapfile -t missing_packages <<<"$missing"
+	[[ -n "${missing}" ]] || return 0
+	mapfile -t missing_packages <<<"${missing}"
 	for package in "${missing_packages[@]}"; do
 		log_detail "Installing Pi extension ${package}"
-		spinner_stream log_debug "$pi_command" install "$package"
+		spinner_stream log_debug "${pi_command}" install "${package}"
 	done
 }
 
@@ -203,11 +277,11 @@ coding_agents_setup() {
 	local agent_id cli_command label npm_package exit_code ids fields configure
 	local -a agent_ids=()
 
-	ids=$(provisioning_ids agents)
+	ids=$(inventory_ids agents)
 	[[ -n "$ids" ]] || return 0
 	mapfile -t agent_ids <<<"$ids"
 	for agent_id in "${agent_ids[@]}"; do
-		fields=$(provisioning_fields agents "$agent_id" command label npmPackage)
+		fields=$(inventory_fields agents "$agent_id" command label npmPackage)
 		IFS=$'\x1f' read -r cli_command label npm_package <<<"$fields"
 		if check_command "$cli_command"; then
 			log_debug "${label} CLI already installed, skipping"
@@ -231,5 +305,6 @@ coding_agents_setup() {
 	done
 }
 
-export -f codex_settings_with_file_storage configure_codex configure_claude configure_pi apply_agent_defaults \
-	merge_statusline_settings coding_agents_setup
+export -f agent_asset asset_source asset_target deploy_managed_file merge_json_asset \
+	merge_statusline_settings codex_settings_with_defaults apply_agent_defaults \
+	configure_claude configure_codex configure_pi coding_agents_setup
