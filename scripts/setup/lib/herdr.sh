@@ -89,22 +89,52 @@ herdr_require_command() {
 	return 1
 }
 
-# herdr_install_plugins: installs each catalogued plugin that is not already listed for the Herdr user
-# Notes: the asset `id` doubles as the Herdr plugin id queried by the `plugin list` probe,
-#   while the asset `source` is the plugin spec passed to `plugin install`.
+# herdr_plugin_spec <source>: prints the owner/repo a plugin source installs from, lowercased
+# Notes: `plugin install` takes OWNER/REPO[/SUBDIR] while `plugin list` reports the owner
+#   and the repo only, so the subdirectory is dropped to compare the two. GitHub slugs are
+#   case-insensitive.
+herdr_plugin_spec() {
+	cut -d/ -f1,2 <<<"$1" | tr '[:upper:]' '[:lower:]'
+}
+
+# herdr_installed_plugins: prints the owner/repo spec of every plugin installed for the Herdr user, one per line
+# Notes: `plugin list --json` wraps its payload in an envelope, {"result":{"plugins":[…]}};
+#   a bare array and a top-level `plugins` key are accepted too. Returns non-zero when the
+#   output cannot be read as a plugin list at all, so that an unknown shape reinstalls
+#   loudly instead of silently reporting every plugin as missing.
+herdr_installed_plugins() {
+	local output plugins
+
+	output=$("$_HERDR_COMMAND" plugin list --json 2>/dev/null) || return 1
+	plugins=$(jq -c 'if type == "array" then .
+		elif type == "object" and has("plugins") then .plugins
+		elif type == "object" and (.result | type) == "object" and (.result | has("plugins")) then .result.plugins
+		else null end' <<<"$output" 2>/dev/null) || return 1
+	[[ -n "$plugins" && "$plugins" != 'null' ]] || return 1
+	jq -r '.[]? | select((.source.kind // "github") == "github")
+		| "\(.source.owner // "")/\(.source.repo // "")" | ascii_downcase' <<<"$plugins"
+}
+
+# herdr_install_plugins: installs each catalogued plugin that is not already installed for the Herdr user
+# Notes: a plugin is matched by the owner/repo of its asset `source` — the very string
+#   `plugin install` is given — so no second identifier has to agree with the one upstream
+#   publishes. The list is read once, before the loop, because an install changes it.
 herdr_install_plugins() {
-	local asset plugin_id plugin_source plugins assets
+	local asset plugin_source plugin_spec installed assets
 
 	herdr_require_command || return 1
 	assets=$(inventory_assets categories herdr) || return 1
+	if ! installed=$(herdr_installed_plugins); then
+		log_warning "Could not read the installed Herdr plugins, installing every catalogued plugin"
+		installed=''
+	fi
 	while IFS= read -r asset; do
 		[[ -n "$asset" ]] || continue
 		[[ "$(jq -r '.type' <<<"$asset")" == 'package' ]] || continue
-		plugin_id=$(jq -r '.id' <<<"$asset")
 		plugin_source=$(jq -r '.source' <<<"$asset")
-		plugins=$("$_HERDR_COMMAND" plugin list --plugin "$plugin_id" --json 2>/dev/null) || plugins=''
-		if jq -e --arg id "$plugin_id" 'any((if type == "array" then . else .plugins end)[]?; .plugin_id == $id)' <<<"$plugins" >/dev/null 2>&1; then
-			log_debug "Herdr plugin $plugin_id already installed, skipping"
+		plugin_spec=$(herdr_plugin_spec "$plugin_source")
+		if grep -qxF "$plugin_spec" <<<"$installed"; then
+			log_debug "Herdr plugin $plugin_spec already installed, skipping"
 			continue
 		fi
 		spinner_stream log_debug "$_HERDR_COMMAND" plugin install "$plugin_source" --yes || return 1
