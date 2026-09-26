@@ -73,6 +73,11 @@ log_detail() {
 	log_output "INFO" "$*" "detail"
 }
 
+# log_blank: emits one unstyled blank line on stderr for visual separation
+log_blank() {
+	printf '\n' >&2
+}
+
 # log_item_success <message>: logs an indented line that is itself a success conclusion, such as one row of a list
 log_item_success() {
 	log_output "SUCCESS" "$*" "item"
@@ -260,4 +265,4 @@ log_output() {
 	write_log "$level" "$message" "$style"
 }
 
-export -f level_value should_log use_color rotate_log_if_needed json_quote write_log log_output log_debug log_error log_info log_success log_warning log_detail log_item_success log_item_warning log_fatal module_skip
+export -f level_value should_log use_color rotate_log_if_needed json_quote write_log log_output log_debug log_error log_info log_success log_warning log_detail log_blank log_item_success log_item_warning log_fatal module_skip

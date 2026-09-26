@@ -114,7 +114,40 @@ cli_reconcile_herdr() {
 	herdr_apply
 }
 
-# cli_confirm_reset <category_id>: asks the user to type yes before a destructive reset
+# cli_ui <operation> [arguments...]: runs the Node adapter on the terminal and stores its choice
+# Returns: 2 when the Node adapter fails; an empty successful answer remains a cancellation.
+# Notes: descriptor 3 carries the machine-readable answer so Inquirer's screen remains visible.
+#   The adapter is only reached after the caller checks that a terminal is available.
+cli_ui() {
+	local operation="$1" result_file status=0 old_int old_term old_hup
+	shift
+	if ! command -v node >/dev/null 2>&1; then
+		log_error 'node is required for interactive mode but was not found on PATH'
+		return 2
+	fi
+	result_file=$(mktemp "${TMPDIR:-/tmp}/devcontainer-data-ui.XXXXXX") || return 2
+	old_int=$(trap -p INT)
+	old_term=$(trap -p TERM)
+	old_hup=$(trap -p HUP)
+	trap 'rm -f -- "${result_file}" || :; exit 130' INT
+	trap 'rm -f -- "${result_file}" || :; exit 143' TERM
+	trap 'rm -f -- "${result_file}" || :; exit 129' HUP
+	if node "${DEVCONTAINER_INSTALLER_DIR}/data-ui.js" "${operation}" "$@" \
+		< /dev/tty > /dev/tty 3>"${result_file}"; then
+		:
+	else
+		status=$?
+	fi
+	CLI_UI_RESULT=$(<"${result_file}")
+	rm -f -- "${result_file}"
+	if [[ -n "${old_int}" ]]; then eval "${old_int}"; else trap - INT; fi
+	if [[ -n "${old_term}" ]]; then eval "${old_term}"; else trap - TERM; fi
+	if [[ -n "${old_hup}" ]]; then eval "${old_hup}"; else trap - HUP; fi
+	[[ "${status}" -eq 0 ]] && return 0
+	return 2
+}
+
+# cli_confirm_reset <category_id>: asks the Node adapter before a destructive reset
 cli_confirm_reset() {
 	local category_id="$1" reply
 
@@ -122,9 +155,9 @@ cli_confirm_reset() {
 		log_error 'Reset requires an interactive confirmation or --yes'
 		return 1
 	fi
-	log_warning "This permanently deletes the data in category '$category_id'. Type yes to continue:"
-	read -r reply </dev/tty
-	if [[ "$reply" != 'yes' ]]; then
+	cli_ui confirm-reset "${category_id}" || return $?
+	reply="${CLI_UI_RESULT}"
+	if [[ "${reply}" != 'yes' ]]; then
 		log_error 'Reset cancelled'
 		return 1
 	fi
@@ -173,65 +206,81 @@ cli_interactive_overview() {
 	done < <(inventory_ids all)
 }
 
-# cli_interactive_path: prompts for a category and logs its path, re-prompting on an unknown id and returning on a blank line
+# cli_interactive_path: asks the adapter for a category and logs its path, returning on Go back
 cli_interactive_path() {
-	local category_id ids resolved
-
-	ids=$(inventory_ids all | paste -sd , - | sed 's/,/, /g')
-	while true; do
-		log_info "Select category [${ids}], or blank to go back:"
-		read -r category_id </dev/tty || return 0
-		[[ -z "$category_id" ]] && return 0
-		if resolved=$(cli_path "$category_id"); then
-			log_item_success "$resolved"
-			return 0
-		fi
-	done
+	local category_id resolved
+	local -a category_ids=()
+	mapfile -t category_ids < <(inventory_ids all)
+	cli_ui category "${category_ids[@]}" || return $?
+	category_id="${CLI_UI_RESULT}"
+	[[ -n "${category_id}" ]] || return 0
+	if resolved=$(cli_path "${category_id}"); then
+		log_item_success "${resolved}"
+	fi
 }
 
-# cli_interactive_reset: prompts for a resettable category and runs the confirmed reset, re-prompting on an unknown id and returning on a blank line
+# cli_interactive_reset: asks the adapter for a resettable category and runs the confirmed reset
+# Returns: 2 for an adapter failure, 1 for an ordinary reset failure, and 0 for success or cancellation.
 cli_interactive_reset() {
-	local category_id ids_list ids all_ids
-
-	ids_list=$(cli_resettable_category_ids)
-	all_ids=$(inventory_ids all)
-	ids=$(paste -sd , - <<<"$ids_list" | sed 's/,/, /g')
-	while true; do
-		log_info "Select category [${ids}], or blank to go back:"
-		read -r category_id </dev/tty || return 0
-		[[ -z "$category_id" ]] && return 0
-		grep -qxF -- "$category_id" <<<"$ids_list" && break
-		if grep -qxF -- "$category_id" <<<"$all_ids"; then
-			log_warning "Not a resettable category: ${category_id}"
-		else
-			log_warning "Unknown persistent-data category: ${category_id}"
-		fi
-	done
-	cli_reset "$category_id" false
+	local category_id
+	local -a category_ids=()
+	mapfile -t category_ids < <(cli_resettable_category_ids)
+	if ! cli_ui category "${category_ids[@]}"; then
+		return 2
+	fi
+	category_id="${CLI_UI_RESULT}"
+	[[ -n "${category_id}" ]] || return 0
+	cli_reset "${category_id}" false
 }
 
-# cli_interactive_menu: runs the action menu until the user quits
+# cli_interactive_menu: runs the adapter action menu until the user quits
 cli_interactive_menu() {
-	local action
+	local action reset_status path_status
 
 	while true; do
-		log_info 'Select an action'
-		log_detail '1) List categories'
-		log_detail '2) Status'
-		log_detail '3) Show path'
-		log_detail '4) Reset data'
-		log_detail '5) Repair managed links'
-		log_detail 'q) Quit'
-		log_info 'Action [1-5, q]:'
-		read -r action </dev/tty || return 0
-		case "$action" in
-		1) cli_list ;;
-		2) cli_status ;;
-		3) cli_interactive_path ;;
-		4) cli_interactive_reset || true ;;
-		5) cli_repair || true ;;
-		q | Q) return 0 ;;
-		*) log_warning 'Invalid selection. Enter 1-5 or q.' ;;
+		cli_ui menu || return $?
+		action="${CLI_UI_RESULT}"
+		case "${action}" in
+		list)
+			log_blank
+			cli_list
+			log_blank
+			;;
+		status)
+			log_blank
+			cli_status
+			log_blank
+			;;
+		path)
+			log_blank
+			if cli_interactive_path; then
+				:
+			else
+				path_status=$?
+				if [[ "${path_status}" -eq 2 ]]; then
+					return 2
+				fi
+			fi
+			log_blank
+			;;
+		reset)
+			log_blank
+			if cli_interactive_reset; then
+				:
+			else
+				reset_status=$?
+				if [[ "${reset_status}" -eq 2 ]]; then
+					return 2
+				fi
+			fi
+			log_blank
+			;;
+		repair)
+			log_blank
+			cli_repair || true
+			log_blank
+			;;
+		quit | '') return 0 ;;
 		esac
 	done
 }
@@ -324,7 +373,7 @@ cli_reset() {
 		return 1
 	fi
 	if [[ "$assume_yes" != true ]]; then
-		cli_confirm_reset "$category_id" || return 1
+		cli_confirm_reset "$category_id" || return $?
 	fi
 	if [[ "$category_id" == 'herdr' ]]; then
 		cli_reset_herdr || return 1

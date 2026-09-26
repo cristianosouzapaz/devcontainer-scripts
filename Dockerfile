@@ -42,6 +42,10 @@ RUN mkdir -p /tmp/dc-init \
     && install -m 0755 /opt/devcontainer/bin/* /usr/local/bin/ \
     && ln -sf /opt/devcontainer/bin/devcontainer-data /usr/local/bin/devcontainer-data
 
+# Install the installer UI's production dependencies from its manifest and lockfile.
+WORKDIR /opt/devcontainer/installer
+RUN corepack pnpm install --prod --frozen-lockfile --ignore-scripts
+
 # Install herdr, verified against its published checksum. HERDR_VERSION is empty
 # by default (latest release); set it to pin a release and bust this layer.
 ARG HERDR_VERSION=""

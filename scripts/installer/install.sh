@@ -16,6 +16,7 @@ readonly _SEED_ENTRYPOINTS=(
 	"skills/index.js"
 	"skills/local/index.js"
 	"agent-md/index.js"
+	"data-ui.js"
 )
 
 # why: required but unreachable from the import graph; sync-agent-assets.sh copies AGENTS.md out of this tree
