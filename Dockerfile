@@ -43,8 +43,10 @@ RUN mkdir -p /tmp/dc-init \
     && ln -sf /opt/devcontainer/bin/devcontainer-data /usr/local/bin/devcontainer-data
 
 # Install the installer UI's production dependencies from its manifest and lockfile.
+# Keep pnpm's build-only files outside the path persistent-data later manages.
 WORKDIR /opt/devcontainer/installer
-RUN corepack pnpm install --prod --frozen-lockfile --ignore-scripts
+RUN PNPM_HOME=/tmp/pnpm-home corepack pnpm install --store-dir=/tmp/pnpm-store --prod --frozen-lockfile --ignore-scripts \
+    && rm -rf /tmp/pnpm-home /tmp/pnpm-store
 
 # Install herdr, verified against its published checksum. HERDR_VERSION is empty
 # by default (latest release); set it to pin a release and bust this layer.
