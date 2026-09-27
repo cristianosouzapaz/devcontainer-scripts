@@ -14,7 +14,7 @@ source "$BOOTSTRAP_LIB_DIR/loader.sh"
 
 # cli_usage: logs the supported command syntax
 cli_usage() {
-	log_info 'Usage: devcontainer-data {list|status|path <id>|repair|reset <id> [--yes]|interactive}'
+	log_info 'Usage: devcontainer-data {list|status|path <id>|repair|reset <id> [--yes]|update herdr [--replace [--yes]]|interactive}'
 }
 
 # cli_category_fields <category_id>: prints scope, relative path, label, identity, resettable and Herdr integration, joined by unit separators with empty fields kept
@@ -95,7 +95,11 @@ cli_reset_category() {
 
 # cli_reset_herdr_locked: clears the project Herdr data and restores its initial configuration
 cli_reset_herdr_locked() {
+	local metadata
+	cli_validate_herdr_paths || return 1
+	metadata=$(herdr_metadata_path) || return 1
 	cli_reset_category herdr || return 1
+	rm -rf -- "$metadata" || return 1
 	herdr_initialize_config
 }
 
@@ -235,24 +239,20 @@ cli_interactive_reset() {
 
 # cli_interactive_menu: runs the adapter action menu until the user quits
 cli_interactive_menu() {
-	local action reset_status path_status
+	local action reset_status path_status update_status
 
 	while true; do
+		log_blank
 		cli_ui menu || return $?
 		action="${CLI_UI_RESULT}"
 		case "${action}" in
 		list)
-			log_blank
 			cli_list
-			log_blank
 			;;
 		status)
-			log_blank
 			cli_status
-			log_blank
 			;;
 		path)
-			log_blank
 			if cli_interactive_path; then
 				:
 			else
@@ -261,10 +261,8 @@ cli_interactive_menu() {
 					return 2
 				fi
 			fi
-			log_blank
 			;;
 		reset)
-			log_blank
 			if cli_interactive_reset; then
 				:
 			else
@@ -273,12 +271,17 @@ cli_interactive_menu() {
 					return 2
 				fi
 			fi
-			log_blank
 			;;
 		repair)
-			log_blank
 			cli_repair || true
-			log_blank
+			;;
+		update)
+			if cli_update herdr false false; then
+				:
+			else
+				update_status=$?
+				[[ "$update_status" -eq 2 ]] && return 2
+			fi
 			;;
 		quit | '') return 0 ;;
 		esac
@@ -387,9 +390,102 @@ cli_reset() {
 	fi
 }
 
+# cli_validate_herdr_paths: refuses writes outside the mounted project and redirected metadata
+cli_validate_herdr_paths() {
+	local root config_path root_real
+	root=$(persistent_data_root project) || return 1
+	if ! mountpoint -q "$root"; then
+		log_error 'Persistent-data category is not mounted: herdr'
+		return 1
+	fi
+	root_real=$(realpath -m "$root") || return 1
+	config_path=$(herdr_config_path) || return 1
+	if [[ "$(realpath -m "$config_path")" != "$root_real/"* ]]; then
+		log_error 'Herdr configuration escapes its project path'
+		return 1
+	fi
+	herdr_validate_metadata_path
+}
+
+# cli_update_herdr_locked <replace> <assume_yes>: updates only persistent config, never scripts or packages
+cli_update_herdr_locked() {
+	local replace="$1" assume_yes="$2" config_path template metadata managed_hash='' current_hash backup timestamp
+
+	cli_validate_herdr_paths || return 1
+	config_path=$(herdr_config_path) || return 1
+	template=$(herdr_template_path) || return 1
+	metadata=$(herdr_metadata_path) || return 1
+	if [[ "$replace" == true && "$assume_yes" != true ]]; then
+		if [[ ! -t 0 ]]; then
+			log_error 'Replacement requires an interactive confirmation or --replace --yes'
+			return 1
+		fi
+		cli_ui confirm-replace || return $?
+		if [[ "$CLI_UI_RESULT" != yes ]]; then
+			log_error 'Update cancelled'
+			return 1
+		fi
+	fi
+	if [[ ! -e "$config_path" && ! -L "$config_path" ]]; then
+		herdr_initialize_config
+		return $?
+	fi
+	if [[ ! -f "$config_path" ]]; then
+		log_error "Not a regular Herdr configuration: $config_path"
+		return 1
+	fi
+	if [[ -f "$metadata/config-template.sha256" ]]; then
+		managed_hash=$(<"$metadata/config-template.sha256")
+	fi
+	current_hash=$(sha256sum < "$config_path") || return 1
+	current_hash="${current_hash%% *}"
+	if [[ "$replace" != true && "$managed_hash" =~ ^[a-f0-9]{64}$ && "$current_hash" == "$managed_hash" ]]; then
+		if cmp -s "$config_path" "$template"; then
+			log_success 'Herdr configuration is already current'
+			return 0
+		fi
+		replace=true
+	elif [[ "$replace" != true && ! "$managed_hash" =~ ^[a-f0-9]{64}$ && -t 0 ]]; then
+		cli_ui first-update || return $?
+		case "$CLI_UI_RESULT" in
+		replace) replace=true ;;
+		keep) ;;
+		*) log_error 'Update cancelled'; return 1 ;;
+		esac
+	fi
+	if [[ "$replace" != true ]]; then
+		# why: A pre-existing candidate may contain user edits or alias the preserved config via symlink.
+		if [[ -e "$config_path.new" || -L "$config_path.new" ]]; then
+			log_error "Refusing to overwrite an existing Herdr candidate: $config_path.new"
+			return 1
+		fi
+		atomic_write "$config_path.new" cat "$template" || return 1
+		log_warning "Preserved Herdr configuration; review $config_path.new or use update herdr --replace"
+		return 0
+	fi
+	# why: Nanoseconds prevent serialized same-second updates from reusing a backup path.
+	timestamp=$(date -u +%Y%m%dT%H%M%S.%NZ) || return 1
+	backup="$config_path.bak.$timestamp"
+	[[ ! -e "$backup" && ! -L "$backup" ]] || { log_error "Backup already exists: $backup"; return 1; }
+	(umask 077; atomic_write "$backup" cat "$config_path") || return 1
+	herdr_write_managed_config "$config_path" "$template" || return 1
+	log_success "Updated Herdr configuration; backup: $backup"
+}
+
+# cli_update <category_id> <replace> <assume_yes>: serializes config decisions with setup and reset
+cli_update() {
+	if [[ "$1" != herdr ]]; then
+		log_error "Persistent-data category cannot be updated: $1"
+		return 1
+	fi
+	# why: Validate before locking because acquiring the lock creates the root and lock file.
+	cli_validate_herdr_paths || return 1
+	with_project_data_lock cli_update_herdr_locked "$2" "$3"
+}
+
 # cli_main <subcommand> [args...]: runs one subcommand, logging the usage on a malformed call
 cli_main() {
-	local subcommand="${1:-}" category_id assume_yes=false
+	local subcommand="${1:-}" category_id assume_yes=false replace=false flag
 
 	case "$subcommand" in
 	list) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_list ;;
@@ -404,6 +500,20 @@ cli_main() {
 			assume_yes=true
 		fi
 		cli_reset "$category_id" "$assume_yes"
+		;;
+	update)
+		[[ "$#" -ge 2 && "$#" -le 4 ]] || { cli_usage; return 1; }
+		category_id="$2"
+		shift 2
+		for flag in "$@"; do
+			case "$flag" in
+			--replace) [[ "$replace" == false ]] || { cli_usage; return 1; }; replace=true ;;
+			--yes) [[ "$assume_yes" == false ]] || { cli_usage; return 1; }; assume_yes=true ;;
+			*) cli_usage; return 1 ;;
+			esac
+		done
+		[[ "$assume_yes" == false || "$replace" == true ]] || { cli_usage; return 1; }
+		cli_update "$category_id" "$replace" "$assume_yes"
 		;;
 	interactive) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_interactive ;;
 	*) cli_usage; return 1 ;;

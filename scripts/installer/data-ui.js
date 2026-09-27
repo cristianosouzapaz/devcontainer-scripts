@@ -17,6 +17,7 @@ export const DATA_ACTION_CHOICES = [
     { name: "Show path", value: "path" },
     { name: "Reset data", value: "reset" },
     { name: "Repair managed links", value: "repair" },
+    { name: "Update Herdr configuration", value: "update" },
     { name: "Quit", value: "quit" },
 ];
 
@@ -59,6 +60,35 @@ export const confirmDataReset = (categoryId, context) => select({
     theme: PROMPT_THEME,
 }, { ...context, ...PROMPT_OPTIONS });
 
+/**
+ * @param {unknown} _config
+ * @param {Record<string, unknown>} [context]
+ * @returns {Promise<string>}
+ */
+export const selectFirstHerdrUpdate = (_config, context) => select({
+    message: "Herdr configuration has no managed history",
+    choices: [
+        { name: "Keep current", value: "keep" },
+        { name: "Replace with managed template", value: "replace" },
+        { name: "Cancel", value: "cancel" },
+    ],
+    theme: PROMPT_THEME,
+}, { ...context, ...PROMPT_OPTIONS });
+
+/**
+ * @param {unknown} _config
+ * @param {Record<string, unknown>} [context]
+ * @returns {Promise<string>}
+ */
+export const confirmHerdrReplace = (_config, context) => select({
+    message: "Replace Herdr configuration with the managed template (with backup)?",
+    choices: [
+        { name: "No, cancel", value: "no" },
+        { name: "Yes, replace it", value: "yes" },
+    ],
+    theme: PROMPT_THEME,
+}, { ...context, ...PROMPT_OPTIONS });
+
 const writeResult = (value) => writeFileSync(3, `${value}\n`);
 
 const isCancelled = (error) => error?.name === "CancelPromptError" ||
@@ -74,6 +104,12 @@ const main = async () => {
         case "category":
             result = await selectDataCategory(args);
             break;
+        case "first-update":
+            result = await selectFirstHerdrUpdate();
+            break;
+        case "confirm-replace":
+            result = await confirmHerdrReplace();
+            break;
         case "confirm-reset":
             if (args.length !== 1) throw new Error("confirm-reset requires a category id");
             result = await confirmDataReset(args[0]);
@@ -82,6 +118,8 @@ const main = async () => {
             throw new Error(`Unknown data UI operation: ${operation || "(missing)"}`);
     }
     writeResult(result);
+    // why: clearing the prompt leaves its cursor on the selected row; end that row before Bash prints the result.
+    process.stdout.write("\n");
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -30,16 +30,9 @@ herdr_config_path() {
 	printf '%s/%s\n' "$category_path" "${target:-config.toml}"
 }
 
-# herdr_initialize_config: copies the config template to the config path, only when no config exists there
-herdr_initialize_config() {
-	local config_path template
-
-	config_path=$(herdr_config_path) || return 1
-	if [[ -f "$config_path" ]]; then
-		log_debug "Herdr configuration already exists, skipping"
-		return 0
-	fi
-	template="${_HERDR_TEMPLATE}"
+# herdr_template_path: resolves the config template shipped by Rebuild Container
+herdr_template_path() {
+	local template="${_HERDR_TEMPLATE}"
 	if [[ -z "${template}" ]]; then
 		template=$(inventory_assets categories herdr | jq -r 'select(.id == "config") | .source' | head -n1)
 		template="${DEVCONTAINER_ASSETS_DIR}/${template}"
@@ -48,8 +41,54 @@ herdr_initialize_config() {
 		log_error "Herdr configuration template is missing: ${template}"
 		return 1
 	fi
-	mkdir -p "$(dirname "$config_path")" || return 1
-	atomic_write "$config_path" cat "${template}" || return 1
+	printf '%s\n' "$template"
+}
+
+# herdr_metadata_path: keeps managed history outside the user's Herdr configuration
+herdr_metadata_path() {
+	local root
+	root=$(persistent_data_root project) || return 1
+	printf '%s/.metadata/herdr\n' "$root"
+}
+
+# herdr_validate_metadata_path: refuses redirected managed history before any config or metadata write
+herdr_validate_metadata_path() {
+	local root root_real metadata
+	root=$(persistent_data_root project) || return 1
+	root_real=$(realpath -m "$root") || return 1
+	metadata=$(herdr_metadata_path) || return 1
+	if [[ "$(realpath -m "$metadata")" != "$root_real/.metadata/herdr" ||
+		"$(realpath -m "$metadata/config-template.sha256")" != "$root_real/.metadata/herdr/config-template.sha256" ]]; then
+		log_error 'Herdr metadata escapes its project path'
+		return 1
+	fi
+}
+
+# herdr_write_managed_config <config_path> <template>: records history only after a successful config write
+# Notes: callers hold the project lock; writing history last prevents a failed
+#   config write from marking an unwritten template as installed.
+herdr_write_managed_config() {
+	local config_path="$1" template="$2" metadata hash
+	herdr_validate_metadata_path || return 1
+	metadata=$(herdr_metadata_path) || return 1
+	hash=$(sha256sum < "$template") || return 1
+	hash="${hash%% *}"
+	mkdir -p "$(dirname "$config_path")" "$metadata" || return 1
+	atomic_write "$config_path" cat "$template" || return 1
+	atomic_write "$metadata/config-template.sha256" printf '%s\n' "$hash"
+}
+
+# herdr_initialize_config: initializes missing config and history without adopting existing user data
+herdr_initialize_config() {
+	local config_path template
+
+	config_path=$(herdr_config_path) || return 1
+	if [[ -f "$config_path" ]]; then
+		log_debug "Herdr configuration already exists, skipping"
+		return 0
+	fi
+	template=$(herdr_template_path) || return 1
+	herdr_write_managed_config "$config_path" "$template" || return 1
 	log_detail "Initialized Herdr configuration"
 }
 
@@ -182,5 +221,6 @@ herdr_apply() {
 	with_shared_data_lock with_project_data_lock herdr_install_integrations
 }
 
-export -f herdr_config_path herdr_require_command herdr_initialize_config \
+export -f herdr_config_path herdr_template_path herdr_metadata_path herdr_validate_metadata_path herdr_write_managed_config \
+	herdr_require_command herdr_initialize_config \
 	herdr_install_plugins herdr_install_integrations herdr_reset_xdg_config_home herdr_apply
