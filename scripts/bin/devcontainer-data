@@ -14,7 +14,7 @@ source "$BOOTSTRAP_LIB_DIR/loader.sh"
 
 # cli_usage: logs the supported command syntax
 cli_usage() {
-	log_info 'Usage: devcontainer-data {list|status|path <id>|repair|reset <id> [--yes]|update herdr [--replace [--yes]]|interactive}'
+	log_info 'Usage: devcontainer-data {list|status [--json]|path <id>|repair|reset <id> [--yes]|update herdr [--replace [--yes]]|interactive}'
 }
 
 # cli_category_fields <category_id>: prints scope, relative path, label, identity, resettable and Herdr integration, joined by unit separators with empty fields kept
@@ -22,15 +22,9 @@ cli_category_fields() {
 	inventory_fields all "$1" scope relativePath label identity resettable herdrIntegration
 }
 
-# cli_link_problem <category_id>: prints what is wrong with the category's managed link, naming the path and its expected target
-# Returns: 1 when the link is in place or the category has no managed link.
-# Notes: a broken link makes the tool that owns the path lose its configuration, which
-#   its status command reports as "not authenticated", so callers check this first.
-cli_link_problem() {
-	local category_id="$1" state destination source_path
-
-	state=$(persistent_data_link_state "$category_id")
-	[[ "$state" == 'ok' || "$state" == 'none' ]] && return 1
+# cli_link_problem_message <category_id> <state>: prints the managed-link diagnostic for a non-healthy state
+cli_link_problem_message() {
+	local category_id="$1" state="$2" destination source_path
 
 	destination=$(persistent_data_link_path "$category_id")
 	source_path=$(persistent_data_category_path "$category_id")
@@ -38,7 +32,19 @@ cli_link_problem() {
 	missing) printf 'managed link missing: %s -> %s, run: devcontainer-data repair\n' "$destination" "$source_path" ;;
 	foreign) printf 'managed link points at %s, expected %s -> %s\n' "$(readlink "$destination")" "$destination" "$source_path" ;;
 	unmanaged) printf 'managed link blocked by unmanaged data: %s, expected -> %s\n' "$destination" "$source_path" ;;
+	*) return 1 ;;
 	esac
+}
+
+# cli_link_problem <category_id>: prints what is wrong with the category's managed link, naming the path and its expected target
+# Returns: 1 when the link is in place or the category has no managed link.
+# Notes: callers check a broken link before authentication so its repair action is not mistaken for a login action.
+cli_link_problem() {
+	local category_id="$1" state
+
+	state=$(persistent_data_link_state "$category_id")
+	[[ "$state" == 'ok' || "$state" == 'none' ]] && return 1
+	cli_link_problem_message "$category_id" "$state"
 }
 
 # cli_category_status <probe>: prints the identity the probe reports, "not authenticated", or "directory present" when there is no probe
@@ -311,30 +317,167 @@ cli_list() {
 	done < <(inventory_ids all)
 }
 
-# cli_status: prints every category's path, availability, mount and status, tab-separated
-cli_status() {
-	local category_id fields scope relative_path probe root category_path available mounted status link_problem
+# cli_status_rows: prints the category status records used by both status renderers, unit-separated
+cli_status_rows() {
+	local category_id fields scope relative_path label probe login_hint root category_path available mounted
+	local link health detail action_label action_command
 
 	while IFS= read -r category_id; do
-		fields=$(cli_category_fields "$category_id")
-		IFS=$'\x1f' read -r scope relative_path _ probe _ <<<"$fields"
+		fields=$(inventory_fields all "$category_id" scope relativePath label identity loginHint)
+		IFS=$'\x1f' read -r scope relative_path label probe login_hint <<<"$fields"
 		root=$(persistent_data_root "$scope")
 		category_path="$root/$relative_path"
 		available=false
 		mounted=false
+		link=''
+		health='ok'
+		detail=''
+		action_label=''
+		action_command=''
 		[[ -d "$category_path" ]] && available=true
 		mountpoint -q "$root" && mounted=true
 		if [[ "$mounted" != true ]]; then
-			status='not mounted'
+			health='error'
+			detail='not mounted'
+			action_label="Mount ${scope} root"
 		elif [[ "$available" != true ]]; then
-			status='unavailable'
-		elif link_problem=$(cli_link_problem "$category_id"); then
-			status="$link_problem"
+			health='error'
+			detail='unavailable'
+			action_label='Restore category directory'
 		else
-			status=$(cli_category_status "$probe")
+			link=$(persistent_data_link_state "$category_id")
+			case "$link" in
+			ok | none)
+				detail=$(cli_category_status "$probe")
+				if [[ "$detail" == 'directory present' ]]; then
+					detail='available'
+				elif [[ "$detail" != authenticated* ]]; then
+					health='warning'
+					action_label='Log in'
+					action_command="$login_hint"
+				fi
+				;;
+			missing)
+				health='error'
+				detail=$(cli_link_problem_message "$category_id" "$link")
+				action_label='Repair managed link'
+				action_command='devcontainer-data repair'
+				;;
+			foreign | unmanaged)
+				health='error'
+				detail=$(cli_link_problem_message "$category_id" "$link")
+				action_label='Managed link requires manual repair'
+				;;
+			esac
 		fi
-		printf '%s\t%s\tavailable=%s\tmounted=%s\t%s\n' "$category_id" "$category_path" "$available" "$mounted" "$status"
+		printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
+			"$category_id" "$label" "$scope" "$relative_path" "$category_path" "$mounted" "$available" \
+			"$link" "$health" "$detail" "$action_label" "$action_command"
 	done < <(inventory_ids all)
+}
+
+# cli_status_symbol <health> <color_enabled>: prints the status symbol, optionally colored for a human report
+cli_status_symbol() {
+	local health="$1" color_enabled="$2" symbol color=''
+
+	case "$health" in
+	ok) symbol='✓'; color='\033[0;32m' ;;
+	warning) symbol='!'; color='\033[0;33m' ;;
+	error) symbol='✗'; color='\033[0;31m' ;;
+	esac
+	if [[ "$color_enabled" == true ]]; then
+		printf '%b%s\033[0m' "$color" "$symbol"
+	else
+		printf '%s' "$symbol"
+	fi
+}
+
+# cli_status_table <rows>: prints a human-readable report from unit-separated category status records
+cli_status_table() {
+	local rows="$1" shared_root project_root category_id label scope relative_path category_path mounted available
+	local link health detail action_label action_command action i color_enabled=false
+	local status_width=6 item_width=4 scope_width=5 path_width=4 health_width=6 action_width=6
+	local -a labels=() scopes=() relative_paths=() healths=() details=() actions=()
+
+	shared_root=$(persistent_data_root shared)
+	project_root=$(persistent_data_root project)
+	[[ -t 1 && ! -v NO_COLOR ]] && color_enabled=true
+	while IFS=$'\x1f' read -r category_id label scope relative_path category_path mounted available link health detail action_label action_command; do
+		[[ -n "$category_id" ]] || continue
+		action="$action_label"
+		[[ -n "$action_command" ]] && action+=" : $action_command"
+		labels+=("$label")
+		scopes+=("$scope")
+		relative_paths+=("$relative_path")
+		healths+=("$health")
+		details+=("$detail")
+		actions+=("$action")
+		((${#label} > item_width)) && item_width=${#label}
+		((${#scope} > scope_width)) && scope_width=${#scope}
+		((${#relative_path} > path_width)) && path_width=${#relative_path}
+		((${#detail} > health_width)) && health_width=${#detail}
+		((${#action} > action_width)) && action_width=${#action}
+	done <<<"$rows"
+
+	printf 'Shared mount root: %s\nProject mount root: %s\n\n' "$shared_root" "$project_root"
+	printf '%-*s  %-*s  %-*s  %-*s  %-*s  %s\n' \
+		"$status_width" 'STATUS' "$item_width" 'ITEM' "$scope_width" 'SCOPE' "$path_width" 'PATH' "$health_width" 'HEALTH' 'ACTION'
+	for i in "${!labels[@]}"; do
+		printf '%s%*s  %-*s  %-*s  %-*s  %-*s  %s\n' \
+			"$(cli_status_symbol "${healths[$i]}" "$color_enabled")" "$((status_width - 1))" '' "$item_width" "${labels[$i]}" \
+			"$scope_width" "${scopes[$i]}" "$path_width" "${relative_paths[$i]}" \
+			"$health_width" "${details[$i]}" "${actions[$i]}"
+	done
+}
+
+# cli_status_json <rows>: prints one JSON status report without terminal formatting
+cli_status_json() {
+	local rows="$1" category_id label scope relative_path category_path mounted available link health detail
+	local action_label action_command action category_json categories='' overall='ok' first=true
+
+	while IFS=$'\x1f' read -r category_id label scope relative_path category_path mounted available link health detail action_label action_command; do
+		[[ -n "$category_id" ]] || continue
+		if [[ "$health" == 'error' ]]; then
+			overall='error'
+		elif [[ "$health" == 'warning' && "$overall" == 'ok' ]]; then
+			overall='warning'
+		fi
+		if [[ -n "$action_label" ]]; then
+			action="{\"label\":$(json_quote "$action_label"),\"command\":"
+			if [[ -n "$action_command" ]]; then
+				action+="$(json_quote "$action_command")"
+			else
+				action+='null'
+			fi
+			action+='}'
+		else
+			action='null'
+		fi
+		if [[ -n "$link" ]]; then
+			link=$(json_quote "$link")
+		else
+			link='null'
+		fi
+		category_json="{\"id\":$(json_quote "$category_id"),\"scope\":$(json_quote "$scope"),\"path\":$(json_quote "$category_path"),\"mounted\":$mounted,\"available\":$available,\"link\":$link,\"health\":$(json_quote "$health"),\"action\":$action}"
+		if [[ "$first" == true ]]; then
+			first=false
+		else
+			categories+=','
+		fi
+		categories+="$category_json"
+	done <<<"$rows"
+	printf '{"version":1,"overall":%s,"categories":[%s]}\n' "$(json_quote "$overall")" "$categories"
+}
+
+# cli_status [table|json]: collects status once and renders it for people or automation
+cli_status() {
+	local format="${1:-table}" rows
+
+	rows=$(cli_status_rows)
+	case "$format" in
+	table) cli_status_table "$rows" ;;
+	json) cli_status_json "$rows" ;;
+	esac
 }
 
 # cli_repair: re-creates every managed link that is not in place
@@ -489,7 +632,14 @@ cli_main() {
 
 	case "$subcommand" in
 	list) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_list ;;
-	status) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_status ;;
+	status)
+		[[ "$#" -eq 1 || ( "$#" -eq 2 && "$2" == '--json' ) ]] || { cli_usage; return 1; }
+		if [[ "${2:-}" == '--json' ]]; then
+			cli_status json
+		else
+			cli_status
+		fi
+		;;
 	path) [[ "$#" -eq 2 ]] || { cli_usage; return 1; }; cli_path "$2" ;;
 	repair) [[ "$#" -eq 1 ]] || { cli_usage; return 1; }; cli_repair ;;
 	reset)
