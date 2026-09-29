@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Bootstraps the installer package from the public scripts repository: downloads every
 # file the entry scripts' import graph reaches into a staging tree, verifies the tree,
-# then copies it live and installs the npm runtime dependencies. A fetch or verification
+# then copies it live and installs the pnpm runtime dependencies. A fetch or verification
 # failure leaves the live installer directory untouched. It runs before the shared
 # logging library exists, so it logs straight to stderr.
 
@@ -20,7 +20,7 @@ readonly _SEED_ENTRYPOINTS=(
 )
 
 # why: required but unreachable from the import graph; sync-agent-assets.sh copies AGENTS.md out of this tree
-readonly _EXTRA_FILES=("package.json" "agents/templates/global/AGENTS.md")
+readonly _EXTRA_FILES=("package.json" "pnpm-lock.yaml" "agents/templates/global/AGENTS.md")
 
 readonly _RUNTIME_DEPS=("@inquirer/core" "@inquirer/prompts" "chalk" "consola")
 
@@ -208,15 +208,15 @@ verify_stage() {
 
 # ----- DEPENDENCIES -----------------------------------------------------------
 
-# install_dependencies <installer_dir>: runs npm install for production dependencies, showing its output only on failure, then exits unless every runtime dependency resolved
+# install_dependencies <installer_dir>: runs pnpm install for production dependencies, showing its output only on failure, then exits unless every runtime dependency resolved
 install_dependencies() {
 	local installer_dir="$1" log_file dep
 	log_file="$(mktemp)"
 
-	if ! npm install --omit=dev --no-audit --no-fund --no-package-lock --loglevel=error >"${log_file}" 2>&1; then
+	if ! corepack pnpm install --prod --frozen-lockfile --ignore-scripts >"${log_file}" 2>&1; then
 		cat "${log_file}" >&2
 		rm -f "${log_file}"
-		fail "npm install failed"
+		fail "pnpm install failed"
 	fi
 	rm -f "${log_file}"
 
@@ -289,7 +289,7 @@ main() {
 
 	command -v curl >/dev/null 2>&1 || fail "curl is required but was not found on PATH"
 	command -v node >/dev/null 2>&1 || fail "node is required but was not found on PATH"
-	command -v npm  >/dev/null 2>&1 || fail "npm is required but was not found on PATH"
+	command -v corepack >/dev/null 2>&1 || fail "corepack is required but was not found on PATH"
 
 	self_update "${base_url}" "${installer_dir}"
 
