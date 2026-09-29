@@ -54,6 +54,8 @@ source "$DEVCONTAINER_LIB_DIR/spinner.sh"
 source "$DEVCONTAINER_LIB_DIR/validation.sh"
 # shellcheck source=public/scripts/setup/lib/herdr.sh
 source "$DEVCONTAINER_LIB_DIR/herdr.sh"
+# shellcheck source=public/scripts/setup/lib/global-agent-assets.sh
+source "$DEVCONTAINER_LIB_DIR/global-agent-assets.sh"
 
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 

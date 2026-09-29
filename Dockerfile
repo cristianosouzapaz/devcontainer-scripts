@@ -5,7 +5,7 @@ FROM ${NODE_IMAGE}
 # ships only python3-minimal, which lacks json/socket).
 # hadolint ignore=DL3008
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl jq python3 \
+    && apt-get install -y --no-install-recommends ca-certificates coreutils curl jq python3 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PNPM_HOME=/root/.local/share/pnpm \

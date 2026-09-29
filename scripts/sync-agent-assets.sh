@@ -12,6 +12,7 @@ _SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 _CAPTURED=""
 _SCOPE_COUNT=0
+_SCOPE_OUTCOME='ok'
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
@@ -20,11 +21,21 @@ source "${_SCRIPT_DIR}/setup/lib/loader.sh"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# resolve_assets_ref: prints the git ref for first-party global assets: AGENT_ASSETS_REF, then SCRIPTS_REF, then main
-# Notes: AGENT_ASSETS_REF comes first so a project pinned to a feature branch through
-#   SCRIPTS_REF pushes that branch's assets into the shared volume only when it opts in.
+# resolve_assets_ref: prints the requested global-assets ref: AGENT_ASSETS_REF, then SCRIPTS_REF, then main
+# Notes: this is deliberately not persisted: refs are mutable input, while the resolved SHA is state.
 resolve_assets_ref() {
-	echo "${AGENT_ASSETS_REF:-${SCRIPTS_REF:-main}}"
+	printf '%s\n' "${AGENT_ASSETS_REF:-${SCRIPTS_REF:-main}}"
+}
+
+# resolve_assets_sha <ref>: resolves a requested ref once to the immutable commit SHA used by every installer download
+resolve_assets_sha() {
+	local requested_ref="$1" response sha
+
+	response=$(timeout --kill-after=2s 10s curl --fail --silent --show-error --location \
+		"https://api.github.com/repos/cristianosouzapaz/devcontainer-scripts/commits/${requested_ref}") || return 1
+	sha=$(jq -r '.sha // empty' <<<"$response") || return 1
+	[[ "$sha" =~ ^[a-f0-9]{40}$ ]] || return 1
+	printf '%s\n' "$sha"
 }
 
 # strip_ansi: copies stdin to stdout without ANSI escape sequences
@@ -125,17 +136,29 @@ count_label() {
 	printf '%s %s%s' "${n}" "${word}" "${suffix}"
 }
 
-# sync_scope <heading> <entry> <fatal_message> [slow]: runs one installer's --global entry and logs what it touched under the heading, exiting on failure
-# Notes: "slow" wraps the run in a spinner and checks the skills CLI refresh.
+# sync_scope <heading> <entry> <fatal_message> [slow] [tolerate]: runs one installer scope and exposes its stable outcome
+# Notes: third-party failures are nonfatal because existing installed assets remain usable;
+#   their partial outcome is persisted for diagnostics instead of being mistaken for success.
 sync_scope() {
-	local heading="$1" entry="$2" fatal="$3" slow="${4:-}"
+	local heading="$1" entry="$2" fatal="$3" slow="${4:-}" tolerance="${5:-}" rc=0
+	_SCOPE_OUTCOME='ok'
 	log_detail "${heading}"
 	if [[ "${slow}" == "slow" ]]; then start_spinner "Updating the shared skills store"; fi
-	run_captured node "${DEVCONTAINER_INSTALLER_DIR}/${entry}" --global || fail_with_captured "${fatal}"
+	run_captured node "${DEVCONTAINER_INSTALLER_DIR}/${entry}" --global || rc=$?
 	spinner_cleanup
+	if [[ "$rc" -ne 0 ]]; then
+		if [[ "$tolerance" != 'tolerate' ]]; then
+			fail_with_captured "${fatal}"
+		fi
+		_SCOPE_OUTCOME='partial'
+		emit_captured "${_CAPTURED}"
+		log_item_warning "${fatal}; retaining existing third-party assets"
+		return 0
+	fi
 	report_names "${_CAPTURED}"
 	if [[ "${slow}" == "slow" ]] && printf '%s\n' "${_CAPTURED}" | grep -q 'skills update -g failed'; then
 		log_item_warning "shared-store refresh reported nothing tracked (per-skill add already covered it)"
+		_SCOPE_OUTCOME='partial'
 	fi
 }
 
@@ -233,39 +256,46 @@ sync_working_agreement() {
 
 # ----- CORE -------------------------------------------------------------------
 
-# sync_agent_assets: fetches the installer, then runs every --global scope in order and logs a closing summary, exiting on a missing prerequisite or a failing step
-sync_agent_assets() {
-	local assets_ref started n_cmd n_local n_ext n_agreement
+# sync_agent_assets_locked: mutates global assets while the shared-data lock serializes all containers on the host
+sync_agent_assets_locked() {
+	local assets_ref source_sha started n_cmd n_local n_ext n_agreement state='complete'
 	setup_error_traps
 	started="$(date +%s)"
 
-	assets_ref="$(resolve_assets_ref)"
-
-	# why: logged before the prerequisite checks, so their detail lines nest under it
-	log_info "Syncing global agent assets · devcontainer-scripts@${assets_ref}"
-
+	# why: Prerequisites are local checks: fail before resolving a ref over the network.
 	check_command node || log_fatal "node is required to sync global agent assets"
 	check_command npx || log_warning "npx not found — third-party skill sync will report failures"
 	[[ -f "${DEVCONTAINER_INSTALLER_DIR}/install.sh" ]] || log_fatal "Installer not found at ${DEVCONTAINER_INSTALLER_DIR}/install.sh"
 
+	assets_ref="$(resolve_assets_ref)"
+	source_sha="$(resolve_assets_sha "$assets_ref")" || log_fatal "Could not resolve immutable source SHA for devcontainer-scripts@${assets_ref}"
+	log_info "Syncing global agent assets · devcontainer-scripts@${source_sha}"
+
 	mkdir -p "${HOME}/.agents/skills" "${HOME}/.claude/skills"
 
-	sync_installer "${assets_ref}"
+	sync_installer "${source_sha}"
 	sync_scope "First-party agent commands" "agents/index.js" "Global agent-command sync failed"
 	n_cmd="${_SCOPE_COUNT}"
 	sync_scope "First-party local skills" "skills/local/index.js" "Global local-skill sync failed"
 	n_local="${_SCOPE_COUNT}"
-	sync_scope "Third-party skills" "skills/index.js" "Global third-party skill sync failed" slow
+	sync_scope "Third-party skills" "skills/index.js" "Global third-party skill sync failed" slow tolerate
 	n_ext="${_SCOPE_COUNT}"
+	[[ "$_SCOPE_OUTCOME" == ok ]] || state='partial'
 	sync_working_agreement
 	n_agreement="${_SCOPE_COUNT}"
+	global_agent_assets_metadata_write "$assets_ref" "$source_sha" "$state" || log_fatal 'Could not record global agent asset sync state'
 
 	log_success "Global agent assets synced in $(( $(date +%s) - started ))s · $(count_label "${n_cmd}" "agent command"), $(count_label "${n_local}" "local skill"), $(count_label "${n_ext}" "third-party skill"), $(count_label "${n_agreement}" "adapter update")"
 }
 
-export -f resolve_assets_ref strip_ansi emit_captured run_captured report_warnings \
+# sync_agent_assets: public lock wrapper for all shared global asset mutation
+sync_agent_assets() {
+	with_shared_data_lock sync_agent_assets_locked "$@"
+}
+
+export -f resolve_assets_ref resolve_assets_sha strip_ansi emit_captured run_captured report_warnings \
 	fail_with_captured report_names count_label sync_installer sync_scope \
-	sync_file_if_changed sync_claude_adapter sync_working_agreement sync_agent_assets
+	sync_file_if_changed sync_claude_adapter sync_working_agreement sync_agent_assets_locked sync_agent_assets
 
 # ----- ENTRY POINT ------------------------------------------------------------
 
