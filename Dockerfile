@@ -18,17 +18,26 @@ ENV CLAUDE_CONFIG_DIR=/root/.claude \
 
 ARG SCRIPTS_REF="main"
 ARG SCRIPTS_REPO="cristianosouzapaz/devcontainer-scripts"
-ENV SCRIPTS_REF=${SCRIPTS_REF}
+ENV SCRIPTS_REF=${SCRIPTS_REF} \
+    SCRIPTS_REPO=${SCRIPTS_REPO}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Reject malformed fork coordinates before using the build argument in a GitHub URL.
+RUN node -e "process.exit(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,38}\\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(process.env.SCRIPTS_REPO || '') ? 0 : 1)"
 
 # Cache-buster for the scripts fetch RUN below, keyed to ${SCRIPTS_REF}'s commit.
 ADD https://api.github.com/repos/${SCRIPTS_REPO}/commits/${SCRIPTS_REF} /tmp/scripts.rev
 
-# Fetch the setup scripts and put the bin/ entrypoints on PATH.
+# Fetch the setup scripts from the immutable commit Docker cached above, then seed the
+# first release through the same root bootstrap used at runtime.
 RUN mkdir -p /tmp/dc-init \
     && node --input-type=module -e " \
-      const res = await fetch('https://github.com/${SCRIPTS_REPO}/archive/refs/heads/${SCRIPTS_REF}.tar.gz'); \
+      import {readFileSync} from 'node:fs'; \
+      const repo = process.env.SCRIPTS_REPO; \
+      const sha = JSON.parse(readFileSync('/tmp/scripts.rev', 'utf8')).sha; \
+      if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error('Invalid scripts SHA'); \
+      const res = await fetch('https://github.com/' + repo + '/archive/' + sha + '.tar.gz'); \
       if (!res.ok) throw new Error('Download failed: ' + res.status + ' ' + res.statusText); \
       const buf = Buffer.from(await res.arrayBuffer()); \
       const {spawnSync} = await import('child_process'); \
@@ -36,17 +45,12 @@ RUN mkdir -p /tmp/dc-init \
       if (r.status !== 0) throw new Error('tar failed: ' + (r.stderr || Buffer.alloc(0)).toString()); \
     " \
     && mv /tmp/dc-init/scripts /opt/devcontainer \
+    && SCRIPTS_REF="$(jq -r '.sha' /tmp/scripts.rev)" SCRIPTS_REPO="$SCRIPTS_REPO" bash /opt/devcontainer/installer/install.sh \
     && rm -rf /tmp/dc-init /tmp/scripts.rev \
     && find /opt/devcontainer -name "*.sh" -exec chmod +x {} + \
     && chmod +x /opt/devcontainer/bin/* \
     && install -m 0755 /opt/devcontainer/bin/* /usr/local/bin/ \
     && ln -sf /opt/devcontainer/bin/devcontainer-data /usr/local/bin/devcontainer-data
-
-# Install the installer UI's production dependencies from its manifest and lockfile.
-# Keep pnpm's build-only files outside the path persistent-data later manages.
-WORKDIR /opt/devcontainer/installer
-RUN PNPM_HOME=/tmp/pnpm-home corepack pnpm install --store-dir=/tmp/pnpm-store --prod --frozen-lockfile --ignore-scripts \
-    && rm -rf /tmp/pnpm-home /tmp/pnpm-store
 
 # Install herdr, verified against its published checksum. HERDR_VERSION is empty
 # by default (latest release); set it to pin a release and bust this layer.

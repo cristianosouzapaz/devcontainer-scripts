@@ -92,6 +92,14 @@ herdr_initialize_config() {
 	log_detail "Initialized Herdr configuration"
 }
 
+# herdr_bashrc_with_reset <bashrc_path> <asset>: prints the existing bashrc followed by the reset asset
+herdr_bashrc_with_reset() {
+	if [[ -e "$1" ]]; then
+		cat -- "$1" || return 1
+	fi
+	cat -- "$2"
+}
+
 # herdr_reset_xdg_config_home: appends the XDG_CONFIG_HOME pane-reset snippet to the system-wide bashrc, once
 # Notes: the public wrapper narrows XDG_CONFIG_HOME for the herdr server, and every
 #   pane it spawns inherits that value, which breaks XDG-aware tools such as gh run
@@ -115,7 +123,7 @@ herdr_reset_xdg_config_home() {
 		log_debug "Herdr XDG_CONFIG_HOME reset already present, skipping"
 		return 0
 	fi
-	cat "${asset}" >>"${bashrc_path}" || return 1
+	atomic_write "$bashrc_path" herdr_bashrc_with_reset "$bashrc_path" "$asset" || return 1
 	log_detail "Installed Herdr XDG_CONFIG_HOME pane reset"
 }
 

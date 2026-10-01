@@ -20,7 +20,9 @@ readonly DEVCONTAINER_MODULES_DIR="${DEVCONTAINER_SETUP_DIR}/modules"
 # shellcheck disable=SC2034 # consumed by modules/coding-agents.sh and lib/herdr.sh
 readonly DEVCONTAINER_ASSETS_DIR="${DEVCONTAINER_SETUP_DIR}/assets"
 # shellcheck disable=SC2034 # consumed by sync-agent-assets.sh
-readonly DEVCONTAINER_INSTALLER_DIR="${DEVCONTAINER_SCRIPTS_DIR}/installer"
+readonly DEVCONTAINER_INSTALLER_ROOT="${DEVCONTAINER_SCRIPTS_DIR}/installer"
+# shellcheck disable=SC2034 # runtime consumers must never fall back to the mutable bootstrap root
+readonly DEVCONTAINER_INSTALLER_DIR="${DEVCONTAINER_INSTALLER_ROOT}/current"
 # shellcheck disable=SC2034 # consumed by the Bats suite (entrypoints/, lib/loader, conventions/shellcheck)
 readonly DEVCONTAINER_BIN_DIR="${DEVCONTAINER_SCRIPTS_DIR}/bin"
 

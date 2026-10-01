@@ -27,12 +27,20 @@ resolve_assets_ref() {
 	printf '%s\n' "${AGENT_ASSETS_REF:-${SCRIPTS_REF:-main}}"
 }
 
+# resolve_assets_repo: prints the explicitly requested installer repository, defaulting to the public release source
+resolve_assets_repo() {
+	local scripts_repo="${SCRIPTS_REPO:-cristianosouzapaz/devcontainer-scripts}"
+	[[ "${scripts_repo}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,38}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$ ]] || return 1
+	printf '%s\n' "${scripts_repo}"
+}
+
 # resolve_assets_sha <ref>: resolves a requested ref once to the immutable commit SHA used by every installer download
 resolve_assets_sha() {
-	local requested_ref="$1" response sha
+	local requested_ref="$1" scripts_repo response sha
 
+	scripts_repo="$(resolve_assets_repo)" || return 1
 	response=$(timeout --kill-after=2s 10s curl --fail --silent --show-error --location \
-		"https://api.github.com/repos/cristianosouzapaz/devcontainer-scripts/commits/${requested_ref}") || return 1
+		"https://api.github.com/repos/${scripts_repo}/commits/${requested_ref}") || return 1
 	sha=$(jq -r '.sha // empty' <<<"$response") || return 1
 	[[ "$sha" =~ ^[a-f0-9]{40}$ ]] || return 1
 	printf '%s\n' "$sha"
@@ -119,10 +127,11 @@ report_names() {
 
 # sync_installer <assets_ref>: re-fetches the installer at the ref, exiting on failure
 sync_installer() {
-	local assets_ref="$1" files
-	start_spinner "Refreshing installer from devcontainer-scripts@${assets_ref}"
-	SCRIPTS_REF="${assets_ref}" INSTALLER_VERBOSE=1 run_captured bash "${DEVCONTAINER_INSTALLER_DIR}/install.sh" \
-		|| fail_with_captured "Installer fetch failed (devcontainer-scripts@${assets_ref})"
+	local assets_ref="$1" scripts_repo files
+	scripts_repo="$(resolve_assets_repo)" || log_fatal "Invalid SCRIPTS_REPO: ${SCRIPTS_REPO:-}"
+	start_spinner "Refreshing installer from ${scripts_repo}@${assets_ref}"
+	SCRIPTS_REF="${assets_ref}" SCRIPTS_REPO="${scripts_repo}" INSTALLER_VERBOSE=1 run_captured bash "${DEVCONTAINER_INSTALLER_ROOT}/install.sh" \
+		|| fail_with_captured "Installer fetch failed (${scripts_repo}@${assets_ref})"
 	spinner_cleanup
 	files="$(printf '%s\n' "${_CAPTURED}" | sed -nE 's/.*verified ([0-9]+) files.*/\1/p' | tail -n1)"
 	log_item_success "Installer refreshed${files:+ (${files} files verified)}"
@@ -258,22 +267,24 @@ sync_working_agreement() {
 
 # sync_agent_assets_locked: mutates global assets while the shared-data lock serializes all containers on the host
 sync_agent_assets_locked() {
-	local assets_ref source_sha started n_cmd n_local n_ext n_agreement state='complete'
+	local assets_ref scripts_repo source_sha started n_cmd n_local n_ext n_agreement state='complete'
 	setup_error_traps
 	started="$(date +%s)"
 
 	# why: Prerequisites are local checks: fail before resolving a ref over the network.
 	check_command node || log_fatal "node is required to sync global agent assets"
 	check_command npx || log_warning "npx not found — third-party skill sync will report failures"
-	[[ -f "${DEVCONTAINER_INSTALLER_DIR}/install.sh" ]] || log_fatal "Installer not found at ${DEVCONTAINER_INSTALLER_DIR}/install.sh"
+	[[ -f "${DEVCONTAINER_INSTALLER_ROOT}/install.sh" ]] || log_fatal "Installer bootstrap not found at ${DEVCONTAINER_INSTALLER_ROOT}/install.sh"
 
 	assets_ref="$(resolve_assets_ref)"
-	source_sha="$(resolve_assets_sha "$assets_ref")" || log_fatal "Could not resolve immutable source SHA for devcontainer-scripts@${assets_ref}"
-	log_info "Syncing global agent assets · devcontainer-scripts@${source_sha}"
+	scripts_repo="$(resolve_assets_repo)" || log_fatal "Invalid SCRIPTS_REPO: ${SCRIPTS_REPO:-}"
+	source_sha="$(resolve_assets_sha "$assets_ref")" || log_fatal "Could not resolve immutable source SHA for ${scripts_repo}@${assets_ref}"
+	log_info "Syncing global agent assets · ${scripts_repo}@${source_sha}"
 
 	mkdir -p "${HOME}/.agents/skills" "${HOME}/.claude/skills"
 
 	sync_installer "${source_sha}"
+	[[ -d "${DEVCONTAINER_INSTALLER_DIR}" ]] || log_fatal "Active installer release not found at ${DEVCONTAINER_INSTALLER_DIR}"
 	sync_scope "First-party agent commands" "agents/index.js" "Global agent-command sync failed"
 	n_cmd="${_SCOPE_COUNT}"
 	sync_scope "First-party local skills" "skills/local/index.js" "Global local-skill sync failed"
@@ -293,7 +304,7 @@ sync_agent_assets() {
 	with_shared_data_lock sync_agent_assets_locked "$@"
 }
 
-export -f resolve_assets_ref resolve_assets_sha strip_ansi emit_captured run_captured report_warnings \
+export -f resolve_assets_ref resolve_assets_repo resolve_assets_sha strip_ansi emit_captured run_captured report_warnings \
 	fail_with_captured report_names count_label sync_installer sync_scope \
 	sync_file_if_changed sync_claude_adapter sync_working_agreement sync_agent_assets_locked sync_agent_assets
 

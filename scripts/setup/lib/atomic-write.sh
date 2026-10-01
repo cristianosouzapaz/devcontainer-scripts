@@ -10,14 +10,14 @@ readonly _ATOMIC_WRITE_SH_LOADED=1
 # ----- FUNCTIONS --------------------------------------------------------------
 
 # atomic_write <target> <command...>: replaces <target> with the command's stdout in one rename
-# Returns: the command's status, or 1 for a refused target, a temp-file or a rename
-#   failure; the target is then untouched and no temp file is left behind.
+# Returns: the command's status, or 1 for a refused target, a temp-file, metadata or
+#   rename failure; the target is then untouched and no temp file is left behind.
 # Notes: the temp file is created next to the target, resolved through a symlink so
 #   the link survives: the targets live on persistent-data volumes, where a mv from
-#   /tmp would be a copy, not a rename. An existing target keeps its mode; a new one
-#   gets the mode a plain redirect would give it. Anything but a regular file (a
-#   device, a FIFO, a directory) is refused, never replaced. The command runs in a
-#   condition, so its own status decides, not errexit inside it.
+#   /tmp would be a copy, not a rename. An existing target keeps its owner, group
+#   and mode; a new one gets the mode a plain redirect would give it. Anything but a
+#   regular file (a device, a FIFO, a directory) is refused, never replaced. The
+#   command runs in a condition, so its own status decides, not errexit inside it.
 atomic_write() {
 	local target tmp_file rc=0
 
@@ -31,7 +31,10 @@ atomic_write() {
 	"$@" >"$tmp_file" || rc=$?
 	if [[ "$rc" -eq 0 ]]; then
 		if [[ -e "$target" ]]; then
-			chmod --reference="$target" -- "$tmp_file" || rc=1
+			chown --reference="$target" -- "$tmp_file" || rc=1
+			if [[ "$rc" -eq 0 ]]; then
+				chmod --reference="$target" -- "$tmp_file" || rc=1
+			fi
 		else
 			chmod "$(printf '%o' $(( 0666 & ~0$(umask) )))" -- "$tmp_file" || rc=1
 		fi
