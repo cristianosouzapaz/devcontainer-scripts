@@ -99,7 +99,6 @@ resolve_token_for_host() {
 configure_git_credentials() {
 	local -a repo_urls=("$@")
 	local -A seen_hosts=()
-	local url host scheme token credential_lines=""
 
 	if ! check_env_var GIT_USER; then
 		push_error "$DEVCONTAINER_VALIDATION_ERROR" "${LINENO}" "configure_git_credentials" "GIT_USER" "GIT_USER is not set"
@@ -117,25 +116,37 @@ configure_git_credentials() {
 	git config --global user.email "${GIT_EMAIL}"
 	git config --global user.name "${GIT_USER}"
 
-	for url in "${repo_urls[@]}"; do
-		host=$(url_host "$url")
-		[[ -n "$host" ]] || continue
-		[[ -v "seen_hosts[$host]" ]] && continue
-		seen_hosts["$host"]=1
+	if ! (
+		local url host scheme token staged_file="" has_credentials=false
+		trap '[[ -z "$staged_file" ]] || rm -f -- "$staged_file"' EXIT
 
-		token=$(resolve_token_for_host "$host")
-		if [[ -z "$token" ]]; then
-			log_item_warning "No GIT_CLONE_TOKEN resolvable for host '${host}' — credentials not written for it"
-			continue
+		for url in "${repo_urls[@]}"; do
+			host=$(url_host "$url")
+			[[ -n "$host" ]] || continue
+			[[ -v "seen_hosts[$host]" ]] && continue
+			seen_hosts["$host"]=1
+
+			token=$(resolve_token_for_host "$host")
+			if [[ -z "$token" ]]; then
+				log_item_warning "No GIT_CLONE_TOKEN resolvable for host '${host}' — credentials not written for it"
+				continue
+			fi
+
+			if [[ -z "$staged_file" ]]; then
+				staged_file=$(mktemp "${_GIT_CREDENTIALS_FILE}.XXXXXX") || exit 1
+			fi
+			scheme=$(url_scheme "$url")
+			printf 'protocol=%s\nhost=%s\nusername=%s\npassword=%s\n\n' "$scheme" "$host" "$GIT_USER" "$token" |
+				git credential-store --file "$staged_file" store || exit 1
+			has_credentials=true
+		done
+
+		if [[ "$has_credentials" == true ]]; then
+			chmod 600 -- "$staged_file" || exit 1
+			mv -f -- "$staged_file" "$_GIT_CREDENTIALS_FILE" || exit 1
 		fi
-
-		scheme=$(url_scheme "$url")
-		credential_lines+="${scheme}://${GIT_USER}:${token}@${host}"$'\n'
-	done
-
-	if [[ -n "$credential_lines" ]]; then
-		atomic_write "$_GIT_CREDENTIALS_FILE" printf '%s' "$credential_lines"
-		chmod 600 "$_GIT_CREDENTIALS_FILE"
+	); then
+		return 1
 	fi
 	log_item_success "Git credentials configured"
 }
