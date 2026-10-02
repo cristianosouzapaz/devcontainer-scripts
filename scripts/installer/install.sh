@@ -51,25 +51,19 @@ fail() {
 
 _STAGE_DIR=""
 _BOOTSTRAP_DIR=""
-_CURRENT_NEW_DIR=""
-_CURRENT_NEW_SOURCE_PATH=""
-_CURRENT_NEW_PATH=""
-_CURRENT_NEW_ID=""
-_CURRENT_NEW_OWNED=""
+_CURRENT_PROMOTION_PATH=""
+_CURRENT_PROMOTION_ID=""
+_CURRENT_PROMOTION_OWNED=""
 _PREPARING_MARKER=""
 
 # cleanup none: removes only process-owned temporary artifacts
 cleanup() {
-	local path
 	if [[ -n "${_STAGE_DIR}" && -d "${_STAGE_DIR}" ]]; then rm -rf -- "${_STAGE_DIR}" || :; fi
 	if [[ -n "${_BOOTSTRAP_DIR}" && -d "${_BOOTSTRAP_DIR}" ]]; then rm -rf -- "${_BOOTSTRAP_DIR}" || :; fi
-	if [[ -n "${_CURRENT_NEW_OWNED}" ]]; then
-		for path in "${_CURRENT_NEW_SOURCE_PATH}" "${_CURRENT_NEW_PATH}"; do
-			[[ -L "${path}" && "$(stat -c '%d:%i' -- "${path}")" == "${_CURRENT_NEW_ID}" ]] || continue
-			rm -f -- "${path}" || :
-		done
+	if [[ -n "${_CURRENT_PROMOTION_OWNED}" && -L "${_CURRENT_PROMOTION_PATH}" \
+		&& "$(stat -c '%d:%i' -- "${_CURRENT_PROMOTION_PATH}")" == "${_CURRENT_PROMOTION_ID}" ]]; then
+		rm -f -- "${_CURRENT_PROMOTION_PATH}" || :
 	fi
-	if [[ -n "${_CURRENT_NEW_DIR}" && -d "${_CURRENT_NEW_DIR}" ]]; then rmdir -- "${_CURRENT_NEW_DIR}" || :; fi
 	return 0
 }
 
@@ -393,6 +387,27 @@ cleanup_stale_candidates() {
 	done < <(find "${releases_dir}" -mindepth 1 -maxdepth 1 -type d -name '.candidate-*' -mmin "+${_STALE_CANDIDATE_MINUTES}" -print0)
 }
 
+# promotion_artifact_owner_is_gone artifact: succeeds only for a dead owner's well-formed promotion symlink
+promotion_artifact_owner_is_gone() {
+	local artifact="$1" name pid target
+	[[ -L "${artifact}" ]] || return 1
+	name="$(basename -- "${artifact}")"
+	[[ "${name}" =~ ^\.current\.promote\.([0-9]+)\.([0-9]+)$ ]] || return 1
+	pid="${BASH_REMATCH[1]}"
+	target="$(readlink -- "${artifact}")" || return 1
+	[[ "${target}" =~ ^releases/[a-f0-9]{40}$ && ! -d "/proc/${pid}" ]]
+}
+
+# cleanup_stale_promotion_artifacts installer_root: removes only dead-owner promotion symlinks while locked
+cleanup_stale_promotion_artifacts() {
+	local installer_root="$1" artifact
+	# why: naming and target checks prevent this recovery path from deleting unrelated root entries.
+	while IFS= read -r -d '' artifact; do
+		promotion_artifact_owner_is_gone "${artifact}" || continue
+		rm -f -- "${artifact}"
+	done < <(find "${installer_root}" -mindepth 1 -maxdepth 1 -type l -name '.current.promote.*' -print0)
+}
+
 # retain_releases releases_dir active_sha previous_sha: keeps only active and previous releases
 retain_releases() {
 	local releases_dir="$1" active_sha="$2" previous_sha="$3" release name
@@ -404,37 +419,32 @@ retain_releases() {
 	done
 }
 
-# activate_release installer_root sha: atomically selects a validated release
+# activate_release installer_root sha: atomically selects a validated release while the promotion lock is held
 activate_release() {
-	local installer_root="$1" sha="$2" releases_dir current_path current_new current_target current_new_source previous_sha=""
+	local installer_root="$1" sha="$2" releases_dir current_path current_new current_target previous_sha="" attempt=0
 	releases_dir="${installer_root}/releases"
 	current_path="${installer_root}/current"
-	current_new="${installer_root}/current.new"
-	if [[ -e "${current_new}" || -L "${current_new}" ]]; then
-		fail "foreign installer promotion artifact exists: ${current_new}"
-	fi
 	if [[ -L "${current_path}" ]]; then
 		current_target="$(readlink -- "${current_path}")"
 		if [[ "${current_target}" =~ ^releases/([a-f0-9]{40})$ ]]; then previous_sha="${BASH_REMATCH[1]}"; fi
 	fi
-	_CURRENT_NEW_DIR="$(mktemp -d "${installer_root}/.current.new.XXXXXX")"
-	current_new_source="${_CURRENT_NEW_DIR}/link"
-	_CURRENT_NEW_SOURCE_PATH="${current_new_source}"
-	_CURRENT_NEW_PATH="${current_new}"
-	ln -s "releases/${sha}" "${current_new_source}"
-	_CURRENT_NEW_ID="$(stat -c '%d:%i' -- "${current_new_source}")"
-	_CURRENT_NEW_OWNED=1
-	if ! mv -Tn -- "${current_new_source}" "${current_new}" || [[ -e "${current_new_source}" || -L "${current_new_source}" ]] \
-		|| [[ ! -L "${current_new}" || "$(stat -c '%d:%i' -- "${current_new}")" != "${_CURRENT_NEW_ID}" ]]; then
-		fail "foreign installer promotion artifact exists: ${current_new}"
-	fi
-	rmdir -- "${_CURRENT_NEW_DIR}"
-	_CURRENT_NEW_DIR=""
+	# why: successful exclusive creation makes this PID-labelled root symlink unique and recoverable after owner death.
+	while [[ "${attempt}" -lt 32 ]]; do
+		current_new="${installer_root}/.current.promote.$$.${RANDOM}"
+		if ln -sT -- "releases/${sha}" "${current_new}" 2>/dev/null && [[ -L "${current_new}" ]]; then
+			_CURRENT_PROMOTION_PATH="${current_new}"
+			_CURRENT_PROMOTION_ID="$(stat -c '%d:%i' -- "${current_new}")"
+			_CURRENT_PROMOTION_OWNED=1
+			break
+		fi
+		((attempt += 1))
+	done
+	[[ -n "${_CURRENT_PROMOTION_OWNED}" ]] || fail "could not create unique installer promotion artifact"
+	# why: both names are in the installer root, so this final rename is atomic and preserves current until it succeeds.
 	mv -Tf -- "${current_new}" "${current_path}"
-	_CURRENT_NEW_OWNED=""
-	_CURRENT_NEW_SOURCE_PATH=""
-	_CURRENT_NEW_PATH=""
-	_CURRENT_NEW_ID=""
+	_CURRENT_PROMOTION_OWNED=""
+	_CURRENT_PROMOTION_PATH=""
+	_CURRENT_PROMOTION_ID=""
 	retain_releases "${releases_dir}" "${sha}" "${previous_sha}"
 }
 
@@ -448,9 +458,7 @@ reuse_existing_release() {
 	exec {lock_fd}>"${lock_file}"
 	flock "${lock_fd}" || fail "could not acquire installer promotion lock"
 	cleanup_stale_candidates "${releases_dir}"
-	if [[ -e "${installer_root}/current.new" || -L "${installer_root}/current.new" ]]; then
-		fail "foreign installer promotion artifact exists: ${installer_root}/current.new"
-	fi
+	cleanup_stale_promotion_artifacts "${installer_root}"
 	if [[ ! -e "${release_dir}" && ! -L "${release_dir}" ]]; then
 		exec {lock_fd}>&-
 		return 2
@@ -470,9 +478,7 @@ promote_release() {
 	exec {lock_fd}>"${lock_file}"
 	flock "${lock_fd}" || fail "could not acquire installer promotion lock"
 	cleanup_stale_candidates "${releases_dir}"
-	if [[ -e "${installer_root}/current.new" || -L "${installer_root}/current.new" ]]; then
-		fail "foreign installer promotion artifact exists: ${installer_root}/current.new"
-	fi
+	cleanup_stale_promotion_artifacts "${installer_root}"
 	if [[ -e "${release_dir}" || -L "${release_dir}" ]]; then
 		clear_stale_owner_markers "${release_dir}" || fail "existing release owner marker is still active"
 		validate_release "${release_dir}" "${sha}" final || fail "refusing to overwrite invalid existing release ${sha}"
@@ -549,7 +555,7 @@ main() {
 
 export -f log warn fail cleanup download_file required_paths fetch_graph stage_valid verify_stage \
 	release_entries release_entry_hash safe_release_link write_release_proof validate_release install_dependencies self_update valid_scripts_repo resolve_scripts_sha \
-	installer_base_url owner_markers_are_gone clear_stale_owner_markers cleanup_stale_candidates retain_releases activate_release reuse_existing_release promote_release main
+	installer_base_url owner_markers_are_gone clear_stale_owner_markers cleanup_stale_candidates promotion_artifact_owner_is_gone cleanup_stale_promotion_artifacts retain_releases activate_release reuse_existing_release promote_release main
 
 # ----- ENTRY POINT ------------------------------------------------------------
 
