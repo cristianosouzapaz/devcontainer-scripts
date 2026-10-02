@@ -15,14 +15,6 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # why: the loader publishes the script tree anchors, so this is the only path spelled out here
 source "$SCRIPT_DIR/setup/lib/loader.sh"
 
-# ----- FUNCTIONS --------------------------------------------------------------
-
-# cleanup_temp_files: removes the devcontainer-* directories an interrupted installer run left in ${TMPDIR:-/tmp}
-cleanup_temp_files() {
-	rm -rf "${TMPDIR:-/tmp}"/devcontainer-* 2>/dev/null || true
-	return 0
-}
-
 # ----- CORE SETUP -------------------------------------------------------------
 
 # main: runs the full setup (error traps, environment, every module in dependency order, persistent-data summary), exiting when a module fails
@@ -30,7 +22,6 @@ main() {
 	local script_version="unknown" result errexit=false
 
 	setup_error_traps
-	register_cleanup cleanup_temp_files
 
 	[[ -f "$SCRIPT_DIR/VERSION" ]] && script_version="$(<"$SCRIPT_DIR/VERSION")"
 	log_info "Starting setup in $(pwd) - version ${script_version}"
@@ -58,7 +49,7 @@ main() {
 	log_success "Setup completed"
 }
 
-export -f cleanup_temp_files main
+export -f main
 
 # ----- ENTRY POINT ------------------------------------------------------------
 
