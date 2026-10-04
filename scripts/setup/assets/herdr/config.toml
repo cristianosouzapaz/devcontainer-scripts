@@ -44,3 +44,6 @@ position = "bottom-left"
 
 [terminal]
 new_cwd = "current"
+
+[worktrees]
+directory = "/workspace/.worktrees"
