@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euo pipefail
+
+# Refreshes the installer release, then hands every argument to its dispatcher.
+
+# ----- SHARED UTILITIES LOADING -----------------------------------------------
+
+# why: readlink -f, so a symlink on PATH still finds the script tree
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+BOOTSTRAP_LIB_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")/../setup/lib" && pwd)"
+source "$BOOTSTRAP_LIB_DIR/loader.sh"
+
+# ----- INSTALLER REFRESH ------------------------------------------------------
+
+# why: a release is validated before it is promoted, so an active one is safe to run when the refresh fails
+if ! bash "$DEVCONTAINER_INSTALLER_ROOT/install.sh"; then
+	if [[ -f "$DEVCONTAINER_INSTALLER_DIR/devcontainer-install.js" ]]; then
+		log_warning 'installer refresh failed, continuing with the active release'
+	else
+		log_error 'installer refresh failed and no installer release is active'
+		exit 1
+	fi
+fi
+
+# ----- DISPATCH ---------------------------------------------------------------
+
+DEVCONTAINER_SYNC_SCRIPT="$DEVCONTAINER_SCRIPTS_DIR/sync-agent-assets.sh" \
+	exec node "$DEVCONTAINER_INSTALLER_DIR/devcontainer-install.js" "$@"

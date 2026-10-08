@@ -50,7 +50,8 @@ RUN mkdir -p /tmp/dc-init \
     && find /opt/devcontainer -name "*.sh" -exec chmod +x {} + \
     && chmod +x /opt/devcontainer/bin/* \
     && install -m 0755 /opt/devcontainer/bin/* /usr/local/bin/ \
-    && ln -sf /opt/devcontainer/bin/devcontainer-data /usr/local/bin/devcontainer-data
+    && ln -sf /opt/devcontainer/bin/devcontainer-data /usr/local/bin/devcontainer-data \
+    && ln -sf /opt/devcontainer/bin/devcontainer-install /usr/local/bin/devcontainer-install
 
 # Install herdr, verified against its published checksum. HERDR_VERSION is empty
 # by default (latest release); set it to pin a release and bust this layer.

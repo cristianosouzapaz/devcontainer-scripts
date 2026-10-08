@@ -797,12 +797,12 @@ cli_health_collect() {
 	if [[ "${CLI_HEALTH_CATEGORY_READY[agents]}" != true ]]; then
 		for integration in metadata commands local-skills third-party agreement; do cli_health_blocked "global.assets.${integration}" 'agents storage unavailable'; done
 	elif ! metadata=$(global_agent_assets_metadata_read 2>/dev/null); then
-		for integration in metadata commands local-skills third-party agreement; do cli_health_add "global.assets.${integration}" warning 'global sync metadata unavailable' 'Sync global agent assets' "bash ${DEVCONTAINER_SCRIPTS_DIR}/sync-agent-assets.sh"; done
+		for integration in metadata commands local-skills third-party agreement; do cli_health_add "global.assets.${integration}" warning 'global sync metadata unavailable' 'Sync global agent assets' "devcontainer-install sync"; done
 	else
 		cli_health_add 'global.assets.metadata' ok "$(jq -r '"requested " + .requestedRef + ", resolved " + .resolvedRevision + " at " + .timestamp' <<<"$metadata")"
 		for integration in commands local-skills third-party agreement; do
 			if [[ "$(jq -r .state <<<"$metadata")" == partial && "$integration" == third-party ]]; then
-				cli_health_add "global.assets.${integration}" warning 'sync completed partially' 'Sync global agent assets' "bash ${DEVCONTAINER_SCRIPTS_DIR}/sync-agent-assets.sh"
+				cli_health_add "global.assets.${integration}" warning 'sync completed partially' 'Sync global agent assets' "devcontainer-install sync"
 			else
 				cli_health_add "global.assets.${integration}" ok 'sync complete'
 			fi
