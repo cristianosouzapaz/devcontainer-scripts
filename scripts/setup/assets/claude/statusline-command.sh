@@ -7,12 +7,6 @@
 
 input=$(cat)
 
-# why: usage reporting must never change or delay the developer's rendered status line
-plugin_root=$(herdr plugin list --plugin usagebar --json 2>/dev/null | jq -r '((if type == "array" then .[0] else .plugins[0] end).plugin_root // empty)' 2>/dev/null)
-if [[ -n "${plugin_root}" ]]; then
-    printf '%s' "${input}" | bash "${plugin_root}/bin/run-statusline.sh" >/dev/null 2>&1 || true
-fi
-
 readonly _COLOR_RESET=$'\033[0m'
 readonly _COLOR_DIM=$'\033[2m'
 readonly _COLOR_BOLD=$'\033[1m'
@@ -101,6 +95,13 @@ if [[ -n "${tokens_used}" ]] && [[ -n "${tokens_max}" ]]; then
     used_k=$(awk "BEGIN{printf \"%.0fk\", ${tokens_used}/1000}")
     max_k=$(awk  "BEGIN{printf \"%.0fk\", ${tokens_max}/1000}")
     token_label=" ${_COLOR_DIM}(${used_k}/${max_k})${_COLOR_RESET}"
+fi
+
+# why: the Herdr sidebar shows this pane's context usage; reporting must never change or delay the render
+if [[ "${HERDR_ENV:-}" == "1" ]] && [[ -n "${HERDR_PANE_ID:-}" ]] && command -v herdr >/dev/null 2>&1; then
+    context_token="⛁ ${pct_int}%"
+    [[ -n "${tokens_used}" ]] && context_token="${context_token} ($(awk "BEGIN{printf \"%.0f\", ${tokens_used}/1000}")k)"
+    herdr pane report-metadata "${HERDR_PANE_ID}" --source claude-context --token "context=${context_token}" >/dev/null 2>&1 || true
 fi
 
 ctx_segment="${bar_color}▕${bar_str}▏${_COLOR_RESET} ${bar_color}${_COLOR_BOLD}${pct_int}%${_COLOR_RESET}${token_label}"

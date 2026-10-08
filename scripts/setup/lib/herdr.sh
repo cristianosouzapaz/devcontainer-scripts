@@ -3,8 +3,8 @@
 readonly _HERDR_SH_LOADED=1
 
 # Herdr configuration helpers: config path, initial config, pane XDG reset,
-# plugin install, integration install, and the locked apply sequence. They live in lib/ because both
-# the herdr setup module and bin/devcontainer-data run them.
+# integration install, the Codex context hook seeding, and the locked apply sequence. They
+# live in lib/ because both the herdr setup module and bin/devcontainer-data run them.
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
@@ -136,58 +136,6 @@ herdr_require_command() {
 	return 1
 }
 
-# herdr_plugin_spec <source>: prints the owner/repo a plugin source installs from, lowercased
-# Notes: `plugin install` takes OWNER/REPO[/SUBDIR] while `plugin list` reports the owner
-#   and the repo only, so the subdirectory is dropped to compare the two. GitHub slugs are
-#   case-insensitive.
-herdr_plugin_spec() {
-	cut -d/ -f1,2 <<<"$1" | tr '[:upper:]' '[:lower:]'
-}
-
-# herdr_installed_plugins: prints the owner/repo spec of every plugin installed for the Herdr user, one per line
-# Notes: `plugin list --json` wraps its payload in an envelope, {"result":{"plugins":[…]}};
-#   a bare array and a top-level `plugins` key are accepted too. Returns non-zero when the
-#   output cannot be read as a plugin list at all, so that an unknown shape reinstalls
-#   loudly instead of silently reporting every plugin as missing.
-herdr_installed_plugins() {
-	local output plugins
-
-	output=$("$_HERDR_COMMAND" plugin list --json 2>/dev/null) || return 1
-	plugins=$(jq -c 'if type == "array" then .
-		elif type == "object" and has("plugins") then .plugins
-		elif type == "object" and (.result | type) == "object" and (.result | has("plugins")) then .result.plugins
-		else null end' <<<"$output" 2>/dev/null) || return 1
-	[[ -n "$plugins" && "$plugins" != 'null' ]] || return 1
-	jq -r '.[]? | select((.source.kind // "github") == "github")
-		| "\(.source.owner // "")/\(.source.repo // "")" | ascii_downcase' <<<"$plugins"
-}
-
-# herdr_install_plugins: installs each catalogued plugin that is not already installed for the Herdr user
-# Notes: a plugin is matched by the owner/repo of its asset `source` — the very string
-#   `plugin install` is given — so no second identifier has to agree with the one upstream
-#   publishes. The list is read once, before the loop, because an install changes it.
-herdr_install_plugins() {
-	local asset plugin_source plugin_spec installed assets
-
-	herdr_require_command || return 1
-	assets=$(inventory_assets categories herdr) || return 1
-	if ! installed=$(herdr_installed_plugins); then
-		log_warning "Could not read the installed Herdr plugins, installing every catalogued plugin"
-		installed=''
-	fi
-	while IFS= read -r asset; do
-		[[ -n "$asset" ]] || continue
-		[[ "$(jq -r '.type' <<<"$asset")" == 'package' ]] || continue
-		plugin_source=$(jq -r '.source' <<<"$asset")
-		plugin_spec=$(herdr_plugin_spec "$plugin_source")
-		if grep -qxF "$plugin_spec" <<<"$installed"; then
-			log_debug "Herdr plugin $plugin_spec already installed, skipping"
-			continue
-		fi
-		spinner_stream log_debug "$_HERDR_COMMAND" plugin install "$plugin_source" --yes || return 1
-	done <<<"$assets"
-}
-
 # herdr_install_integrations: installs each catalog agent's Herdr integration that is not already current
 # Notes: `herdr integration status` is read once and reports a current target as
 #   "<target>: current (vN) (<path>)"; a missing, outdated or unreadable status
@@ -215,20 +163,49 @@ herdr_install_integrations() {
 	done
 }
 
-# herdr_apply: installs the pane reset, then initializes the project config and installs Herdr integrations under their locks
+# herdr_seed_codex_context_hook: adds the Codex Stop hook that reports the context row to Herdr's hooks.json, once
+# Notes: the entry names a script shipped in the assets dir, so editing the script never
+#   changes the hook definition (Codex trusts a hook by a hash of it). Every other key and
+#   entry, such as Herdr's SessionStart, is kept; a file that already carries the entry is
+#   not rewritten, and one that is not valid JSON is left as it is.
+herdr_seed_codex_context_hook() {
+	local hooks_file command current updated
+
+	if [[ "$(inventory_fields agents codex herdrIntegration)" != 'true' ]]; then
+		log_debug "No Herdr integration declared for codex, skipping the context hook"
+		return 0
+	fi
+	hooks_file="$(persistent_data_category_path codex)/hooks.json" || return 1
+	command="bash '${DEVCONTAINER_ASSETS_DIR}/codex/herdr-context-hook.sh'"
+	if [[ -f "$hooks_file" ]] && ! jq -e . "$hooks_file" >/dev/null 2>&1; then
+		log_error "Codex hooks file is not valid JSON: $hooks_file"
+		return 1
+	fi
+	if [[ -f "$hooks_file" ]] && jq -e --arg c "$command" '[.hooks.Stop[]?.hooks[]? | select(.command == $c)] | length > 0' "$hooks_file" >/dev/null; then
+		log_debug "Codex context hook already present, skipping"
+		return 0
+	fi
+	[[ -f "$hooks_file" ]] && current=$(<"$hooks_file") || current='{}'
+	updated=$(jq --arg c "$command" '.hooks.Stop += [{hooks: [{type: "command", command: $c, timeout: 10}]}]' <<<"$current") || return 1
+	mkdir -p "$(dirname "$hooks_file")" || return 1
+	atomic_write "$hooks_file" printf '%s\n' "$updated" || return 1
+	log_detail "Added the Codex context hook to $hooks_file"
+}
+
+# herdr_apply: installs the pane reset, the project config, the Herdr integrations and the Codex context hook under their locks
 # Notes: fails fast when the Herdr CLI is missing, before any lock is taken. The pane
 #   reset targets the system-wide bashrc, outside the persistent-data model, so it
 #   takes no lock; the config is project data, so it takes the project lock; the
-#   catalogued plugins are global to the Herdr user and the integrations touch shared agent config,
-#   so both take the shared then project lock order.
+#   integrations and the Codex hook touch shared agent config, so they take the shared then
+#   project lock order.
 herdr_apply() {
 	herdr_require_command || return 1
 	herdr_reset_xdg_config_home || return 1
 	with_project_data_lock herdr_initialize_config || return 1
-	with_shared_data_lock with_project_data_lock herdr_install_plugins || return 1
-	with_shared_data_lock with_project_data_lock herdr_install_integrations
+	with_shared_data_lock with_project_data_lock herdr_install_integrations || return 1
+	with_shared_data_lock with_project_data_lock herdr_seed_codex_context_hook
 }
 
 export -f herdr_config_path herdr_template_path herdr_metadata_path herdr_validate_metadata_path herdr_write_managed_config \
 	herdr_require_command herdr_initialize_config \
-	herdr_install_plugins herdr_install_integrations herdr_reset_xdg_config_home herdr_apply
+	herdr_install_integrations herdr_seed_codex_context_hook herdr_reset_xdg_config_home herdr_apply

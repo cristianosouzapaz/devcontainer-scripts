@@ -1,0 +1,5 @@
+# why: the type-check reads only declaration files; no dependency needs its build script
+allowBuilds:
+  '@google/genai': false
+  esbuild: false
+  protobufjs: false

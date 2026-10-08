@@ -1,0 +1,10 @@
+{
+    "private": true,
+    "type": "module",
+    "packageManager": "pnpm@12.6.0",
+    "devDependencies": {
+        "@earendil-works/pi-coding-agent": "1.0.4",
+        "@types/node": "24.19.1",
+        "typescript": "7.0.2"
+    }
+}

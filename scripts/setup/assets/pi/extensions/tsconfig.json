@@ -1,0 +1,16 @@
+{
+    "extends": "../../../../installer/configs/templates/tsconfig.base.json",
+    "compilerOptions": {
+        "incremental": false,
+        "noEmit": true,
+        "types": [
+            "node"
+        ]
+    },
+    "include": [
+        "*.ts"
+    ],
+    "exclude": [
+        "node_modules"
+    ]
+}

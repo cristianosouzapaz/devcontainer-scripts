@@ -109,11 +109,6 @@
           "target": "config.toml"
         },
         {
-          "id": "usagebar",
-          "type": "package",
-          "source": "senna-lang/herdr-agent-usage"
-        },
-        {
           "id": "xdg-reset",
           "type": "append-once",
           "source": "herdr/xdg-reset.sh",
