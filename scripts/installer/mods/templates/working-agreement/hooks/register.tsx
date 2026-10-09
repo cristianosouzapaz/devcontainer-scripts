@@ -320,7 +320,7 @@ async function judgeWrite($: EngineInterface, s: Session, path: string): Promise
 // Without parsed words (a fallback invocation) the whole command stands in, as does the command for a heredoc fed as `--body-file -`.
 async function prBody($: EngineInterface, command: string, run: Invocation) {
   if (!run.isParsed) return command
-  const { args } = run
+  const { args, vars } = run
   const parts: string[] = []
   const at = { i: 0 }
   while (at.i < args.length) {
@@ -333,8 +333,10 @@ async function prBody($: EngineInterface, command: string, run: Invocation) {
     if (flag[1] === '--body' || flag[1] === '-b') parts.push(value)
     else if (value === '-') parts.push(command)
     else {
+      // Only plain $NAME and ${NAME} of variables assigned earlier in the line; any other reference stays as written.
+      const path = value.replace(/\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})/g, (ref, a, b) => vars[a ?? b] ?? ref)
       try {
-        parts.push(await $.fs.read(value))
+        parts.push(await $.fs.read(path))
       } catch {
         parts.push(command)
       }

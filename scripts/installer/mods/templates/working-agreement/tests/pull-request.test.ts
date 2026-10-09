@@ -251,6 +251,51 @@ test('gh pr edit that sets the body needs a Closes line for every declared issue
   expect((await $.tool.call(editCall(`-F ${root}/both.md`))).deny).toBeUndefined()
 })
 
+test('gh pr create and gh pr edit read --body-file from a variable assigned earlier in the command', async ($, on) => {
+  world(on, { branch: 'feat' }, { ...twoIssueCloseOut, files: { [`${root}/one.md`]: 'Closes #1', [`${root}/both.md`]: closes } })
+  expect((await $.tool.call(bashCall(`f=${root}/both.md && gh pr create --title t --body-file "$f"`))).deny).toBeUndefined()
+  expect((await $.tool.call(bashCall(`f=${root}/one.md && gh pr create --title t --body-file "$f"`))).deny).toContain('lacks Closes #2 —')
+  expect((await $.tool.call(bashCall(`f=${root}/both.md && gh pr edit 5 --body-file "$f"`))).deny).toBeUndefined()
+  expect((await $.tool.call(bashCall(`f=${root}/one.md && gh pr edit 5 --body-file "$f"`))).deny).toContain('lacks Closes #2 —')
+})
+
+test('a variable in the body-file path resolves for ${NAME}, -F and --body-file=', async ($, on) => {
+  world(on, { branch: 'feat' }, { ...twoIssueCloseOut, files: { [`${root}/one.md`]: 'Closes #1', [`${root}/both.md`]: closes } })
+  expect((await $.tool.call(bashCall(`f=${root}/both.md && gh pr edit 5 --body-file "\${f}"`))).deny).toBeUndefined()
+  expect((await $.tool.call(bashCall(`f=${root}/one.md && gh pr edit 5 --body-file "\${f}"`))).deny).toContain('lacks Closes #2 —')
+  expect((await $.tool.call(bashCall(`f=${root}/both.md && gh pr create --title t -F "$f"`))).deny).toBeUndefined()
+  expect((await $.tool.call(bashCall(`f=${root}/one.md && gh pr create --title t -F "$f"`))).deny).toContain('lacks Closes #2 —')
+  expect((await $.tool.call(bashCall(`f=${root}/both.md && gh pr edit 5 --body-file="$f"`))).deny).toBeUndefined()
+  expect((await $.tool.call(bashCall(`f=${root}/one.md && gh pr edit 5 --body-file="$f"`))).deny).toContain('lacks Closes #2 —')
+})
+
+test('a variable assigned before ; or a newline resolves the body file', async ($, on) => {
+  world(on, { branch: 'feat' }, { ...twoIssueCloseOut, files: { [`${root}/one.md`]: 'Closes #1', [`${root}/both.md`]: closes } })
+  expect((await $.tool.call(bashCall(`f=${root}/both.md; gh pr edit 5 --body-file "$f"`))).deny).toBeUndefined()
+  expect((await $.tool.call(bashCall(`f=${root}/one.md; gh pr edit 5 --body-file "$f"`))).deny).toContain('lacks Closes #2 —')
+  expect((await $.tool.call(bashCall(`f=${root}/both.md\ngh pr edit 5 --body-file "$f"`))).deny).toBeUndefined()
+  expect((await $.tool.call(bashCall(`f=${root}/one.md\ngh pr edit 5 --body-file "$f"`))).deny).toContain('lacks Closes #2 —')
+})
+
+test('a quoted assignment value is unquoted before the body file is read', async ($, on) => {
+  world(on, { branch: 'feat' }, { ...twoIssueCloseOut, files: { [`${root}/one.md`]: 'Closes #1', [`${root}/both.md`]: closes } })
+  expect((await $.tool.call(bashCall(`f="${root}/both.md" && gh pr edit 5 --body-file "$f"`))).deny).toBeUndefined()
+  expect((await $.tool.call(bashCall(`f='${root}/both.md' && gh pr edit 5 --body-file "$f"`))).deny).toBeUndefined()
+  expect((await $.tool.call(bashCall(`f="${root}/one.md" && gh pr edit 5 --body-file "$f"`))).deny).toContain('lacks Closes #2 —')
+})
+
+test('the last assignment before the body-file read decides which file is read', async ($, on) => {
+  world(on, { branch: 'feat' }, { ...twoIssueCloseOut, files: { [`${root}/one.md`]: 'Closes #1', [`${root}/both.md`]: closes } })
+  expect((await $.tool.call(bashCall(`f=${root}/one.md; f=${root}/both.md && gh pr edit 5 --body-file "$f"`))).deny).toBeUndefined()
+  expect((await $.tool.call(bashCall(`f=${root}/both.md; f=${root}/one.md && gh pr edit 5 --body-file "$f"`))).deny).toContain('lacks Closes #2 —')
+})
+
+test('an unassigned variable in the body-file path keeps the command text as the body and is denied', async ($, on) => {
+  world(on, { branch: 'feat' }, { ...twoIssueCloseOut, files: { [`${root}/one.md`]: 'Closes #1', [`${root}/both.md`]: closes } })
+  expect((await $.tool.call(bashCall('gh pr edit 5 --body-file "$f"'))).deny).toContain('lacks Closes')
+  expect((await $.tool.call(bashCall('gh pr create --title t --body-file "$f"'))).deny).toContain('lacks Closes')
+})
+
 test('gh pr edit that only changes a label is not checked for Closes lines', async ($, on) => {
   world(on, { branch: 'feat' }, twoIssueCloseOut)
   expect((await $.tool.call(editCall('--add-label x'))).deny).toBeUndefined()

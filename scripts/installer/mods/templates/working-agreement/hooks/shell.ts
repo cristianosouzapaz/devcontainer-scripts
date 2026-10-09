@@ -4,8 +4,11 @@ export interface Word { text: string; isRedirect?: boolean }
 // Where the scan of a command stands: the character it reads, the word it builds, and the open quote.
 interface Scan { i: number; word: string; isWord: boolean; isQuoted: boolean; quote: string | null }
 
-/** A command found in a parsed line: the words that matched and the words after them. */
-export interface ParsedInvocation { isParsed: true; lead: string; args: string[] }
+/**
+ * A command found in a parsed line: the words that matched, the words after them, and the variables that
+ * earlier segments of the line assigned (the last assignment wins).
+ */
+export interface ParsedInvocation { isParsed: true; lead: string; args: string[]; vars: Record<string, string> }
 
 /** A command found by matching the whole line, because the line could not be parsed: only the words that matched are known. */
 export interface FallbackInvocation { isParsed: false; lead: string }
@@ -205,8 +208,8 @@ function runsOf(text: string): string[][] | null {
  *
  * @param command - The command line.
  * @param pattern - The leading words as regular expression sources, with a space between words (e.g. `gh pr (?:create|edit)`).
- * @returns Each match with its leading words and the words after them; a line that cannot be parsed
- *   yields a fallback invocation when the pattern matches the whole line.
+ * @returns Each match with its leading words, the words after them and the variables assigned in earlier
+ *   segments; a line that cannot be parsed yields a fallback invocation when the pattern matches the whole line.
  */
 export function ranCommands(command: string, pattern: string): Invocation[] {
   const runs = runsOf(command)
@@ -215,8 +218,19 @@ export function ranCommands(command: string, pattern: string): Invocation[] {
     return m ? [{ lead: m[0].split(/\s+/).join(' '), isParsed: false }] : []
   }
   const lead = pattern.split(' ').map(w => new RegExp(`^(?:${w})$`))
-  return runs.flatMap(run => {
+  return runs.flatMap((run, n) => {
+    // Assignments in the same run do not count: `f=x gh ... "$f"` expands $f before the assignment.
+    const vars: Record<string, string> = Object.create(null)
+    const assignment = /^([A-Za-z_]\w*)=(.*)$/s
+    for (const earlier of runs.slice(0, n)) {
+      // A command-prefix assignment does not outlive its command, so only all-assignment runs count.
+      if (!earlier.every(w => assignment.test(w))) continue
+      for (const word of earlier) {
+        const m = assignment.exec(word)!
+        vars[m[1]!] = m[2]!
+      }
+    }
     const at = run.findIndex((_, i) => lead.every((re, k) => re.test(k ? run[i + k] ?? '' : program(run[i]!))))
-    return at < 0 ? [] : [{ isParsed: true, lead: [program(run[at]!), ...run.slice(at + 1, at + lead.length)].join(' '), args: run.slice(at + lead.length) }]
+    return at < 0 ? [] : [{ isParsed: true, lead: [program(run[at]!), ...run.slice(at + 1, at + lead.length)].join(' '), args: run.slice(at + lead.length), vars }]
   })
 }
