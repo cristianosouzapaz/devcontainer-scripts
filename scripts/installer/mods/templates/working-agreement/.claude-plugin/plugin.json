@@ -1,0 +1,14 @@
+{
+  "name": "working-agreement",
+  "version": "0.4.2",
+  "description": "Enforces and shows the AGENTS.md work flows",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "handoffTokens": {
+      "type": "number",
+      "title": "Handoff threshold (tokens)",
+      "description": "Context size, in tokens, from which the Flow pane offers Continue in new session",
+      "default": 150000
+    }
+  }
+}

@@ -222,11 +222,10 @@ sync_working_agreement() {
 	log_detail "Personal working agreement"
 
 	result="$(sync_file_if_changed "${canonical}" "${HOME}/.agents/AGENTS.md")"
-	# shellcheck disable=SC2088  # literal "~/" is intentional in this user-facing message, not a path to expand
 	if [[ "${result}" == "unchanged" ]]; then
-		log_item_success "~/.agents/AGENTS.md already up to date"
+		log_item_success "Working agreement (~/.agents/AGENTS.md) already up to date"
 	else
-		log_item_success "~/.agents/AGENTS.md installed"
+		log_item_success "Working agreement (~/.agents/AGENTS.md) installed"
 		_SCOPE_COUNT=$(( _SCOPE_COUNT + 1 ))
 	fi
 
@@ -263,6 +262,57 @@ sync_working_agreement() {
 	fi
 }
 
+# mod_differs <src> <dest>: succeeds when the mod folders differ, ignoring the .claude-plugin/types path Claude Code writes on every load
+# Notes: filtered on diff's report rather than with -x, which matches a basename anywhere
+#   and would also hide the mod's tracked top-level types/.
+mod_differs() {
+	local report
+	report="$(diff -rq -- "$1" "$2" 2>&1 | grep -vF -e '.claude-plugin: types' -e '.claude-plugin/types' || true)"
+	[[ -n "${report}" ]]
+}
+
+# sync_working_agreement_mod: installs the working-agreement mod to ~/.agents/mods/working-agreement, links it from ~/.claude/skills, and sets _SCOPE_COUNT to the number of changes
+# Notes: a changed copy is staged beside the destination and swapped in by rename, so a
+#   partial copy is never visible there. A missing source is fatal, like a missing
+#   installer. An entry at the link path that is not the expected link is warned about and
+#   left untouched. Claude Code's settings are never read or written: the mod's
+#   enable state lives there.
+sync_working_agreement_mod() {
+	local src="${DEVCONTAINER_INSTALLER_DIR}/mods/templates/working-agreement" dest="${HOME}/.agents/mods/working-agreement"
+	local link="${HOME}/.claude/skills/working-agreement" stage old version
+	_SCOPE_COUNT=0
+
+	log_detail "Working-agreement mod"
+	[[ -d "${src}" ]] || log_fatal "Working-agreement mod not found at ${src}"
+	version="$(jq -er '.version' "${src}/.claude-plugin/plugin.json" 2>/dev/null)" \
+		|| log_fatal "Working-agreement mod manifest missing or invalid: ${src}/.claude-plugin/plugin.json"
+
+	if [[ -d "${dest}" ]] && ! mod_differs "${src}" "${dest}"; then
+		log_item_success "Working-agreement mod (~/.agents/mods/working-agreement) already up to date (v${version})"
+	else
+		mkdir -p "${dest%/*}"
+		rm -rf -- "${dest}".new.* "${dest}".old.*
+		stage="$(mktemp -d "${dest}.new.XXXXXX")"
+		old="${dest}.old.${stage##*.}"
+		cp -a -- "${src}/." "${stage}/" || { rm -rf -- "${stage}"; log_fatal "Could not copy the working-agreement mod to ${stage}"; }
+		if [[ -d "${dest}" ]]; then mv -- "${dest}" "${old}"; fi
+		mv -- "${stage}" "${dest}"
+		rm -rf -- "${old}"
+		log_item_success "Working-agreement mod (~/.agents/mods/working-agreement) installed (v${version})"
+		_SCOPE_COUNT=$(( _SCOPE_COUNT + 1 ))
+	fi
+
+	if [[ -L "${link}" && "$(readlink -- "${link}")" == "${dest}" ]]; then
+		log_item_success "Claude mod link (~/.claude/skills/working-agreement) already up to date"
+	elif [[ -e "${link}" || -L "${link}" ]]; then
+		log_item_warning "Claude mod link skipped — ~/.claude/skills/working-agreement already exists and is not the expected link"
+	else
+		ln -s -- "${dest}" "${link}"
+		log_item_success "Claude mod link (~/.claude/skills/working-agreement) created"
+		_SCOPE_COUNT=$(( _SCOPE_COUNT + 1 ))
+	fi
+}
+
 # ----- CORE -------------------------------------------------------------------
 
 # sync_agent_assets_locked: mutates global assets while the shared-data lock serializes all containers on the host
@@ -294,6 +344,8 @@ sync_agent_assets_locked() {
 	[[ "$_SCOPE_OUTCOME" == ok ]] || state='partial'
 	sync_working_agreement
 	n_agreement="${_SCOPE_COUNT}"
+	sync_working_agreement_mod
+	n_agreement=$(( n_agreement + _SCOPE_COUNT ))
 	global_agent_assets_metadata_write "$assets_ref" "$source_sha" "$state" || log_fatal 'Could not record global agent asset sync state'
 
 	log_success "Global agent assets synced in $(( $(date +%s) - started ))s · $(count_label "${n_cmd}" "agent command"), $(count_label "${n_local}" "local skill"), $(count_label "${n_ext}" "third-party skill"), $(count_label "${n_agreement}" "adapter update")"
@@ -306,7 +358,7 @@ sync_agent_assets() {
 
 export -f resolve_assets_ref resolve_assets_repo resolve_assets_sha strip_ansi emit_captured run_captured report_warnings \
 	fail_with_captured report_names count_label sync_installer sync_scope \
-	sync_file_if_changed sync_claude_adapter sync_working_agreement sync_agent_assets_locked sync_agent_assets
+	sync_file_if_changed sync_claude_adapter sync_working_agreement mod_differs sync_working_agreement_mod sync_agent_assets_locked sync_agent_assets
 
 # ----- ENTRY POINT ------------------------------------------------------------
 

@@ -49,10 +49,22 @@ Reproduce and isolate before changing anything (`diagnosing-bugs`). Reports that
 arrive raw get sorted first (`triage`).
 
 **Close out** — the work is done.
-Write the commits (`generate-commit`), then open the PR (`create-pr`). The PR
+Write the commits (`generate-commit`), then open or update the PR with
+`create-pr`: a PR already open on the branch is updated, not duplicated. The PR
 body must carry a `Closes #<n>` line for every issue the branch resolves, so the
 tracker does not accumulate finished work. A branch may close several issues —
 one branch per issue is not required. Branch naming is free.
+
+Two more flows are never chosen by the agent: the user declares them.
+
+**Follow-up** — more work on an issue whose PR already exists. Write the code,
+verify it, commit (`generate-commit`), then push to the open PR and update it
+with `create-pr` — or, once that PR is merged, open a new one that refs the
+issue.
+
+**Trivial change** — work that needs no issue (see above). Make the change,
+verify it, commit, then open a PR with no `Closes` line, or push to the PR
+already open on the branch, leaving its body alone.
 
 **One unit of work per session.** When a ticket or a flow completes, say so and
 stop. The next unit starts in a fresh session, from its issue. If this session
@@ -61,7 +73,8 @@ out, work interrupted mid-way — tell the user to run `/handoff` before clearin
 
 **Writing code is not a flow, it is a constant.** Whenever code gets written, in
 any flow, take the laziest solution that actually works (`ponytail`). A ticket
-that is ready goes straight to code — there is no separate build step.
+that is ready goes straight to code — there is no separate build step. Code is
+written on a branch, never on the default branch: create it before the first write.
 
 **Edit the source, never a copy of it.** Before editing a file, establish whether
 it is the source or something produced from one: build output, generated code,

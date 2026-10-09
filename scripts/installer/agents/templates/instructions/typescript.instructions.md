@@ -6,6 +6,12 @@ applyTo: "**/*.{ts,tsx}"
 
 # TypeScript Rules
 
+## Scope and Structure
+
+- **S1:** Each TypeScript file MUST have one primary responsibility.
+- **S2:** A file's top-level declarations MUST appear in this order: imports, then types (interfaces and type aliases), then constants, then functions.
+- **S3:** Functions defined as `const` arrow functions MUST be placed with the functions, not with the constants.
+
 ## Naming
 
 - **N1:** Type, interface, class, and enum names MUST use PascalCase.
@@ -21,7 +27,7 @@ applyTo: "**/*.{ts,tsx}"
 - **C5:** Values with unknown runtime shapes MUST use `unknown` until explicitly narrowed.
 - **C6:** TypeScript code MUST NOT use `any`.
 - **C7:** Optional properties MUST represent values that callers may omit.
-- **C8:** Variables that are not reassigned MUST use `const`.
+- **C8:** Bindings MUST use `const`; TypeScript code MUST NOT use `let` or `var`.
 - **C9:** Publicly exported functions MUST declare explicit return types.
 
 ## Behavior and Reliability

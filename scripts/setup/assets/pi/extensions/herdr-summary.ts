@@ -37,7 +37,7 @@ async function report(paneId: string, source: string, args: string[]): Promise<v
  *
  * @param pi Pi's extension API.
  */
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI): void {
   const paneId = env["HERDR_PANE_ID"];
   if (env["HERDR_ENV"] !== "1" || !paneId) return;
 
