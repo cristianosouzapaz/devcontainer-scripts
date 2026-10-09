@@ -19,7 +19,7 @@ export interface Checkout { branch: string; isDirty?: boolean; tree?: string; ah
  * `verifyFile` is the raw text of the repository's `.agents/working-agreement.json` (absent when omitted),
  * `isLoggedOut` makes every gh call fail as gh does with no login, and `isRepoBroken` makes `session.repo` throw,
  * `prView` is what every `gh pr view` answers, read at each call; without it the call prints nothing,
- * `issueLabels` lists the labels gh reports for an issue, none when omitted,
+ * `issueLabels` lists the labels gh reports for an issue, none when omitted, read at each call like `isLoggedOut`, so a test can change either mid-way,
  * `workflow` gives the repository a GitHub Actions workflow run on that event, and `checks` lists the bucket of every check
  * `gh pr checks` reports, read at each call; without it no check is reported.
  */

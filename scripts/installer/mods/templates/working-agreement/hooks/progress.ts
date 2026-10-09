@@ -233,8 +233,9 @@ export function stepStates(def: FlowDef, s: Session, u: Unit, g: GitState | null
   const isDone = (st: Step): boolean => {
     // A test-exempt step (Diagnose) is done once its reproduction is written, not when its skill starts.
     if (st.exempt === 'tests') return ran(st) && !!u.tested
-    // An issue-producing step (Spec, Triage, Map) is done once its issue is written, not when its skill starts.
-    if (st.produces === 'issue') return ran(st) && !!u.produced?.includes(st.skill!)
+    // An issue-producing step (Spec, Triage, Map) follows the issue's labels on GitHub, not the command that wrote them;
+    // `produced` counts only while no declared issue has stored info, so once GitHub has answered the labels alone decide.
+    if (st.doneLabels) return ran(st) && ((!!u.produced?.includes(st.skill!) && s.issues.every(n => !s.info[n])) || s.issues.some(n => s.info[n]?.labels.some(l => st.doneLabels!.includes(l))))
     // The mod sees a skill start, never its end: a talk step is done once the next one has started.
     if (st.skill && !st.observe) {
       const later = talk.slice(talk.indexOf(st) + 1)

@@ -194,10 +194,14 @@ async function ghIssue($: EngineInterface, n: number): Promise<IssueLookup> {
   return { isFound: true, state: asString(j.state), title: asString(j.title), labels: asRecords(j.labels).map(l => asString(l.name)) }
 }
 
-// The issue-writing skill started this turn, or '' when none did.
-function issueSkill(): string {
-  return runtime.turnSkills.find(n => flowDefs.issueSkills.includes(n)) ?? ''
-}
+// A skill counts when it started this turn, or started earlier for the unit while its step is still open:
+// an interactive skill asks first, so its write lands in a later turn.
+const skillCounts = (p: Position | null, skill: string): boolean =>
+  runtime.turnSkills.includes(skill) ||
+  (!!p && p.u.skills.includes(skill) && p.states.some(st => st.step.skill === skill && st.state === 'current'))
+
+// Whether an issue-writing skill counts now.
+const hasIssueSkill = (p: Position | null): boolean => flowDefs.issueSkills.some(n => skillCounts(p, n))
 
 // The title and labels of an issue gh found.
 function issueInfo(issue: Issue): IssueInfo {
@@ -252,9 +256,11 @@ async function position($: EngineInterface, s: Session): Promise<Position | null
   return { def, u, g, states, current: states.find(st => st.state === 'current') ?? null, isVerified, verifyCmd, checks }
 }
 
-async function refresh($: EngineInterface, isQuiet = false) {
-  const s = await getSession($)
-  if (s.flow && !isQuiet) await syncPr($, s)
+// Skips the issue sync, which takes the lock: declare holds it and has just read its issues.
+async function refresh($: EngineInterface, isQuiet = false, isIssuesRead = false) {
+  const saved = await getSession($)
+  if (saved.flow && !isQuiet) await syncPr($, saved)
+  const s = saved.flow && !isQuiet && !isIssuesRead ? await syncIssues($, saved) : saved
   const p = await position($, s)
   if (!p) {
     if (await read($, view)) await update($, view, () => null)
@@ -366,7 +372,7 @@ async function judgeCall($: EngineInterface, tool: string, args: Record<string, 
   const verdicts = [...writes]
   const p = s.flow ? await position($, s) : null
 
-  if (ranCommands(command, 'gh issue create').length && !issueSkill()) {
+  if (ranCommands(command, 'gh issue create').length && !hasIssueSkill(p)) {
     verdicts.push(ask('gh issue create outside /to-spec or /triage', 'issues come from those skills: stop and ask the user to run one'))
   }
   if (p && ranCommands(command, 'git commit').length && p.verifyCmd && !p.isVerified && !p.u.overrides.some(o => o.step === 'verify')) {
@@ -441,7 +447,9 @@ async function declare($: EngineInterface, flow: string, issues: number[], by: F
   const start = flow === 'close-out' ? undefined : await head($)
   await eachUnit($, next, u => ({ ...u, skills: mergeSkills(u.skills, before), start: u.start ?? start }))
   await syncPr($, next, true)
-  await refresh($)
+  // This runs inside `serial`, which syncIssues would wait on.
+  runtime.issuesCheckedAt = await $.clock.now()
+  await refresh($, false, true)
   void openPane($)
   const p = (await position($, next))!
   const warn = gh === 'connected' ? '' : ` (GitHub ${gh}: issues not verified)`
@@ -467,6 +475,34 @@ async function syncPr($: EngineInterface, s: Session, force = false) {
     const pr: Pr | undefined = found && typeof found.number === 'number' ? { number: found.number, state: asString(found.state) } : undefined
     if (pr && (pr.number !== u.pr?.number || pr.state !== u.pr?.state)) await $.store.set(key, { ...u, pr: u.pr?.isCreated && pr.number === u.pr.number ? { ...pr, isCreated: true } : pr })
   }
+}
+
+// Reads each of the session's issues back from GitHub; an issue that cannot be read is left out, so the caller keeps its stored info.
+async function readIssues($: EngineInterface, s: Session): Promise<Record<string, IssueInfo>> {
+  const info: Record<string, IssueInfo> = {}
+  for (const n of s.issues) {
+    const issue = await ghIssue($, n)
+    if (issue.isFound) info[n] = issueInfo(issue)
+  }
+  return info
+}
+
+// Stores the declared issues' info as GitHub reports it, at most once a minute unless forced; returns the session as stored.
+// It must not run inside `serial`: the gh reads stay off the lock, and only the re-read, merge of `info` and write take it.
+async function syncIssues($: EngineInterface, s: Session, force = false): Promise<Session> {
+  const now = await $.clock.now()
+  if ((!force && now - runtime.issuesCheckedAt < 60000) || !s.issues.length) return s
+  runtime.issuesCheckedAt = now
+  if ((await ghStatus($)) !== 'connected') return s
+  const fresh = await readIssues($, s)
+  return serial(async () => {
+    const cur = await getSession($)
+    const info = { ...cur.info, ...fresh }
+    if (JSON.stringify(info) === JSON.stringify(cur.info)) return cur
+    const next = { ...cur, info }
+    await putSession($, next)
+    return next
+  })
 }
 
 async function followUp($: EngineInterface, n: number) {
@@ -660,35 +696,29 @@ async function openPrOn($: EngineInterface, branch: string): Promise<number> {
 async function observeBash($: EngineInterface, seen: Session, command: string, ran: ToolRun) {
   const s: Session = { ...seen, info: { ...seen.info } }
   const { isOk, stdout, commit, push, pr } = bashOutcome(ran)
-  const skill = issueSkill()
+  const writesGh = ranCommands(command, 'gh issue (?:create|edit|comment)').length + ranCommands(command, 'gh pr (?:create|edit)').length > 0
+  const p = seen.flow && writesGh ? await position($, seen) : null
+  const isSkill = hasIssueSkill(p)
   const made = isOk && ranCommands(command, 'gh issue create').length ? stdout.match(/\/issues\/(\d+)/) : null
-  // A spec can also land on the declared issue itself (gh issue edit/comment).
-  const issueRuns = isOk && skill ? ranCommands(command, 'gh issue (?:edit|comment)') : []
+  // The outcome can also land on the declared issue itself (gh issue edit/comment).
+  const issueRuns = isOk ? ranCommands(command, 'gh issue (?:edit|comment)') : []
   const edited = s.issues.find(n => issueRuns.some(r => r.isParsed
     ? r.args.some(w => new RegExp(`(^|[#/])${n}$`).test(w))
     : new RegExp(`(^|[\\s#/])${n}(\\s|$)`).test(command)))
-  if (made && skill) {
+  if (made && isSkill) {
     const n = Number(made[1])
     if (!s.issues.length && !s.followUp) {
       const before = await getUnit($, await unitKey($, s))
       s.issues = [n]
-      const issue = await ghIssue($, n)
-      if (issue.isFound) s.info[n] = issueInfo(issue)
       const key = await unitKey($, s)
       const u = await getUnit($, key)
       await $.store.set(key, { ...u, ...before, skills: mergeSkills(u.skills, before.skills) })
     }
     s.output = true
   }
-  if (edited !== undefined) {
-    // The skill usually changes labels too (to-spec applies ready-for-agent): re-read them.
-    const issue = await ghIssue($, edited)
-    if (issue.isFound) s.info[edited] = issueInfo(issue)
-    s.output = true
-  }
-  if ((made && skill) || edited !== undefined) {
-    await eachUnit($, s, u => ({ ...u, produced: mergeSkills(u.produced ?? [], [skill]) }))
-  }
+  if (edited !== undefined && isSkill) s.output = true
+  // The labels decide the step: read the unit's issues back after any write to them.
+  if ((made && isSkill) || edited !== undefined) s.info = { ...s.info, ...await readIssues($, s) }
   if (commit) {
     s.output = true
     await eachUnit($, s, u => ({ ...u, committed: true }))
@@ -698,7 +728,7 @@ async function observeBash($: EngineInterface, seen: Session, command: string, r
     if (pr.action === 'created') s.prCreated = true
     await eachUnit($, s, u => ({ ...u, pr: pr.action === 'merged' ? { number: pr.number, state: 'MERGED' } : { number: pr.number, state: 'OPEN', isCreated: true } }))
   }
-  if (isOk && runtime.turnSkills.includes('create-pr') && ranCommands(command, 'gh pr (?:create|edit)').length && (await confirmPr($, s, stdout))) s.prCreated = true
+  if (isOk && skillCounts(p, 'create-pr') && ranCommands(command, 'gh pr (?:create|edit)').length && (await confirmPr($, s, stdout))) s.prCreated = true
   const verifyCmd = await verifyCommand($)
   if (verifyCmd && isOk && runsVerify(command, verifyCmd)) {
     const key = await treeKey($)
@@ -775,7 +805,10 @@ export const register: Register = (on, options) => {
       void openPane($)
     }
     $.clock.every(tickMs, async () => {
-      if ((await getSession($)).flow) await refresh($, true)
+      const s = await getSession($)
+      if (!s.flow) return
+      await syncIssues($, s)
+      await refresh($, true)
     })
     return next(e)
   })
@@ -792,7 +825,8 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     if (runtime.handoff && !runtime.handoff.armed && e.origin.kind === 'plugin' && e.origin.name === 'working-agreement' && e.text.startsWith('/handoff')) runtime.handoff.armed = true
-    const s = await getSession($)
+    const saved = await getSession($)
+    const s = saved.flow ? await syncIssues($, saved) : saved
     const p = s.flow ? await position($, s) : null
     if (isUnitFinished(s, p)) return next(e)
     const line = p

@@ -161,6 +161,7 @@ test('body flags and body text of another segment do not count', async ($, on) =
 test('only a real gh issue create is observed', async ($, on) => {
   world(on, { branch: 'feat' }, {
     session: { issues: [], hadIssue: false, info: {} }, toolRun: { result: { stdout: 'https://github.com/o/r/issues/7\n' } },
+    issueLabels: { 7: ['ready-for-agent'] },
   })
   await startSkill($, 'grilling')
   await startSkill($, 'to-spec')
@@ -203,7 +204,7 @@ test('unparseable input never lets a guarded command through', async ($, on) => 
 test('only a real gh issue edit marks the spec produced', async ($, on) => {
   world(on, { branch: 'feat' }, {
     session: { issues: [1], hadIssue: true, info: { 1: { title: 'a', labels: [] } } }, unit: { skills: ['grilling'] },
-    issues: { 1: 'OPEN' },
+    issues: { 1: 'OPEN' }, issueLabels: { 1: ['ready-for-agent'] },
   })
   await startSkill($, 'to-spec')
   expect(await promptContext($)).toContain('current step: Spec')

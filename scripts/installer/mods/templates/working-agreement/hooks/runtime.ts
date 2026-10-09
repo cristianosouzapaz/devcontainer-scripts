@@ -23,6 +23,7 @@ export interface Runtime {
   ghCache: GhCache | null
   permissionMode: string | null
   prCheckedAt: number
+  issuesCheckedAt: number
   checksCache: ChecksCache | null
   handoffTokens: number
   handoff: Handoff | null
@@ -39,6 +40,7 @@ export const runtime: Runtime = {
   ghCache: null,
   permissionMode: null,
   prCheckedAt: 0,
+  issuesCheckedAt: 0,
   checksCache: null,
   handoffTokens: 150000,
   handoff: null,

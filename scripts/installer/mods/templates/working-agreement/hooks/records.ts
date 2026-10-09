@@ -26,7 +26,8 @@ export interface Pr { number: number; state: string; isCreated?: boolean }
 /**
  * The stored record of one unit of work, shared by every session that works on its issue;
  * `start` is the HEAD when it was first declared, so only commits after it count as the unit's;
- * `prHead` is the PR head SHA at the last confirmed update, absent when none was confirmed.
+ * `prHead` is the PR head SHA at the last confirmed update, absent when none was confirmed;
+ * `produced` lists the skills whose issue a unit wrote before any read-back; it counts only while no issue info is stored.
  */
 export interface Unit {
   skills: string[]; verify: string | null; overrides: Override[]

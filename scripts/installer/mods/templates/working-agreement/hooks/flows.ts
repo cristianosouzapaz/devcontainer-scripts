@@ -7,9 +7,12 @@ export type Gate = 'deny' | 'ask' | 'none'
  */
 export type PrRequirement = 'closes' | 'refs' | 'linked' | 'none'
 
-/** One step of a flow: the skill or observed event that completes it, and how it gates repository writes. */
+/**
+ * One step of a flow: the skill or observed event that completes it, and how it gates repository writes;
+ * `doneLabels` makes it follow GitHub: it is done once its skill started and a declared issue carries any of them.
+ */
 export interface Step {
-  id: string; label: string; skill?: string; human?: boolean; produces?: 'issue'
+  id: string; label: string; skill?: string; human?: boolean; doneLabels?: string[]
   gate?: Gate; unlocks?: 'write'; observe?: string; requires?: PrRequirement
   skipIfIssue?: boolean; exempt?: 'tests'
 }
@@ -41,7 +44,7 @@ export const flowDefs: Defs = {
     'large-feature': {
       label: 'Large feature', issue: 'produced', declaredBy: 'agent', repoWrites: 'deny',
       steps: [
-        { id: 'map', label: 'Map', skill: 'wayfinder', human: true, produces: 'issue' },
+        { id: 'map', label: 'Map', skill: 'wayfinder', human: true, doneLabels: ['wayfinder:map'] },
         { id: 'tickets', label: 'Tickets', skill: 'to-tickets', human: true },
       ],
     },
@@ -49,7 +52,7 @@ export const flowDefs: Defs = {
       label: 'Small feature', issue: 'produced', declaredBy: 'agent',
       steps: [
         { id: 'grill', label: 'Grill', skill: 'grilling', gate: 'ask' },
-        { id: 'spec', label: 'Spec', skill: 'to-spec', human: true, produces: 'issue', gate: 'ask' },
+        { id: 'spec', label: 'Spec', skill: 'to-spec', human: true, doneLabels: ['ready-for-agent'], gate: 'ask' },
         { id: 'code', label: 'Code', unlocks: 'write' },
         ...deliverySteps('closes'),
       ],
@@ -58,7 +61,7 @@ export const flowDefs: Defs = {
     fix: {
       label: 'Fix', issue: 'produced', declaredBy: 'agent',
       steps: [
-        { id: 'triage', label: 'Triage', skill: 'triage', human: true, produces: 'issue', gate: 'ask', skipIfIssue: true },
+        { id: 'triage', label: 'Triage', skill: 'triage', human: true, doneLabels: ['ready-for-agent', 'ready-for-human', 'needs-info', 'wontfix'], gate: 'ask', skipIfIssue: true },
         { id: 'diagnose', label: 'Diagnose', skill: 'diagnosing-bugs', gate: 'ask', exempt: 'tests' },
         { id: 'code', label: 'Code', unlocks: 'write' },
         ...deliverySteps('closes'),

@@ -152,11 +152,28 @@ test('a merged-PR follow-up with an open PR on record still reads PR and asks to
   expect(line).not.toContain('update PR #5')
 })
 
-test('a gh pr edit after create-pr ran in an earlier turn leaves PR current', async ($, on) => {
+test('a gh pr edit in a later turn than the one create-pr started in finishes the unit', async ($, on) => {
   world(on, { branch: 'feat', ahead: 1 }, updating())
   await startSkill($, 'create-pr')
   await endTurn($)
   await $.tool.call(edit)
+  expect(await flowStatus($)).toContain('Unit finished.')
+})
+
+test('a gh pr create in a later turn than the one create-pr started in finishes the unit', async ($, on) => {
+  world(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, unit: { skills: ['generate-commit'] }, prView: { body: closes, headRefOid: 'c1' }, toolRun: created })
+  await startSkill($, 'create-pr')
+  await endTurn($)
+  await $.tool.call(pr('--body "Closes #1\nCloses #2"'))
+  expect(await flowStatus($)).toContain('Unit finished.')
+})
+
+test('a gh pr edit after create-pr started in an earlier turn leaves PR unconfirmed while another step is current', async ($, on) => {
+  world(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, unit: { skills: [] }, prView: { body: closes, headRefOid: 'c1' } })
+  await startSkill($, 'create-pr')
+  await endTurn($)
+  await $.tool.call(edit)
+  expect(await promptContext($)).toContain('current step: Commit')
   expect(await flowStatus($)).not.toContain('Unit finished.')
 })
 

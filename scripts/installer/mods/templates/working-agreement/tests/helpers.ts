@@ -51,6 +51,14 @@ export const promptContext = async ($: Engine): Promise<string> =>
   (await $.prompt.submit({ text: 'go', wait: false, origin: { kind: 'composer' } })).context?.join('\n') ?? ''
 
 /**
+ * Names the step the prompt context calls current.
+ *
+ * @param $ - The test's engine.
+ * @returns The step's label, or undefined when the context names none.
+ */
+export const currentStep = async ($: Engine): Promise<string | undefined> => (await promptContext($)).match(/current step: (\w+)/)?.[1]
+
+/**
  * Submits a prompt under a permission mode, which the mod records.
  *
  * @param $ - The test's engine.

@@ -75,7 +75,7 @@ test('an overridden Verify whose run no longer matches the tree is stale', async
 
 test('a new session declaring an issue whose uncommitted code was verified is sent to Commit', async ($, on) => {
   world(on, { branch: 'feat', isDirty: true, tree: 'done' }, {
-    verifyFile, session: noFlow, unit: { start: 'c0', skills: ['grilling', 'to-spec'], produced: ['to-spec'], verify: 'done' },
+    verifyFile, session: noFlow, unit: { start: 'c0', skills: ['grilling', 'to-spec'], produced: ['to-spec'], verify: 'done' }, issueLabels: { 1: ['ready-for-agent'] },
   })
   await declareFlow($, 'small-feature', [1])
   expect(await promptContext($)).toContain('current step: Commit')
