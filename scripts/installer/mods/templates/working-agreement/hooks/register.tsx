@@ -12,14 +12,14 @@ import { bashOutcome } from './outcome'
 import type { ToolRun } from './outcome'
 import { matches, normalize, repoRelative } from './paths'
 import { branchFirst, instruction, isUnitFinished, issueRefs, missingLines, onBase, prBranch, prStep, requirement, stepLabel, stepStates, stepSymbol } from './progress'
-import type { GitState, Position, StepState } from './progress'
+import type { GitState, Position, RedState, StepState } from './progress'
 import { emptySession, emptyUnit, mergeSkills, toSession, toUnit, withOverride } from './records'
 import type { Gh, IssueInfo, Pr, Session, Unit } from './records'
 import { ask, asksHuman, deny, fileTools, isJudgedTool, strictest } from './rules'
 import type { Judgement, Verdict } from './rules'
 import { runtime, serial } from './runtime'
 import type { Handoff } from './runtime'
-import { ranCommands, runsVerify, shellTargets } from './shell'
+import { ranCommands, runsVerify, shellTargets, shellWords } from './shell'
 import type { Invocation } from './shell'
 import { buildView, keyWidth, labelColor, paneRule, palette, symbolColor, toneColor, viewText } from './view'
 
@@ -237,6 +237,56 @@ async function eachUnit($: EngineInterface, s: Session, fn: (u: Unit) => Unit) {
   }
 }
 
+// The content hash git gives a repo-relative file, '' when it is absent; the absolute path resolves from any working directory.
+async function fingerprint($: EngineInterface, root: string, rel: string): Promise<string> {
+  const r = await runProcess($, ['git', 'hash-object', '--', `${root}/${rel}`])
+  return r.exitCode === 0 ? r.stdout.trim() : ''
+}
+
+// Whether the unit's red is absent, still holds, or no longer matches the test files it exercised.
+async function redState($: EngineInterface, u: Unit, g: GitState | null): Promise<RedState> {
+  if (!u.red || !g) return 'none'
+  for (const [rel, print] of Object.entries(u.red.fingerprints)) {
+    if ((await fingerprint($, g.root, rel)) !== print) return 'stale'
+  }
+  return 'holds'
+}
+
+// Whether every change since the unit's start, staged or not and untracked files included, is under the test paths.
+async function isTestOnly($: EngineInterface, root: string, start: string | undefined): Promise<boolean> {
+  const changed = await runProcess($, ['git', '-C', root, 'diff', '--name-only', '--no-renames', start ?? 'HEAD'])
+  const untracked = await runProcess($, ['git', '-C', root, 'ls-files', '--others', '--exclude-standard'])
+  if (changed.exitCode !== 0 || untracked.exitCode !== 0) return false
+  return [...changed.stdout.split('\n'), ...untracked.stdout.split('\n')].filter(Boolean).every(f => matches(flowDefs.testPaths, f))
+}
+
+// The recorded test files a command runs: those its arguments name or sit under, or all of them when it runs the verify command.
+function testRuns(command: string, verifyCmd: string | undefined, files: string[], cwd: string, root: string): string[] {
+  if (verifyCmd && runsVerify(command, verifyCmd)) return files
+  const rels = shellWords(command).flatMap(seg => seg.filter((w, i) => !w.isRedirect && !seg[i - 1]?.isRedirect))
+    .map(w => repoRelative(normalize(w.text, cwd), root))
+  // The repository root is '' and would contain every file: only a named file or a subdirectory counts.
+  return files.filter(f => rels.some(rel => rel !== null && (rel === f || (rel !== '' && f.startsWith(`${rel}/`)))))
+}
+
+// Stores a red that fingerprints the given test files, replacing the previous one.
+async function recordRed($: EngineInterface, s: Session, root: string, files: string[]) {
+  const prints = await Promise.all(files.map(async f => [f, await fingerprint($, root, f)] as const))
+  await eachUnit($, s, u => ({ ...u, red: { fingerprints: Object.fromEntries(prints) } }))
+}
+
+// Records a red when a failed command ran the unit's reproduction test on a tree that held only test changes.
+async function observeRed($: EngineInterface, s: Session, command: string, verifyCmd: string | undefined) {
+  const root = await gitRoot($)
+  const u = await getUnit($, await unitKey($, s))
+  if (!root || !u.testFiles?.length) return
+  const hit = testRuns(command, verifyCmd, u.testFiles, await $.session.cwd(), root)
+  if (hit.length && (await isTestOnly($, root, u.start))) await recordRed($, s, root, hit)
+}
+
+// Whether the session's flow has a test-exempt step (Diagnose), the only one a red completes.
+const hasDiagnose = (s: Session): boolean => !!s.flow && !!flowDefs.flows[s.flow]?.steps.some(st => st.exempt === 'tests')
+
 async function position($: EngineInterface, s: Session): Promise<Position | null> {
   const def = s.flow ? flowDefs.flows[s.flow] : undefined
   if (!def) return null
@@ -250,10 +300,11 @@ async function position($: EngineInterface, s: Session): Promise<Position | null
   // Commits before the unit's start belong to earlier work on the branch; a unit with no start (Close out) owns them all.
   const own = !g ? 0 : u.start ? await aheadOf($, u.start) : g.ahead
   const verify = { cmd: verifyCmd, isVerified }
-  const unchecked = stepStates(def, s, u, g, own, verify)
+  const red = await redState($, u, g)
+  const unchecked = stepStates(def, s, u, g, own, verify, 'off', red)
   const checks = await stepChecks($, unchecked, u, g)
-  const states = checks === 'off' ? unchecked : stepStates(def, s, u, g, own, verify, checks)
-  return { def, u, g, states, current: states.find(st => st.state === 'current') ?? null, isVerified, verifyCmd, checks }
+  const states = checks === 'off' ? unchecked : stepStates(def, s, u, g, own, verify, checks, red)
+  return { def, u, g, states, current: states.find(st => st.state === 'current') ?? null, isVerified, verifyCmd, red, checks }
 }
 
 // Skips the issue sync, which takes the lock: declare holds it and has just read its issues.
@@ -345,17 +396,15 @@ async function prBody($: EngineInterface, command: string, run: Invocation) {
   return parts.join('\n')
 }
 
-async function writesTest($: EngineInterface, tool: string, args: Record<string, unknown>) {
+// The repo-relative test files a write call touches.
+async function writesTest($: EngineInterface, tool: string, args: Record<string, unknown>): Promise<string[]> {
   const root = await gitRoot($)
-  if (!root) return false
+  if (!root) return []
   const cwd = await $.session.cwd()
   const paths = fileTools.includes(tool)
     ? [asString(args.file_path ?? args.notebook_path)]
     : shellTargets(asString(args.command), flowDefs.bashWritePatterns)
-  return paths.some(p => {
-    const rel = repoRelative(normalize(p, cwd), root)
-    return !!rel && matches(flowDefs.testPaths, rel)
-  })
+  return paths.map(p => repoRelative(normalize(p, cwd), root)).filter((rel): rel is string => !!rel && matches(flowDefs.testPaths, rel))
 }
 
 async function judgeCall($: EngineInterface, tool: string, args: Record<string, unknown>): Promise<Judgement> {
@@ -456,7 +505,7 @@ async function declare($: EngineInterface, flow: string, issues: number[], by: F
   const p = (await position($, next))!
   const warn = gh === 'connected' ? '' : ` (GitHub ${gh}: issues not verified)`
   const which = declared.length ? ` for ${issueRefs(declared, ', ')}` : ''
-  const steps = p.states.map(st => `${stepSymbol[st.state]} ${stepLabel(st.step, p.u.pr)} (${requirement(st.step, next, p.verifyCmd, p.u.skills, onBase(p.g), p.u.pr)})`).join('; ')
+  const steps = p.states.map(st => `${stepSymbol[st.state]} ${stepLabel(st.step, p.u.pr)} (${requirement(st.step, next, p.verifyCmd, p.u.skills, onBase(p.g), p.u.pr, false, p.u.testFiles, p.red)})`).join('; ')
   return `Flow declared: ${def.label}${which}${warn}. Steps: ${steps}. ${instruction(p, next)}`
 }
 
@@ -697,7 +746,7 @@ async function openPrOn($: EngineInterface, branch: string): Promise<number> {
 
 async function observeBash($: EngineInterface, seen: Session, command: string, ran: ToolRun) {
   const s: Session = { ...seen, info: { ...seen.info } }
-  const { isOk, stdout, commit, push, pr } = bashOutcome(ran)
+  const { isOk, isFailed, stdout, commit, push, pr } = bashOutcome(ran)
   const writesGh = ranCommands(command, 'gh issue (?:create|edit|comment)').length + ranCommands(command, 'gh pr (?:create|edit)').length > 0
   const p = seen.flow && writesGh ? await position($, seen) : null
   const isSkill = hasIssueSkill(p)
@@ -736,15 +785,20 @@ async function observeBash($: EngineInterface, seen: Session, command: string, r
     const key = await treeKey($)
     await eachUnit($, s, u => ({ ...u, verify: key }))
   }
+  if (isFailed && hasDiagnose(s)) await observeRed($, s, command, verifyCmd)
   // A herdr pane run returns at once: the verdict is the marker line a later wait-output prints.
   const launched = verifyCmd && isOk ? herdrVerifyLaunch(command, verifyCmd) : null
   const launchTree = launched ? await treeKey($) : null
-  if (launched && launchTree && !runtime.herdrConsumed.has(launched.id)) runtime.herdrVerify[launched.pane] = { id: launched.id, tree: launchTree }
+  if (launched && launchTree && !runtime.herdrConsumed.has(launched.id)) {
+    const root = hasDiagnose(s) ? await gitRoot($) : null
+    const start = (await getUnit($, await unitKey($, s))).start
+    runtime.herdrVerify[launched.pane] = { id: launched.id, tree: launchTree, isTestOnly: !!root && (await isTestOnly($, root, start)) }
+  }
   const waited = isOk ? herdrWaitArgs(command)?.find(w => w in runtime.herdrVerify) : undefined
   if (waited) {
     const parsed = parseJson(stdout)
     const matched = isRecord(parsed) && isRecord(parsed.result) ? asString(parsed.result.matched_line) : ''
-    const { id, tree } = runtime.herdrVerify[waited]!
+    const { id, tree, isTestOnly: wasTestOnly } = runtime.herdrVerify[waited]!
     const code = new RegExp(`^__EXIT_${id}=(\\d+)__$`).exec(matched)?.[1]
     if (code !== undefined) {
       const key = await treeKey($)
@@ -752,6 +806,9 @@ async function observeBash($: EngineInterface, seen: Session, command: string, r
       delete runtime.herdrVerify[waited]
       runtime.herdrConsumed.add(id)
       if (isPassed) await eachUnit($, s, u => ({ ...u, verify: key }))
+      const files = (await getUnit($, await unitKey($, s))).testFiles ?? []
+      const root = await gitRoot($)
+      if (Number(code) !== 0 && wasTestOnly && hasDiagnose(s) && files.length && root) await recordRed($, s, root, files)
     }
   }
   await putSession($, s)
@@ -924,11 +981,12 @@ export const register: Register = (on, options) => {
         if (!s.flow) return
         if (v.write && ran.isError !== true) {
           const g = await readGit($)
-          const tested = await writesTest($, e.tool, args)
-          if (g || tested) {
+          const tests = await writesTest($, e.tool, args)
+          if (g || tests.length) {
             const isNewBranch = (u: Unit) => !!g && !onBase(g) && (!u.branch || u.branch === g.base)
             await eachUnit($, s, u => ({
-              ...u, branch: isNewBranch(u) ? g?.branch : u.branch, tested: tested || u.tested,
+              ...u, branch: isNewBranch(u) ? g?.branch : u.branch,
+              ...(tests.length ? { testFiles: [...new Set([...(u.testFiles ?? []), ...tests])] } : {}),
             }))
           }
         }

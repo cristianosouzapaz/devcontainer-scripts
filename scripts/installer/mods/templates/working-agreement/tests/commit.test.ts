@@ -18,8 +18,8 @@ test('a commit made after the declaration ticks Commit, even unseen by the sessi
 })
 
 test('a unit declared again in a later session still sees its own earlier commits', async ($, on) => {
-  world(on, { branch: 'feat', ahead: 9 }, {
-    session: noFlow, unit: { start: 'c8', skills: ['diagnosing-bugs', 'generate-commit'], tested: true },
+  world(on, { branch: 'feat', ahead: 9, hashes: { 'test/fix.bats': 'h1' } }, {
+    session: noFlow, unit: { start: 'c8', skills: ['diagnosing-bugs', 'generate-commit'], testFiles: ['test/fix.bats'], red: { fingerprints: { 'test/fix.bats': 'h1' } } },
   })
   await declareFlow($, 'fix', [1])
   expect(await promptContext($)).toContain('current step: PR')

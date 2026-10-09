@@ -8,8 +8,15 @@ import type { ToolRun } from '../hooks/outcome'
  * The working tree a world answers git with; tests mutate it to move the checkout.
  * `ahead` is how many commits the branch is ahead of its base; HEAD is `c<ahead>`, on a linear history.
  * `isPushed` makes the branch level with its upstream; without it the upstream is missing.
+ * `changed` lists the paths changed since the unit's start, tracked or untracked, and `before` those committed on the branch ahead of the default branch
+ * but before the unit's start, which only a diff against the default branch reports.
+ * `hashes` maps a repo-relative path to its git content hash; a path it omits is absent, so `git hash-object` fails on it.
+ * All three are read at each call.
  */
-export interface Checkout { branch: string; isDirty?: boolean; tree?: string; ahead?: number; isPushed?: boolean }
+export interface Checkout {
+  branch: string; isDirty?: boolean; tree?: string; ahead?: number; isPushed?: boolean
+  changed?: string[]; before?: string[]; hashes?: Record<string, string>
+}
 
 /**
  * What a world holds beyond its checkout; `unit` is the stored unit record, kept under the session's own unit key when `session.followUp` is set, else under issue #1's;
@@ -95,6 +102,14 @@ export function world(on: On, git: Checkout, options: Options = {}): World {
     const since = cmd.match(/^git rev-list --count c(\d+)\.\.HEAD$/)
     if (since) return out(String((git.ahead ?? 0) - Number(since[1])))
     if (cmd.startsWith('git rev-list --count')) return out(String(git.ahead ?? 0))
+    const diff = cmd.match(/^git -C \/repo diff --name-only --no-renames (\S+)$/)
+    if (diff) return out([...(git.changed ?? []), ...(/^c\d+$|^HEAD$/.test(diff[1] ?? '') ? [] : git.before ?? [])].join('\n'))
+    if (cmd === 'git -C /repo ls-files --others --exclude-standard') return out('')
+    const blob = cmd.match(/^git hash-object -- \/repo\/(.+)$/)
+    if (blob) {
+      const hash = git.hashes?.[blob[1] ?? '']
+      return hash === undefined ? out('', 128, 'fatal: could not open') : out(hash)
+    }
     if (cmd === 'git status --porcelain') return out(git.isDirty ? ' M src/a.ts' : '')
     if (cmd.startsWith('sh -c') && cmd.includes('find')) return out(options.documents ?? '')
     if (cmd.startsWith('sh -c')) return out(git.tree ?? 'tree')

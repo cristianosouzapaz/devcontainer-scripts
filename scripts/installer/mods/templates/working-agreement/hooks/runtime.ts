@@ -13,8 +13,8 @@ export interface Handoff {
 /** The last CI state read for a PR at a given head, keyed `<pr>@<head>`, and when it was read. */
 export interface ChecksCache { key: string; at: number; checks: Checks }
 
-/** A verify run launched in a herdr pane and not yet reported: the id of its exit marker and the tree it started on. */
-export interface HerdrRun { id: string; tree: string }
+/** A verify run launched in a herdr pane and not yet reported: the id of its exit marker, the tree it started on and whether the tree held only test changes then. */
+export interface HerdrRun { id: string; tree: string; isTestOnly: boolean }
 
 /** What the hooks share between events for the life of one module load. */
 export interface Runtime {

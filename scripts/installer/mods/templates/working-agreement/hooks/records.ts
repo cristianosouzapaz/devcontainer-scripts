@@ -23,16 +23,19 @@ export interface Session {
 export interface Override { step: string; reason: string }
 /** The pull request a unit's branch opened; `isCreated` marks one the unit created, as opposed to one already open when it started. */
 export interface Pr { number: number; state: string; isCreated?: boolean }
+/** The reproduction test's red: the content hash of each test file the failing run exercised, '' for a file that was absent. */
+export interface Red { fingerprints: Record<string, string> }
 /**
  * The stored record of one unit of work, shared by every session that works on its issue;
  * `start` is the HEAD when it was first declared, so only commits after it count as the unit's;
  * `prHead` is the PR head SHA at the last confirmed update, absent when none was confirmed;
- * `produced` lists the skills whose issue a unit wrote before any read-back; it counts only while no issue info is stored.
+ * `produced` lists the skills whose issue a unit wrote before any read-back; it counts only while no issue info is stored;
+ * `testFiles` lists the repo-relative test files the unit wrote; `red` is the last observed failure of those tests on unfixed code.
  */
 export interface Unit {
   skills: string[]; verify: string | null; overrides: Override[]
   start?: string; branch?: string; committed?: boolean; pushed?: boolean; pr?: Pr
-  tested?: boolean; produced?: string[]; prHead?: string
+  testFiles?: string[]; red?: Red; produced?: string[]; prHead?: string
 }
 /** Whether the gh CLI can reach GitHub as a signed-in user. */
 export type Gh = 'connected' | 'unreachable' | 'unauth' | 'unknown'
@@ -49,6 +52,12 @@ function toIssueInfo(v: unknown): Record<string, IssueInfo> {
   const info = isRecord(v) ? v : {}
   return Object.fromEntries(Object.entries(info).flatMap(([n, i]) =>
     isRecord(i) ? [[n, { title: asString(i.title), labels: asStrings(i.labels) }]] : []))
+}
+
+function toRed(v: unknown): Pick<Unit, 'red'> {
+  if (!isRecord(v) || !isRecord(v.fingerprints)) return {}
+  const entries = Object.entries(v.fingerprints).filter((e): e is [string, string] => typeof e[1] === 'string')
+  return { red: { fingerprints: Object.fromEntries(entries) } }
 }
 
 function toHandoff(v: unknown): Pick<Session, 'handoff'> {
@@ -101,7 +110,8 @@ export function toUnit(v: unknown): Unit {
     ...(typeof r.branch === 'string' ? { branch: r.branch } : {}),
     ...(typeof r.committed === 'boolean' ? { committed: r.committed } : {}),
     ...(typeof r.pushed === 'boolean' ? { pushed: r.pushed } : {}),
-    ...(typeof r.tested === 'boolean' ? { tested: r.tested } : {}),
+    ...(Array.isArray(r.testFiles) ? { testFiles: asStrings(r.testFiles) } : {}),
+    ...toRed(r.red),
     ...(isRecord(r.pr) && typeof r.pr.number === 'number' ? { pr: { number: r.pr.number, state: asString(r.pr.state), ...(r.pr.isCreated === true ? { isCreated: true } : {}) } } : {}),
     ...(typeof r.prHead === 'string' && r.prHead ? { prHead: r.prHead } : {}),
     ...(Array.isArray(r.produced) ? { produced: asStrings(r.produced) } : {}),

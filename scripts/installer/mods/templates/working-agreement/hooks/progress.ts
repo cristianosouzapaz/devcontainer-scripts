@@ -13,10 +13,13 @@ export interface StepState { step: Step; state: FlowStepState }
 /** The repository's verify command, if it has one, and whether a run of it passed on the current tree. */
 export interface VerifyState { cmd: string | undefined; isVerified: boolean }
 
+/** Whether the reproduction test has been seen failing on unfixed code: never, and still unchanged since, or changed since. */
+export type RedState = 'none' | 'holds' | 'stale'
+
 /** Where the session's unit stands in its flow, with the checkout, the Verify state and the CI state of its PR it was judged on. */
 export interface Position {
   def: FlowDef; u: Unit; g: GitState | null; states: StepState[]; current: StepState | null
-  isVerified: boolean; verifyCmd: string | undefined
+  isVerified: boolean; verifyCmd: string | undefined; red: RedState
   /** Off unless the PR step waits only on CI, then what `gh pr checks` reported. */
   checks: Checks
 }
@@ -85,11 +88,22 @@ export function missingLines(requires: Step['requires'], s: Session, body: strin
  * @param isOnBase - Whether the checkout is on the default branch.
  * @param pr - The unit's PR on record, if any.
  * @param isStale - Whether the step's confirmed update no longer matches HEAD, so the branch must be pushed first.
+ * @param testFiles - The test files the unit wrote.
+ * @param red - Whether the reproduction test has been seen failing on unfixed code.
  * @returns The step's next action, as an imperative phrase.
  */
-export function requirement(step: Step, s: Session, verifyCmd: string | undefined, skills: string[], isOnBase = false, pr?: Pr, isStale = false): string {
+export function requirement(step: Step, s: Session, verifyCmd: string | undefined, skills: string[], isOnBase = false, pr?: Pr, isStale = false, testFiles: string[] = [], red: RedState = 'none'): string {
   if (step.human && step.skill) return `the user's step: stop and ask them to run /${step.skill}`
-  if (step.exempt === 'tests') return `run the ${step.skill} skill and write the failing test that reproduces the bug before editing non-test files`
+  if (step.exempt === 'tests') {
+    const first = step.skill && !skills.includes(step.skill) ? `run the ${step.skill} skill, then ` : ''
+    if (!testFiles.length) return `${first}write the failing test that reproduces the bug before editing non-test files`
+    if (red === 'holds') return `run the ${step.skill} skill`
+    if (red === 'stale') {
+      return `${first}the reproduction test changed since it failed: re-run it on unfixed code and see it fail (if non-test changes are already in the tree, set them aside with git stash push -- <non-test paths>, re-run the test, then restore them with git stash pop)`
+    }
+    const alt = verifyCmd ? `, or run ${verifyCmd}` : ''
+    return `${first}run the reproduction test directly by its path (the test file or its directory${alt}) and see it fail on unfixed code, before changing any non-test file`
+  }
   if (step.skill && !step.observe) return `run the ${step.skill} skill`
   if (step.unlocks) {
     const change = verifyCmd ? `make the change, then run ${verifyCmd} to pass Verify` : 'make the change'
@@ -132,7 +146,7 @@ export function instruction(p: Position, s: Session): string {
   const handover = next?.step.human && next.step.skill
     ? ` When it is done, do not run or offer ${next.step.skill} yourself: the next step is the user's — tell them to run /${next.step.skill}.`
     : ''
-  return `[working-agreement] ${p.def.label}${issue} — current step: ${stepLabel(p.current.step, p.u.pr)}. Next action: ${requirement(p.current.step, s, p.verifyCmd, p.u.skills, onBase(p.g), p.u.pr, isPrStale(p.current.step, p.u, p.g))}.${handover}`
+  return `[working-agreement] ${p.def.label}${issue} — current step: ${stepLabel(p.current.step, p.u.pr)}. Next action: ${requirement(p.current.step, s, p.verifyCmd, p.u.skills, onBase(p.g), p.u.pr, isPrStale(p.current.step, p.u, p.g), p.u.testFiles, p.red)}.${handover}`
 }
 
 /**
@@ -214,9 +228,10 @@ export function isPrDone(st: Step, u: Unit, g: GitState | null, own: number, has
  * @param own - How many commits the unit made since its start.
  * @param verify - The verify command and whether it passed on the current tree.
  * @param checks - The CI state of the unit's PR; the PR step is done only when it is passing or off.
+ * @param red - Whether the reproduction test has been seen failing on unfixed code; the test-exempt step is done only while it holds.
  * @returns The flow's steps with their states; Verify is left out when the repository has no verify command.
  */
-export function stepStates(def: FlowDef, s: Session, u: Unit, g: GitState | null, own: number, verify: VerifyState, checks: Checks = 'off'): StepState[] {
+export function stepStates(def: FlowDef, s: Session, u: Unit, g: GitState | null, own: number, verify: VerifyState, checks: Checks = 'off', red: RedState = 'none'): StepState[] {
   const steps = def.steps.filter(st => st.observe !== 'verify.passed' || verify.cmd)
   const labels = declaredLabels(s)
   const skipTarget = Object.entries(def.skipTo ?? {})
@@ -231,8 +246,8 @@ export function stepStates(def: FlowDef, s: Session, u: Unit, g: GitState | null
   const isGreen = checks === 'off' || checks === 'passing'
 
   const isDone = (st: Step): boolean => {
-    // A test-exempt step (Diagnose) is done once its reproduction is written, not when its skill starts.
-    if (st.exempt === 'tests') return ran(st) && !!u.tested
+    // A test-exempt step (Diagnose) is done once its reproduction was seen failing and has not changed since, not when its skill starts.
+    if (st.exempt === 'tests') return ran(st) && red === 'holds'
     // An issue-producing step (Spec, Triage, Map) follows the issue's labels on GitHub, not the command that wrote them;
     // `produced` counts only while no declared issue has stored info, so once GitHub has answered the labels alone decide.
     if (st.doneLabels) return ran(st) && ((!!u.produced?.includes(st.skill!) && s.issues.every(n => !s.info[n])) || s.issues.some(n => s.info[n]?.labels.some(l => st.doneLabels!.includes(l))))
