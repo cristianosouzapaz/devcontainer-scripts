@@ -1,3 +1,4 @@
+import type { Checks } from './checks'
 import type { Gh } from './records'
 
 /** The last GitHub reachability probe and when it ran. */
@@ -9,6 +10,9 @@ export interface Handoff {
   armed: boolean; ended: (reason: string) => void
 }
 
+/** The last CI state read for a PR at a given head, keyed `<pr>@<head>`, and when it was read. */
+export interface ChecksCache { key: string; at: number; checks: Checks }
+
 /** A verify run launched in a herdr pane and not yet reported: the id of its exit marker and the tree it started on. */
 export interface HerdrRun { id: string; tree: string }
 
@@ -19,6 +23,7 @@ export interface Runtime {
   ghCache: GhCache | null
   permissionMode: string | null
   prCheckedAt: number
+  checksCache: ChecksCache | null
   handoffTokens: number
   handoff: Handoff | null
   /** Verify runs launched in a herdr pane and not yet reported, by pane id. */
@@ -34,6 +39,7 @@ export const runtime: Runtime = {
   ghCache: null,
   permissionMode: null,
   prCheckedAt: 0,
+  checksCache: null,
   handoffTokens: 150000,
   handoff: null,
   herdrVerify: {},

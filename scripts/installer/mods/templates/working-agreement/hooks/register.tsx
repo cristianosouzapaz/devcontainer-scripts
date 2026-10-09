@@ -2,6 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { FlowRow } from '../types'
+import { checksTodo, readChecks } from './checks'
+import type { Checks } from './checks'
 import { flowDefs } from './flows'
 import type { FlowDef } from './flows'
 import { herdrVerifyLaunch, herdrWaitArgs } from './herdr'
@@ -10,7 +12,7 @@ import { bashOutcome } from './outcome'
 import type { ToolRun } from './outcome'
 import { matches, normalize, repoRelative } from './paths'
 import { branchFirst, instruction, isUnitFinished, issueRefs, missingLines, onBase, prBranch, prStep, requirement, stepLabel, stepStates, stepSymbol } from './progress'
-import type { GitState, Position } from './progress'
+import type { GitState, Position, StepState } from './progress'
 import { emptySession, emptyUnit, mergeSkills, toSession, toUnit, withOverride } from './records'
 import type { Gh, IssueInfo, Pr, Session, Unit } from './records'
 import { ask, asksHuman, deny, fileTools, isJudgedTool, strictest } from './rules'
@@ -41,6 +43,8 @@ const declareTool = 'mcp__working-agreement__declare_flow'
 const checkFailed = '[working-agreement] the check failed, so the call is denied — retry; if it keeps failing, stop and tell the user'
 const view = atom({ plugin: 'working-agreement', key: 'view' } as const, null)
 const bodyFlag = /^(--body|-b|--body-file|-F)(=|$)/
+// The gh pr merge flags that take a value as the next word, so it is not read as the PR.
+const mergeValueFlags = ['-b', '--body', '-F', '--body-file', '-t', '--subject', '-A', '--author-email', '--match-head-commit']
 
 async function runProcess($: EngineInterface, argv: string[], timeoutMs = 15000): Promise<ProcessOutput> {
   try {
@@ -130,6 +134,41 @@ async function readGit($: EngineInterface): Promise<GitState | null> {
   return { root, branch, head: (await head($)) ?? '', base, ahead, dirty, upToDate: up.exitCode === 0 && up.stdout.trim() === '0' }
 }
 
+// Whether a GitHub Actions workflow runs on pull requests, so a PR has CI to wait for; without one the CI gate is off.
+async function hasCi($: EngineInterface) {
+  return (await runProcess($, ['git', 'grep', '-qE', 'pull_request(_target)?', '--', '.github/workflows'])).exitCode === 0
+}
+
+// The PR a gh pr merge names — number, URL or branch — or undefined for the current branch's.
+function mergeTarget(args: string[]): string | undefined {
+  const at = { i: 0 }
+  while (at.i < args.length) {
+    const arg = args[at.i++]!
+    if (!arg.startsWith('-')) return arg
+    if (mergeValueFlags.includes(arg)) at.i++
+  }
+  return undefined
+}
+
+// What a PR's checks report; the PR is a number, a URL, or none for the current branch's.
+async function fetchChecks($: EngineInterface, pr?: string): Promise<Checks> {
+  const r = await runProcess($, ['gh', 'pr', 'checks', ...(pr ? [pr] : []), '--json', 'bucket'])
+  return readChecks(r.stdout)
+}
+
+// The CI state that holds back a PR step whose own work is done, or off when nothing does; cached briefly, since every refresh asks.
+async function stepChecks($: EngineInterface, states: StepState[], u: Unit, g: GitState | null): Promise<Checks> {
+  const pr = states.find(st => st.step.observe === 'pr.created')
+  if (pr?.state !== 'done' || u.pr?.state !== 'OPEN' || !(await hasCi($))) return 'off'
+  const key = `${u.pr.number}@${g?.head ?? ''}`
+  const now = await $.clock.now()
+  const cached = runtime.checksCache
+  if (cached && cached.key === key && now - cached.at < 30000) return cached.checks
+  const checks = await fetchChecks($, String(u.pr.number))
+  runtime.checksCache = { key, at: now, checks }
+  return checks
+}
+
 async function treeKey($: EngineInterface) {
   const r = await runProcess($, ['sh', '-c',
     'T=$(mktemp) && cp "$(git rev-parse --git-dir)/index" "$T" 2>/dev/null; ' +
@@ -206,8 +245,11 @@ async function position($: EngineInterface, s: Session): Promise<Position | null
   const isVerified = !!key && u.verify === key
   // Commits before the unit's start belong to earlier work on the branch; a unit with no start (Close out) owns them all.
   const own = !g ? 0 : u.start ? await aheadOf($, u.start) : g.ahead
-  const states = stepStates(def, s, u, g, own, { cmd: verifyCmd, isVerified })
-  return { def, u, g, states, current: states.find(st => st.state === 'current') ?? null, isVerified, verifyCmd }
+  const verify = { cmd: verifyCmd, isVerified }
+  const unchecked = stepStates(def, s, u, g, own, verify)
+  const checks = await stepChecks($, unchecked, u, g)
+  const states = checks === 'off' ? unchecked : stepStates(def, s, u, g, own, verify, checks)
+  return { def, u, g, states, current: states.find(st => st.state === 'current') ?? null, isVerified, verifyCmd, checks }
 }
 
 async function refresh($: EngineInterface, isQuiet = false) {
@@ -344,6 +386,15 @@ async function judgeCall($: EngineInterface, tool: string, args: Record<string, 
       verdicts.push(deny(`PR body lacks ${missing.join(', ')}`, req === 'linked'
         ? `keep a line linking #${s.followUp} (Closes, Refs, Fixes or Resolves)`
         : `add a "${req === 'refs' ? 'Refs' : 'Closes'} #<n>" line for every declared issue`))
+    }
+  }
+  const merges = ranCommands(command, 'gh pr merge')
+  if (merges.length && (await hasCi($))) for (const run of merges) {
+    const target = run.isParsed ? mergeTarget(run.args) : undefined
+    const checks = await fetchChecks($, target)
+    if (checks !== 'passing') {
+      const { reason, todo } = checksTodo(checks, target && /^\d+$/.test(target) ? `#${target}` : target ?? '')
+      verdicts.push(deny(reason, todo))
     }
   }
   return {

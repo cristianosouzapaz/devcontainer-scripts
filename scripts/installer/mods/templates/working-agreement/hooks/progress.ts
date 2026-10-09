@@ -1,4 +1,6 @@
 import type { FlowStepState } from '../types'
+import { checksTodo } from './checks'
+import type { Checks } from './checks'
 import type { FlowDef, Step } from './flows'
 import type { Pr, Session, Unit } from './records'
 
@@ -11,10 +13,12 @@ export interface StepState { step: Step; state: FlowStepState }
 /** The repository's verify command, if it has one, and whether a run of it passed on the current tree. */
 export interface VerifyState { cmd: string | undefined; isVerified: boolean }
 
-/** Where the session's unit stands in its flow, with the checkout and the Verify state it was judged on. */
+/** Where the session's unit stands in its flow, with the checkout, the Verify state and the CI state of its PR it was judged on. */
 export interface Position {
   def: FlowDef; u: Unit; g: GitState | null; states: StepState[]; current: StepState | null
   isVerified: boolean; verifyCmd: string | undefined
+  /** Off unless the PR step waits only on CI, then what `gh pr checks` reported. */
+  checks: Checks
 }
 
 /** The mark the pane draws beside a step in each state. */
@@ -119,6 +123,10 @@ export function requirement(step: Step, s: Session, verifyCmd: string | undefine
 export function instruction(p: Position, s: Session): string {
   const issue = s.issues.length ? ` ${issueRefs(s.issues, ' ')}` : ''
   if (!p.current) return `[working-agreement] ${p.def.label}${issue} — all steps done.`
+  if (isCiWait(p)) {
+    const { reason, todo } = checksTodo(p.checks, `#${p.u.pr?.number ?? ''}`)
+    return `[working-agreement] ${p.def.label}${issue} — current step: ${stepLabel(p.current.step, p.u.pr)}. ${reason}: ${todo}; do not report the unit as done before every check passes.`
+  }
   // Name a following human step now: otherwise the agent closes this step by offering to run it itself.
   const next = p.states.slice(p.states.indexOf(p.current) + 1).find(st => st.state === 'pending')
   const handover = next?.step.human && next.step.skill
@@ -126,6 +134,15 @@ export function instruction(p: Position, s: Session): string {
     : ''
   return `[working-agreement] ${p.def.label}${issue} — current step: ${stepLabel(p.current.step, p.u.pr)}. Next action: ${requirement(p.current.step, s, p.verifyCmd, p.u.skills, onBase(p.g), p.u.pr, isPrStale(p.current.step, p.u, p.g))}.${handover}`
 }
+
+/**
+ * Tells whether the unit's current step is its PR step, held back only by a PR whose CI has not passed.
+ *
+ * @param p - The unit's position.
+ * @returns True while the PR step waits on CI.
+ */
+export const isCiWait = (p: Position): boolean =>
+  p.current?.step.observe === 'pr.created' && p.checks !== 'off' && p.checks !== 'passing'
 
 /**
  * Tells whether the session's unit has reached its end: every step done and a PR on record, or, with no flow, a PR created here.
@@ -172,6 +189,22 @@ export const declaredLabels = (s: Session): string[] => s.issues.flatMap(n => s.
 export const prBranch = (u: Unit, g: GitState | null): string | undefined => u.branch ?? (g && !onBase(g) ? g.branch : undefined)
 
 /**
+ * Tells whether a PR step's own work is done, CI aside: the branch pushed to the open PR, or the PR opened or updated to HEAD.
+ *
+ * @param st - The PR step.
+ * @param u - The unit.
+ * @param g - The checkout, or null outside a repository.
+ * @param own - How many commits the unit made since its start.
+ * @param hasRun - Whether the unit ran the step's skill.
+ * @returns True once the PR holds the unit's work.
+ */
+export function isPrDone(st: Step, u: Unit, g: GitState | null, own: number, hasRun: boolean): boolean {
+  if (!st.skill && u.pr?.state === 'OPEN') return !!g && !g.dirty && g.upToDate && (!!u.pushed || own > 0)
+  if (st.skill && st.requires !== 'refs') return !!g?.head && !!u.prHead && u.prHead === g.head
+  return !!u.pr && (!st.skill || hasRun)
+}
+
+/**
  * Decides where each step of the unit's flow stands: done, skipped, overridden, the current one, or pending.
  *
  * @param def - The declared flow.
@@ -180,9 +213,10 @@ export const prBranch = (u: Unit, g: GitState | null): string | undefined => u.b
  * @param g - The checkout, or null outside a repository.
  * @param own - How many commits the unit made since its start.
  * @param verify - The verify command and whether it passed on the current tree.
+ * @param checks - The CI state of the unit's PR; the PR step is done only when it is passing or off.
  * @returns The flow's steps with their states; Verify is left out when the repository has no verify command.
  */
-export function stepStates(def: FlowDef, s: Session, u: Unit, g: GitState | null, own: number, verify: VerifyState): StepState[] {
+export function stepStates(def: FlowDef, s: Session, u: Unit, g: GitState | null, own: number, verify: VerifyState, checks: Checks = 'off'): StepState[] {
   const steps = def.steps.filter(st => st.observe !== 'verify.passed' || verify.cmd)
   const labels = declaredLabels(s)
   const skipTarget = Object.entries(def.skipTo ?? {})
@@ -193,6 +227,8 @@ export function stepStates(def: FlowDef, s: Session, u: Unit, g: GitState | null
   const changed = !!g && (g.dirty || own > 0 || !!u.committed)
   const ran = (st: Step) => !!st.skill && u.skills.includes(st.skill)
   const talk = steps.filter(st => st.skill && !st.observe)
+
+  const isGreen = checks === 'off' || checks === 'passing'
 
   const isDone = (st: Step): boolean => {
     // A test-exempt step (Diagnose) is done once its reproduction is written, not when its skill starts.
@@ -207,9 +243,7 @@ export function stepStates(def: FlowDef, s: Session, u: Unit, g: GitState | null
     if (st.unlocks) return verify.cmd ? changed && verify.isVerified : committed
     if (st.observe === 'verify.passed') return verify.isVerified
     if (st.observe === 'commit') return committed && (!st.skill || u.skills.includes(st.skill))
-    if (st.observe === 'pr.created' && !st.skill && u.pr?.state === 'OPEN') return !!g && !g.dirty && g.upToDate && (!!u.pushed || own > 0)
-    if (st.observe === 'pr.created' && st.skill && st.requires !== 'refs') return !!g?.head && !!u.prHead && u.prHead === g.head
-    if (st.observe === 'pr.created') return !!u.pr && (!st.skill || ran(st))
+    if (st.observe === 'pr.created') return isGreen && isPrDone(st, u, g, own, ran(st))
     return ran(st)
   }
   // Null marks a step still open: the first open one is current, the rest pending.

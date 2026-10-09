@@ -1,5 +1,5 @@
 import type { FlowRow, FlowStepState, FlowTone, FlowView } from '../types'
-import { declaredLabels, isPrStale, isUnitFinished, stepLabel, stepSymbol } from './progress'
+import { declaredLabels, isCiWait, isPrStale, isUnitFinished, stepLabel, stepSymbol } from './progress'
 import type { Position } from './progress'
 import type { Gh, Session } from './records'
 
@@ -89,7 +89,8 @@ export function buildView(s: Session, p: Position, gh: Gh): FlowView {
       symbol: stepSymbol[st.state],
       label: stepLabel(st.step, p.u.pr),
       state: st.state,
-      hint: st.state === 'current' && st.step.human && st.step.skill ? `run /${st.step.skill}` : undefined,
+      hint: st.state === 'current' && st.step.human && st.step.skill ? `run /${st.step.skill}`
+        : st.state === 'current' && isCiWait(p) ? `waiting for CI (${p.checks})` : undefined,
       isStale: (st.step.observe === 'verify.passed' && !!p.u.verify && !p.isVerified) || isPrStale(st.step, p.u, p.g),
     })),
     notes,

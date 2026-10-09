@@ -19,7 +19,9 @@ export interface Checkout { branch: string; isDirty?: boolean; tree?: string; ah
  * `verifyFile` is the raw text of the repository's `.agents/working-agreement.json` (absent when omitted),
  * `isLoggedOut` makes every gh call fail as gh does with no login, and `isRepoBroken` makes `session.repo` throw,
  * `prView` is what every `gh pr view` answers, read at each call; without it the call prints nothing,
- * and `issueLabels` lists the labels gh reports for an issue, none when omitted.
+ * `issueLabels` lists the labels gh reports for an issue, none when omitted,
+ * `workflow` gives the repository a GitHub Actions workflow run on that event, and `checks` lists the bucket of every check
+ * `gh pr checks` reports, read at each call; without it no check is reported.
  */
 export interface Options {
   verifyFile?: string
@@ -36,6 +38,8 @@ export interface Options {
   isRepoBroken?: boolean
   prView?: PrView
   issueLabels?: Record<number, string[]>
+  workflow?: 'pull_request' | 'push'
+  checks?: string[]
 }
 
 /** What `gh pr view` answers: `body` and `headRefOid` as JSON, `isFailing` for a failed call, or `raw` for text printed as is. */
@@ -101,6 +105,8 @@ export function world(on: On, git: Checkout, options: Options = {}): World {
       if (v.isFailing) return out('', 1, 'unreachable')
       return out(v.raw ?? JSON.stringify({ body: v.body ?? '', headRefOid: v.headRefOid ?? '' }))
     }
+    if (cmd.startsWith('git grep -qE pull_request')) return out('', options.workflow === 'pull_request' ? 0 : 1)
+    if (cmd.startsWith('gh pr checks')) return options.checks ? out(JSON.stringify(options.checks.map(bucket => ({ bucket })))) : out('', 1, 'no checks reported')
     if (cmd.startsWith('gh pr list')) return out(JSON.stringify(options.prs ?? []))
     const issue = cmd.match(/^gh issue view (\d+) --json/)
     if (issue && options.missing?.includes(Number(issue[1]))) return out('', 1)
