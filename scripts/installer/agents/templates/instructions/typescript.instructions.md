@@ -27,8 +27,9 @@ applyTo: "**/*.{ts,tsx}"
 - **C5:** Values with unknown runtime shapes MUST use `unknown` until explicitly narrowed.
 - **C6:** TypeScript code MUST NOT use `any`.
 - **C7:** Optional properties MUST represent values that callers may omit.
-- **C8:** Bindings MUST use `const`; TypeScript code MUST NOT use `let` or `var`.
-- **C9:** Publicly exported functions MUST declare explicit return types.
+- **C8:** Bindings MUST use `const`.
+- **C9:** TypeScript code MUST NOT use `let` or `var`.
+- **C10:** Publicly exported functions MUST declare explicit return types.
 
 ## Behavior and Reliability
 
