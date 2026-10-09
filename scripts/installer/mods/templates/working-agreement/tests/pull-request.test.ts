@@ -66,6 +66,23 @@ test('a failing gh pr create leaves PR current, and a create confirmed by read-b
   expect(await flowStatus($)).toContain('Unit finished.')
 })
 
+test('a PR the unit created under create-pr reads PR #<n>, not Update PR #<n>', async ($, on) => {
+  world(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, unit: { skills: ['generate-commit'] }, prView: { body: closes, headRefOid: 'c1' }, toolRun: created })
+  await startSkill($, 'create-pr')
+  await $.tool.call(pr('--body "Closes #1\nCloses #2"'))
+  const text = await flowStatus($)
+  expect(text).toContain('PR #5')
+  expect(text).not.toContain('Update PR')
+})
+
+test('a stored PR the unit created reads PR #<n>, and the periodic refresh keeps that when it rewrites the state', async ($, on) => {
+  const { clock } = world(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, unit: { skills: ['generate-commit'], pr: { number: 5, state: 'CLOSED', isCreated: true } }, prs: [{ number: 5, state: 'OPEN' }] })
+  await clock.advance(61000)
+  const text = await flowStatus($)
+  expect(text).toContain('PR #5')
+  expect(text).not.toContain('Update PR')
+})
+
 test('starting create-pr alone leaves PR current, and the instruction asks to update the open PR', async ($, on) => {
   world(on, { branch: 'feat', ahead: 1 }, updating())
   expect(await promptContext($)).toContain('Next action: run the create-pr skill to update PR #5 (body must carry Closes #1, Closes #2).')
@@ -92,6 +109,22 @@ test('a successful gh pr edit under create-pr whose read-back carries every line
   const text = await flowStatus($)
   expect(text).toContain('Unit finished.')
   expect(text).not.toContain('stale')
+})
+
+test('a gh pr create under create-pr after its nested generate-pr confirms the PR and finishes the unit', async ($, on) => {
+  world(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, unit: { skills: ['generate-commit'] }, prView: { body: closes, headRefOid: 'c1' }, toolRun: created })
+  await startSkill($, 'create-pr')
+  await startSkill($, 'generate-pr')
+  await $.tool.call(pr('--body "Closes #1\nCloses #2"'))
+  expect(await flowStatus($)).toContain('Unit finished.')
+})
+
+test('a gh pr edit under create-pr after its nested generate-pr confirms the update and finishes the unit', async ($, on) => {
+  world(on, { branch: 'feat', ahead: 1 }, updating())
+  await startSkill($, 'create-pr')
+  await startSkill($, 'generate-pr')
+  await $.tool.call(edit)
+  expect(await flowStatus($)).toContain('Unit finished.')
 })
 
 for (const [name, extra] of unconfirmed) {

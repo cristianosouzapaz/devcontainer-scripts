@@ -14,7 +14,8 @@ export interface HerdrRun { id: string; tree: string }
 
 /** What the hooks share between events for the life of one module load. */
 export interface Runtime {
-  activeSkill: string | null
+  /** Every skill started in the current turn: a nested skill (generate-pr inside create-pr) does not end the one that started it. */
+  turnSkills: string[]
   ghCache: GhCache | null
   permissionMode: string | null
   prCheckedAt: number
@@ -29,7 +30,7 @@ export interface Runtime {
 
 /** The hooks' shared in-memory state; a reload evaluates the module again, so it starts over. */
 export const runtime: Runtime = {
-  activeSkill: null,
+  turnSkills: [],
   ghCache: null,
   permissionMode: null,
   prCheckedAt: 0,

@@ -21,8 +21,8 @@ export interface Session {
 }
 /** A step the user let through, and the reason they gave. */
 export interface Override { step: string; reason: string }
-/** The pull request a unit's branch opened. */
-export interface Pr { number: number; state: string }
+/** The pull request a unit's branch opened; `isCreated` marks one the unit created, as opposed to one already open when it started. */
+export interface Pr { number: number; state: string; isCreated?: boolean }
 /**
  * The stored record of one unit of work, shared by every session that works on its issue;
  * `start` is the HEAD when it was first declared, so only commits after it count as the unit's;
@@ -101,7 +101,7 @@ export function toUnit(v: unknown): Unit {
     ...(typeof r.committed === 'boolean' ? { committed: r.committed } : {}),
     ...(typeof r.pushed === 'boolean' ? { pushed: r.pushed } : {}),
     ...(typeof r.tested === 'boolean' ? { tested: r.tested } : {}),
-    ...(isRecord(r.pr) && typeof r.pr.number === 'number' ? { pr: { number: r.pr.number, state: asString(r.pr.state) } } : {}),
+    ...(isRecord(r.pr) && typeof r.pr.number === 'number' ? { pr: { number: r.pr.number, state: asString(r.pr.state), ...(r.pr.isCreated === true ? { isCreated: true } : {}) } } : {}),
     ...(typeof r.prHead === 'string' && r.prHead ? { prHead: r.prHead } : {}),
     ...(Array.isArray(r.produced) ? { produced: asStrings(r.produced) } : {}),
   }

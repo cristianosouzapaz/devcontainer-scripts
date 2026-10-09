@@ -155,6 +155,11 @@ async function ghIssue($: EngineInterface, n: number): Promise<IssueLookup> {
   return { isFound: true, state: asString(j.state), title: asString(j.title), labels: asRecords(j.labels).map(l => asString(l.name)) }
 }
 
+// The issue-writing skill started this turn, or '' when none did.
+function issueSkill(): string {
+  return runtime.turnSkills.find(n => flowDefs.issueSkills.includes(n)) ?? ''
+}
+
 // The title and labels of an issue gh found.
 function issueInfo(issue: Issue): IssueInfo {
   return { title: issue.title, labels: issue.labels }
@@ -319,7 +324,7 @@ async function judgeCall($: EngineInterface, tool: string, args: Record<string, 
   const verdicts = [...writes]
   const p = s.flow ? await position($, s) : null
 
-  if (ranCommands(command, 'gh issue create').length && !flowDefs.issueSkills.includes(runtime.activeSkill ?? '')) {
+  if (ranCommands(command, 'gh issue create').length && !issueSkill()) {
     verdicts.push(ask('gh issue create outside /to-spec or /triage', 'issues come from those skills: stop and ask the user to run one'))
   }
   if (p && ranCommands(command, 'git commit').length && p.verifyCmd && !p.isVerified && !p.u.overrides.some(o => o.step === 'verify')) {
@@ -409,7 +414,7 @@ async function syncPr($: EngineInterface, s: Session, force = false) {
     const r = await runProcess($, ['gh', 'pr', 'list', '--head', branch, '--state', 'all', '--json', 'number,state', '--limit', '1'])
     const found = r.exitCode === 0 ? asRecords(parseJson(r.stdout))[0] : undefined
     const pr: Pr | undefined = found && typeof found.number === 'number' ? { number: found.number, state: asString(found.state) } : undefined
-    if (pr && (pr.number !== u.pr?.number || pr.state !== u.pr?.state)) await $.store.set(key, { ...u, pr })
+    if (pr && (pr.number !== u.pr?.number || pr.state !== u.pr?.state)) await $.store.set(key, { ...u, pr: u.pr?.isCreated && pr.number === u.pr.number ? { ...pr, isCreated: true } : pr })
   }
 }
 
@@ -604,14 +609,14 @@ async function openPrOn($: EngineInterface, branch: string): Promise<number> {
 async function observeBash($: EngineInterface, seen: Session, command: string, ran: ToolRun) {
   const s: Session = { ...seen, info: { ...seen.info } }
   const { isOk, stdout, commit, push, pr } = bashOutcome(ran)
-  const skill = runtime.activeSkill ?? ''
+  const skill = issueSkill()
   const made = isOk && ranCommands(command, 'gh issue create').length ? stdout.match(/\/issues\/(\d+)/) : null
   // A spec can also land on the declared issue itself (gh issue edit/comment).
-  const issueRuns = isOk && flowDefs.issueSkills.includes(skill) ? ranCommands(command, 'gh issue (?:edit|comment)') : []
+  const issueRuns = isOk && skill ? ranCommands(command, 'gh issue (?:edit|comment)') : []
   const edited = s.issues.find(n => issueRuns.some(r => r.isParsed
     ? r.args.some(w => new RegExp(`(^|[#/])${n}$`).test(w))
     : new RegExp(`(^|[\\s#/])${n}(\\s|$)`).test(command)))
-  if (made && flowDefs.issueSkills.includes(skill)) {
+  if (made && skill) {
     const n = Number(made[1])
     if (!s.issues.length && !s.followUp) {
       const before = await getUnit($, await unitKey($, s))
@@ -630,7 +635,7 @@ async function observeBash($: EngineInterface, seen: Session, command: string, r
     if (issue.isFound) s.info[edited] = issueInfo(issue)
     s.output = true
   }
-  if ((made && flowDefs.issueSkills.includes(skill)) || edited !== undefined) {
+  if ((made && skill) || edited !== undefined) {
     await eachUnit($, s, u => ({ ...u, produced: mergeSkills(u.produced ?? [], [skill]) }))
   }
   if (commit) {
@@ -640,9 +645,9 @@ async function observeBash($: EngineInterface, seen: Session, command: string, r
   if (push) await eachUnit($, s, u => ({ ...u, pushed: true }))
   if (pr && (pr.action === 'created' || pr.action === 'merged')) {
     if (pr.action === 'created') s.prCreated = true
-    await eachUnit($, s, u => ({ ...u, pr: { number: pr.number, state: pr.action === 'merged' ? 'MERGED' : 'OPEN' } }))
+    await eachUnit($, s, u => ({ ...u, pr: pr.action === 'merged' ? { number: pr.number, state: 'MERGED' } : { number: pr.number, state: 'OPEN', isCreated: true } }))
   }
-  if (isOk && skill === 'create-pr' && ranCommands(command, 'gh pr (?:create|edit)').length && (await confirmPr($, s, stdout))) s.prCreated = true
+  if (isOk && runtime.turnSkills.includes('create-pr') && ranCommands(command, 'gh pr (?:create|edit)').length && (await confirmPr($, s, stdout))) s.prCreated = true
   const verifyCmd = await verifyCommand($)
   if (verifyCmd && isOk && runsVerify(command, verifyCmd)) {
     const key = await treeKey($)
@@ -749,7 +754,7 @@ export const register: Register = (on, options) => {
 
   on('skill.prompt', async ($, e, next) => {
     const name = e.skill.split(':').pop()!
-    runtime.activeSkill = name
+    if (!runtime.turnSkills.includes(name)) runtime.turnSkills = [...runtime.turnSkills, name]
     await serial(async () => {
       const s = await getSession($)
       if (!s.flow) {
@@ -766,7 +771,7 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId) return done
-    runtime.activeSkill = null
+    runtime.turnSkills = []
     if (runtime.handoff?.armed) {
       runtime.handoff.armed = false
       runtime.handoff.ended(e.reason)

@@ -38,6 +38,16 @@ test('gh issue create asks outside the issue-writing skills, and goes through in
   }
 })
 
+for (const skill of ['to-spec', 'triage']) {
+  test(`gh issue create goes through inside ${skill} after a nested skill starts`, async ($, on) => {
+    world(on, { branch: 'feat' })
+    await setPermissionMode($, 'auto')
+    await startSkill($, skill)
+    await startSkill($, 'grilling')
+    expect((await $.tool.call(bashCall('gh issue create --title t --body b'))).deny).toBeUndefined()
+  })
+}
+
 for (const [state, gh] of Object.entries(degraded)) {
   test(`a write under an unverified issue asks while GitHub is ${state}, and local rules still deny`, async ($, on) => {
     world(on, { branch: 'feat' }, { ...unverified, ...gh })

@@ -32,7 +32,7 @@ export const branchFirst = 'create a branch for the issue (git switch -c <name>)
 export const onBase = (g: GitState | null): boolean => !!g && g.branch === g.base
 
 /**
- * Names a step as the pane and the instruction show it: the PR step says what it does to the unit's open PR, except a follow-up's, which keeps its label.
+ * Names a step as the pane and the instruction show it: the PR step says what it does to the unit's open PR, or names the one the unit created, except a follow-up's, which keeps its label.
  *
  * @param step - The step.
  * @param pr - The unit's PR on record, if any.
@@ -40,6 +40,7 @@ export const onBase = (g: GitState | null): boolean => !!g && g.branch === g.bas
  */
 export function stepLabel(step: Step, pr: Pr | undefined): string {
   if (step.observe !== 'pr.created' || step.requires === 'refs' || pr?.state !== 'OPEN') return step.label
+  if (pr.isCreated) return `PR #${pr.number}`
   return step.skill ? `Update PR #${pr.number}` : `Push to PR #${pr.number}`
 }
 

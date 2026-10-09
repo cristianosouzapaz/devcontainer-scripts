@@ -21,6 +21,14 @@ test('Spec stays current while /to-spec runs and ends when the issue is written'
   expect(await currentStep($)).toBe('Code')
 })
 
+test('a spec lands on the declared issue after a nested skill starts inside /to-spec', async ($, on) => {
+  world(on, { branch: 'feat' }, grilled)
+  await startSkill($, 'to-spec')
+  await startSkill($, 'domain-modeling')
+  await $.tool.call(bashCall('gh issue edit 1 --body-file spec.md --add-label ready-for-agent'))
+  expect(await currentStep($)).toBe('Code')
+})
+
 test('Grill names /to-spec as the user\'s next step', async ($, on) => {
   world(on, { branch: 'feat' }, grilled)
   const ctx = await promptContext($)
