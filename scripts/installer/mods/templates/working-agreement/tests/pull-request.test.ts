@@ -38,6 +38,12 @@ test('gh pr create reads the Closes lines from --body-file', async ($, on) => {
   expect((await $.tool.call(pr(`--body-file ${root}/both.md`))).deny).toBeUndefined()
 })
 
+test('gh pr create written over several lines with backslash continuations reads its Closes lines', async ($, on) => {
+  world(on, { branch: 'feat' }, twoIssueCloseOut)
+  expect((await $.tool.call(bashCall(`gh pr create \\\n  --title t \\\n  --body 'Closes #1'`))).deny).toContain('Closes #2')
+  expect((await $.tool.call(bashCall(`gh pr create \\\n  --title t \\\n  --body '${closes}'`))).deny).toBeUndefined()
+})
+
 test('gh pr create on a dirty working tree is denied', async ($, on) => {
   world(on, { branch: 'feat', isDirty: true }, twoIssueCloseOut)
   expect((await $.tool.call(pr('--body "Closes #1\nCloses #2"'))).deny).toContain('working tree is dirty')
@@ -212,6 +218,32 @@ test('a unit with no recorded branch discovers its open PR from the current bran
   const { clock } = world(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, unit: { skills: ['generate-commit'] }, prs: [{ number: 7, state: 'OPEN' }] })
   await clock.advance(61000)
   expect(await flowStatus($)).toContain('Update PR #7')
+})
+
+// A Fix of #1 declared at HEAD on a branch that already carries the open PR #7 of other work.
+const declaredOnOthersPr: Options = {
+  session: { flow: 'fix', info: { 1: { title: 'bug', labels: [] } } }, unit: { skills: [], start: 'c1' }, prs: [{ number: 7, state: 'OPEN' }],
+}
+
+test('a unit with no commit of its own does not adopt the open PR of the current branch', async ($, on) => {
+  const { clock } = world(on, { branch: 'feat', ahead: 1 }, declaredOnOthersPr)
+  await clock.advance(61000)
+  expect(await flowStatus($)).not.toContain('PR #7')
+})
+
+test('a unit adopts the open PR of the current branch once HEAD moves past its start', async ($, on) => {
+  const git = { branch: 'feat', ahead: 1 }
+  const { clock } = world(on, git, declaredOnOthersPr)
+  git.ahead = 2
+  await clock.advance(61000)
+  expect(await flowStatus($)).toContain('Update PR #7')
+})
+
+test('an edit under create-pr does not record the open PR of the current branch for a unit with no commit of its own', async ($, on) => {
+  world(on, { branch: 'feat', ahead: 1 }, { ...declaredOnOthersPr, prView: { body: 'Closes #1', headRefOid: 'c1' }, toolRun: { result: { stdout: '' } } })
+  await startSkill($, 'create-pr')
+  await $.tool.call(bashCall('gh pr edit --body "Closes #1"'))
+  expect(await flowStatus($)).not.toContain('PR #7')
 })
 
 test('no PR is discovered from the default branch', async ($, on) => {

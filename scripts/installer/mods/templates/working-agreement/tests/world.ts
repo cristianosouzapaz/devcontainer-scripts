@@ -28,7 +28,8 @@ export interface Checkout {
  * `prView` is what every `gh pr view` answers, read at each call; without it the call prints nothing,
  * `issueLabels` lists the labels gh reports for an issue, none when omitted, read at each call like `isLoggedOut`, so a test can change either mid-way,
  * `workflow` gives the repository a GitHub Actions workflow run on that event, and `checks` lists the bucket of every check
- * `gh pr checks` reports, read at each call; without it no check is reported.
+ * `gh pr checks` reports, read at each call; without it no check is reported,
+ * and `cwd` is the session's working directory, the repository root when omitted.
  */
 export interface Options {
   verifyFile?: string
@@ -47,6 +48,7 @@ export interface Options {
   issueLabels?: Record<number, string[]>
   workflow?: 'pull_request' | 'push'
   checks?: string[]
+  cwd?: string
 }
 
 /** What `gh pr view` answers: `body` and `headRefOid` as JSON, `isFailing` for a failed call, or `raw` for text printed as is. */
@@ -83,7 +85,7 @@ export function world(on: On, git: Checkout, options: Options = {}): World {
   })
   const clock = mock.clock(on)
   on('session.id', () => ({ value: sid }))
-  on('session.cwd', () => ({ value: root }))
+  on('session.cwd', () => ({ value: options.cwd ?? root }))
   on('session.repo', () => {
     if (options.isRepoBroken) throw new Error('session.repo failed')
     return { value: { root, remote: `git@github.com:${slug}.git`, internal: false, name: 'r' } }
@@ -120,7 +122,13 @@ export function world(on: On, git: Checkout, options: Options = {}): World {
       if (v.isFailing) return out('', 1, 'unreachable')
       return out(v.raw ?? JSON.stringify({ body: v.body ?? '', headRefOid: v.headRefOid ?? '' }))
     }
-    if (cmd.startsWith('git grep -qE pull_request')) return out('', options.workflow === 'pull_request' ? 0 : 1)
+    if (cmd.startsWith('git grep -qE pull_request') || cmd.startsWith(`git -C ${root} grep -qE pull_request`)) {
+      // Git resolves the pathspec against the cwd (or `-C`), so only a root-anchored one finds the workflows from a subfolder.
+      const pathspec = e.argv[e.argv.length - 1]
+      const isAtRoot = e.argv[1] === '-C' ? e.argv[2] === root : (options.cwd ?? root) === root
+      const isFound = pathspec === ':/.github/workflows' || (pathspec === '.github/workflows' && isAtRoot)
+      return out('', isFound && options.workflow === 'pull_request' ? 0 : 1)
+    }
     if (cmd.startsWith('gh pr checks')) return options.checks ? out(JSON.stringify(options.checks.map(bucket => ({ bucket })))) : out('', 1, 'no checks reported')
     if (cmd.startsWith('gh pr list')) return out(JSON.stringify(options.prs ?? []))
     const issue = cmd.match(/^gh issue view (\d+) --json/)

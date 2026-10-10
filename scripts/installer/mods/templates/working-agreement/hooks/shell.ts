@@ -34,6 +34,11 @@ function scanWords(text: string) {
   // Reads the character under the scan; the caller then moves past it.
   const read = () => {
     const ch = text[at.i]!
+    // A line continuation: the shell drops the backslash and the newline everywhere but inside single quotes.
+    if (ch === '\\' && text[at.i + 1] === '\n' && at.quote !== "'") {
+      at.i++
+      return
+    }
     if (at.quote) {
       if (ch === at.quote) at.quote = null
       else at.word += ch

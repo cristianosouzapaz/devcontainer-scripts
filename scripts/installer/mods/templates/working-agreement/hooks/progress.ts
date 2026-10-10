@@ -19,6 +19,8 @@ export type RedState = 'none' | 'holds' | 'stale'
 /** Where the session's unit stands in its flow, with the checkout, the Verify state and the CI state of its PR it was judged on. */
 export interface Position {
   def: FlowDef; u: Unit; g: GitState | null; states: StepState[]; current: StepState | null
+  /** The unit's own commits: those past its start, or every commit ahead of base when it has none. */
+  own: number
   isVerified: boolean; verifyCmd: string | undefined; red: RedState
   /** Off unless the PR step waits only on CI, then what `gh pr checks` reported. */
   checks: Checks
@@ -194,13 +196,16 @@ export const prStep = (def: FlowDef): Step | undefined => def.steps.find(st => s
 export const declaredLabels = (s: Session): string[] => s.issues.flatMap(n => s.info[n]?.labels ?? [])
 
 /**
- * Names the branch a unit's PR lives on: the branch the unit recorded, else the checkout's branch unless it is the default one.
+ * Names the branch a unit's PR lives on: the branch the unit recorded, else the checkout's branch unless it is the default one
+ * or the unit has a start and no commit past it, since a branch it has no work on carries other work's PR.
  *
  * @param u - The unit.
  * @param g - The checkout, or null outside a repository.
+ * @param own - The unit's commits past its start; ignored for a unit with no start.
  * @returns The branch, or undefined when there is none to look on.
  */
-export const prBranch = (u: Unit, g: GitState | null): string | undefined => u.branch ?? (g && !onBase(g) ? g.branch : undefined)
+export const prBranch = (u: Unit, g: GitState | null, own: number): string | undefined =>
+  u.branch ?? (g && !onBase(g) && (!u.start || own > 0) ? g.branch : undefined)
 
 /**
  * Tells whether a PR step's own work is done, CI aside: the branch pushed to the open PR, or the PR opened or updated to HEAD.

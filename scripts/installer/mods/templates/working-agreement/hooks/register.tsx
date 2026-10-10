@@ -135,8 +135,9 @@ async function readGit($: EngineInterface): Promise<GitState | null> {
 }
 
 // Whether a GitHub Actions workflow runs on pull requests, so a PR has CI to wait for; without one the CI gate is off.
+// The pathspec is anchored at the root: git resolves a plain one against the working directory, which may be a subfolder.
 async function hasCi($: EngineInterface) {
-  return (await runProcess($, ['git', 'grep', '-qE', 'pull_request(_target)?', '--', '.github/workflows'])).exitCode === 0
+  return (await runProcess($, ['git', 'grep', '-qE', 'pull_request(_target)?', '--', ':/.github/workflows'])).exitCode === 0
 }
 
 // The PR a gh pr merge names — number, URL or branch — or undefined for the current branch's.
@@ -304,7 +305,7 @@ async function position($: EngineInterface, s: Session): Promise<Position | null
   const unchecked = stepStates(def, s, u, g, own, verify, 'off', red)
   const checks = await stepChecks($, unchecked, u, g)
   const states = checks === 'off' ? unchecked : stepStates(def, s, u, g, own, verify, checks, red)
-  return { def, u, g, states, current: states.find(st => st.state === 'current') ?? null, isVerified, verifyCmd, red, checks }
+  return { def, u, g, own, states, current: states.find(st => st.state === 'current') ?? null, isVerified, verifyCmd, red, checks }
 }
 
 // Skips the issue sync, which takes the lock: declare holds it and has just read its issues.
@@ -517,9 +518,9 @@ async function syncPr($: EngineInterface, s: Session, force = false) {
   for (const key of await unitKeys($, s)) {
     const u = await getUnit($, key)
     // A unit records its branch only on the agent's first write, so code committed from a terminal leaves none;
-    // the default branch never carries a unit's PR.
+    // the default branch never carries a unit's PR, nor does a branch the unit has no commit of its own on.
     const g = u.branch ? null : await readGit($)
-    const branch = prBranch(u, g)
+    const branch = prBranch(u, g, g && u.start ? await aheadOf($, u.start) : 0)
     if (!branch) continue
     const r = await runProcess($, ['gh', 'pr', 'list', '--head', branch, '--state', 'all', '--json', 'number,state', '--limit', '1'])
     const found = r.exitCode === 0 ? asRecords(parseJson(r.stdout))[0] : undefined
@@ -725,7 +726,7 @@ async function confirmPr($: EngineInterface, s: Session, stdout: string): Promis
   const p = s.flow ? await position($, s) : null
   const step = p ? prStep(p.def) : undefined
   if (!p || !step?.skill || step.requires === 'refs' || !p.g?.head || (step.requires === 'linked' && s.followUp === undefined)) return false
-  const branch = prBranch(p.u, p.g)
+  const branch = prBranch(p.u, p.g, p.own)
   const known = (p.u.pr?.state === 'OPEN' ? p.u.pr.number : 0) || (Number(stdout.match(/\/pull\/(\d+)/)?.[1]) || 0)
   const found = known || (branch ? await openPrOn($, branch) : 0)
   if (!found) return false

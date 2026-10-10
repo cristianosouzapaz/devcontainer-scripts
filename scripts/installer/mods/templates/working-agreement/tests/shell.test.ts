@@ -28,6 +28,7 @@ const others = [
   'echo x > $OUT',
   'echo x > ~/a',
   'cp a.txt /tmp/b',
+  'cp a.txt \\\n  /tmp/b',
   'cat <<EOF\na > b.txt\nEOF',
 ]
 
