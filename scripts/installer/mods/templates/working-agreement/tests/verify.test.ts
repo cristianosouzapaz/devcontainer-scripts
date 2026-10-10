@@ -1,8 +1,13 @@
 import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
+import type { On } from 'claude-code'
 
 import { bashCall, declareFlow, flow, flowStatus, noFlow, promptContext, setPermissionMode, verifyFile } from './helpers'
+import type { ToolRun } from '../hooks/outcome'
 import { world } from './world'
+
+/** What the next tool call returns, swapped by a test while a verify run is in flight. */
+interface Pending { run: ToolRun }
 
 // Malformed verify files, by what is wrong with them.
 const malformed: [string, string][] = [
@@ -111,7 +116,9 @@ for (const [name, from, on_, id, line, isPassed] of herdr) {
     await $.tool.call(bashCall(run(from, launch(id))))
     Object.assign(toolRun, matched(line))
     await $.tool.call(bashCall(wait(on_, id)))
-    expect(await promptContext($)).toContain(isPassed ? 'current step: Commit' : 'current step: Change')
+    const text = await promptContext($)
+    if (isPassed) expect(text).toContain('current step: Commit')
+    else expect(text).not.toContain('current step: Commit')
   })
 }
 
@@ -152,3 +159,156 @@ for (const [name, inner] of [['no marker', './test/run.sh'], ['another command',
     expect(await promptContext($)).toContain('current step: Change')
   })
 }
+
+// A verify run in flight: the tool call is open and the test code observes the mod from inside it.
+const changed = { branch: 'feat', ahead: 8, isDirty: true }
+const green: ToolRun = { result: { stdout: '' } }
+const isRunning = (status: string | undefined) => (status ?? '').includes('▸ Verify — running') && (status ?? '').includes('✓ Code')
+const isIdle = (status: string | undefined) => (status ?? '').includes('▸ Code') && (status ?? '').includes('○ Verify') && !(status ?? '').includes('running')
+// The steps of the last view written to the pane's store, which a read of the pane would refresh.
+const watchView = (on: On) => {
+  const seen = { steps: '' }
+  on('state.set', { plugin: 'working-agreement', key: 'view' }, (_$, e, next) => {
+    seen.steps = JSON.stringify(e.value?.steps ?? [])
+    return next(e)
+  })
+  return seen
+}
+
+test('a direct verify run refreshes the pane before the command executes', async ($, on) => {
+  const view = watchView(on)
+  const seen = { steps: '' }
+  world(on, changed, { verifyFile, toolRun: () => { seen.steps = view.steps; return green } })
+  await $.tool.call(bashCall('./test/run.sh'))
+  expect(seen.steps).toContain('running')
+  expect(seen.steps).toContain('Verify')
+})
+
+test('a direct verify run in flight shows Code done and Verify running', async ($, on) => {
+  const seen = { status: '' }
+  world(on, changed, { verifyFile, toolRun: async () => { seen.status = (await flowStatus($)) ?? ''; return green } })
+  await $.tool.call(bashCall('./test/run.sh'))
+  expect(isRunning(seen.status)).toBe(true)
+})
+
+test('a direct verify run in flight tells the agent to wait instead of running it', async ($, on) => {
+  const seen = { text: '' }
+  world(on, changed, { verifyFile, toolRun: async () => { seen.text = await promptContext($); return green } })
+  await $.tool.call(bashCall('./test/run.sh'))
+  expect(seen.text).toContain('current step: Verify')
+  expect(seen.text).toContain('wait')
+  expect(seen.text).not.toContain('run ./test/run.sh')
+})
+
+test('a commit asks while a direct verify run is in flight', async ($, on) => {
+  const seen = { verdict: '' }
+  world(on, changed, {
+    verifyFile,
+    toolRun: async () => {
+      const v = await commit($)
+      seen.verdict = v.decision === 'ask' ? v.reason : v.decision
+      return green
+    },
+  })
+  await setPermissionMode($, 'default')
+  await $.tool.call(bashCall('./test/run.sh'))
+  expect(seen.verdict).toContain('Verify is running — wait for it')
+})
+
+test('a red direct verify run ends the run in flight', async ($, on) => {
+  const seen = { status: '' }
+  world(on, changed, { verifyFile, toolRun: async () => { seen.status = (await flowStatus($)) ?? ''; return { isError: true, result: { stdout: '' } } } })
+  await $.tool.call(bashCall('./test/run.sh'))
+  expect(isRunning(seen.status)).toBe(true)
+  expect(isIdle(await flowStatus($))).toBe(true)
+})
+
+test('a tree change during a direct verify run ends the run in flight and Verify does not pass', async ($, on) => {
+  const git = { ...changed, tree: 'one' }
+  const seen = { status: '' }
+  world(on, git, {
+    verifyFile,
+    toolRun: async () => { git.tree = 'two'; seen.status = (await flowStatus($)) ?? ''; return green },
+  })
+  await $.tool.call(bashCall('./test/run.sh'))
+  expect(isRunning(seen.status)).toBe(false)
+  expect(seen.status).not.toContain('running')
+  expect(isIdle(await flowStatus($))).toBe(true)
+  expect(await promptContext($)).toContain('current step: Code')
+})
+
+test('a direct verify run launched in the background does not stay in flight or pass Verify', async ($, on) => {
+  world(on, changed, { verifyFile, toolRun: { result: { backgroundTaskId: 'b1' } } })
+  await $.tool.call(bashCall('./test/run.sh'))
+  expect(isIdle(await flowStatus($))).toBe(true)
+  expect(await promptContext($)).toContain('current step: Code')
+})
+
+test('a herdr verify launch with no wait-output yet is in flight', async ($, on) => {
+  const toolRun = { result: { stdout: '' } }
+  world(on, changed, { verifyFile, toolRun })
+  await setPermissionMode($, 'default')
+  await $.tool.call(bashCall(run('h10:p1', launch('b10'))))
+  expect(isRunning(await flowStatus($))).toBe(true)
+  const text = await promptContext($)
+  expect(text).toContain('herdr pane wait-output h10:p1')
+  expect(text).not.toContain('run ./test/run.sh')
+  const verdict = await commit($)
+  expect(verdict.decision === 'ask' && verdict.reason).toContain('Verify is running — wait for it')
+})
+
+for (const [name, answer] of [['an errored wait-output', { isError: true, result: { stdout: '' } }], ['a wait-output without a matched line', { result: { stdout: 'timed out' } }]] as const) {
+  test(`a herdr verify run stays in flight after ${name}`, async ($, on) => {
+    const next: Pending = { run: { result: { stdout: '' } } }
+    world(on, changed, { verifyFile, toolRun: () => next.run })
+    await $.tool.call(bashCall(run('h11:p1', launch('b11'))))
+    next.run = answer
+    await $.tool.call(bashCall(wait('h11:p1', 'b11')))
+    expect(isRunning(await flowStatus($))).toBe(true)
+  })
+}
+
+test('a herdr verify run reporting a non-zero marker ends the run in flight', async ($, on) => {
+  const next: Pending = { run: { result: { stdout: '' } } }
+  world(on, changed, { verifyFile, toolRun: () => next.run })
+  await $.tool.call(bashCall(run('h12:p1', launch('b12'))))
+  expect(isRunning(await flowStatus($))).toBe(true)
+  next.run = matched('__EXIT_b12=1__')
+  await $.tool.call(bashCall(wait('h12:p1', 'b12')))
+  expect(isIdle(await flowStatus($))).toBe(true)
+})
+
+test('a tree change ends a herdr verify run in flight, and a later green marker does not pass Verify', async ($, on) => {
+  const git = { ...changed, tree: 'one' }
+  const next: Pending = { run: { result: { stdout: '' } } }
+  world(on, git, { verifyFile, toolRun: () => next.run })
+  await $.tool.call(bashCall(run('h13:p1', launch('b13'))))
+  expect(isRunning(await flowStatus($))).toBe(true)
+  git.tree = 'two'
+  expect(isIdle(await flowStatus($))).toBe(true)
+  next.run = matched('__EXIT_b13=0__')
+  await $.tool.call(bashCall(wait('h13:p1', 'b13')))
+  expect(isIdle(await flowStatus($))).toBe(true)
+  expect(await promptContext($)).toContain('current step: Code')
+})
+
+test('a changed tree with no verify run in flight shows Code current and Verify pending', async ($, on) => {
+  world(on, changed, { verifyFile })
+  expect(isIdle(await flowStatus($))).toBe(true)
+  expect(await promptContext($)).toContain('run ./test/run.sh')
+})
+
+test('a green verify run on a tree that then changes is not in flight', async ($, on) => {
+  const git = { ...changed, tree: 'one' }
+  world(on, git, { verifyFile })
+  await $.tool.call(bashCall('./test/run.sh'))
+  git.tree = 'two'
+  expect(isIdle(await flowStatus($))).toBe(true)
+})
+
+test('a piped verify command is not a run in flight', async ($, on) => {
+  const seen = { status: '' }
+  world(on, changed, { verifyFile, toolRun: async () => { seen.status = (await flowStatus($)) ?? ''; return green } })
+  await $.tool.call(bashCall('./test/run.sh | tail'))
+  expect(seen.status).not.toContain('running')
+})

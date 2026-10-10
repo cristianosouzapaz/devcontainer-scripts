@@ -4,6 +4,9 @@ import type { On } from 'claude-code'
 
 import type { ToolRun } from '../hooks/outcome'
 
+/** What a tool call returns in a world: a fixed result, or a function called at each call. */
+export type ToolRunSource = ToolRun | (() => ToolRun | Promise<ToolRun>)
+
 /**
  * The working tree a world answers git with; tests mutate it to move the checkout.
  * `ahead` is how many commits the branch is ahead of its base; HEAD is `c<ahead>`, on a linear history.
@@ -22,7 +25,7 @@ export interface Checkout {
  * What a world holds beyond its checkout; `unit` is the stored unit record, kept under the session's own unit key when `session.followUp` is set, else under issue #1's;
  * `missing` lists the issues gh cannot find, `prs` is what every `gh pr list` prints,
  * `documents` is what the handoff's document search prints, one path per line, `toolRun` is what every tool call returns,
- * read at each call so a test can change it, `failing` is a command prefix whose `process.run` throws,
+ * read at each call so a test can change it, or a function (sync or async) called at each tool call, whose body runs while the call is in flight, `failing` is a command prefix whose `process.run` throws,
  * `verifyFile` is the raw text of the repository's `.agents/working-agreement.json` (absent when omitted),
  * `isLoggedOut` makes every gh call fail as gh does with no login, and `isRepoBroken` makes `session.repo` throw,
  * `prView` is what every `gh pr view` answers, read at each call; without it the call prints nothing,
@@ -40,7 +43,7 @@ export interface Options {
   prs?: Record<string, unknown>[]
   files?: Record<string, string>
   documents?: string
-  toolRun?: ToolRun
+  toolRun?: ToolRunSource
   failing?: string
   isLoggedOut?: boolean
   isRepoBroken?: boolean
@@ -152,7 +155,7 @@ export function world(on: On, git: Checkout, options: Options = {}): World {
     return {}
   })
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('tool.call', () => options.toolRun ?? { result: 'written' })
+  on('tool.call', () => (typeof options.toolRun === 'function' ? options.toolRun() : options.toolRun ?? { result: 'written' }))
   on('tool.check', () => ({ decision: 'allow' }))
   on('skill.prompt', (_$, e) => ({ text: e.text }))
   on('prompt.submit', (_$, e) => ({ text: e.text, context: e.context }))

@@ -1,6 +1,6 @@
 import type { FlowRow, FlowStepState, FlowTone, FlowView } from '../types'
 import { declaredLabels, isCiWait, isPrStale, isUnitFinished, stepLabel, stepSymbol } from './progress'
-import type { Position } from './progress'
+import type { Position, StepState } from './progress'
 import type { Gh, Session } from './records'
 
 /** The width of a row's key column, in characters. */
@@ -51,6 +51,7 @@ export const paneRule = (columns: number): string => '─'.repeat(Math.max(colum
  * @returns The pane's view.
  */
 export function buildView(s: Session, p: Position, gh: Gh): FlowView {
+  const isRunning = (st: StepState): boolean => !!p.running && st.state === 'current' && st.step.observe === 'verify.passed'
   const meta: FlowRow[] = []
   const notes: FlowRow[] = []
   if (p.g) {
@@ -87,11 +88,11 @@ export function buildView(s: Session, p: Position, gh: Gh): FlowView {
     labels: [...new Set(declaredLabels(s))],
     steps: p.states.map(st => ({
       symbol: stepSymbol[st.state],
-      label: stepLabel(st.step, p.u.pr),
+      label: stepLabel(st.step, p.u.pr) + (isRunning(st) ? ' — running' : ''),
       state: st.state,
       hint: st.state === 'current' && st.step.human && st.step.skill ? `run /${st.step.skill}`
         : st.state === 'current' && isCiWait(p) ? `waiting for CI (${p.checks})` : undefined,
-      isStale: (st.step.observe === 'verify.passed' && !!p.u.verify && !p.isVerified) || isPrStale(st.step, p.u, p.g),
+      isStale: (st.step.observe === 'verify.passed' && !!p.u.verify && !p.isVerified && !isRunning(st)) || isPrStale(st.step, p.u, p.g),
     })),
     notes,
     footer: isFinished || s.isLong || s.handoff

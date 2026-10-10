@@ -1,6 +1,6 @@
 {
   "name": "working-agreement",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Enforces and shows the AGENTS.md work flows",
   "types": "./types/index.d.ts",
   "userConfig": {

@@ -6,6 +6,7 @@ import { bashCall, currentStep, flow, flowStatus, promptContext, verifyFile, wri
 import { stepSymbol } from '../hooks/progress'
 import { world } from './world'
 import type { Checkout } from './world'
+import type { ToolRun } from '../hooks/outcome'
 
 // A Fix session on #1 whose unit has already run diagnosing-bugs.
 const diagnosed = { session: { flow: 'fix', info: { 1: { title: 'bug', labels: [] } } }, unit: { skills: ['diagnosing-bugs'], start: 'c0' } }
@@ -175,3 +176,30 @@ test('a failing test run changes nothing outside the Fix flow', async ($, on) =>
   expect(await currentStep($)).toBe('Code')
   expect(await flowStatus($)).not.toContain('Diagnose')
 })
+
+// herdr runs of a reproduction test that is not the verify command: the marker id and pane (unique to this file), the command, the non-test paths in the tree at launch, the exit code the wait reports and whether Diagnose completes.
+const herdrTest: [string, string, string, string, string[], number, boolean][] = [
+  ['a failing run of a named test file', 'e1', 'h8:p1', 'bun test test/fix.bats', [], 1, true],
+  ['a failing run of a directory containing it', 'e2', 'h8:p2', 'claude plugin test test/', [], 1, true],
+  ['a passing run', 'e3', 'h8:p3', 'bun test test/fix.bats', [], 0, false],
+  ['a failing run with a non-test change in the tree at launch', 'e4', 'h8:p4', 'bun test test/fix.bats', ['src/x.sh'], 1, false],
+]
+
+for (const [name, id, pane, command, changed, code, completes] of herdrTest) {
+  test(`a herdr launch of the reproduction test with ${name} ${completes ? 'completes' : 'does not complete'} Diagnose`, async ($, on) => {
+    const toolRun: ToolRun = { result: { stdout: '' } }
+    world(on, { branch: 'fix', hashes: { ...hashes }, changed }, { ...diagnosed, verifyFile, toolRun })
+    await $.tool.call(writeCall('test/fix.bats'))
+    await $.tool.call(bashCall(`herdr pane run ${pane} '${command}; echo "__EXIT_${id}=$?__"'`))
+    const status = (await flowStatus($)) ?? ''
+    expect(status).not.toContain('running')
+    const line = JSON.stringify({ id: 'cli:pane:wait-output', result: { matched_line: `__EXIT_${id}=${code}__`, type: 'output_matched' } })
+    Object.assign(toolRun, { result: { stdout: line } })
+    await $.tool.call(bashCall(`herdr pane wait-output ${pane} --regex '__EXIT_${id}=[0-9]+__' --source recent-unwrapped --timeout 590000 --lines 80`))
+    const text = await promptContext($)
+    expect(text.includes('current step: Code')).toBe(completes)
+    expect(text.includes('current step: Diagnose')).toBe(!completes)
+    expect(text).not.toContain('current step: Commit')
+    expect((await flowStatus($)) ?? '').not.toContain('running')
+  })
+}

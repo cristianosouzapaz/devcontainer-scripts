@@ -11,7 +11,16 @@ export interface GitState { root: string; branch: string; head: string; base: st
 export interface StepState { step: Step; state: FlowStepState }
 
 /** The repository's verify command, if it has one, and whether a run of it passed on the current tree. */
-export interface VerifyState { cmd: string | undefined; isVerified: boolean }
+export interface VerifyState { cmd: string | undefined; isVerified: boolean; running: VerifyRun | null }
+
+/** A direct run of the verify command. */
+export interface DirectVerifyRun { kind: 'direct' }
+
+/** A verify run launched in a herdr pane, which reports through that pane. */
+export interface HerdrVerifyRun { kind: 'herdr'; pane: string }
+
+/** A verify run in flight on the current tree. */
+export type VerifyRun = DirectVerifyRun | HerdrVerifyRun
 
 /** Whether the reproduction test has been seen failing on unfixed code: never, and still unchanged since, or changed since. */
 export type RedState = 'none' | 'holds' | 'stale'
@@ -22,6 +31,8 @@ export interface Position {
   /** The unit's own commits: those past its start, or every commit ahead of base when it has none. */
   own: number
   isVerified: boolean; verifyCmd: string | undefined; red: RedState
+  /** A verify run in flight on the current tree, if any. */
+  running: VerifyRun | null
   /** Off unless the PR step waits only on CI, then what `gh pr checks` reported. */
   checks: Checks
 }
@@ -92,9 +103,10 @@ export function missingLines(requires: Step['requires'], s: Session, body: strin
  * @param isStale - Whether the step's confirmed update no longer matches HEAD, so the branch must be pushed first.
  * @param testFiles - The test files the unit wrote.
  * @param red - Whether the reproduction test has been seen failing on unfixed code.
+ * @param running - The verify run in flight on the current tree, if any.
  * @returns The step's next action, as an imperative phrase.
  */
-export function requirement(step: Step, s: Session, verifyCmd: string | undefined, skills: string[], isOnBase = false, pr?: Pr, isStale = false, testFiles: string[] = [], red: RedState = 'none'): string {
+export function requirement(step: Step, s: Session, verifyCmd: string | undefined, skills: string[], isOnBase = false, pr?: Pr, isStale = false, testFiles: string[] = [], red: RedState = 'none', running: VerifyRun | null = null): string {
   if (step.human && step.skill) return `the user's step: stop and ask them to run /${step.skill}`
   if (step.exempt === 'tests') {
     const first = step.skill && !skills.includes(step.skill) ? `run the ${step.skill} skill, then ` : ''
@@ -110,6 +122,9 @@ export function requirement(step: Step, s: Session, verifyCmd: string | undefine
   if (step.unlocks) {
     const change = verifyCmd ? `make the change, then run ${verifyCmd} to pass Verify` : 'make the change'
     return isOnBase ? `${branchFirst} first, then ${change}` : change
+  }
+  if (step.observe === 'verify.passed' && running) {
+    return running.kind === 'herdr' ? `wait for the running ${verifyCmd}: herdr pane wait-output ${running.pane} for its exit marker` : `wait for the running ${verifyCmd} to finish`
   }
   if (step.observe === 'verify.passed') return `run ${verifyCmd} exactly (no pipe, not in background)`
   if (step.observe === 'commit') {
@@ -148,7 +163,7 @@ export function instruction(p: Position, s: Session): string {
   const handover = next?.step.human && next.step.skill
     ? ` When it is done, do not run or offer ${next.step.skill} yourself: the next step is the user's — tell them to run /${next.step.skill}.`
     : ''
-  return `[working-agreement] ${p.def.label}${issue} — current step: ${stepLabel(p.current.step, p.u.pr)}. Next action: ${requirement(p.current.step, s, p.verifyCmd, p.u.skills, onBase(p.g), p.u.pr, isPrStale(p.current.step, p.u, p.g), p.u.testFiles, p.red)}.${handover}`
+  return `[working-agreement] ${p.def.label}${issue} — current step: ${stepLabel(p.current.step, p.u.pr)}. Next action: ${requirement(p.current.step, s, p.verifyCmd, p.u.skills, onBase(p.g), p.u.pr, isPrStale(p.current.step, p.u, p.g), p.u.testFiles, p.red, p.running)}.${handover}`
 }
 
 /**
@@ -261,7 +276,7 @@ export function stepStates(def: FlowDef, s: Session, u: Unit, g: GitState | null
       const later = talk.slice(talk.indexOf(st) + 1)
       return ran(st) && (!later.length || later.some(ran))
     }
-    if (st.unlocks) return verify.cmd ? changed && verify.isVerified : committed
+    if (st.unlocks) return verify.cmd ? changed && (verify.isVerified || !!verify.running) : committed
     if (st.observe === 'verify.passed') return verify.isVerified
     if (st.observe === 'commit') return committed && (!st.skill || u.skills.includes(st.skill))
     if (st.observe === 'pr.created') return isGreen && isPrDone(st, u, g, own, ran(st))

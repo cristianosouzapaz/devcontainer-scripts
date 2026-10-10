@@ -6,19 +6,19 @@ import { checksTodo, readChecks } from './checks'
 import type { Checks } from './checks'
 import { flowDefs } from './flows'
 import type { FlowDef } from './flows'
-import { herdrVerifyLaunch, herdrWaitArgs } from './herdr'
+import { herdrLaunch, herdrVerifyLaunch, herdrWaitArgs } from './herdr'
 import { asRecords, asString, isRecord, parseJson } from './json'
 import { bashOutcome } from './outcome'
 import type { ToolRun } from './outcome'
 import { matches, normalize, repoRelative } from './paths'
 import { branchFirst, instruction, isUnitFinished, issueRefs, missingLines, onBase, prBranch, prStep, requirement, stepLabel, stepStates, stepSymbol } from './progress'
-import type { GitState, Position, RedState, StepState } from './progress'
+import type { GitState, Position, RedState, StepState, VerifyRun } from './progress'
 import { emptySession, emptyUnit, mergeSkills, toSession, toUnit, withOverride } from './records'
 import type { Gh, IssueInfo, Pr, Session, Unit } from './records'
 import { ask, asksHuman, deny, fileTools, isJudgedTool, strictest } from './rules'
 import type { Judgement, Verdict } from './rules'
 import { runtime, serial } from './runtime'
-import type { Handoff } from './runtime'
+import type { DirectRun, Handoff } from './runtime'
 import { ranCommands, runsVerify, shellTargets, shellWords } from './shell'
 import type { Invocation } from './shell'
 import { buildView, keyWidth, labelColor, paneRule, palette, symbolColor, toneColor, viewText } from './view'
@@ -300,12 +300,15 @@ async function position($: EngineInterface, s: Session): Promise<Position | null
   const isVerified = !!key && u.verify === key
   // Commits before the unit's start belong to earlier work on the branch; a unit with no start (Close out) owns them all.
   const own = !g ? 0 : u.start ? await aheadOf($, u.start) : g.ahead
-  const verify = { cmd: verifyCmd, isVerified }
+  const direct = [...runtime.directVerify].find(r => r.tree === key)
+  const pane = Object.entries(runtime.herdrVerify).find(([, r]) => r.tree === key)?.[0]
+  const running: VerifyRun | null = isVerified || !key ? null : direct ? { kind: 'direct' } : pane !== undefined ? { kind: 'herdr', pane } : null
+  const verify = { cmd: verifyCmd, isVerified, running }
   const red = await redState($, u, g)
   const unchecked = stepStates(def, s, u, g, own, verify, 'off', red)
   const checks = await stepChecks($, unchecked, u, g)
   const states = checks === 'off' ? unchecked : stepStates(def, s, u, g, own, verify, checks, red)
-  return { def, u, g, own, states, current: states.find(st => st.state === 'current') ?? null, isVerified, verifyCmd, red, checks }
+  return { def, u, g, own, states, current: states.find(st => st.state === 'current') ?? null, isVerified, verifyCmd, red, running, checks }
 }
 
 // Skips the issue sync, which takes the lock: declare holds it and has just read its issues.
@@ -427,7 +430,9 @@ async function judgeCall($: EngineInterface, tool: string, args: Record<string, 
   if (ranCommands(command, 'gh issue create').length && !hasIssueSkill(p)) {
     verdicts.push(ask('gh issue create outside /to-spec or /triage', 'issues come from those skills: stop and ask the user to run one'))
   }
-  if (p && ranCommands(command, 'git commit').length && p.verifyCmd && !p.isVerified && !p.u.overrides.some(o => o.step === 'verify')) {
+  if (p?.running && ranCommands(command, 'git commit').length && !p.u.overrides.some(o => o.step === 'verify')) {
+    verdicts.push(ask('Verify is running — wait for it', 'commit once it passes'))
+  } else if (p && ranCommands(command, 'git commit').length && p.verifyCmd && !p.isVerified && !p.u.overrides.some(o => o.step === 'verify')) {
     verdicts.push(ask(p.u.verify ? 'Verify is stale' : 'Verify has not run', `run ${p.verifyCmd} exactly (no pipe, not in background), then commit; an untested commit needs the user's /flow override verify <reason>`))
   }
   // An edit that leaves the body alone (labels, title) cannot drop a required line.
@@ -745,7 +750,27 @@ async function openPrOn($: EngineInterface, branch: string): Promise<number> {
   return Number(asRecords(parseJson(listed.stdout))[0]?.number) || 0
 }
 
-async function observeBash($: EngineInterface, seen: Session, command: string, ran: ToolRun) {
+// Registers a direct verify run before it executes; a failure here leaves the call untracked rather than denying it.
+async function trackVerify($: EngineInterface, command: string): Promise<DirectRun | null> {
+  try {
+    const verifyCmd = await verifyCommand($)
+    const tree = verifyCmd && runsVerify(command, verifyCmd) ? await treeKey($) : null
+    if (!tree) return null
+    const run: DirectRun = { tree }
+    runtime.directVerify.add(run)
+    try {
+      await serial(() => refresh($, true))
+    } catch {
+      runtime.directVerify.delete(run)
+      return null
+    }
+    return run
+  } catch {
+    return null
+  }
+}
+
+async function observeBash($: EngineInterface, seen: Session, command: string, ran: ToolRun, directTree: string | null) {
   const s: Session = { ...seen, info: { ...seen.info } }
   const { isOk, isFailed, stdout, commit, push, pr } = bashOutcome(ran)
   const writesGh = ranCommands(command, 'gh issue (?:create|edit|comment)').length + ranCommands(command, 'gh pr (?:create|edit)').length > 0
@@ -784,7 +809,7 @@ async function observeBash($: EngineInterface, seen: Session, command: string, r
   const verifyCmd = await verifyCommand($)
   if (verifyCmd && isOk && runsVerify(command, verifyCmd)) {
     const key = await treeKey($)
-    await eachUnit($, s, u => ({ ...u, verify: key }))
+    if (key && key === directTree) await eachUnit($, s, u => ({ ...u, verify: key }))
   }
   if (isFailed && hasDiagnose(s)) await observeRed($, s, command, verifyCmd)
   // A herdr pane run returns at once: the verdict is the marker line a later wait-output prints.
@@ -794,6 +819,26 @@ async function observeBash($: EngineInterface, seen: Session, command: string, r
     const root = hasDiagnose(s) ? await gitRoot($) : null
     const start = (await getUnit($, await unitKey($, s))).start
     runtime.herdrVerify[launched.pane] = { id: launched.id, tree: launchTree, isTestOnly: !!root && (await isTestOnly($, root, start)) }
+  }
+  const testLaunch = isOk && !launched && hasDiagnose(s) ? herdrLaunch(command) : null
+  if (testLaunch && !runtime.herdrConsumed.has(testLaunch.id)) {
+    const u = await getUnit($, await unitKey($, s))
+    const root = await gitRoot($)
+    const files = root && u.testFiles ? testRuns(testLaunch.inner, verifyCmd, u.testFiles, await $.session.cwd(), root) : []
+    if (root && files.length) runtime.herdrTests[testLaunch.pane] = { id: testLaunch.id, files, isTestOnly: await isTestOnly($, root, u.start) }
+  }
+  const waitedTest = isOk ? herdrWaitArgs(command)?.find(w => w in runtime.herdrTests) : undefined
+  if (waitedTest) {
+    const parsed = parseJson(stdout)
+    const matched = isRecord(parsed) && isRecord(parsed.result) ? asString(parsed.result.matched_line) : ''
+    const { id, files, isTestOnly: wasTestOnly } = runtime.herdrTests[waitedTest]!
+    const code = new RegExp(`^__EXIT_${id}=(\\d+)__$`).exec(matched)?.[1]
+    if (code !== undefined) {
+      delete runtime.herdrTests[waitedTest]
+      runtime.herdrConsumed.add(id)
+      const root = await gitRoot($)
+      if (Number(code) !== 0 && wasTestOnly && root) await recordRed($, s, root, files)
+    }
   }
   const waited = isOk ? herdrWaitArgs(command)?.find(w => w in runtime.herdrVerify) : undefined
   if (waited) {
@@ -968,7 +1013,18 @@ export const register: Register = (on, options) => {
       }
       return { deny: v.reason }
     }
-    const ran = await next(e)
+    const run = e.tool === 'Bash' ? await trackVerify($, asString(args.command)) : null
+    const ran = await (async () => {
+      try {
+        return await next(e)
+      } catch (err) {
+        if (run) void serial(() => refresh($, true)).catch(() => undefined)
+        throw err
+      } finally {
+        if (run) runtime.directVerify.delete(run)
+      }
+    })()
+    if (run && ran.deny !== undefined) void serial(() => refresh($, true)).catch(() => undefined)
     if (ran.deny !== undefined) return ran
     try {
       const file = asString(args.file_path)
@@ -991,7 +1047,7 @@ export const register: Register = (on, options) => {
             }))
           }
         }
-        if (e.tool === 'Bash') await observeBash($, s, asString(args.command), ran)
+        if (e.tool === 'Bash') await observeBash($, s, asString(args.command), ran, run?.tree ?? null)
         await refresh($, true)
       })
       // GitHub (PR state, gh status) is refreshed off the lock and off the tool result's path.
