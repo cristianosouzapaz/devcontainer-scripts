@@ -1,5 +1,5 @@
 /** The color role of a row in the Flow pane. */
-export type FlowTone = 'text' | 'muted' | 'warn' | 'error'
+export type FlowTone = 'text' | 'warn' | 'error'
 /** Where a flow step stands for the current unit of work. */
 export type FlowStepState = 'done' | 'current' | 'pending' | 'skipped' | 'override'
 /** A labelled line of the Flow pane, such as the branch or a blocked-write count. */
