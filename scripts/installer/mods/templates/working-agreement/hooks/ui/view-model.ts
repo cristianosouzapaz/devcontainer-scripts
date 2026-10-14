@@ -51,6 +51,13 @@ export function buildView(session: Session, position: Position, github: GithubSt
     const parts = [edits && pluralize(edits, 'edit'), shell && pluralize(shell, 'shell write')]
     notes.push({ key: 'Blocked', value: parts.filter(Boolean).join(', '), tone: 'error' })
   }
+  const { unexplained } = position.unit
+  if (unexplained) {
+    const value = unexplained.isUnchecked
+      ? 'the tree could not be read at a tool call or a turn end — writes held until /flow override writes'
+      : `${Object.keys(unexplained.files).join(', ')} changed outside Edit or Write, by a Bash call or a writer outside any call — writes held until restored or /flow override writes`
+    notes.push({ key: 'Unexplained', value, tone: 'error' })
+  }
   if (session.handoff?.state === 'failed') {
     notes.push({ key: 'Handoff', value: `not completed — ${session.handoff.reason}. Nothing cleared.`, tone: 'error' })
   }

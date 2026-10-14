@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
-import { buildWriteCall } from '../../support/builders'
-import { setPermissionMode, startSkill } from '../../support/helpers'
+import { buildBashCall, buildWriteCall } from '../../support/builders'
+import { readPromptContext, setPermissionMode, startSkill } from '../../support/helpers'
 import { createWorld, root } from '../../support/world'
 import type { Options } from '../../support/world'
 
@@ -27,6 +27,14 @@ function buildBugOptions(labels: string[], skills: string[] = []): Options {
 }
 
 for (const { flow, step, options, skill } of gatedSteps) {
+  test(`${flow} at ${step} tells the agent, in its instruction and in the deny, to change files only through Edit or Write`, async ($, on) => {
+    createWorld(on, { branch: 'feat' }, options)
+    if (skill) await startSkill($, skill)
+    await setPermissionMode($, 'auto')
+    expect(await readPromptContext($)).toContain('only through Edit or Write')
+    expect((await $.tool.call(buildBashCall("python3 -c 'pass'"))).deny).toContain('never work around a blocked write')
+  })
+
   test(`${flow} at ${step} asks in default mode and denies when it cannot ask`, async ($, on) => {
     createWorld(on, { branch: 'feat' }, options)
     if (skill) await startSkill($, skill)

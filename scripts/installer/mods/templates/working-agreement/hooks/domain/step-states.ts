@@ -55,7 +55,7 @@ export interface Evidence {
   git: GitState | null
   /** How many commits the unit made since its start, or up to its anchor while that holds; every commit ahead of base for a unit with no start. */
   ownCommits: number
-  /** Whether the unit changed a file since its start, in its commits or in the working tree, or up to its anchor while that holds; a non-test file in a flow with Diagnose. */
+  /** Whether the unit changed a file since its start, in its commits or in the working tree, or up to its anchor while that holds; a non-test file in a flow with Diagnose, unless Diagnose is overridden. */
   isCodeChanged: boolean
   /** The verify command and whether a run of it passed on the current tree. */
   verify: VerifyState
@@ -171,6 +171,7 @@ const isPullRequestDone = (unit: Unit, git: GitState | null): boolean => !!git?.
  * An optional step (Tickets) that is not done is skipped until its skill starts, and again once a later step is done.
  * A step is done only on evidence that still holds, so it falls back when that evidence lapses; a skill starting never
  * completes its own step. Grill is the one exception, since a conversation leaves no artefact: the next step's skill starting ends it.
+ * Code is done on a change handed to Verify: a passing or in-flight verify run on the current tree, an overridden Verify, or a done Commit.
  * While the unit's anchor holds, Commit is done by the unit's commits up to it and never stale, and the PR is done once its head contains the anchor.
  * Every state carries a stale marker when the step's stored evidence exists but no longer holds; steps that rest on GitHub alone never lapse.
  *
@@ -186,6 +187,11 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
   const isCommitted = !!git && !git.isDirty && ownCommits > 0
   const isGreen = checks === 'off' || checks === 'passing'
   const declared = session.issues.map(number => session.info[number])
+  const isCommitDone = anchored ? ownCommits > 0 : isCommitted
+  // Code ↔ Verify is a loop: a change counts as Code only once it is handed to Verify. A later PR does not count, since its head
+  // can match HEAD on a dirty tree; without a verify command nothing marks the hand-off, so the change alone counts.
+  const isHandedOff = !verify.command || verify.isVerified || !!verify.running || isCommitDone ||
+    unit.overrides.some(override => steps.some(step => step.id === override.step && step.observe === 'verify.passed'))
 
   const isDone = (step: Step): boolean => {
     if (step.isTestExempt) return red === 'holds'
@@ -194,9 +200,9 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
       return declared.some(info => !!info?.labels.some(label => doneLabels.includes(label)))
     }
     if (step.observe === 'sub-issues') return declared.some(info => (info?.subIssues ?? 0) > 0)
-    if (step.isUnlocking) return isCodeChanged
+    if (step.isUnlocking) return isCodeChanged && isHandedOff
     if (step.observe === 'verify.passed') return verify.isVerified
-    if (step.observe === 'commit') return anchored ? ownCommits > 0 : isCommitted
+    if (step.observe === 'commit') return isCommitDone
     if (step.observe === 'pr.created') return isGreen && (anchored ? anchored.isPullRequestContained : isPullRequestDone(unit, git))
     // The mod sees a skill start, never its end: a talk step (Grill) is done once the next step's skill has started.
     const next = steps.slice(steps.indexOf(step) + 1).find(later => later.skill)

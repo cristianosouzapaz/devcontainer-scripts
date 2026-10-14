@@ -160,6 +160,27 @@ export async function hashFile(processes: ProcessPort, path: string): Promise<Re
 }
 
 /**
+ * Reads the files that differ from HEAD, staged or not, untracked ones included, with their content hashes: two git
+ * processes, whatever the size of the tree.
+ *
+ * @param processes - The engine's process runner.
+ * @param root - The repository root.
+ * @returns Each repo-relative path with its content hash, '' for a file the tree lacks; or a failure when git cannot read it.
+ */
+export async function readDirtyFiles(processes: ProcessPort, root: string): Promise<Result<Record<string, string>>> {
+  const status = hasExitedZero(await runCommand(processes, ['git', '-C', root, 'status', '--porcelain', '-z', '--no-renames', '--untracked-files=all']))
+  if (!status.isOk) return status
+  // Each entry is `XY path`; Y is the working tree's side, and `D ` a file deleted and staged so.
+  const entries = status.value.stdout.split('\0').filter(Boolean).map(entry => ({ path: entry.slice(3), isAbsent: entry[1] === 'D' || entry.startsWith('D ') }))
+  const present = [...new Set(entries.filter(entry => !entry.isAbsent).map(entry => entry.path))]
+  const hashed = present.length ? hasExitedZero(await runCommand(processes, ['git', '-C', root, 'hash-object', '--', ...present])) : succeed({ exitCode: 0, stdout: '', stderr: '' })
+  if (!hashed.isOk) return hashed
+  const hashes = hashed.value.stdout.split('\n').filter(Boolean)
+  if (hashes.length !== present.length) return fail('git hash-object did not hash every file')
+  return succeed({ ...Object.fromEntries(entries.map(entry => [entry.path, ''])), ...Object.fromEntries(present.map((path, index) => [path, hashes[index]!])) })
+}
+
+/**
  * Lists every file changed since a commit: staged or not, and untracked files.
  *
  * @param processes - The engine's process runner.

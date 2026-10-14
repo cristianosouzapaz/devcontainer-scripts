@@ -1,6 +1,7 @@
 import type { CiState } from '../domain/ci-blocker'
 import { flowDefinitions } from '../domain/flow-definitions'
-import { countCommitsSince, hasPullRequestWorkflow, isAncestor, listChangedFiles, listCommittedFiles, readCommitTree, readGitState, readHead, readRoot, readTreeKey } from '../lib/git'
+import type { DirtyFiles } from '../domain/tree-changes'
+import { countCommitsSince, hasPullRequestWorkflow, isAncestor, listChangedFiles, listCommittedFiles, readCommitTree, readDirtyFiles, readGitState, readHead, readRoot, readTreeKey } from '../lib/git'
 import type { GitState } from '../lib/git'
 import { readChecks } from '../lib/github'
 import { isPathMatched } from '../lib/paths'
@@ -106,6 +107,15 @@ export const readPullRequestChecks = async (port: EnginePort, pullRequest?: stri
  * @returns The key, or null when git cannot tell.
  */
 export const readWorkingTreeKey = async (port: EnginePort): Promise<string | null> => unwrapOr(await readTreeKey(port.processes), null)
+
+/**
+ * Reads the files that differ from HEAD, with their content hashes.
+ *
+ * @param port - The engine calls.
+ * @param root - The repository root.
+ * @returns The files, or null when git cannot read them.
+ */
+export const readDirtyTree = async (port: EnginePort, root: string): Promise<DirtyFiles | null> => unwrapOr(await readDirtyFiles(port.processes, root), null)
 
 /**
  * Tells whether every change since the unit's start, staged or not and untracked files included, is under the test paths.

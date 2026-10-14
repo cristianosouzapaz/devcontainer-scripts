@@ -43,8 +43,9 @@ export async function locatePosition(port: EnginePort, session: Session): Promis
   const verify = { command: verifyCommand, isVerified: anchor ? isAnchorVerified : isVerified, running }
   const red = await readRedState(port, unit, git)
   // A unit with no start owns every commit ahead of base, which the diff against HEAD does not see. In a flow with a
-  // test-exempt step (Diagnose) the reproduction test is that step's work, so only a non-test change counts as Code.
-  const isTestExcluded = definition.steps.some(step => step.isTestExempt)
+  // test-exempt step (Diagnose) the reproduction test is that step's work, so only a non-test change counts as Code;
+  // an overridden Diagnose lifts that, since a bug in the test harness is fixed in the test files themselves.
+  const isTestExcluded = definition.steps.some(step => step.isTestExempt && !unit.overrides.some(override => override.step === step.id))
   const hasCodeStep = definition.steps.some(step => step.isUnlocking)
   const isCodeChanged = !!git && hasCodeStep && (
     (!unit.start && ownCommits > 0) ||

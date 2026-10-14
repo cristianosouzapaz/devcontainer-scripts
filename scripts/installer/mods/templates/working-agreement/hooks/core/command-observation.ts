@@ -2,7 +2,7 @@ import { recogniseCommand } from '../domain/command-events'
 import type { CommandContext, CommandEvent, CommandOutcome, LaunchedCommand, Observation } from '../domain/command-events'
 import { hasDiagnoseStep } from '../domain/flow-definitions'
 import type { Session } from '../domain/records'
-import { completeHerdrRuns, readHerdrLaunch, readHerdrPaneCommand, trackHerdrRun } from '../features/herdr'
+import { completeHerdrRuns, readHerdrLaunch, readHerdrPaneCommand, trackDetachedHerdrRun, trackHerdrRun } from '../features/herdr'
 import { isRecord, toStringOrEmpty } from '../lib/json'
 import { formatError } from '../lib/result'
 import { listWriteTargets } from '../lib/shell-parser'
@@ -153,7 +153,8 @@ function readReportedEvents(ran: ToolRun): CommandEvent[] {
 /**
  * Lists the commands a finished Bash call lets the steps observe: the call itself, with its exit as outcome, and every
  * herdr run whose exit marker a `wait-output` in it reported, with the marker's exit code as outcome. A `herdr pane run`
- * in the call starts tracking the command it runs, observed at launch as a direct call is. The git and PR operations the
+ * in the call starts tracking the command it runs, observed at launch as a direct call is, and is known as a writer
+ * that may change the tree until its marker is reported. The git and PR operations the
  * engine reports for the call count as done even when the recogniser did not see them in its text.
  *
  * @param port - The engine calls.
@@ -176,6 +177,7 @@ export async function observeBashCall(port: EnginePort, session: Session, comman
   if (!isPassed) return observed
   const herdrLaunch = readHerdrLaunch(command)
   if (herdrLaunch) {
+    trackDetachedHerdrRun(herdrLaunch)
     const launched = await launchCommand(port, session, herdrLaunch.command)
     if (launched.events.length) trackHerdrRun(herdrLaunch, launched)
   }

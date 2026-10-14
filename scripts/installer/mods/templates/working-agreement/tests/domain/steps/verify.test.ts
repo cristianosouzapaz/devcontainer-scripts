@@ -80,8 +80,9 @@ function isRunning(status: string | undefined): boolean {
   return (status ?? '').includes('▸ Verify — running') && (status ?? '').includes('✓ Code')
 }
 
+// A run that ended without passing, or lapsed, hands the unit back to Code.
 function isIdle(status: string | undefined): boolean {
-  return (status ?? '').includes('✓ Code') && (status ?? '').includes('▸ Verify') && !(status ?? '').includes('running')
+  return (status ?? '').includes('▸ Code') && !(status ?? '').includes('running')
 }
 
 test('a passing verify command with nothing changed leaves Code current', async ($, on) => {
@@ -171,7 +172,7 @@ test('a herdr verify run whose tree changed before wait-output does not pass Ver
   git.tree = 'two'
   Object.assign(toolRun, buildMatchedRun('__EXIT_a4=0__'))
   await $.tool.call(buildBashCall(buildWaitCommand('h4:p1', 'a4')))
-  expect(await readPromptContext($)).toContain('current step: Verify')
+  expect(await readPromptContext($)).toContain('current step: Code')
 })
 
 test('a herdr verify launch reusing an id already reported does not pass Verify', async ($, on) => {
@@ -185,7 +186,7 @@ test('a herdr verify launch reusing an id already reported does not pass Verify'
   await $.tool.call(buildBashCall(buildPaneRunCommand('h7:p2', buildLaunchCommand('a7'))))
   Object.assign(toolRun, buildMatchedRun('__EXIT_a7=0__'))
   await $.tool.call(buildBashCall(buildWaitCommand('h7:p2', 'a7')))
-  expect(await readPromptContext($)).toContain('current step: Verify')
+  expect(await readPromptContext($)).toContain('current step: Code')
 })
 
 for (const { name, command } of unmarkedRuns) {
@@ -196,7 +197,7 @@ for (const { name, command } of unmarkedRuns) {
     await $.tool.call(buildBashCall(buildPaneRunCommand('h5:p1', command)))
     Object.assign(toolRun, buildMatchedRun('__EXIT_a5=0__'))
     await $.tool.call(buildBashCall(buildWaitCommand('h5:p1', 'a5')))
-    expect(await readPromptContext($)).toContain('current step: Verify')
+    expect(await readPromptContext($)).toContain('current step: Code')
   })
 }
 
@@ -235,7 +236,7 @@ test('a tree change during a direct verify run ends the run in flight and Verify
   expect(isRunning(seen.status)).toBe(false)
   expect(seen.status).not.toContain('running')
   expect(isIdle(await readFlowStatus($))).toBe(true)
-  expect(await readPromptContext($)).toContain('current step: Verify')
+  expect(await readPromptContext($)).toContain('current step: Code')
 })
 
 // Background runs: the call returns at once with a task id, and only the task notification says how the run ended.
@@ -257,12 +258,12 @@ test('a background verify run whose task completes passes Verify, already in the
 })
 
 for (const status of ['failed', 'killed']) {
-  test(`a background verify run whose task is ${status} leaves flight and Verify current`, async ($, on) => {
+  test(`a background verify run whose task is ${status} leaves flight and sends the unit back to Code`, async ($, on) => {
     createWorld(on, changed, { verifyFile, toolRun: buildBackgroundedRun('b3') })
     await $.tool.call(buildBashCall('./test/run.sh'))
     await notifyTask($, buildTaskNotification('b3', status))
     expect(isIdle(await readFlowStatus($))).toBe(true)
-    expect(await readPromptContext($)).toContain('current step: Verify')
+    expect(await readPromptContext($)).toContain('current step: Code')
   })
 }
 
@@ -282,7 +283,7 @@ test('a background verify run stopped by TaskStop leaves flight and its later no
   await $.tool.call({ tool: 'TaskStop', task_id: 'b5' })
   expect(isIdle(await readFlowStatus($))).toBe(true)
   await notifyTask($, buildTaskNotification('b5', 'completed'))
-  expect(await readPromptContext($)).toContain('current step: Verify')
+  expect(await readPromptContext($)).toContain('current step: Code')
 })
 
 test('a tree change lapses a background verify run, and the tree coming back does not revive it', async ($, on) => {
@@ -294,7 +295,7 @@ test('a tree change lapses a background verify run, and the tree coming back doe
   git.tree = 'one'
   expect(isIdle(await readFlowStatus($))).toBe(true)
   await notifyTask($, buildTaskNotification('b6', 'completed'))
-  expect(await readPromptContext($)).toContain('current step: Verify')
+  expect(await readPromptContext($)).toContain('current step: Code')
 })
 
 test('a background verify run whose task ended unnotified lapses at the second turn end that does not list it', async ($, on) => {
@@ -321,7 +322,7 @@ test('a backgrounded verify run that ends with its caller\'s final response is n
   await $.tool.call(buildBashCall('./test/run.sh'))
   expect(isIdle(await readFlowStatus($))).toBe(true)
   await notifyTask($, buildTaskNotification('b9', 'completed'))
-  expect(await readPromptContext($)).toContain('current step: Verify')
+  expect(await readPromptContext($)).toContain('current step: Code')
 })
 
 for (const { name, deliver } of unrelatedDeliveries) {
@@ -334,7 +335,7 @@ for (const { name, deliver } of unrelatedDeliveries) {
 }
 
 test('the Verify instruction asks for the command without a pipe and no longer forbids the background', async ($, on) => {
-  createWorld(on, changed, { verifyFile })
+  createWorld(on, { branch: 'feat', ahead: 1 }, { verifyFile, unit: { start: 'c0' } })
   const text = await readPromptContext($)
   expect(text).toContain('run ./test/run.sh exactly (no pipe)')
   expect(text).not.toContain('background')
@@ -383,13 +384,13 @@ test('a tree change ends a herdr verify run in flight, and a later green marker 
   next.run = buildMatchedRun('__EXIT_b13=0__')
   await $.tool.call(buildBashCall(buildWaitCommand('h13:p1', 'b13')))
   expect(isIdle(await readFlowStatus($))).toBe(true)
-  expect(await readPromptContext($)).toContain('current step: Verify')
+  expect(await readPromptContext($)).toContain('current step: Code')
 })
 
-test('a changed tree with no verify run in flight shows Code done and Verify current', async ($, on) => {
+test('a changed tree with no verify run in flight leaves Code current and names the verify command', async ($, on) => {
   createWorld(on, changed, { verifyFile })
   expect(isIdle(await readFlowStatus($))).toBe(true)
-  expect(await readPromptContext($)).toContain('run ./test/run.sh')
+  expect(await readPromptContext($)).toContain('make the change, then run ./test/run.sh to pass Verify')
 })
 
 test('a green verify run on a tree that then changes is not in flight', async ($, on) => {

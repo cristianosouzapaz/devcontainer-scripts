@@ -191,6 +191,13 @@ test('the Diagnose instruction names the next action', async ($, on) => {
   expect(await readFlowStatus($)).toContain(`${stepSymbol.current} Diagnose`)
 })
 
+test('a stale red\'s instruction names the override for a bug in the test harness', async ($, on) => {
+  const { git, runCommand } = await startDiagnosis($, on)
+  await runCommand('bats test/fix.bats', failed)
+  git.hashes = { 'test/fix.bats': 'h2' }
+  expect(await readPromptContext($)).toContain('/flow override diagnose <reason>')
+})
+
 test('without a test file the instruction asks for the failing test', async ($, on) => {
   createWorld(on, { branch: 'fix' }, diagnosed)
   expect(await readPromptContext($)).toContain('write the failing test')

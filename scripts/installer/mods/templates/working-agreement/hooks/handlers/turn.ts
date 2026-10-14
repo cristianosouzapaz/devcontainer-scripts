@@ -4,12 +4,14 @@ import type { EnginePort } from '../core/engine-port'
 import { toastFailure } from '../core/failure-toast'
 import { createFeaturePort } from '../core/feature-port'
 import { refreshView } from '../core/pane-view'
+import { readSession } from '../core/record-store'
 import { reconcileBackgroundRuns } from '../core/runs-in-flight'
 import { sessionMemory, withRecordLock } from '../core/session-memory'
+import { compareTree } from '../core/tree-record'
 import { endHandoffTurn, trackSessionLength } from '../features/handoff'
 
 /**
- * Ends the main agent's turn: clears the turn's skills, reports the end of a /handoff turn to the handoff,
+ * Ends the main agent's turn: clears the turn's skills, judges what changed in the tree since the last call, reports the end of a /handoff turn to the handoff,
  * and otherwise checks whether the session has grown long.
  *
  * @param port - The engine calls.
@@ -21,6 +23,11 @@ export async function handleTurnComplete(port: EnginePort, event: Frozen<Args<'t
   const done = await next(event)
   if (event.agentId) return done
   sessionMemory.turnSkills = []
+  // Compared before the user's next prompt can take the tree as theirs, so a change made during the turn is judged.
+  await withRecordLock(async () => {
+    await compareTree(port, await readSession(port))
+    await refreshView(port, true)
+  }).catch(toastFailure(port, 'compare the working tree'))
   if (endHandoffTurn(event.reason)) return done
   await withRecordLock(() => trackSessionLength(createFeaturePort(port)))
   return done

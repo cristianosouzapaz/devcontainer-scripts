@@ -48,6 +48,22 @@ const unresolvedWrites = [
   'cd - && echo x > f.txt',
   'echo x > `pwd`/a.txt',
 ]
+// Code an interpreter runs from the line or from stdin, which may write any file.
+const interpreterWrites = [
+  "python3 - <<'EOF'\nopen('a.sh', 'w').write('x')\nEOF",
+  "python3 -c \"open('a.sh', 'w').write('x')\"",
+  "python -c 'pass'",
+  "cat fix.py | python3",
+  "node -e \"require('fs').writeFileSync('a.sh', 'x')\"",
+  "node --eval '1'",
+  "perl -pi -e 's/a/b/' a.sh",
+  "perl -e 'print 1'",
+  "ruby -e 'File.write(\"a.sh\", \"x\")'",
+  "awk -i inplace '{print}' a.sh",
+  "cd src && python3 -c 'pass'",
+]
+// A script file is not code the line holds: its writes are seen once it ran.
+const scriptRuns = ['python3 script.py', 'node script.js', 'perl script.pl', 'python3 -m pytest', "awk '{print}' a.sh"]
 
 test('a shell command that writes inside the repository is judged; one that reads or writes elsewhere is not', async ($, on) => {
   createWorld(on, { branch: 'main' })
@@ -89,6 +105,16 @@ test('a target the shell resolves at run time is judged as a repository write', 
   }
   // An absolute target stays resolved after a cd the line cannot follow.
   expect((await $.tool.call(buildBashCall('cd $X && echo x > /tmp/f'))).deny).toBeUndefined()
+})
+
+test('an interpreter running code from the line or from stdin is judged as a repository write; one running a script file is not', async ($, on) => {
+  createWorld(on, { branch: 'main' })
+  for (const command of interpreterWrites) {
+    expect((await $.tool.call(buildBashCall(command))).deny, command).toContain('default branch')
+  }
+  for (const command of scriptRuns) {
+    expect((await $.tool.call(buildBashCall(command))).deny, command).toBeUndefined()
+  }
 })
 
 test('an unresolved target asks where a repository write asks, and is denied in a mode that never asks', async ($, on) => {

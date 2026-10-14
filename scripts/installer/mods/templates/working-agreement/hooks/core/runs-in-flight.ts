@@ -1,6 +1,6 @@
 import type { CommandOutcome, LaunchedCommand, Observation } from '../domain/command-events'
 import type { RunInFlight } from '../domain/step-states'
-import { listHerdrRuns } from '../features/herdr'
+import { hasDetachedHerdrRuns, listHerdrRuns } from '../features/herdr'
 
 /** A task end the engine notified: the task's id and the status it ended with. */
 interface TaskEnd { id: string; status: string }
@@ -16,6 +16,12 @@ const directRuns = new Set<LaunchedCommand>()
  * They live for one module load, so a session restart leaves nothing in flight that nothing can report.
  */
 const backgroundRuns = new Map<string, BackgroundRun>()
+
+/**
+ * The ids of the background tasks a call left running, whatever they run (a Bash call moved to the background, a Monitor),
+ * which may write the tree between calls. They never count as runs in flight; a user prompt absorbs nothing while one is known.
+ */
+const detachedTasks = new Set<string>()
 
 /**
  * Tracks a direct run as in flight until its Bash call returns.
@@ -44,6 +50,32 @@ export function untrackDirectRun(launched: LaunchedCommand): void {
 export function trackBackgroundRun(taskId: string, launched: LaunchedCommand): void {
   backgroundRuns.set(taskId, { launched, isEnded: false })
 }
+
+/**
+ * Knows a background task a call left running until its end is notified, it is stopped, or a turn end finds it gone.
+ *
+ * @param taskId - The task's id.
+ */
+export function trackDetachedTask(taskId: string): void {
+  detachedTasks.add(taskId)
+}
+
+/**
+ * Forgets a background task once it ended.
+ *
+ * @param taskId - The task's id.
+ */
+export function settleDetachedTask(taskId: string): void {
+  detachedTasks.delete(taskId)
+}
+
+/**
+ * Tells whether a writer a call left running may still change the tree: a known background task, or a herdr pane run
+ * carrying an exit marker no `wait-output` reported yet.
+ *
+ * @returns True when one is known.
+ */
+export const hasDetachedRuns = (): boolean => detachedTasks.size > 0 || hasDetachedHerdrRuns()
 
 /**
  * Reads the task ends a task notification's text reports, one per `<task-notification>` envelope it holds.
@@ -88,12 +120,14 @@ export function lapseBackgroundRuns(tree: string | null): void {
 /**
  * Drops the background runs whose task ended without a notification. A turn end that no longer lists a run's task marks
  * it ended; the next turn end drops it if it is still unsettled, since a notification queued at the first is delivered
- * before the second. A task listed again is not ended.
+ * before the second. A task listed again is not ended. A known background task the turn end no longer lists is forgotten
+ * at once: whatever it wrote before it ended, the turn end's own tree comparison judges.
  *
  * @param activeIds - The ids of the session's background tasks still running or pending.
  * @returns True when a run was dropped.
  */
 export function reconcileBackgroundRuns(activeIds: string[]): boolean {
+  for (const id of detachedTasks) if (!activeIds.includes(id)) detachedTasks.delete(id)
   const dropped = [...backgroundRuns].filter(([id, run]) => run.isEnded && !activeIds.includes(id)).map(([id]) => id)
   for (const id of dropped) backgroundRuns.delete(id)
   for (const [id, run] of backgroundRuns) backgroundRuns.set(id, { ...run, isEnded: !activeIds.includes(id) })

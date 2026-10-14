@@ -15,14 +15,16 @@ type ToolRunSource = ToolRun | (() => ToolRun | Promise<ToolRun>)
  * but before the unit's start, which only a diff against the default branch reports; without `changed`, a dirty tree or a commit past the
  * compared one changed `src/a.ts`, as `git status` reports.
  * `hashes` maps a repo-relative path to its git content hash; a path it omits is absent, so `git hash-object` fails on it.
- * All three are read at each call.
+ * `dirty` maps each file that differs from HEAD to its content hash, '' for a deleted one, as the tree snapshot reads it;
+ * without it a dirty tree holds `src/a.ts` alone, at a fixed hash.
+ * All four are read at each call.
  * `head` overrides HEAD, which is `c<ahead>` otherwise: `c<n>` is the n-th commit of a linear history, and `a<n>` is the amended commit at position n, whose parent is `c<n-1>`,
  * so `c<i>` is an ancestor of `a<j>` only when i < j, and `a<n>` is an ancestor of itself alone.
  * `commitTrees` maps a commit id to its tree id, `tree` for the ones it omits. A diff between two commits reports `src/a.ts` when the second commit is past the first.
  */
 export interface Checkout {
   branch: string; isDirty?: boolean; tree?: string; ahead?: number; isPushed?: boolean
-  changed?: string[]; before?: string[]; hashes?: Record<string, string>
+  changed?: string[]; before?: string[]; hashes?: Record<string, string>; dirty?: Record<string, string>
   head?: string; commitTrees?: Record<string, string>
 }
 
@@ -187,6 +189,12 @@ export function createWorld(on: On, git: Checkout, options: Options = {}): World
       const hash = git.hashes?.[blob[1] ?? '']
       return hash === undefined ? buildResult('', 128, 'fatal: could not open') : buildResult(hash)
     }
+    const dirty = git.dirty ?? (git.isDirty ? { 'src/a.ts': 'h-a' } : {})
+    if (command === `git -C ${root} status --porcelain -z --no-renames --untracked-files=all`) {
+      return buildResult(Object.entries(dirty).map(([path, hash]) => `${hash ? ' M' : ' D'} ${path}\0`).join(''))
+    }
+    const hashed = command.match(/^git -C \/repo hash-object -- (.+)$/)
+    if (hashed) return buildResult((hashed[1] ?? '').split(' ').map(path => `${dirty[path]}\n`).join(''))
     if (command === 'git status --porcelain') {
       const gate = options.statusGate
       options.statusGate = undefined

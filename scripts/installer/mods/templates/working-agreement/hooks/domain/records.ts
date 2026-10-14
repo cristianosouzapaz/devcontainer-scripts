@@ -62,11 +62,21 @@ interface Red {
   fingerprints: Record<string, string>
 }
 /**
+ * Holds the repository files changed outside Edit or Write, during a Bash call or between calls, while a step held writes
+ * back, with no allowed write to explain them: each file's content hash before the change, `clean` for a file that matched
+ * HEAD, '' for one that was absent; `isUnchecked` when the working tree could not be read at a boundary, so what changed is unknown.
+ */
+export interface UnexplainedWrites {
+  files: Record<string, string>
+  isUnchecked?: true
+}
+/**
  * Holds the stored record of one unit of work, shared by every session that works on its issue;
  * `start` is the HEAD when it was first declared, so only commits after it count as the unit's;
  * `prHead` is the PR head SHA at the last confirmed update, absent when none was confirmed;
  * `anchor` is the commit that completed the unit's Commit step, absent until a session sees the step done;
- * `testFiles` lists the repo-relative test files the unit wrote; `red` is the last observed failure of those tests on unfixed code.
+ * `testFiles` lists the repo-relative test files the unit wrote; `red` is the last observed failure of those tests on unfixed code;
+ * `unexplained` holds back every repository write until its files are restored or the user overrides it.
  */
 export interface Unit {
   skills: string[]
@@ -79,6 +89,7 @@ export interface Unit {
   red?: Red
   prHead?: string
   anchor?: string
+  unexplained?: UnexplainedWrites
 }
 
 // Store records outlive the mod's versions: a field of the wrong type falls back to its default,
@@ -101,6 +112,12 @@ function parseRed(value: unknown): Pick<Unit, 'red'> {
   if (!isRecord(value) || !isRecord(value.fingerprints)) return {}
   const entries = Object.entries(value.fingerprints).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
   return { red: { fingerprints: Object.fromEntries(entries) } }
+}
+
+function parseUnexplained(value: unknown): Pick<Unit, 'unexplained'> {
+  if (!isRecord(value) || !isRecord(value.files)) return {}
+  const files = Object.fromEntries(Object.entries(value.files).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+  return { unexplained: { files, ...(value.isUnchecked === true ? { isUnchecked: true } : {}) } }
 }
 
 function parseHandoff(value: unknown): Pick<Session, 'handoff'> {
@@ -165,6 +182,7 @@ export function parseUnit(value: unknown): Unit {
     ...parsePullRequest(record.pr),
     ...(typeof record.prHead === 'string' && record.prHead ? { prHead: record.prHead } : {}),
     ...(typeof record.anchor === 'string' && record.anchor ? { anchor: record.anchor } : {}),
+    ...parseUnexplained(record.unexplained),
   }
 }
 

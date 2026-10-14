@@ -23,7 +23,7 @@ export function describeRequirement(state: StepState, session: Session, position
     if (!testFiles.length) return `${first}write the failing test that reproduces the bug before editing non-test files`
     if (testRun) return describeWait('reproduction test', testRun)
     if (red === 'stale') {
-      return `${first}the reproduction test changed since it failed: re-run it on unfixed code and see it fail (if non-test changes are already in the tree, set them aside with git stash push -- <non-test paths>, re-run the test, then restore them with git stash pop)`
+      return `${first}the reproduction test changed since it failed: re-run it on unfixed code and see it fail (if non-test changes are already in the tree, set them aside with git stash push -- <non-test paths>, re-run the test, then restore them with git stash pop); if the bug is in the test files themselves, so fixing it changes the reproduction, stop and ask the user to run /flow override diagnose <reason>`
     }
     const alternative = verifyCommand ? `, or run ${verifyCommand}` : ''
     return `${first}run the reproduction test directly by its path (the test file or its directory${alternative}) and see it fail on unfixed code, before changing any non-test file`

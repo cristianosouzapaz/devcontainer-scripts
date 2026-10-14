@@ -1,6 +1,8 @@
 import type { BodyPart, CommandEvent } from '../domain/command-events'
 import { flowDefinitions } from '../domain/flow-definitions'
+import { writePolicy } from '../domain/messages'
 import { listMissingLines } from '../domain/pull-request-body'
+import { listUnrestored } from '../domain/tree-changes'
 import type { Session } from '../domain/records'
 import { branchFirstInstruction } from '../domain/requirements'
 import { findPullRequestStep, isOnBase } from '../domain/step-states'
@@ -14,10 +16,10 @@ import type { ShellContext, WriteTarget } from '../lib/shell-parser'
 import { listCallWrites, recogniseCall } from './command-observation'
 import type { EnginePort } from './engine-port'
 import { readGithubStatus } from './github-sync'
-import { canAskHuman, fileTools } from './judged-tools'
+import { canAskHuman, fileTools, readJudgedTool } from './judged-tools'
 import { hasIssueSkill, locatePosition } from './position'
 import { readSession } from './record-store'
-import { readRepositoryRoot } from './repository'
+import { readDirtyTree, readRepositoryRoot } from './repository'
 
 /**
  * Judges a tool call as the tool.call hook does: the handoff's own rule first, then the agreement's,
@@ -29,7 +31,7 @@ import { readRepositoryRoot } from './repository'
  * @returns The judgement.
  */
 export async function judgeToolCall(port: EnginePort, tool: string, args: Record<string, unknown>): Promise<Judgement> {
-  const handoffVerdict = tool === 'Bash' ? judgeHandoffCall(tool, listCallWrites(toStringOrEmpty(args.command), await readShellContext(port))) : null
+  const handoffVerdict = readJudgedTool(tool) === 'Bash' ? judgeHandoffCall(tool, listCallWrites(toStringOrEmpty(args.command), await readShellContext(port))) : null
   if (handoffVerdict) return handoffVerdict
   const judged = await judgeCall(port, tool, args)
   return judged.decision === 'ask' && !canAskHuman()
@@ -51,7 +53,7 @@ export async function judgeCall(port: EnginePort, tool: string, args: Record<str
     const verdict = await judgeWrite(port, session, toStringOrEmpty(args.file_path ?? args.notebook_path))
     return verdict ? { ...verdict, write: { kind: 'edits', isDenied: verdict.decision === 'deny' } } : { decision: 'allow' }
   }
-  if (tool !== 'Bash') return { decision: 'allow' }
+  if (readJudgedTool(tool) !== 'Bash') return { decision: 'allow' }
   const command = toStringOrEmpty(args.command)
   const writes: Verdict[] = []
   for (const target of listCallWrites(command, await readShellContext(port))) {
@@ -106,6 +108,23 @@ export async function readShellContext(port: EnginePort): Promise<ShellContext> 
   return { cwd: await port.readCwd(), ...(home ? { home } : {}) }
 }
 
+/**
+ * Tells whether the agreement lets a write to a path through without asking anyone.
+ *
+ * @param port - The engine calls.
+ * @param session - The session.
+ * @param path - The written path, or null for one a command hides.
+ * @returns False when a step, a path rule or an unexplained write holds it back, or when the check fails.
+ */
+export async function isWriteAllowed(port: EnginePort, session: Session, path: WriteTarget): Promise<boolean> {
+  try {
+    const verdict = await judgeWrite(port, session, path)
+    return !verdict || verdict.decision === 'allow'
+  } catch {
+    return false
+  }
+}
+
 // A null path is a shell target the command hides: it counts as a repository write, so the gate fails closed.
 async function judgeWrite(port: EnginePort, session: Session, path: WriteTarget): Promise<Verdict | null> {
   // A git that cannot run rejects here rather than reading as "outside a repository": with no root to compare against,
@@ -128,6 +147,17 @@ async function judgeWrite(port: EnginePort, session: Session, path: WriteTarget)
     return deny(`${position.flow.label} never writes to the repository`, 'put the outcome in the tracker; code starts in a later session from its ticket')
   }
   const verdicts: Verdict[] = []
+  const { unexplained } = position.unit
+  // A write to a recorded file is how the agent restores it, so it stays judged by the rules below alone.
+  if (unexplained && (file === undefined || !(file in unexplained.files))) {
+    const unrestored = listUnrestored(unexplained, Object.keys(unexplained.files).length ? await readDirtyTree(port, root) : null)
+    if (unexplained.isUnchecked) {
+      verdicts.push(deny('the working tree could not be read at a tool call or a turn end, so what changed it is unknown', `stop and ask the user to check the tree and run /flow override writes <reason>. ${writePolicy}`))
+    } else if (unrestored.length) {
+      verdicts.push(deny(`${unrestored.join(', ')} changed outside Edit or Write while a step held writes back, by a Bash call or by a writer outside any call (a background run, a herdr pane, a detached process)`,
+        `restore it to what it held before (git restore for a file that was committed unchanged, rm for one the call created), or stop and ask the user to run /flow override writes <reason>. ${writePolicy}`))
+    }
+  }
   const unlock = position.states.findIndex(state => state.step.isUnlocking)
   for (const state of position.states.slice(0, Math.max(unlock, 0))) {
     if (state.state !== 'current' && state.state !== 'pending') continue
@@ -137,7 +167,7 @@ async function judgeWrite(port: EnginePort, session: Session, path: WriteTarget)
       : state.step.isTestExempt
         ? `run the ${state.step.skill} skill and write the failing test first; a fix no test can reproduce needs the user's /flow override ${state.step.id} <reason>`
         : `run the ${state.step.skill} skill, then retry`
-    verdicts.push(ask(`${position.flow.label}: ${state.step.label} not done`, todo))
+    verdicts.push(ask(`${position.flow.label}: ${state.step.label} not done`, `${todo}. ${writePolicy}`))
   }
   if (session.issues.some(issue => !session.info[issue]) && (await readGithubStatus(port)) !== 'connected') {
     verdicts.push(ask('GitHub is unavailable, so the declared issue and its labels are unverified', 'stop and ask the user to fix gh (gh auth status), then declare again'))

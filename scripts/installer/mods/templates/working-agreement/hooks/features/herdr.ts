@@ -20,9 +20,11 @@ interface HerdrRuns {
   pending: Record<string, PendingRun>
   /** Marker ids a run already reported; one never counts again. */
   consumed: Set<string>
+  /** The marker id of every run launched with one, whatever it runs, by pane id, until a `wait-output` reports it. */
+  detached: Record<string, string>
 }
 
-const runs: HerdrRuns = { pending: {}, consumed: new Set() }
+const runs: HerdrRuns = { pending: {}, consumed: new Set(), detached: {} }
 
 // The words after the subcommand of the command's first `herdr pane <subcommand>`, or null. It is found as any command
 // is, behind a prefix (env, sudo, timeout), a program path or herdr's own options, so none of them hides a pane run from the gates.
@@ -72,6 +74,23 @@ export function trackHerdrRun(launch: HerdrLaunch, launched: LaunchedCommand): v
 }
 
 /**
+ * Knows a launched herdr run, whatever it runs, as a writer that may change the tree until a `wait-output` reports its
+ * marker; a later launch in the same pane replaces it.
+ *
+ * @param launch - The launch.
+ */
+export function trackDetachedHerdrRun(launch: HerdrLaunch): void {
+  runs.detached[launch.pane] = launch.id
+}
+
+/**
+ * Tells whether a herdr run launched with a marker has not been reported yet.
+ *
+ * @returns True when one has not.
+ */
+export const hasDetachedHerdrRuns = (): boolean => Object.keys(runs.detached).length > 0
+
+/**
  * Lists what the herdr runs still in flight recorded at launch, with their panes.
  *
  * @returns Each run's pane and launch record.
@@ -98,6 +117,10 @@ function readExitCode(stdout: string, id: string): number | undefined {
  */
 export function completeHerdrRuns(command: string, stdout: string): HerdrExit[] {
   const waitArgs = readPaneCall(command, 'wait-output') ?? []
+  for (const pane of waitArgs) {
+    const id = runs.detached[pane]
+    if (id !== undefined && readExitCode(stdout, id) !== undefined) delete runs.detached[pane]
+  }
   return waitArgs.filter(word => word in runs.pending).flatMap(pane => {
     const { id, launched } = runs.pending[pane]!
     const exitCode = readExitCode(stdout, id)

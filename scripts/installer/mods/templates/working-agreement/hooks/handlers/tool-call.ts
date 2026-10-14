@@ -11,14 +11,15 @@ import { observeCommand } from '../core/observation-recording'
 import { refreshView } from '../core/pane-view'
 import { listUnitKeys, readSession, readUnit, updateUnits, writeSession } from '../core/record-store'
 import { readGit, readRepositoryRoot } from '../core/repository'
-import { settleBackgroundRun } from '../core/runs-in-flight'
+import { settleBackgroundRun, settleDetachedTask, trackDetachedTask } from '../core/runs-in-flight'
+import { compareTree } from '../core/tree-record'
 import { withRecordLock } from '../core/session-memory'
 import { flowDefinitions } from '../domain/flow-definitions'
 import { markForAgent } from '../domain/messages'
 import type { Session, Unit } from '../domain/records'
 import { isOnBase } from '../domain/step-states'
 import { recordHandoffDocument } from '../features/handoff'
-import { toStringOrEmpty } from '../lib/json'
+import { isRecord, toStringOrEmpty } from '../lib/json'
 import { isPathMatched, normalizePath, toRepoRelative } from '../lib/paths'
 
 /**
@@ -41,7 +42,9 @@ export async function handleToolCall(port: EnginePort, event: Frozen<Args<'tool.
     return next(event)
   }
   if (event.tool === 'TaskStop') return handleTaskStop(port, args, next(event))
-  if (!isJudgedTool(event.tool)) return next(event)
+  if (!isJudgedTool(event.tool, args)) return next(event)
+  // Compared before the verdict, so a change no call made holds this very call back.
+  await withRecordLock(async () => compareTree(port, await readSession(port))).catch(toastFailure(port, 'compare the working tree'))
   const verdict = await judgeToolCall(port, event.tool, args)
   if (verdict.decision === 'deny') {
     const kind = verdict.write?.isDenied ? verdict.write.kind : undefined
@@ -55,13 +58,15 @@ export async function handleToolCall(port: EnginePort, event: Frozen<Args<'tool.
     }
     return { deny: verdict.reason }
   }
-  const launch = event.tool === 'Bash' ? await startDirectRun(port, await readSession(port), toStringOrEmpty(args.command)) : null
+  const launchSession = event.tool === 'Bash' ? await readSession(port) : null
+  const launch = launchSession ? await startDirectRun(port, launchSession, toStringOrEmpty(args.command)) : null
   const isInFlight = !!launch?.isInFlight
   if (isInFlight) await withRecordLock(() => refreshView(port, true)).catch(toastFailure(port, 'show the run'))
   const ran = await (async () => {
     try {
       const done = await next(event)
       endDirectRun(launch, done)
+      trackLeftTask(done)
       return done
     } catch (error) {
       endDirectRun(launch, null)
@@ -89,6 +94,8 @@ export async function handleToolCall(port: EnginePort, event: Frozen<Args<'tool.
           }))
         }
       }
+      // Compared before the command is observed, so a red this run records does not open the gate its own writes are judged by.
+      await compareTree(port, session, verdict.decision === 'ask')
       if (event.tool === 'Bash') await observeCommand(port, session, toStringOrEmpty(args.command), ran, launch)
       // A write leaves the tree dirty, so a marked write has nothing to anchor.
       if (session === saved) await recordAnchor(port, await readSession(port))
@@ -116,10 +123,19 @@ async function markWrite(port: EnginePort, session: Session): Promise<Session> {
 async function handleTaskStop(port: EnginePort, args: Record<string, unknown>, stopping: Promise<EventResult<'tool.call'>>): Promise<EventResult<'tool.call'>> {
   const ran = await stopping
   const id = toStringOrEmpty(args.task_id) || toStringOrEmpty(args.shell_id)
+  if (ran.deny === undefined && ran.isError !== true) settleDetachedTask(id)
   if (ran.deny === undefined && ran.isError !== true && settleBackgroundRun({ id, status: 'killed' })) {
     await withRecordLock(() => refreshView(port, true)).catch(toastFailure(port, 'end the stopped run'))
   }
   return ran
+}
+
+// Knows the background task a call left running, a Bash call's or a Monitor's, as a writer that may change the tree between
+// calls; one that ends with its caller's final response is over by the turn end, whose comparison judges what it wrote.
+function trackLeftTask(ran: EventResult<'tool.call'>): void {
+  const result = isRecord(ran.result) ? ran.result : {}
+  const taskId = toStringOrEmpty(result.backgroundTaskId ?? result.taskId)
+  if (taskId && !result.backgroundEndsWithFinalResponse) trackDetachedTask(taskId)
 }
 
 async function listWrittenTests(port: EnginePort, tool: string, args: Record<string, unknown>): Promise<string[]> {

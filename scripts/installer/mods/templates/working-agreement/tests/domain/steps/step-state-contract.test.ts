@@ -21,11 +21,14 @@ const refreshMs = 61000
 const closes = 'Closes #1\nCloses #2'
 
 const codeRow: ContractRow = {
-  step: 'Code', doneWhen: 'the unit has a non-test change', fallsBackWhen: 'the change is undone', next: 'Commit',
-  start: (_$, on) => {
-    const git: Checkout = { branch: 'feat', changed: [] }
-    createWorld(on, git, { unit: { start: 'c0' } })
-    return { establish: async () => { git.changed = ['src/a.ts'] }, lapse: async () => { git.changed = [] } }
+  step: 'Code', doneWhen: 'a change is handed to Verify', fallsBackWhen: 'the tree moves past the verified run', next: 'Commit',
+  start: ($, on) => {
+    const git: Checkout = { branch: 'feat', changed: [], tree: 'one' }
+    createWorld(on, git, { verifyFile, unit: { start: 'c0' } })
+    return {
+      establish: async () => { Object.assign(git, { changed: ['src/a.ts'], isDirty: true, tree: 'two' }); await $.tool.call(buildBashCall('./test/run.sh')) },
+      lapse: async () => { git.tree = 'three' },
+    }
   },
 }
 
@@ -78,11 +81,15 @@ const rows: ContractRow[] = [
   },
   codeRow,
   {
-    step: 'Verify', doneWhen: 'a passing run matches the current tree', fallsBackWhen: 'the tree changes', next: 'Commit',
+    // Committed work keeps Code done, so a new commit of this session's leaves Verify, not Code, current.
+    step: 'Verify', doneWhen: 'a passing run matches the current tree', fallsBackWhen: 'the tree changes', next: 'PR',
     start: ($, on) => {
-      const git: Checkout = { branch: 'feat', isDirty: true, tree: 'one' }
+      const git: Checkout = { branch: 'feat', ahead: 1, tree: 'one', commitTrees: { c1: 'one', c2: 'two' } }
       createWorld(on, git, { verifyFile, unit: { start: 'c0' } })
-      return { establish: async () => { await $.tool.call(buildBashCall('./test/run.sh')) }, lapse: async () => { git.tree = 'two' } }
+      return {
+        establish: async () => { await $.tool.call(buildBashCall('./test/run.sh')) },
+        lapse: async () => { await $.tool.call(buildWriteCall('src/a.ts')); Object.assign(git, { ahead: 2, tree: 'two' }) },
+      }
     },
   },
   {
@@ -177,8 +184,11 @@ test('Code stays current in a Fix while only test files changed', async ($, on) 
   await expectCurrent($, codeRow)
 })
 
-test('Code stays done while a Verify run is not in flight', async ($, on) => {
-  createWorld(on, { branch: 'feat', changed: ['src/a.ts'] }, { verifyFile, unit: { start: 'c0' } })
+test('Code is done in a Fix with Diagnose overridden when only test files changed', async ($, on) => {
+  createWorld(on, { branch: 'fix', changed: ['test/fix.bats'] }, {
+    session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } },
+    unit: { start: 'c0', overrides: [{ step: 'diagnose', reason: 'the bug is in the test harness' }] },
+  })
   expect(await readFlowStatus($)).toContain('✓ Code')
-  expect(await readPromptContext($)).toContain('current step: Verify')
+  expect(await readPromptContext($)).toContain('current step: Commit')
 })

@@ -55,6 +55,19 @@ const placeholder = /\u0000(\d+)\u0000/g
 // The programs that write the files their arguments name.
 const writers = /^(?:tee|cp|mv|sed)$/
 
+// The interpreters whose code may write any file, and, per interpreter, the options that hand it code on the line or
+// edit files in place; a cluster of perl or ruby switches (-pi, -ne) counts by its last letter.
+const interpreters = /^(?:python[\d.]*|node|perl|ruby)$/
+const inlineOptions: Record<string, RegExp> = {
+  python: /^-[A-Za-z]*c$/,
+  node: /^(?:-e|--eval|-p|--print)(?:=|$)/,
+  perl: /^-[aclnpstuwTUWX]*[eEi]/,
+  ruby: /^-[acdlnpsvwyW]*[ei]/,
+}
+
+// The options that make an interpreter print and exit rather than read a script from stdin.
+const infoOptions = /^(?:-V|-v|--version|-h|--help)$/
+
 // The scope of the line itself, outside any subshell.
 const lineScope = -1
 
@@ -140,7 +153,8 @@ export const splitShellWords = (text: string): Word[][] => scanWords(text).segme
  *
  * @param command - The command line.
  * @param context - The shell's working directory and home directory.
- * @returns Each written path, absolute, or null where the line hides it; a line the parser cannot follow yields one null.
+ * @returns Each written path, absolute, or null where the line hides it; a line the parser cannot follow, and each
+ *   interpreter run on code from the line or from stdin, yields one null.
  *   Paths under /dev are left out.
  */
 export function listWriteTargets(command: string, context: ShellContext): WriteTarget[] {
@@ -148,7 +162,11 @@ export function listWriteTargets(command: string, context: ShellContext): WriteT
   // A line the parser cannot follow may write anywhere: one target it cannot resolve stands in for its writes.
   if (!parsed) return [null]
   return parsed.runs
-    .flatMap(run => listWrittenWords(run.words).map(word => resolvePath(word, run.directory, context.home)))
+    .flatMap(run => [
+      ...listWrittenWords(run.words).map(word => resolvePath(word, run.directory, context.home)),
+      // Code the line hands an interpreter may write anywhere, so it stands in as a target the line hides.
+      ...(isInlineCode(run.words) ? [null] : []),
+    ])
     .filter(target => target === null || !target.startsWith('/dev/'))
 }
 
@@ -289,6 +307,25 @@ function listWrittenWords(words: Word[]): string[] {
   if ((name === 'cp' || name === 'mv') && args.length > 1) return [...redirected, ...last]
   if (name === 'sed' && args.some(arg => /^-\w*i/.test(arg) || arg.startsWith('--in-place'))) return [...redirected, ...last]
   return redirected
+}
+
+// Whether a run hands an interpreter code of its own: -c or -e code, a script read from stdin (a heredoc or a pipe,
+// which leave no script operand, or `-`), perl or ruby -i, or awk -i inplace. A script file it names is not.
+function isInlineCode(words: Word[]): boolean {
+  const run = listCommandWords(words)
+  const awkIndex = findLead(run, [/^g?awk$/])
+  if (awkIndex >= 0) {
+    const args = run.slice(awkIndex + 1).map(word => word.text)
+    return args.some((arg, index) => (arg === '-i' && args[index + 1] === 'inplace') || /^(?:-iinplace|--include=inplace)$/.test(arg))
+  }
+  const leadIndex = findLead(run, [interpreters])
+  if (leadIndex < 0) return false
+  const name = readProgramName(run[leadIndex]!.text).replace(/[\d.]+$/, '')
+  const args = run.slice(leadIndex + 1).map(word => word.text)
+  const operand = args.findIndex(arg => arg === '-' || !arg.startsWith('-'))
+  const options = operand < 0 ? args : args.slice(0, operand)
+  if (options.some(option => inlineOptions[name]!.test(option))) return true
+  return (operand < 0 || args[operand] === '-') && !options.some(option => infoOptions.test(option))
 }
 
 // Resolves a path the shell will write to or move into, as the shell would; null for a variable, a substitution or

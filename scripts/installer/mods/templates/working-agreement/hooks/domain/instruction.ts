@@ -1,4 +1,5 @@
 import { describeCiBlocker } from './ci-blocker'
+import { writePolicy } from './messages'
 import type { Session } from './records'
 import { describeRequirement } from './requirements'
 import { formatStepLabel, isCiWait } from './step-states'
@@ -34,5 +35,6 @@ export function composeInstruction(position: Position, session: Session): string
     ? ` When it is done, do not run or offer ${next.step.skill} yourself: the next step is the user's — tell them to run /${next.step.skill}.`
     : ''
   const requirement = describeRequirement(current, session, position)
-  return `${flow.label}${issue} — current step: ${formatStepLabel(current.step, unit.pr)}. Next action: ${requirement}.${handover}`
+  const policy = current.step.isWriteGated ? ` ${writePolicy}` : ''
+  return `${flow.label}${issue} — current step: ${formatStepLabel(current.step, unit.pr)}. Next action: ${requirement}.${handover}${policy}`
 }

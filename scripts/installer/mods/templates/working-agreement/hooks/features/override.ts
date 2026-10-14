@@ -21,7 +21,8 @@ export interface OverridePort {
 }
 
 /**
- * Runs `/flow override <step> [#issue] <reason>`: lets one step, the branch check or one reclassification through, and logs the reason.
+ * Runs `/flow override <step> [#issue] <reason>`: lets one step, the branch check, the unexplained writes or one
+ * reclassification through, and logs the reason.
  *
  * @param port - The engine and core calls.
  * @param args - The words after `override`.
@@ -52,10 +53,14 @@ async function storeOverride(port: OverridePort, step: string, issue: number | u
     await port.updateUnits(session, unit => ({ ...recordOverride(unit, 'branch', reason), branch: git.branch }))
     return succeed(`Override logged: the issue's work now lives on ${git.branch} — "${reason}".`)
   }
+  if (step === 'writes') {
+    await port.updateUnits(session, ({ unexplained: _cleared, ...unit }) => recordOverride(unit, 'writes', reason))
+    return succeed(`Override logged: the unexplained writes are accepted and writes are no longer held — "${reason}".`)
+  }
   const flow = flowDefinitions.flows[session.flow]
   if (!flow) return fail(`Unknown flow "${session.flow}" — nothing to override.`)
   if (!flow.steps.some(candidate => candidate.id === step)) {
-    return fail(`No step "${step}" in ${flow.label} — steps: ${flow.steps.map(candidate => candidate.id).join(', ')}, branch, reclassify.`)
+    return fail(`No step "${step}" in ${flow.label} — steps: ${flow.steps.map(candidate => candidate.id).join(', ')}, branch, writes, reclassify.`)
   }
   if (issue === undefined) {
     await port.updateUnits(session, unit => recordOverride(unit, step, reason))

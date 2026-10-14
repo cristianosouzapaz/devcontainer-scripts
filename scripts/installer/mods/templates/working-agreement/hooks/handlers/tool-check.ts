@@ -14,8 +14,9 @@ import { isRecord } from '../lib/json'
  * @returns What the chain answers, or the agreement's ask.
  */
 export async function handleToolCheck(port: EnginePort, event: Frozen<Args<'tool.check'>>, next: Next<'tool.check'>): Promise<EventResult<'tool.check'>> {
-  if (!isJudgedTool(event.tool)) return next(event)
-  const verdict = await judgeCall(port, event.tool, isRecord(event.input) ? event.input : {})
+  const input = isRecord(event.input) ? event.input : {}
+  if (!isJudgedTool(event.tool, input)) return next(event)
+  const verdict = await judgeCall(port, event.tool, input)
   const below = await next(event)
   if (verdict.decision !== 'ask' || below.decision === 'deny') return below
   return { decision: 'ask', reason: verdict.reason }

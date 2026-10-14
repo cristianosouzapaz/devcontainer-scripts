@@ -8,7 +8,9 @@ import { observeTaskNotification } from '../core/observation-recording'
 import { refreshView } from '../core/pane-view'
 import { locatePosition } from '../core/position'
 import { readSession } from '../core/record-store'
+import { hasDetachedRuns, readTaskEnds, settleDetachedTask } from '../core/runs-in-flight'
 import { sessionMemory, withRecordLock } from '../core/session-memory'
+import { absorbTree } from '../core/tree-record'
 import { readVerifyConfig } from '../core/verify-config'
 import { composeInstruction } from '../domain/instruction'
 import { markForAgent } from '../domain/messages'
@@ -19,7 +21,8 @@ const noFlowLine = markForAgent('No flow is declared. Reading and talking need n
   'classify the work per AGENTS.md and call declare_flow; if unsure, ask the user with a multiple-choice question.')
 
 /**
- * Records the background runs a task notification reports the end of, then adds the flow's instruction, or the reminder
+ * Records the background runs a task notification reports the end of, takes the tree into the record at a prompt the user
+ * submitted while no writer a call left running is known, then adds the flow's instruction, or the reminder
  * to declare one, to a submitted prompt's context, with the notice of an ignored verify file; a finished unit's prompt
  * passes unchanged.
  *
@@ -32,9 +35,14 @@ export async function handlePromptSubmit(port: EnginePort, event: Frozen<Args<'p
   armHandoff(event.origin, event.text)
   // The engine stamps the origin, so a typed envelope settles nothing; settling first lets this turn's instruction see the outcome.
   if (event.origin.kind === 'task-notification') {
+    for (const end of readTaskEnds(event.text)) settleDetachedTask(end.id)
     await withRecordLock(async () => {
       if (await observeTaskNotification(port, await readSession(port), event.text)) await refreshView(port, true)
     }).catch(toastFailure(port, 'record the task notification'))
+  }
+  // The tree changed since the turn end is the user's own work, unless a writer a call left running may have changed it.
+  if (event.origin.kind === 'composer' && !hasDetachedRuns()) {
+    await withRecordLock(async () => absorbTree(port, await readSession(port))).catch(toastFailure(port, 'take in the working tree'))
   }
   const saved = await readSession(port)
   if (saved.flow) await withRecordLock(() => recordAnchor(port, saved)).catch(toastFailure(port, "record the unit's commit"))
