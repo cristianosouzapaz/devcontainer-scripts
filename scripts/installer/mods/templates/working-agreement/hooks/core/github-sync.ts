@@ -1,7 +1,7 @@
 import { flowDefinitions } from '../domain/flow-definitions'
 import type { Step } from '../domain/flow-definitions'
 import { listMissingLines } from '../domain/pull-request-body'
-import type { GithubStatus, IssueInfo, PullRequest, Session } from '../domain/records'
+import type { GithubStatus, IssueInfo, PullRequest, Session, Unit } from '../domain/records'
 import { findPullRequestBranch, findPullRequestStep } from '../domain/step-states'
 import type { GitState } from '../lib/git'
 import { countSubIssues, findPullRequest, probeGithub, readIssue, viewPullRequest } from '../lib/github'
@@ -67,7 +67,7 @@ export async function readPullRequests(port: EnginePort, session: Session): Prom
     const found: PullRequest | undefined = unwrapOr(await findPullRequest(port.processes, branch, 'all'), null) ?? undefined
     if (!found) continue
     // A push to an open PR is the user's, so no command the agent runs reads the PR back: the sync confirms it.
-    const confirmed = found.state === 'OPEN' && step && !step.skill ? await confirmPush(port, session, step.requires, found.number, git, unit.prHead) : undefined
+    const confirmed = found.state === 'OPEN' && step && !step.skill ? await confirmPush(port, session, unit, step.requires, found.number, git, unit.prHead) : undefined
     reads[key] = { found, confirmed }
   }
   return reads
@@ -108,13 +108,13 @@ export async function syncPullRequests(port: EnginePort, session: Session, isFor
 }
 
 // The PR head GitHub reports for an open PR when it is the local HEAD, not yet recorded, and the body carries the step's lines; undefined otherwise.
-async function confirmPush(port: EnginePort, session: Session, requires: Step['requires'], number: number, git: GitState | null, recorded: string | undefined): Promise<string | undefined> {
+async function confirmPush(port: EnginePort, session: Session, unit: Unit, requires: Step['requires'], number: number, git: GitState | null, recorded: string | undefined): Promise<string | undefined> {
   const head = (git ?? await readGit(port))?.head
   if (!head || head === recorded) return undefined
   const viewed = await viewPullRequest(port.processes, number)
   if (!viewed.isOk) return undefined
   const { body, headRefOid } = viewed.value
-  return headRefOid === head && !listMissingLines(requires, session, body).length ? headRefOid : undefined
+  return headRefOid === head && !listMissingLines(requires, session, body, unit).length ? headRefOid : undefined
 }
 
 /**

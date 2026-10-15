@@ -3,12 +3,14 @@ import { flowDefinitions } from '../domain/flow-definitions'
 import { mergeUnits } from '../domain/records'
 import type { Session, Unit } from '../domain/records'
 import { resolveStepStates } from '../domain/step-states'
-import type { Evidence, Position, StepState } from '../domain/step-states'
+import type { Evidence, Position, StepState, WorktreeState } from '../domain/step-states'
+import { hasBranch, isWorktreeListed, readWorktreeHead } from '../lib/git'
 import type { GitState } from '../lib/git'
+import { unwrapOr } from '../lib/result'
 import { findHoldingAnchor } from './anchor'
 import type { EnginePort } from './engine-port'
 import { listUnitKeys, readUnit } from './record-store'
-import { readRedState } from './red-state'
+import { readRedFiles } from './red-files'
 import { countCommitsAhead, hasChanges, hasCommittedChanges, isCommitAncestor, readCommitTreeKey, readContinuousIntegration, readGit, readPullRequestChecks, readWorkingTreeKey } from './repository'
 import { findRunInFlight, hasRunsInFlight, lapseBackgroundRuns } from './runs-in-flight'
 import { sessionMemory } from './session-memory'
@@ -38,24 +40,32 @@ export async function locatePosition(port: EnginePort, session: Session): Promis
   const liveCommits = !git ? 0 : unit.start ? await countCommitsAhead(port, unit.start) : git.ahead
   const ownCommits = !git || !anchor ? liveCommits : unit.start ? await countCommitsAhead(port, unit.start, anchor) : git.ahead - (await countCommitsAhead(port, anchor))
   const running = isVerified ? null : findRunInFlight(tree, 'verify')
-  const testRun = findRunInFlight(tree, 'test')
+  const worktreeRun = findRunInFlight(tree, 'worktree')
   const isAnchorVerified = !!anchor && !!verifyCommand && !!unit.verify && unit.verify === await readCommitTreeKey(port, anchor)
   const verify = { command: verifyCommand, isVerified: anchor ? isAnchorVerified : isVerified, running }
-  const red = await readRedState(port, unit, git)
-  // A unit with no start owns every commit ahead of base, which the diff against HEAD does not see. In a flow with a
-  // test-exempt step (Diagnose) the reproduction test is that step's work, so only a non-test change counts as Code;
-  // an overridden Diagnose lifts that, since a bug in the test harness is fixed in the test files themselves.
-  const isTestExcluded = definition.steps.some(step => step.isTestExempt && !unit.overrides.some(override => override.step === step.id))
+  // A unit with no start owns every commit ahead of base, which the diff against HEAD does not see.
   const hasCodeStep = definition.steps.some(step => step.isUnlocking)
   const isCodeChanged = !!git && hasCodeStep && (
     (!unit.start && ownCommits > 0) ||
-    (anchor && unit.start ? await hasCommittedChanges(port, git.root, unit.start, anchor, isTestExcluded) : !anchor && await hasChanges(port, git.root, unit.start, isTestExcluded)))
+    (anchor && unit.start ? await hasCommittedChanges(port, git.root, unit.start, anchor) : !anchor && await hasChanges(port, git.root, unit.start)))
   const anchored = anchor ? { isPullRequestContained: !!unit.prHead && await isCommitAncestor(port, anchor, unit.prHead) } : null
-  const evidence: Evidence = { git, ownCommits, isCodeChanged, verify, anchored, checks: 'off', red }
+  const worktree = await readWorktreeState(port, unit)
+  const redFiles = git ? await readRedFiles(port, unit, git.root) : {}
+  const evidence: Evidence = { git, ownCommits, isCodeChanged, verify, anchored, checks: 'off', worktree, redFiles }
   const unchecked = resolveStepStates(definition, session, unit, evidence)
   const checks = await readStepChecks(port, unchecked, unit, git)
   const states = checks === 'off' ? unchecked : resolveStepStates(definition, session, unit, { ...evidence, checks })
-  return { ...evidence, checks, flow: definition, unit, states, current: states.find(state => state.state === 'current') ?? null, testRun }
+  return { ...evidence, checks, flow: definition, unit, states, current: states.find(state => state.state === 'current') ?? null, worktreeRun }
+}
+
+// The worktree the unit recorded, with its HEAD, whether the session works in it and whether it still exists; null when it
+// recorded none. It exists while git lists it or its branch is left, and a git that cannot answer counts as existing.
+async function readWorktreeState(port: EnginePort, unit: Unit): Promise<WorktreeState | null> {
+  if (!unit.worktree) return null
+  const { name, path } = unit.worktree
+  const cwd = await port.readCwd()
+  const isPresent = unwrapOr(await isWorktreeListed(port.processes, path), true) || unwrapOr(await hasBranch(port.processes, `worktree-${name}`), true)
+  return { name, head: unwrapOr(await readWorktreeHead(port.processes, path), null), isEntered: cwd === path || cwd.startsWith(`${path}/`), isPresent }
 }
 
 /**

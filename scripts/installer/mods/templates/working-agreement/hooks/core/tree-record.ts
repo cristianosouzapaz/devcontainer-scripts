@@ -8,7 +8,7 @@ import { sessionMemory } from './session-memory'
 
 /**
  * Compares the working tree with the one last recorded and records on the unit what changed in between, whoever changed
- * it: the test files that changed, and every changed file the agreement would have held a write to back. A tree git
+ * it: every changed file the agreement would have held a write to back. A tree git
  * cannot read counts as an unexplained write while a step holds writes back, and leaves the record as it was, so the
  * next read still sees the change. The first read of a declared flow only starts the record.
  *

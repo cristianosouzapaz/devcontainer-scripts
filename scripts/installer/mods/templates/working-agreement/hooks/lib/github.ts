@@ -25,6 +25,9 @@ interface PullRequestRef extends PullRequestState { headRefName: string; headRef
 /** A PR's body and head commit, as `gh pr view` reports them. */
 interface PullRequestView { body: string; headRefOid: string }
 
+/** An issue comment as GitHub reports it: its URL, which links to it, and its body. */
+interface IssueComment { url: string; body: string }
+
 /** An issue the logged-in user opened: its number, title and when GitHub created it, in milliseconds since the epoch. */
 interface OwnIssue { number: number; title: string; createdAt: number }
 
@@ -172,4 +175,20 @@ export async function viewPullRequest(processes: ProcessPort, pullRequest: numbe
   const data = parseJson(run.value.stdout)
   if (!data.isOk || !isRecord(data.value) || typeof data.value.body !== 'string' || typeof data.value.headRefOid !== 'string') return fail('unreadable gh output')
   return succeed({ body: data.value.body, headRefOid: data.value.headRefOid })
+}
+
+/**
+ * Reads an issue's latest comment.
+ *
+ * @param processes - The engine's process runner.
+ * @param issue - The issue number.
+ * @returns The comment, null when the issue has none, or a failure when gh cannot read it or reports it in another shape.
+ */
+export async function viewLatestIssueComment(processes: ProcessPort, issue: number): Promise<Result<IssueComment | null>> {
+  const run = hasExitedZero(await runCommand(processes, ['gh', 'issue', 'view', String(issue), '--json', 'comments']))
+  if (!run.isOk) return run
+  const data = parseJson(run.value.stdout)
+  if (!data.isOk || !isRecord(data.value) || !Array.isArray(data.value.comments)) return fail('unreadable gh output')
+  const latest = filterRecords(data.value.comments).at(-1)
+  return succeed(latest && typeof latest.url === 'string' && typeof latest.body === 'string' ? { url: latest.url, body: latest.body } : null)
 }

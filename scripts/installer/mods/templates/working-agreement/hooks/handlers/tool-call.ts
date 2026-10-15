@@ -1,26 +1,26 @@
 import type { Args, EventResult, Frozen, Next } from 'claude-code'
 
 import { recordAnchor } from '../core/anchor'
-import { judgeToolCall, readShellContext } from '../core/call-judgement'
-import { endDirectRun, listCallWrites, startDirectRun } from '../core/command-observation'
+import { judgeToolCall } from '../core/call-judgement'
+import { endDirectRun, startDirectRun } from '../core/command-observation'
 import type { EnginePort } from '../core/engine-port'
 import { toastFailure } from '../core/failure-toast'
 import { createFeaturePort } from '../core/feature-port'
-import { fileTools, isJudgedTool } from '../core/judged-tools'
+import { isJudgedTool } from '../core/judged-tools'
 import { observeCommand } from '../core/observation-recording'
 import { refreshView } from '../core/pane-view'
 import { listUnitKeys, readSession, readUnit, updateUnits, writeSession } from '../core/record-store'
-import { readGit, readRepositoryRoot } from '../core/repository'
+import { readGit } from '../core/repository'
 import { settleBackgroundRun, settleDetachedTask, trackDetachedTask } from '../core/runs-in-flight'
 import { compareTree } from '../core/tree-record'
 import { withRecordLock } from '../core/session-memory'
+import { adoptWorktree, excludeWorktrees } from '../core/worktree-setup'
 import { flowDefinitions } from '../domain/flow-definitions'
 import { markForAgent } from '../domain/messages'
 import type { Session, Unit } from '../domain/records'
 import { isOnBase } from '../domain/step-states'
 import { recordHandoffDocument } from '../features/handoff'
 import { isRecord, toStringOrEmpty } from '../lib/json'
-import { isPathMatched, normalizePath, toRepoRelative } from '../lib/paths'
 
 /**
  * Gates a tool call against the declared flow, runs it, and records what it did for the unit.
@@ -42,6 +42,7 @@ export async function handleToolCall(port: EnginePort, event: Frozen<Args<'tool.
     return next(event)
   }
   if (event.tool === 'TaskStop') return handleTaskStop(port, args, next(event))
+  if (event.tool === 'EnterWorktree') return handleEnterWorktree(port, args, () => next(event))
   if (!isJudgedTool(event.tool, args)) return next(event)
   // Compared before the verdict, so a change no call made holds this very call back.
   await withRecordLock(async () => compareTree(port, await readSession(port))).catch(toastFailure(port, 'compare the working tree'))
@@ -83,16 +84,10 @@ export async function handleToolCall(port: EnginePort, event: Frozen<Args<'tool.
       if (!saved.flow) return
       const hasWritten = !!verdict.write && ran.isError !== true
       const session = hasWritten ? await markWrite(port, saved) : saved
-      if (hasWritten) {
-        const git = await readGit(port)
-        const tests = await listWrittenTests(port, event.tool, args)
-        if (git || tests.length) {
-          const isNewBranch = (unit: Unit): boolean => !!git && !isOnBase(git) && (!unit.branch || unit.branch === git.base)
-          await updateUnits(port, session, unit => ({
-            ...unit, branch: isNewBranch(unit) ? git?.branch : unit.branch,
-            ...(tests.length ? { testFiles: [...new Set([...(unit.testFiles ?? []), ...tests])] } : {}),
-          }))
-        }
+      const git = hasWritten ? await readGit(port) : null
+      if (git) {
+        const isNewBranch = (unit: Unit): boolean => !isOnBase(git) && (!unit.branch || unit.branch === git.base)
+        await updateUnits(port, session, unit => ({ ...unit, branch: isNewBranch(unit) ? git.branch : unit.branch }))
       }
       // Compared before the command is observed, so a red this run records does not open the gate its own writes are judged by.
       await compareTree(port, session, verdict.decision === 'ask')
@@ -119,6 +114,18 @@ async function markWrite(port: EnginePort, session: Session): Promise<Session> {
   return marked
 }
 
+// Keeps the worktrees out of git status before Claude Code creates one, then takes in the worktree the call entered.
+async function handleEnterWorktree(port: EnginePort, args: Record<string, unknown>, entering: () => Promise<EventResult<'tool.call'>>): Promise<EventResult<'tool.call'>> {
+  await excludeWorktrees(port).catch(toastFailure(port, 'keep the worktrees out of git status'))
+  const ran = await entering()
+  if (ran.deny !== undefined || ran.isError === true) return ran
+  await withRecordLock(async () => {
+    await adoptWorktree(port, await readSession(port), args, ran.result)
+    await refreshView(port, true)
+  }).catch(toastFailure(port, 'set up the worktree'))
+  return ran
+}
+
 // Settles the background run a TaskStop ended: the engine sends no notification for a task the agent stops.
 async function handleTaskStop(port: EnginePort, args: Record<string, unknown>, stopping: Promise<EventResult<'tool.call'>>): Promise<EventResult<'tool.call'>> {
   const ran = await stopping
@@ -136,14 +143,4 @@ function trackLeftTask(ran: EventResult<'tool.call'>): void {
   const result = isRecord(ran.result) ? ran.result : {}
   const taskId = toStringOrEmpty(result.backgroundTaskId ?? result.taskId)
   if (taskId && !result.backgroundEndsWithFinalResponse) trackDetachedTask(taskId)
-}
-
-async function listWrittenTests(port: EnginePort, tool: string, args: Record<string, unknown>): Promise<string[]> {
-  const root = await readRepositoryRoot(port)
-  if (!root) return []
-  const cwd = await port.readCwd()
-  const paths = fileTools.includes(tool)
-    ? [toStringOrEmpty(args.file_path ?? args.notebook_path)]
-    : listCallWrites(toStringOrEmpty(args.command), await readShellContext(port)).filter((path): path is string => path !== null)
-  return paths.map(path => toRepoRelative(normalizePath(path, cwd), root)).filter((file): file is string => !!file && isPathMatched(flowDefinitions.testPaths, file))
 }

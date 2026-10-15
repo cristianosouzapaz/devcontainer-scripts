@@ -4,8 +4,10 @@ export type FlowTone = 'text' | 'warn' | 'error'
 export type FlowStepState = 'done' | 'current' | 'pending' | 'skipped' | 'override'
 /** A labelled line of the Flow pane, such as the branch or a blocked-write count. */
 export interface FlowRow { key: string; value: string; tone: FlowTone }
-/** One step of the declared flow as the pane shows it, with the user's command when the step is theirs. */
-export interface FlowStep { symbol: string; label: string; state: FlowStepState; hint?: string; isStale: boolean }
+/** A sub-step of a step as the pane shows it, drawn under its step while that step is current. */
+export interface FlowSubStep { symbol: string; label: string; state: FlowStepState; hint?: string; isStale: boolean }
+/** One step of the declared flow as the pane shows it, with the user's command when the step is theirs, and its sub-steps while it is current. */
+export interface FlowStep { symbol: string; label: string; state: FlowStepState; hint?: string; isStale: boolean; subSteps: FlowSubStep[] }
 /** An issue the session's unit of work resolves. */
 export interface FlowIssue { number: number; title: string }
 /** The pane's closing line, offering to continue in a new session. */

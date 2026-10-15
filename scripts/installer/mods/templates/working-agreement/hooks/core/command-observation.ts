@@ -8,27 +8,28 @@ import { formatError } from '../lib/result'
 import { listWriteTargets } from '../lib/shell-parser'
 import type { ShellContext, WriteTarget } from '../lib/shell-parser'
 import type { EnginePort } from './engine-port'
+import { isInWorktree } from './main-checkout'
 import { findUnitKey, readUnit } from './record-store'
-import { isTestOnly, readRepositoryRoot, readWorkingTreeKey } from './repository'
+import { hasStaleRedFile } from './red-files'
+import { readWorkingTreeKey } from './repository'
 import { trackBackgroundRun, trackDirectRun, untrackDirectRun } from './runs-in-flight'
 import { readVerifyCommand } from './verify-config'
 
 /** What a tool call returns: its result, flagged when the call failed. */
 export interface ToolRun { isError?: true; result?: unknown }
 
-/** A Bash call observed before it executes, and whether a verify or test run of it is now in flight. */
+/** A Bash call observed before it executes, and whether a verify run, or a run in the worktree, is now in flight. */
 export interface DirectLaunch { launched: LaunchedCommand; isInFlight: boolean }
 
 /** How a direct Bash call ended, and what it printed. */
 interface DirectOutcome { outcome: CommandOutcome; output: string }
 
-const hasTestRun = (events: CommandEvent[]): boolean => events.some(event => event.kind === 'verify' || event.kind === 'test')
+const isTracked = (launched: LaunchedCommand): boolean => !!launched.worktree || launched.events.some(event => event.kind === 'verify')
 
-// What recognising a command in the session needs beyond its text.
-async function readCommandContext(port: EnginePort, session: Session, testFiles: string[]): Promise<CommandContext> {
-  return {
-    verifyCommand: await readVerifyCommand(port), testFiles, cwd: await port.readCwd(), root: await readRepositoryRoot(port), issues: session.issues,
-  }
+// What recognising a command in the session needs beyond its text. A verify run in a worktree tests the worktree, not
+// the tree Verify judges, so there it is not recognised.
+async function readCommandContext(port: EnginePort, session: Session): Promise<CommandContext> {
+  return { verifyCommand: isInWorktree(await port.readCwd()) ? undefined : await readVerifyCommand(port), issues: session.issues }
 }
 
 /**
@@ -53,8 +54,7 @@ function listCallLines(command: string): string[] {
  * @returns The events, with their arguments, of every line the call runs.
  */
 export async function recogniseCall(port: EnginePort, session: Session, command: string): Promise<CommandEvent[]> {
-  const unit = await readUnit(port, await findUnitKey(port, session))
-  const context = await readCommandContext(port, session, unit.testFiles ?? [])
+  const context = await readCommandContext(port, session)
   return listCallLines(command).flatMap(line => recogniseCommand(line, context))
 }
 
@@ -72,8 +72,9 @@ export function listCallWrites(command: string, context: ShellContext): WriteTar
 }
 
 /**
- * Observes a command at its launch: the events it maps to, and, when it runs tests, the tree it starts on and whether
- * that tree holds only test changes. A direct run and a herdr run are both judged here, at launch.
+ * Observes a command at its launch: the events it maps to, the worktree when the session works in the unit's worktree
+ * of a flow with Diagnose before the green or while a red file is stale, and, for a verify run or a run in the worktree, the tree it starts on. A direct
+ * run and a herdr run are both judged here, at launch; a herdr pane's own directory is unknown, so the session's stands in.
  *
  * @param port - The engine calls.
  * @param session - The session the command runs in.
@@ -82,20 +83,17 @@ export function listCallWrites(command: string, context: ShellContext): WriteTar
  */
 async function launchCommand(port: EnginePort, session: Session, command: string): Promise<LaunchedCommand> {
   const unit = await readUnit(port, await findUnitKey(port, session))
-  const context = await readCommandContext(port, session, unit.testFiles ?? [])
-  const { root } = context
-  const events = recogniseCommand(command, context)
-  const isTest = events.some(event => event.kind === 'test')
-  return {
-    events,
-    startedAt: await port.now(),
-    tree: hasTestRun(events) ? await readWorkingTreeKey(port) : null,
-    isTestOnly: !!root && isTest && hasDiagnoseStep(session.flow) && (await isTestOnly(port, root, unit.start)),
-  }
+  const cwd = await port.readCwd()
+  const path = unit.worktree?.path
+  const isInUnitWorktree = !!path && hasDiagnoseStep(session.flow) && (cwd === path || cwd.startsWith(`${path}/`))
+  const isGreen = isInUnitWorktree && !!unit.red && unit.green === unit.red.command && !await hasStaleRedFile(port, unit)
+  const worktree = path && isInUnitWorktree && !isGreen ? path : null
+  const launched = { command, events: recogniseCommand(command, await readCommandContext(port, session)), startedAt: await port.now(), tree: null, worktree }
+  return isTracked(launched) ? { ...launched, tree: await readWorkingTreeKey(port) } : launched
 }
 
 /**
- * Observes a Bash call before it executes, and tracks its verify or test run as in flight until `endDirectRun`.
+ * Observes a Bash call before it executes, and tracks its verify run, or its run in the worktree, as in flight until `endDirectRun`.
  * A failure here leaves the call unobserved rather than denying it, and says so.
  *
  * @param port - The engine calls.
@@ -106,7 +104,7 @@ async function launchCommand(port: EnginePort, session: Session, command: string
 export async function startDirectRun(port: EnginePort, session: Session, command: string): Promise<DirectLaunch | null> {
   try {
     const launched = await launchCommand(port, session, command)
-    const isInFlight = hasTestRun(launched.events) && !!launched.tree
+    const isInFlight = isTracked(launched) && !!launched.tree
     if (isInFlight) trackDirectRun(launched)
     return { launched, isInFlight }
   } catch (error) {
@@ -166,20 +164,20 @@ function readReportedEvents(ran: ToolRun): CommandEvent[] {
  */
 export async function observeBashCall(port: EnginePort, session: Session, command: string, ran: ToolRun, launch: DirectLaunch | null): Promise<Observation[]> {
   const { outcome, output } = readDirectOutcome(ran)
-  const launched = launch?.launched ?? { events: [], startedAt: await port.now(), tree: null, isTestOnly: false }
+  const launched = launch?.launched ?? { command, events: [], startedAt: await port.now(), tree: null, worktree: null }
   const reported = readReportedEvents(ran)
   const isPassed = outcome === 'passed'
   // On a passed call the engine's report replaces a recognised event of the same kind: it is what git did, and it carries the PR number.
   const events = isPassed ? [...launched.events.filter(event => !reported.some(other => other.kind === event.kind)), ...reported] : launched.events
-  const direct: Observation[] = events.length ? [{ ...launched, events, outcome, output }] : []
+  const direct: Observation[] = events.length || launched.worktree ? [{ ...launched, events, outcome, output }] : []
   // A failed call can still have done a git operation first (`git commit && false`): the report stands on its own.
-  const observed: Observation[] = !isPassed && reported.length ? [...direct, { ...launched, events: reported, tree: null, isTestOnly: false, outcome: 'passed', output }] : direct
+  const observed: Observation[] = !isPassed && reported.length ? [...direct, { ...launched, events: reported, tree: null, worktree: null, outcome: 'passed', output }] : direct
   if (!isPassed) return observed
   const herdrLaunch = readHerdrLaunch(command)
   if (herdrLaunch) {
     trackDetachedHerdrRun(herdrLaunch)
     const launched = await launchCommand(port, session, herdrLaunch.command)
-    if (launched.events.length) trackHerdrRun(herdrLaunch, launched)
+    if (launched.events.length || launched.worktree) trackHerdrRun(herdrLaunch, launched)
   }
   const exits = completeHerdrRuns(command, output)
   return [...observed, ...exits.map((exit): Observation => ({ ...exit.launched, outcome: exit.exitCode === 0 ? 'passed' : 'failed', output: '' }))]

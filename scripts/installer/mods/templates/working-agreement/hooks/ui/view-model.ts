@@ -1,7 +1,7 @@
-import type { FlowRow, FlowView } from '../../types'
+import type { FlowRow, FlowSubStep, FlowView } from '../../types'
 import type { GithubStatus, Session } from '../domain/records'
 import { formatStepLabel, isCiWait, isUnitFinished, listDeclaredLabels } from '../domain/step-states'
-import type { Position, StepState } from '../domain/step-states'
+import type { Position, StepState, SubStepState } from '../domain/step-states'
 import { stepSymbol } from './theme'
 
 /**
@@ -24,8 +24,13 @@ function pluralize(count: number, word: string): string {
  * @returns The pane's view.
  */
 export function buildView(session: Session, position: Position, github: GithubStatus): FlowView {
-  const isRunning = (entry: StepState): boolean =>
-    entry.state === 'current' && ((!!position.verify.running && entry.step.observe === 'verify.passed') || (!!position.testRun && position.red !== 'holds' && !!entry.step.isTestExempt))
+  const isRunning = (entry: StepState | SubStepState): boolean => entry.state === 'current' &&
+    ('step' in entry ? !!position.verify.running && entry.step.observe === 'verify.passed' : !!position.worktreeRun)
+  // A step's sub-steps show only while it is current; a run in the worktree runs its current sub-step.
+  const listSubSteps = (entry: StepState): FlowSubStep[] => entry.state !== 'current' ? [] : (entry.subSteps ?? []).map(sub => ({
+    symbol: stepSymbol[sub.state], label: sub.label + (isRunning(sub) ? ' — running' : ''), state: sub.state, isStale: sub.isStale && !isRunning(sub),
+    ...(sub.hint ? { hint: sub.hint } : {}),
+  }))
   const meta: FlowRow[] = []
   const notes: FlowRow[] = []
   if (position.git) {
@@ -35,6 +40,10 @@ export function buildView(session: Session, position: Position, github: GithubSt
     if (position.unit.branch && position.unit.branch !== position.git.branch) {
       notes.push({ key: 'Branch', value: `issue work is on ${position.unit.branch} — writes here ask`, tone: 'warn' })
     }
+  }
+  if (position.worktree?.isPresent) {
+    const isHolding = position.states.some(entry => entry.isHeldByWorktree)
+    meta.push({ key: 'Worktree', value: isHolding ? `${position.worktree.name} — remove it to finish Code` : position.worktree.name, tone: isHolding ? 'warn' : 'text' })
   }
   if (session.followUp) meta.push({ key: 'Refs', value: `#${session.followUp}`, tone: 'text' })
   if (github === 'unauth') meta.push({ key: 'GitHub', value: 'not authenticated — run gh auth login', tone: 'warn' })
@@ -77,6 +86,7 @@ export function buildView(session: Session, position: Position, github: GithubSt
       hint: entry.state === 'current' && entry.step.isHuman && entry.step.skill ? `run /${entry.step.skill}`
         : entry.state === 'current' && isCiWait(position) ? `waiting for CI (${position.checks})` : undefined,
       isStale: entry.isStale && !isRunning(entry),
+      subSteps: listSubSteps(entry),
     })),
     notes,
     footer: isFinished || session.isLong || session.handoff

@@ -1,6 +1,8 @@
 import type { CommandRunResult, PromptOrigin, ToolCallResult } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
+import type { IssueComment } from './world'
+
 /**
  * Runs `/flow` with these arguments, typed at the prompt unless another origin is given.
  *
@@ -101,4 +103,18 @@ export const stopTurn = async ($: Engine, activeIds: string[]): Promise<void> =>
  */
 export const startSkill = async ($: Engine, skill: string): Promise<void> => {
   await $.skill.prompt({ skill, text: '' })
+}
+
+/**
+ * Posts a comment on issue #1 as the agent does with `gh issue comment`; GitHub then holds it as the issue's latest comment.
+ *
+ * @param $ - The test's engine.
+ * @param comments - The world's `issueComments`, which the comment is added to.
+ * @param body - The comment text.
+ * @returns What the Bash call answered.
+ */
+export function postComment($: Engine, comments: Record<number, IssueComment[]>, body: string): Promise<ToolCallResult> {
+  const list = (comments[1] ??= [])
+  list.push({ url: `https://github.com/o/r/issues/1#issuecomment-${list.length + 1}`, body })
+  return $.tool.call({ tool: 'Bash', command: `gh issue comment 1 --body "${body}"` })
 }

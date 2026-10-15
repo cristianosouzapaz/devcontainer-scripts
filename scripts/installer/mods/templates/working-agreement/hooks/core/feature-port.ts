@@ -1,3 +1,4 @@
+import type { ApprovePort } from '../features/approve'
 import { startFollowUp } from '../features/follow-up'
 import type { FollowUpPort } from '../features/follow-up'
 import type { HandoffPort } from '../features/handoff'
@@ -11,7 +12,7 @@ import { readGit, readHeadCommit, readRepositoryRoot } from './repository'
 import { withRecordLock } from './session-memory'
 
 /** The engine and core calls every feature module makes. */
-type FeaturePort = HandoffPort & OverridePort & FollowUpPort
+type FeaturePort = HandoffPort & OverridePort & ApprovePort & FollowUpPort
 
 /**
  * Builds the calls the feature modules reach the engine and the core through; handoff gets follow-up as one of them,

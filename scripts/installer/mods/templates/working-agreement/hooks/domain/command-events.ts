@@ -1,15 +1,9 @@
-import { normalizePath, toRepoRelative } from '../lib/paths'
-import { findRanCommands, hasExactSegment, splitShellWords } from '../lib/shell-parser'
+import { findRanCommands, hasExactSegment } from '../lib/shell-parser'
 import type { Invocation } from '../lib/shell-parser'
 
 /** Records a run of the repository's verify command. */
 interface VerifyEvent {
   kind: 'verify'
-}
-/** Records a run of some of the unit's test files: those its arguments name, or all of them for the verify command. */
-interface TestEvent {
-  kind: 'test'
-  testFiles: string[]
 }
 /** Records a `git commit`. */
 interface CommitEvent {
@@ -64,6 +58,12 @@ interface IssueCreateEvent {
   kind: 'issue-create'
   title?: string
 }
+/** Records a `gh issue comment`, with the declared issues it names and where its body comes from. */
+interface IssueCommentEvent {
+  kind: 'issue-comment'
+  issues: number[]
+  body: BodyPart[]
+}
 /** Records a `gh issue edit` or `gh issue comment`, with the declared issues it names. */
 interface IssueEditEvent {
   kind: 'issue-edit'
@@ -72,22 +72,23 @@ interface IssueEditEvent {
 
 /** Names what an observed command does for the unit; the same command maps to the same events whether it runs directly or in a herdr pane. */
 export type CommandEvent =
-  | VerifyEvent | TestEvent | CommitEvent | PushEvent | HistoryEvent
+  | VerifyEvent | CommitEvent | PushEvent | HistoryEvent
   | PullRequestCreateEvent | PullRequestEditEvent | PullRequestMergeEvent | PullRequestReviewEvent
-  | IssueCreateEvent | IssueEditEvent
+  | IssueCreateEvent | IssueEditEvent | IssueCommentEvent
 
 /** Names how an observed command ended: with exit 0, non-zero, or not at all yet (in the background, interrupted, or no marker read back). */
 export type CommandOutcome = 'passed' | 'failed' | 'unfinished'
 
 /**
- * Holds a command as observed at its launch: the events it maps to, when it started on the engine clock, the tree it started on,
- * and whether that tree held only test changes then.
+ * Holds a command as observed at its launch: its text, the events it maps to, when it started on the engine clock, the tree
+ * it started on, and the unit's worktree when it started there before the green, so it is a red or green candidate.
  */
 export interface LaunchedCommand {
+  command: string
   events: CommandEvent[]
   startedAt: number
   tree: string | null
-  isTestOnly: boolean
+  worktree: string | null
 }
 
 /** Holds a launched command that ended, and what it printed: empty for a herdr run, whose output stays in its pane. */
@@ -100,12 +101,6 @@ export interface Observation extends LaunchedCommand {
 export interface CommandContext {
   /** The repository's verify command, if it names one. */
   verifyCommand: string | undefined
-  /** The unit's repo-relative test files. */
-  testFiles: string[]
-  /** The directory the command runs in. */
-  cwd: string
-  /** The repository root, or null outside a repository. */
-  root: string | null
   /** The declared issues. */
   issues: number[]
 }
@@ -170,24 +165,6 @@ function readBodyParts(line: string, run: Invocation): BodyPart[] {
 }
 
 /**
- * Lists the recorded test files a command runs: those its arguments name or sit under, or all of them when it runs the verify command.
- *
- * @param command - The command line.
- * @param context - The verify command, the unit's test files, the working directory and the repository root.
- * @returns The test files the command runs.
- */
-function listTestRuns(command: string, context: CommandContext): string[] {
-  const { verifyCommand, testFiles, cwd, root } = context
-  if (verifyCommand && hasExactSegment(command, verifyCommand)) return testFiles
-  if (!root) return []
-  const relativePaths = splitShellWords(command)
-    .flatMap(segment => segment.filter((word, index) => !word.isRedirect && !segment[index - 1]?.isRedirect))
-    .map(word => toRepoRelative(normalizePath(word.text, cwd), root))
-  // The repository root is '' and would contain every file: only a named file or a subdirectory counts.
-  return testFiles.filter(file => relativePaths.some(path => path !== null && (path === file || (path !== '' && file.startsWith(`${path}/`)))))
-}
-
-/**
  * Maps a command line to the events it does for the unit. This is the only reader of a command's text for the steps and
  * the gates: the observation layer applies it to a direct Bash call and to the command a herdr pane runs alike, before the
  * command runs and once it ended.
@@ -199,8 +176,6 @@ function listTestRuns(command: string, context: CommandContext): string[] {
 export function recogniseCommand(command: string, context: CommandContext): CommandEvent[] {
   const events: CommandEvent[] = []
   if (context.verifyCommand && hasExactSegment(command, context.verifyCommand)) events.push({ kind: 'verify' })
-  const testFiles = listTestRuns(command, context)
-  if (testFiles.length) events.push({ kind: 'test', testFiles })
   const subcommands = listGitSubcommands(command)
   if (subcommands.includes('commit')) events.push({ kind: 'commit' })
   if (subcommands.includes('push')) events.push({ kind: 'push' })
@@ -223,13 +198,13 @@ export function recogniseCommand(command: string, context: CommandContext): Comm
     const title = run.isParsed ? readFlagValue(run.args, ['--title', '-t']) : undefined
     events.push(title ? { kind: 'issue-create', title } : { kind: 'issue-create' })
   }
+  // The declared issues a run names.
+  const listNamedIssues = (runs: Invocation[]): number[] => context.issues.filter(issue => runs.some(run => run.isParsed
+    ? run.args.some(word => new RegExp(`(^|[#/])${issue}$`).test(word))
+    : new RegExp(`(^|[\\s#/])${issue}(\\s|$)`).test(command)))
   const issueRuns = findRanCommands(command, 'gh issue (?:edit|comment)')
-  if (issueRuns.length) {
-    // The outcome can also land on the declared issue itself.
-    const issues = context.issues.filter(issue => issueRuns.some(run => run.isParsed
-      ? run.args.some(word => new RegExp(`(^|[#/])${issue}$`).test(word))
-      : new RegExp(`(^|[\\s#/])${issue}(\\s|$)`).test(command)))
-    events.push({ kind: 'issue-edit', issues })
-  }
+  // The outcome can also land on the declared issue itself.
+  if (issueRuns.length) events.push({ kind: 'issue-edit', issues: listNamedIssues(issueRuns) })
+  for (const run of findRanCommands(command, 'gh issue comment')) events.push({ kind: 'issue-comment', issues: listNamedIssues([run]), body: readBodyParts(command, run) })
   return events
 }

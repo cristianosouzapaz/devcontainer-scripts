@@ -3,22 +3,25 @@ import { expect, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
 
 import type { ToolRun } from '../../../hooks/core/command-observation'
-import { buildBashCall, buildWriteCall, twoIssueCloseOut, verifyFile } from '../../support/builders'
-import { readFlowStatus, readPromptContext, startSkill } from '../../support/helpers'
-import { createWorld } from '../../support/world'
-import type { Checkout, Options } from '../../support/world'
+import { buildBashCall, buildDiagnosis, buildWriteCall, twoIssueCloseOut, verifyFile } from '../../support/builders'
+import { postComment, readFlowStatus, readPromptContext, runFlowCommand, startSkill } from '../../support/helpers'
+import { createWorld, root } from '../../support/world'
+import type { Checkout, IssueComment, Options } from '../../support/world'
 
-/** How a row's test moves the world: to where the step's evidence holds, then to where it lapses. */
-interface Moves { establish: () => Promise<void>; lapse: () => Promise<void> }
+/** How a row's test moves the world: to where the step's evidence holds, then to where it lapses, for a step whose evidence can lapse. */
+interface Moves { establish: () => Promise<void>; lapse?: () => Promise<void> }
 
 /**
- * One row of the step-state contract: the step as the pane names it, what makes it done and what makes it fall back,
- * the world it starts in, with the step current, and the step the instruction calls current once it is done (none when the flow is finished).
+ * One row of the step-state contract: the step as the pane names it, what makes it done and what makes it fall back (null for a step
+ * nothing makes fall back), the world it starts in, with the step current, and the step the instruction calls current once it is done
+ * (none when the flow is finished).
  */
-interface ContractRow { step: string; doneWhen: string; fallsBackWhen: string; next: string | null; start: ($: Engine, on: On) => Moves | Promise<Moves> }
+interface ContractRow { step: string; doneWhen: string; fallsBackWhen: string | null; next: string | null; start: ($: Engine, on: On) => Moves | Promise<Moves> }
 
 const refreshMs = 61000
 const closes = 'Closes #1\nCloses #2'
+// A Fix whose Diagnose went green on test/fix.bats alone.
+const greenUnit = { start: 'c0', red: { command: 'bats test/fix.bats', fingerprints: { 'test/fix.bats': 'h1' } }, green: 'bats test/fix.bats', diagnosis: 'https://github.com/o/r/issues/1#issuecomment-1', approval: 'https://github.com/o/r/issues/1#issuecomment-1' }
 
 const codeRow: ContractRow = {
   step: 'Code', doneWhen: 'a change is handed to Verify', fallsBackWhen: 'the tree moves past the verified run', next: 'Commit',
@@ -93,18 +96,22 @@ const rows: ContractRow[] = [
     },
   },
   {
-    step: 'Diagnose', doneWhen: 'the reproduction test was seen failing', fallsBackWhen: 'the test changes', next: 'Code',
+    step: 'Diagnose', doneWhen: 'a command that failed in the worktree passed there and the user approved the diagnosis comment', fallsBackWhen: null, next: 'Code',
     start: async ($, on) => {
-      const git: Checkout = { branch: 'fix', hashes: { 'test/fix.bats': 'h1' } }
       const toolRun: ToolRun = { result: { stdout: '' } }
-      createWorld(on, git, { session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } }, unit: { start: 'c0' }, toolRun })
-      await $.tool.call(buildWriteCall('test/fix.bats'))
-      const runFailingReproduction = async () => {
+      const worktree = { name: 'diagnose-1', base: 'c0', changed: ['test/fix.bats'], hashes: { 'test/fix.bats': 'h1' } }
+      const comments: Record<number, IssueComment[]> = {}
+      createWorld(on, { branch: 'fix' }, { session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } }, unit: { start: 'c0' }, issueLabels: { 1: ['ready-for-agent'] }, worktree, cwd: root, toolRun, issueComments: comments })
+      await $.tool.call({ tool: 'EnterWorktree', name: 'diagnose-1' })
+      const runRedThenGreen = async () => {
         toolRun.isError = true
         await $.tool.call(buildBashCall('bats test/fix.bats'))
         delete toolRun.isError
+        await $.tool.call(buildBashCall('bats test/fix.bats'))
+        await postComment($, comments, buildDiagnosis('bats test/fix.bats'))
+        await runFlowCommand($, 'approve diagnose')
       }
-      return { establish: runFailingReproduction, lapse: async () => { git.hashes = { 'test/fix.bats': 'h2' } } }
+      return { establish: runRedThenGreen }
     },
   },
   {
@@ -162,11 +169,11 @@ for (const row of rows) {
     await expectDone($, row)
   })
 
-  test(`${row.step} falls back when ${row.fallsBackWhen}`, async ($, on) => {
+  if (row.fallsBackWhen) test(`${row.step} falls back when ${row.fallsBackWhen}`, async ($, on) => {
     const moves = await row.start($, on)
     await moves.establish()
     await expectDone($, row)
-    await moves.lapse()
+    await moves.lapse?.()
     await expectCurrent($, row)
   })
 }
@@ -177,17 +184,15 @@ test('Code is done when a unit outside Fix changes only test files', async ($, o
   expect(await readPromptContext($)).toContain('current step: Commit')
 })
 
-test('Code stays current in a Fix while only test files changed', async ($, on) => {
-  createWorld(on, { branch: 'fix', changed: ['test/fix.bats'] }, {
-    session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } }, unit: { start: 'c0', red: { fingerprints: {} } },
-  })
-  await expectCurrent($, codeRow)
+test('Code is done in a Fix when only the red files changed and they are transferred', async ($, on) => {
+  createWorld(on, { branch: 'fix', changed: ['test/fix.bats'], hashes: { 'test/fix.bats': 'h1' } }, { session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } }, unit: greenUnit })
+  expect(await readFlowStatus($)).toContain('✓ Code')
 })
 
-test('Code is done in a Fix with Diagnose overridden when only test files changed', async ($, on) => {
-  createWorld(on, { branch: 'fix', changed: ['test/fix.bats'] }, {
+test('Code is done in a Fix with Diagnose overridden when only the red files changed', async ($, on) => {
+  createWorld(on, { branch: 'fix', changed: ['test/fix.bats'], hashes: { 'test/fix.bats': 'h1' } }, {
     session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } },
-    unit: { start: 'c0', overrides: [{ step: 'diagnose', reason: 'the bug is in the test harness' }] },
+    unit: { ...greenUnit, overrides: [{ step: 'diagnose', reason: 'no loop could be built' }] },
   })
   expect(await readFlowStatus($)).toContain('✓ Code')
   expect(await readPromptContext($)).toContain('current step: Commit')

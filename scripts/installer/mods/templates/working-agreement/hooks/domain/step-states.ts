@@ -6,12 +6,25 @@ import type { PullRequest, Session, Unit } from './records'
 /** Names where a step stands for the session's unit. */
 type StepStatus = 'done' | 'current' | 'pending' | 'skipped' | 'override'
 
+/** Holds a sub-step of a step and where it stands, judged as a step is. */
+export interface SubStepState {
+  label: string
+  state: StepStatus
+  /** The user's command that completes the sub-step, if it is theirs. */
+  hint?: string
+  isStale: boolean
+}
+
 /** Holds a step of the declared flow and where it stands. */
 export interface StepState {
   step: Step
   state: StepStatus
-  /** Whether the step's stored evidence exists but no longer holds: a verify run, a red, a commit or a PR head that the tree has moved past. */
+  /** Whether the step's stored evidence exists but no longer holds: a verify run, a commit or a PR head that the tree has moved past. */
   isStale: boolean
+  /** The step's sub-steps, in order; only a worktree step (Diagnose) has any. */
+  subSteps?: SubStepState[]
+  /** Set on the current Code step when the unit's worktree is the only thing holding it back. */
+  isHeldByWorktree?: boolean
 }
 
 /** Holds the repository's verify command, if it has one, and whether a run of it passed on the current tree. */
@@ -37,11 +50,22 @@ interface HerdrRunInFlight {
   pane: string
 }
 
-/** Names a verify or test run in flight on the current tree. */
+/** Names a verify run, or a run in the worktree, in flight on the current tree. */
 export type RunInFlight = DirectRunInFlight | BackgroundRunInFlight | HerdrRunInFlight
 
-/** Names whether the reproduction test has been seen failing on unfixed code: never, and still unchanged since, or changed since. */
-export type RedState = 'none' | 'holds' | 'stale'
+/** Names where a red file stands in the main checkout: identical to its fingerprint, not yet there, or changed since. */
+export type RedFileState = 'transferred' | 'pending' | 'stale'
+
+/**
+ * Holds the worktree the unit recorded: its name, the commit its HEAD is at (null when it cannot be read), whether the
+ * session works in it and whether it still exists, as a listed worktree or a branch that is left.
+ */
+export interface WorktreeState {
+  name: string
+  head: string | null
+  isEntered: boolean
+  isPresent: boolean
+}
 
 /** Holds what a holding anchor adds to the evidence. */
 interface AnchoredEvidence {
@@ -55,7 +79,7 @@ export interface Evidence {
   git: GitState | null
   /** How many commits the unit made since its start, or up to its anchor while that holds; every commit ahead of base for a unit with no start. */
   ownCommits: number
-  /** Whether the unit changed a file since its start, in its commits or in the working tree, or up to its anchor while that holds; a non-test file in a flow with Diagnose, unless Diagnose is overridden. */
+  /** Whether the unit changed a file since its start, in its commits or in the working tree, or up to its anchor while that holds. */
   isCodeChanged: boolean
   /** The verify command and whether a run of it passed on the current tree. */
   verify: VerifyState
@@ -63,8 +87,10 @@ export interface Evidence {
   anchored: AnchoredEvidence | null
   /** The CI state of the unit's PR; the PR step is done only when it is passing or off. */
   checks: CiState
-  /** Whether the reproduction test has been seen failing on unfixed code and is unchanged since. */
-  red: RedState
+  /** The worktree the unit recorded, or null when it recorded none. */
+  worktree: WorktreeState | null
+  /** Where each red file stands in the main checkout; empty while the unit has no red. */
+  redFiles: Record<string, RedFileState>
 }
 
 /** Holds where the session's unit stands in its flow, with the checkout, the Verify state and the CI state of its PR it was judged on. */
@@ -73,9 +99,39 @@ export interface Position extends Evidence {
   unit: Unit
   states: StepState[]
   current: StepState | null
-  /** A run of the unit's tests in flight on the current tree, if any; a verify run is one too. */
-  testRun: RunInFlight | null
+  /** A run in the worktree in flight before the green, if any. */
+  worktreeRun: RunInFlight | null
 }
+
+/** The user's command that approves the diagnosis comment. */
+const approvalHint = 'run /flow approve diagnose'
+
+/**
+ * Tells whether the user approved the unit's latest diagnosis comment: the approval is bound to a comment id, so a newer comment leaves it behind.
+ *
+ * @param unit - The unit.
+ * @returns True when a diagnosis comment is on record and the approval names it.
+ */
+export const isApproved = (unit: Unit): boolean => !!unit.diagnosis && unit.approval === unit.diagnosis
+
+/**
+ * Tells whether Diagnose's Red and Green are settled: the red's command passed in the worktree, or the user overrode the step,
+ * which skips them alone. The diagnosis comment counts only from here on.
+ *
+ * @param step - The worktree step.
+ * @param unit - The unit.
+ * @returns True once the green is on record or the step is overridden.
+ */
+export const isRedGreenSettled = (step: Step, unit: Unit): boolean =>
+  (!!unit.red && unit.green === unit.red.command) || unit.overrides.some(override => override.step === step.id)
+
+/**
+ * Finds a flow's worktree step.
+ *
+ * @param flow - The flow.
+ * @returns Diagnose, if the flow has it.
+ */
+export const findDiagnoseStep = (flow: FlowDefinition): Step | undefined => flow.steps.find(step => step.isInWorktree)
 
 /**
  * Tells whether the checkout is on its default branch.
@@ -171,7 +227,11 @@ const isPullRequestDone = (unit: Unit, git: GitState | null): boolean => !!git?.
  * An optional step (Tickets) that is not done is skipped until its skill starts, and again once a later step is done.
  * A step is done only on evidence that still holds, so it falls back when that evidence lapses; a skill starting never
  * completes its own step. Grill is the one exception, since a conversation leaves no artefact: the next step's skill starting ends it.
+ * A worktree step (Diagnose) is done once its green (a passing run of the red's command after the red) or its override has
+ * a valid diagnosis comment, and the user approved that comment; an override skips its Red and Green alone. A red file changed
+ * in the main checkout since it was proved reopens the step with Red and Green stale, the diagnosis and its approval kept (a red of another command drops them).
  * Code is done on a change handed to Verify: a passing or in-flight verify run on the current tree, an overridden Verify, or a done Commit.
+ * In a flow with Diagnose it also needs every red file in the main checkout as proved and the unit's worktree and its branch gone.
  * While the unit's anchor holds, Commit is done by the unit's commits up to it and never stale, and the PR is done once its head contains the anchor.
  * Every state carries a stale marker when the step's stored evidence exists but no longer holds; steps that rest on GitHub alone never lapse.
  *
@@ -182,10 +242,10 @@ const isPullRequestDone = (unit: Unit, git: GitState | null): boolean => !!git?.
  * @returns The flow's steps with their states; Verify is left out when the repository has no verify command.
  */
 export function resolveStepStates(flow: FlowDefinition, session: Session, unit: Unit, evidence: Evidence): StepState[] {
-  const { git, ownCommits, isCodeChanged, verify, checks, red, anchored } = evidence
+  const { git, ownCommits, isCodeChanged, verify, checks, anchored, redFiles, worktree } = evidence
   const steps = flow.steps.filter(step => step.observe !== 'verify.passed' || verify.command)
   const isCommitted = !!git && !git.isDirty && ownCommits > 0
-  const isGreen = checks === 'off' || checks === 'passing'
+  const isCiGreen = checks === 'off' || checks === 'passing'
   const declared = session.issues.map(number => session.info[number])
   const isCommitDone = anchored ? ownCommits > 0 : isCommitted
   // Code ↔ Verify is a loop: a change counts as Code only once it is handed to Verify. A later PR does not count, since its head
@@ -193,23 +253,30 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
   const isHandedOff = !verify.command || verify.isVerified || !!verify.running || isCommitDone ||
     unit.overrides.some(override => steps.some(step => step.id === override.step && step.observe === 'verify.passed'))
 
+  // A red file changed in the main checkout since it was proved reopens Diagnose's Red and Green, unless the step is overridden.
+  const isRedStale = (step: Step): boolean => Object.values(redFiles).includes('stale') && !unit.overrides.some(override => override.step === step.id)
+  // In a flow with Diagnose, Code also needs every red file in the main checkout as proved, and the worktree and its branch gone;
+  // an overridden Diagnose has no red to hold Code to.
+  const isRedTransferred = Object.values(redFiles).every(state => state === 'transferred')
+  const isRedGate = steps.some(step => step.isInWorktree && !unit.overrides.some(override => override.step === step.id))
+  const isWorkTransferred = isCodeChanged && isHandedOff && (!isRedGate || isRedTransferred)
+
   const isDone = (step: Step): boolean => {
-    if (step.isTestExempt) return red === 'holds'
+    if (step.isInWorktree) return isRedGreenSettled(step, unit) && isApproved(unit) && !isRedStale(step)
     if (step.doneLabels) {
       const doneLabels = step.doneLabels
       return declared.some(info => !!info?.labels.some(label => doneLabels.includes(label)))
     }
     if (step.observe === 'sub-issues') return declared.some(info => (info?.subIssues ?? 0) > 0)
-    if (step.isUnlocking) return isCodeChanged && isHandedOff
+    if (step.isUnlocking) return isWorkTransferred && !worktree?.isPresent
     if (step.observe === 'verify.passed') return verify.isVerified
     if (step.observe === 'commit') return isCommitDone
-    if (step.observe === 'pr.created') return isGreen && (anchored ? anchored.isPullRequestContained : isPullRequestDone(unit, git))
+    if (step.observe === 'pr.created') return isCiGreen && (anchored ? anchored.isPullRequestContained : isPullRequestDone(unit, git))
     // The mod sees a skill start, never its end: a talk step (Grill) is done once the next step's skill has started.
     const next = steps.slice(steps.indexOf(step) + 1).find(later => later.skill)
     return !!next?.skill && unit.skills.includes(next.skill)
   }
   const isLapsed = (step: Step): boolean => {
-    if (step.isTestExempt) return red === 'stale'
     if (step.observe === 'verify.passed') return !!unit.verify && !verify.isVerified
     if (step.observe === 'commit') return !anchored && ownCommits > 0 && !!git?.isDirty
     if (anchored && step.observe === 'pr.created') return !!unit.prHead && !anchored.isPullRequestContained
@@ -219,7 +286,8 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
   const producedIndex = steps.findLastIndex(step => !!step.doneLabels && isDone(step))
   // Null marks a step still open: the first open one is current, the rest pending.
   const settled = steps.map((step, index): StepStatus | null => {
-    if (unit.overrides.some(override => override.step === step.id)) return 'override'
+    // An override of the worktree step (Diagnose) skips its Red and Green only: its diagnosis and approval stay required.
+    if (!step.isInWorktree && unit.overrides.some(override => override.step === step.id)) return 'override'
     // Done wins over skipped: /to-spec itself applies ready-for-agent, and its steps did run.
     if (isDone(step)) return 'done'
     if (index < producedIndex) return 'skipped'
@@ -227,7 +295,35 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
     return null
   })
   const currentIndex = settled.indexOf(null)
-  return steps.map((step, index): StepState => ({
-    step, state: settled[index] ?? (index === currentIndex ? 'current' : 'pending'), isStale: isLapsed(step),
+  return steps.map((step, index): StepState => {
+    const state = settled[index] ?? (index === currentIndex ? 'current' : 'pending')
+    return {
+      step, state, isStale: isLapsed(step),
+      ...(step.isInWorktree ? { subSteps: resolveDiagnoseSubSteps(step, unit, isRedStale(step)) } : {}),
+      ...(step.isUnlocking && state === 'current' && isWorkTransferred && worktree?.isPresent ? { isHeldByWorktree: true } : {}),
+    }
+  })
+}
+
+/**
+ * Decides where Diagnose's sub-steps stand: Red once a failing run in the worktree is on record, Green once the same
+ * command passed there after it, Diagnosis once a valid diagnosis comment is on record, Approval once the user approved
+ * that comment; the first one not done is current. An override of Diagnose overrides Red and Green only. While a red file is
+ * stale, Red is current and Green pending, both stale, whatever is recorded; the diagnosis and the approval keep their state, which a new red of another command has already cleared.
+ *
+ * @param step - The worktree step.
+ * @param unit - The unit.
+ * @param isRedStale - Whether a red file changed in the main checkout since it was proved.
+ * @returns Red, Green, Diagnosis and Approval, in order.
+ */
+function resolveDiagnoseSubSteps(step: Step, unit: Unit, isRedStale: boolean): SubStepState[] {
+  const isOverridden = unit.overrides.some(override => override.step === step.id)
+  const done = [isOverridden || !!unit.red, isRedGreenSettled(step, unit), !!unit.diagnosis, isApproved(unit)]
+  const current = isRedStale ? 0 : done.indexOf(false)
+  return ['Red', 'Green', 'Diagnosis', 'Approval'].map((label, index) => ({
+    label,
+    state: isRedStale && index < 2 ? (index === 0 ? 'current' : 'pending') : isOverridden && index < 2 ? 'override' : done[index] ? 'done' : index === current ? 'current' : 'pending',
+    ...(label === 'Approval' ? { hint: approvalHint } : {}),
+    isStale: isRedStale && index < 2,
   }))
 }

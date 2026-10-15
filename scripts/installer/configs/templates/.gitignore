@@ -50,6 +50,7 @@ db.sqlite
 # Tooling & editor config
 /*.superpowers/
 .claude/settings.local.json
+.claude/worktrees/
 
 # Logs
 *.log

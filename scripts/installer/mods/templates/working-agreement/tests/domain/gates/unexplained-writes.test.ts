@@ -5,7 +5,7 @@ import type { Engine } from 'claude-code/testing'
 import type { ToolRun } from '../../../hooks/core/command-observation'
 import { buildBackgroundedRun, buildBashCall, buildTaskNotification, buildWriteCall, verifyFile } from '../../support/builders'
 import { endTurn, notifyTask, readFlowStatus, readPromptContext, runFlowCommand, setPermissionMode } from '../../support/helpers'
-import { createWorld } from '../../support/world'
+import { createWorld, root } from '../../support/world'
 import type { Checkout, Options } from '../../support/world'
 
 /** A Bash call to come: the tree its program leaves, unchanged when omitted, and what the call returns. */
@@ -14,11 +14,12 @@ interface PendingRun { tree?: Record<string, string>; result: ToolRun }
 /** A call that leaves a writer running after it returns: its name, its command and what it returns. */
 interface LeftWriter { name: string; command: string; result: ToolRun }
 
-// A Fix session at Diagnose on #1, and a Small feature one at Code.
+// A Fix session at Diagnose on #1, a Small feature one at Grill, whose write gate asks, and one at Code.
 const atDiagnose: Options = { session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } }, unit: { skills: ['diagnosing-bugs'], start: 'c0' } }
+const atGrill: Options = { session: { info: { 1: { title: 'feat', labels: [] } } } }
 const atCode: Options = { unit: { skills: ['grilling', 'to-spec'] } }
+const worktreeFile = `${root}/.claude/worktrees/diagnose-1/test/more.bats`
 const passed: ToolRun = { result: { stdout: '', stderr: '', interrupted: false } }
-const failed: ToolRun = { isError: true, result: { stdout: '', stderr: '', interrupted: false } }
 const held = 'changed outside Edit or Write'
 
 // The ways a call leaves a writer behind it: the engine moving it to the background, a process detached with `&`, and a
@@ -30,7 +31,7 @@ const leftWriters: LeftWriter[] = [
 ]
 
 // Builds a world whose Bash calls run programs that change the tree behind the parser's back; `run` makes the next call
-// leave the tree as given, `write` probes the gate with a test-file write, which Diagnose lets through, and `git` and
+// leave the tree as given, `write` probes the gate with a write in a worktree, which no step holds back, and `git` and
 // `world` are the checkout and options the world reads at each call, so a test can change the tree between calls.
 function startWorld($: Engine, on: On, options: Options, checkout: Checkout = { branch: 'fix', dirty: {} }) {
   const git: Checkout = { ...checkout }
@@ -47,11 +48,11 @@ function startWorld($: Engine, on: On, options: Options, checkout: Checkout = { 
     await $.tool.call(buildBashCall(command))
     Object.assign(pending, { tree: undefined, result: passed })
   }
-  const write = async (path = 'test/more.bats') => (await $.tool.call(buildWriteCall(path))).deny
+  const write = async (path = worktreeFile) => (await $.tool.call(buildWriteCall(path))).deny
   return { run, write, git, world }
 }
 
-test('a program that changes a non-test file at Diagnose holds every later write back, and shows in the pane, until the file is restored', async ($, on) => {
+test('a program that changes a file at Diagnose holds every later write back, one in a worktree included, and shows in the pane, until the file is restored', async ($, on) => {
   const { run, write } = startWorld($, on, atDiagnose)
   await run('python3 scripts/patch.py', { 'src/app.ts': 'h2' })
   expect(await write()).toContain(`src/app.ts ${held}`)
@@ -87,14 +88,7 @@ test('/flow override writes accepts the unexplained writes and lets writes throu
   expect(await write()).toBeUndefined()
 })
 
-test('a test file a program changes joins the unit\'s test files, so its failing run records the red', async ($, on) => {
-  const { run, write } = startWorld($, on, atDiagnose, { branch: 'fix', dirty: {}, changed: ['test/fix.bats'], hashes: { 'test/fix.bats': 'h1' } })
-  await run('python3 scripts/gen_test.py', { 'test/fix.bats': 'h1' })
-  await run('bats test/fix.bats', undefined, failed)
-  expect(await write('src/fix.sh')).toBeUndefined()
-})
-
-test('a program that changes a non-test file at Code holds nothing back', async ($, on) => {
+test('a program that changes a file at Code holds nothing back', async ($, on) => {
   const { run, write } = startWorld($, on, atCode, { branch: 'feat', dirty: {} })
   await run('python3 scripts/patch.py', { 'src/app.ts': 'h2' })
   expect(await write('src/b.ts')).toBeUndefined()
@@ -117,7 +111,7 @@ test('a tree git cannot read around a call holds nothing back at Code', async ($
 })
 
 test('a call the user approved records no unexplained write', async ($, on) => {
-  const { run, write } = startWorld($, on, atDiagnose)
+  const { run, write } = startWorld($, on, atGrill, { branch: 'feat', dirty: {} })
   await setPermissionMode($, 'default')
   await run("python3 -c 'patch()'", { 'src/app.ts': 'h2' })
   await setPermissionMode($, 'auto')
@@ -125,7 +119,7 @@ test('a call the user approved records no unexplained write', async ($, on) => {
 })
 
 for (const writer of leftWriters) {
-  test(`a non-test change landing after ${writer.name} returned holds the very next write back, a non-test one included`, async ($, on) => {
+  test(`a change landing after ${writer.name} returned holds the very next write back, to the main checkout or a worktree`, async ($, on) => {
     const { run, write, git } = startWorld($, on, atDiagnose)
     await run(writer.command, undefined, writer.result)
     git.dirty = { 'src/app.ts': 'h2' }
@@ -189,14 +183,6 @@ test('a task notification absorbs nothing', async ($, on) => {
   expect(await write()).toContain(`src/app.ts ${held}`)
 })
 
-test('a test file changed between calls joins the unit\'s test files, so its failing run records the red', async ($, on) => {
-  const { run, write, git } = startWorld($, on, atDiagnose, { branch: 'fix', dirty: {}, changed: ['test/fix.bats'], hashes: { 'test/fix.bats': 'h1' } })
-  await run('ls')
-  git.dirty = { 'test/fix.bats': 'h1' }
-  await run('bats test/fix.bats', undefined, failed)
-  expect(await write('src/fix.sh')).toBeUndefined()
-})
-
 test('a change between calls at Code holds nothing back', async ($, on) => {
   const { run, write, git } = startWorld($, on, atCode, { branch: 'feat', dirty: {} })
   await run('ls')
@@ -238,7 +224,7 @@ test('/flow override writes accepts a change made between calls', async ($, on) 
 })
 
 test('a call the user approved does not cover a change found before it', async ($, on) => {
-  const { run, write, git } = startWorld($, on, atDiagnose)
+  const { run, write, git } = startWorld($, on, atGrill, { branch: 'feat', dirty: {} })
   await run('ls')
   git.dirty = { 'src/app.ts': 'h2' }
   await setPermissionMode($, 'default')

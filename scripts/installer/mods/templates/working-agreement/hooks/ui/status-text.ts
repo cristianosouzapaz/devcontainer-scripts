@@ -1,9 +1,13 @@
-import type { FlowRow, FlowView } from '../../types'
+import type { FlowRow, FlowStep, FlowSubStep, FlowView } from '../../types'
 import { drawRule, layoutLabelRows, measureLabelWidth } from './pane-layout'
 import { hintIndent, inlineGap, keyWidth, pillGap, pillRowGap, sectionGap, statusColumns } from './theme'
 
 function keyedLine(row: FlowRow): string {
   return `${row.key.padEnd(keyWidth)}${row.value}`
+}
+
+function stepLine(step: FlowStep | FlowSubStep): string {
+  return `${step.symbol} ${step.label}${step.isStale ? `${inlineGap}stale` : ''}`
 }
 
 /**
@@ -21,7 +25,9 @@ export function renderStatusText(view: FlowView): string {
     // A blank line between pill rows, as the pane has.
     labelLines.flatMap((line, index) => (index === 0 ? [line] : [...Array<string>(pillRowGap).fill(''), line])),
     view.meta.map(keyedLine),
-    view.steps.flatMap(step => [`${step.symbol} ${step.label}${step.isStale ? `${inlineGap}stale` : ''}`, ...(step.hint ? [`${' '.repeat(hintIndent)}${step.hint}`] : [])]),
+    view.steps.flatMap(step => [
+      stepLine(step), ...(step.hint ? [`${' '.repeat(hintIndent)}${step.hint}`] : []), ...step.subSteps.flatMap(sub => [`${' '.repeat(hintIndent)}${stepLine(sub)}`, ...(sub.hint ? [`${' '.repeat(hintIndent * 2)}${sub.hint}`] : [])]),
+    ]),
     view.notes.map(keyedLine),
     view.footer ? [`${view.footer.text ? `${view.footer.text} ` : ''}Continue in new session: /flow handoff`] : [],
   ]

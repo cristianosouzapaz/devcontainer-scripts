@@ -10,7 +10,7 @@ type StepEvidence = 'sub-issues' | 'verify.passed' | 'commit' | 'pr.created'
 /**
  * Describes one step of a flow: the skill that runs it, the observed evidence that completes it, and how it gates repository writes:
  * only an `isWriteGated` step before the `isUnlocking` one asks before a write, so every other step never does;
- * an `isTestExempt` step (Diagnose) lets test files through and is completed by an observed red;
+ * an `isInWorktree` step (Diagnose) runs in a worktree, denies every write to the main checkout while current, and is completed by its sub-steps;
  * `doneLabels` makes it follow GitHub: it is done while a declared issue carries any of them, and the steps before it show as skipped unless they are done or overridden.
  * An `isOptional` step is skipped until its skill starts or its evidence appears, never gates a write, and never holds the steps after it back.
  */
@@ -25,7 +25,7 @@ export interface Step {
   isUnlocking?: boolean
   observe?: StepEvidence
   requires?: PullRequestRequirement
-  isTestExempt?: boolean
+  isInWorktree?: boolean
 }
 
 /** Names how a flow relates to an issue: it needs one, creates one, has none, or takes the followed-up one. */
@@ -53,7 +53,6 @@ interface PathGlobs {
 interface AgreementDefinitions {
   flows: Record<string, FlowDefinition>
   issueSkills: string[]
-  testPaths: string[]
   paths: PathGlobs
 }
 
@@ -81,7 +80,7 @@ export const flowDefinitions: AgreementDefinitions = {
       label: 'Fix', issue: 'produced', declaredBy: 'agent',
       steps: [
         { id: 'triage', label: 'Triage', skill: 'triage', isHuman: true, doneLabels: ['ready-for-agent', 'ready-for-human', 'needs-info', 'wontfix'], isWriteGated: true },
-        { id: 'diagnose', label: 'Diagnose', skill: 'diagnosing-bugs', isWriteGated: true, isTestExempt: true },
+        { id: 'diagnose', label: 'Diagnose', skill: 'diagnosing-bugs', isWriteGated: true, isInWorktree: true },
         { id: 'code', label: 'Code', isUnlocking: true },
         ...buildDeliverySteps('closes'),
       ],
@@ -113,7 +112,6 @@ export const flowDefinitions: AgreementDefinitions = {
     },
   },
   issueSkills: ['to-spec', 'triage', 'to-tickets', 'wayfinder'],
-  testPaths: ['**/test/**', '**/tests/**', '**/__tests__/**', '**/*.test.*', '**/*.spec.*', '**/*_test.*', '**/*.bats'],
   paths: {
     ephemeral: ['**/PLAN.md', '**/SPEC.md', '**/TODO.md', '**/TODOS.md', '**/plans/**', 'docs/plans/**', '**/*.plan.md'],
     generated: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/vendor/**', '**/.venv/**'],
@@ -136,11 +134,11 @@ function buildDeliverySteps(requires: PullRequestRequirement, hasSkills = true):
 }
 
 /**
- * Tells whether a flow has a test-exempt step (Diagnose), the only one an observed red completes.
+ * Tells whether a flow has a worktree step (Diagnose), the only one a red and a green complete.
  *
  * @param flow - The declared flow's id, or null with none declared.
  * @returns True when the flow has a Diagnose step.
  */
 export function hasDiagnoseStep(flow: string | null): boolean {
-  return !!flow && !!flowDefinitions.flows[flow]?.steps.some(step => step.isTestExempt)
+  return !!flow && !!flowDefinitions.flows[flow]?.steps.some(step => step.isInWorktree)
 }

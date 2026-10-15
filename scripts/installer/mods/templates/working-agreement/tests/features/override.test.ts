@@ -5,8 +5,11 @@ import { declareFlow, readFlowStatus, runFlowCommand } from '../support/helpers'
 import { createWorld } from '../support/world'
 
 const userOnly = ['override verify skipped', 'trivial', 'follow-up #1', 'handoff']
-// A Fix on #1 and #2 with Diagnose still to do; with no prompt yet the permission mode is unknown, so its ask denies.
+const approvedDiagnosis = { diagnosis: 'https://github.com/o/r/issues/1#issuecomment-1', approval: 'https://github.com/o/r/issues/1#issuecomment-1' }
+// A Fix on #1 and #2 with Diagnose still to do, its diagnosis comment approved so only the red and the green are left; with no prompt yet the permission mode is unknown, so its ask denies.
 const twoIssueFix = {
+  unit: approvedDiagnosis,
+  units: { 2: approvedDiagnosis },
   session: {
     ...twoIssueCloseOut.session, flow: 'fix',
     info: { 1: { title: 'a', labels: ['ready-for-agent'] }, 2: { title: 'b', labels: ['ready-for-agent'] } },

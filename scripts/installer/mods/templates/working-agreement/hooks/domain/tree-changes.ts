@@ -1,5 +1,3 @@
-import { isPathMatched } from '../lib/paths'
-import { flowDefinitions } from './flow-definitions'
 import type { UnexplainedWrites, Unit } from './records'
 
 /** Holds a working tree as git reads it: each file that differs from HEAD with its content hash, '' for one the tree lacks. */
@@ -46,8 +44,8 @@ export function listUnrestored(unexplained: UnexplainedWrites, tree: DirtyFiles 
 }
 
 /**
- * Records what changed between two reads on a unit: the test files that changed join the unit's, the unexplained files join
- * the record with what they held before, keeping an earlier record's, and every recorded file restored leaves it.
+ * Records what changed between two reads on a unit: the unexplained files join the record with what they held before,
+ * keeping an earlier record's, and every recorded file restored leaves it.
  *
  * @param unit - The unit.
  * @param change - What the call changed.
@@ -55,14 +53,12 @@ export function listUnrestored(unexplained: UnexplainedWrites, tree: DirtyFiles 
  */
 export function applyTreeChange(unit: Unit, change: TreeChange): Unit {
   const { before, after, strays, isUnchecked } = change
-  const tests = before && after ? listTreeChanges(before, after).filter(path => after[path] && isPathMatched(flowDefinitions.testPaths, path)) : []
   const { unexplained: recorded, ...rest } = unit
   const files = { ...Object.fromEntries(strays.map(path => [path, before?.[path] ?? cleanMark])), ...recorded?.files }
   const unrestored = after ? listUnrestored({ files }, after) : Object.keys(files)
   const isStillUnchecked = isUnchecked || !!recorded?.isUnchecked
   return {
     ...rest,
-    ...(tests.length ? { testFiles: [...new Set([...(unit.testFiles ?? []), ...tests])] } : {}),
     ...(unrestored.length || isStillUnchecked
       ? { unexplained: { files: Object.fromEntries(unrestored.map(path => [path, files[path]!])), ...(isStillUnchecked ? { isUnchecked: true as const } : {}) } }
       : {}),

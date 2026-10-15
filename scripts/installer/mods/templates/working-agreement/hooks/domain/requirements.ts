@@ -1,5 +1,8 @@
-import type { Session } from './records'
-import { isOnBase } from './step-states'
+import { diagnosisHeadings } from './diagnosis-comment'
+import { flowDefinitions } from './flow-definitions'
+import type { Step } from './flow-definitions'
+import type { Session, Unit } from './records'
+import { findDiagnoseStep, isApproved, isOnBase, isRedGreenSettled } from './step-states'
 import type { Position, RunInFlight, StepState } from './step-states'
 
 /** Holds the instruction that sends the agent to a branch before its first write on the default branch. */
@@ -15,24 +18,12 @@ export const branchFirstInstruction = 'create a branch for the issue (git switch
  */
 export function describeRequirement(state: StepState, session: Session, position: Position): string {
   const { step, isStale } = state
-  const { unit: { skills, testFiles = [], pr: pullRequest }, verify: { command: verifyCommand, running }, red, testRun, git } = position
+  const { unit: { skills, pr: pullRequest }, verify: { command: verifyCommand, running }, git } = position
   const isPushed = !!git?.isUpToDate
   if (step.isHuman && step.skill) return `the user's step: stop and ask them to run /${step.skill}`
-  if (step.isTestExempt) {
-    const first = step.skill && !skills.includes(step.skill) ? `run the ${step.skill} skill, then ` : ''
-    if (!testFiles.length) return `${first}write the failing test that reproduces the bug before editing non-test files`
-    if (testRun) return describeWait('reproduction test', testRun)
-    if (red === 'stale') {
-      return `${first}the reproduction test changed since it failed: re-run it on unfixed code and see it fail (if non-test changes are already in the tree, set them aside with git stash push -- <non-test paths>, re-run the test, then restore them with git stash pop); if the bug is in the test files themselves, so fixing it changes the reproduction, stop and ask the user to run /flow override diagnose <reason>`
-    }
-    const alternative = verifyCommand ? `, or run ${verifyCommand}` : ''
-    return `${first}run the reproduction test directly by its path (the test file or its directory${alternative}) and see it fail on unfixed code, before changing any non-test file`
-  }
+  if (step.isInWorktree) return describeDiagnose(step.skill && !skills.includes(step.skill) ? `run the ${step.skill} skill, then ` : '', step, session, position)
   if (step.skill && !step.observe) return `run the ${step.skill} skill`
-  if (step.isUnlocking) {
-    const change = verifyCommand ? `make the change, then run ${verifyCommand} to pass Verify` : 'make the change'
-    return isOnBase(git) ? `${branchFirstInstruction} first, then ${change}` : change
-  }
+  if (step.isUnlocking) return describeCode(position)
   if (step.observe === 'verify.passed' && running) {
     return describeWait(verifyCommand ?? 'verify command', running)
   }
@@ -50,11 +41,82 @@ export function describeRequirement(state: StepState, session: Session, position
     const pushFirst = isPushed ? '' : 'stop and ask the user to push the branch, then '
     if (!step.skill) return isOpen ? `stop and ask the user to push the branch to PR #${pullRequest.number}` : `${pushFirst}open the PR with gh pr create`
     const lines = step.requires === 'refs' ? [`Refs #${session.followUp}`] : step.requires === 'closes' ? session.issues.map(number => `Closes #${number}`) : []
-    const body = step.requires === 'linked' ? ` (body must keep a line linking #${session.followUp}: Closes, Refs, Fixes or Resolves)`
-      : lines.length ? ` (body must carry ${lines.join(', ')})` : ''
+    const flow = session.flow ? flowDefinitions.flows[session.flow] : undefined
+    const link = flow && findDiagnoseStep(flow) && isApproved(position.unit) ? [`the approved diagnosis comment link ${position.unit.approval}`] : []
+    const body = step.requires === 'linked' ? ` (body must keep a line linking #${session.followUp}: Closes, Refs, Fixes or Resolves${link.map(text => `, and carry ${text}`).join('')})`
+      : lines.length + link.length ? ` (body must carry ${[...lines, ...link].join(', ')})` : ''
     return `${pushFirst}run the ${step.skill} skill ${isStale ? 'again ' : ''}to ${isOpen ? `update PR #${pullRequest.number}` : 'open the PR'}${body}`
   }
   return step.label
+}
+
+// Says what Code needs: in a flow with Diagnose, the steps still open to bring the diagnosis into the main checkout and remove
+// the worktree, in order, then the change itself. A verify run in the worktree tests the worktree, so Verify is judged only
+// once the session is back in the main checkout.
+function describeCode(position: Position): string {
+  const { git, unit, worktree, redFiles, isCodeChanged, verify: { command: verifyCommand } } = position
+  const pending = Object.keys(redFiles).filter(file => redFiles[file] === 'pending')
+  const path = unit.worktree?.path
+  const isTransferring = !!worktree?.isPresent && !!path && (pending.length > 0 || !isCodeChanged)
+  const removals = worktree?.isPresent && path ? [`git worktree remove --force ${path}`, `git branch -D worktree-${worktree.name}`] : []
+  const steps = [
+    ...(isOnBase(git) ? [`${branchFirstInstruction} first`] : []),
+    ...(worktree?.isEntered ? ['call ExitWorktree with action keep'] : []),
+    ...(isTransferring ? ['remove the [DEBUG-…] instrumentation in the worktree', `transfer everything at once with git -C ${path} add -N . && git -C ${path} diff --binary ${unit.start ?? 'HEAD'} | git apply`] : []),
+    ...removals,
+    ...(!worktree?.isPresent && pending.length ? [`add the red files not yet in the main checkout (${pending.join(', ')})`] : []),
+  ]
+  const make = isTransferring ? 'make the change (the fix may be refined after the transfer)' : 'make the change'
+  return [...steps, verifyCommand ? `${make}, then run ${verifyCommand} to pass Verify` : make].join(', then ')
+}
+
+// Says what Diagnose needs next: the worktree, a start at the unit's start commit, the red, then the green, then the diagnosis
+// comment and the user's approval of it. An override skips the red and the green alone. A red file changed in the main
+// checkout comes first: its red and green are proved again.
+function describeDiagnose(first: string, step: Step, session: Session, position: Position): string {
+  const { unit, worktree, worktreeRun, redFiles } = position
+  const { start, red } = unit
+  const isOverridden = unit.overrides.some(override => override.step === step.id)
+  const stale = Object.keys(redFiles).filter(file => redFiles[file] === 'stale')
+  if (red && stale.length && !isOverridden) return `${first}${worktreeRun ? describeWait('re-proof', worktreeRun) : describeReproof(position, red.command, stale)}`
+  // The worktree stays mandatory under an override: the diagnosis starts from one the session entered.
+  if (isRedGreenSettled(step, unit) && (!isOverridden || unit.worktree)) return `${first}${describeDiagnosis(session, unit)}`
+  if (!worktree?.isEntered) {
+    return `${first}call EnterWorktree and diagnose there (the main checkout is read-only until the approval; a new worktree is brought to the unit's start commit), set the project up in it per its docs, ${isOverridden ? 'then post the diagnosis comment' : 'then run the command that reproduces the bug there and see it fail (red)'}`
+  }
+  if (start && worktree.head && worktree.head !== start) {
+    return `${first}the worktree is at ${worktree.head}, not the unit's start ${start}, so a red there does not count: set its changes aside, run git reset --hard ${start} in it, then run the reproduction again`
+  }
+  if (worktreeRun) return describeWait(red ? 'green candidate' : 'reproduction command', worktreeRun)
+  if (!red) {
+    return `${first}run the command that reproduces the bug in the worktree and see it fail (red): a test runner, a curl call or a scratchpad script; the files changed in the worktree by then become the red files, and until the green a failing run of another command replaces the red, so end an exploratory command that may fail with || true`
+  }
+  return `${first}apply the candidate fix in the worktree and re-run exactly: ${red.command} — it must pass (green)`
+}
+
+// Says how to prove again a red that changed in the main checkout: the changed files go into the worktree, the fix's paths are
+// stashed so the red fails, then restored so the green passes; a red file that also holds the fix has only the fix's hunks
+// undone. A removed worktree is created anew, and Code needs it removed again.
+function describeReproof(position: Position, command: string, stale: string[]): string {
+  const { git, unit, worktree } = position
+  const prove = `git stash push -- <files holding only the fix>, and in a red file that also holds the fix undo only the fix's hunks (a non-interactive reverse patch: git apply -R of a patch holding just those hunks, or by hand with Edit), run exactly ${command} and see it fail (red), restore the fix (git stash pop, or re-apply the patch), then run it again and see it pass (green)`
+  const files = `${stale.join(', ')} changed in the main checkout, so Red and Green are stale`
+  if (!worktree?.isPresent) {
+    const bring = `git -C ${git?.root} add -N . && git -C ${git?.root} diff --binary ${unit.start ?? 'HEAD'} | git apply`
+    return `${files} and the worktree is gone: call EnterWorktree to create a new one (it is brought to the unit's start commit), bring the main checkout's changes into it with ${bring}, ${prove}`
+  }
+  const enter = worktree.isEntered ? '' : `call EnterWorktree with path ${unit.worktree?.path}, `
+  return `${files}: ${enter}copy each changed file from the main checkout into the worktree, ${prove}`
+}
+
+// Says what the diagnosis needs once the red and the green are settled: the comment on the issue, then the user's approval of it.
+function describeDiagnosis(session: Session, unit: Unit): string {
+  if (unit.diagnosis) {
+    return `the diagnosis comment is posted: stop and ask the user to run /flow approve diagnose (the approval is theirs alone); if they reject it in chat, post a new diagnosis comment, since a newer comment voids any approval`
+  }
+  const files = Object.keys(unit.red?.fingerprints ?? {})
+  const red = unit.red ? `quote the red command (${unit.red.command}) and name ${files.length ? `every red file (${files.join(', ')})` : 'no red file: the Regression test section explains why there is no test'}` : 'the Regression test section explains why there is no test'
+  return `post the diagnosis as a comment on ${session.issues.map(number => `#${number}`).join(' ')} with gh issue comment, under the headings ${diagnosisHeadings.join(', ')}; ${red}`
 }
 
 // Tells the agent to wait for a run in flight, naming what reports its end: a herdr pane, or the task notification.

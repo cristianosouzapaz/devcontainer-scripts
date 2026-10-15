@@ -1,10 +1,8 @@
 import type { CiState } from '../domain/ci-blocker'
-import { flowDefinitions } from '../domain/flow-definitions'
 import type { DirtyFiles } from '../domain/tree-changes'
 import { countCommitsSince, hasPullRequestWorkflow, isAncestor, listChangedFiles, listCommittedFiles, readCommitTree, readDirtyFiles, readGitState, readHead, readRoot, readTreeKey } from '../lib/git'
 import type { GitState } from '../lib/git'
 import { readChecks } from '../lib/github'
-import { isPathMatched } from '../lib/paths'
 import { unwrapOr } from '../lib/result'
 import type { Result } from '../lib/result'
 import type { EnginePort } from './engine-port'
@@ -59,12 +57,11 @@ export const readCommitTreeKey = async (port: EnginePort, commit: string): Promi
  * @param root - The repository root.
  * @param from - The commit compared against.
  * @param to - The commit compared.
- * @param isTestExcluded - Whether a change under the test paths does not count.
- * @returns True when a counted file changed; false when git cannot tell.
+ * @returns True when a file changed; false when git cannot tell.
  */
-export async function hasCommittedChanges(port: EnginePort, root: string, from: string, to: string, isTestExcluded: boolean): Promise<boolean> {
+export async function hasCommittedChanges(port: EnginePort, root: string, from: string, to: string): Promise<boolean> {
   const changed = await listCommittedFiles(port.processes, root, from, to)
-  return changed.isOk && changed.value.some(file => !isTestExcluded || !isTestPath(file))
+  return changed.isOk && changed.value.length > 0
 }
 
 /**
@@ -118,33 +115,14 @@ export const readWorkingTreeKey = async (port: EnginePort): Promise<string | nul
 export const readDirtyTree = async (port: EnginePort, root: string): Promise<DirtyFiles | null> => unwrapOr(await readDirtyFiles(port.processes, root), null)
 
 /**
- * Tells whether every change since the unit's start, staged or not and untracked files included, is under the test paths.
- *
- * @param port - The engine calls.
- * @param root - The repository root.
- * @param start - The unit's starting commit; HEAD when it has none.
- * @returns True when only test files changed.
- */
-export async function isTestOnly(port: EnginePort, root: string, start: string | undefined): Promise<boolean> {
-  const changed = await listChangedFiles(port.processes, root, start ?? 'HEAD')
-  return changed.isOk && changed.value.every(isTestPath)
-}
-
-/**
  * Tells whether any file changed since the unit's start, staged or not and untracked files included.
  *
  * @param port - The engine calls.
  * @param root - The repository root.
  * @param start - The unit's starting commit; HEAD when it has none, so only the working tree counts.
- * @param isTestExcluded - Whether a change under the test paths does not count.
- * @returns True when a counted file changed; false when git cannot tell.
+ * @returns True when a file changed; false when git cannot tell.
  */
-export async function hasChanges(port: EnginePort, root: string, start: string | undefined, isTestExcluded: boolean): Promise<boolean> {
+export async function hasChanges(port: EnginePort, root: string, start: string | undefined): Promise<boolean> {
   const changed = await listChangedFiles(port.processes, root, start ?? 'HEAD')
-  return changed.isOk && changed.value.some(file => !isTestExcluded || !isTestPath(file))
-}
-
-// Whether a repo-relative file is under the test paths.
-function isTestPath(file: string): boolean {
-  return isPathMatched(flowDefinitions.testPaths, file)
+  return changed.isOk && changed.value.length > 0
 }

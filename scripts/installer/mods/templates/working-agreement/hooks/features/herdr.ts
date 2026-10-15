@@ -53,14 +53,15 @@ export function readHerdrPaneCommand(command: string): string | null {
  * (the id is `[A-Za-z0-9]+`, so output already in the pane cannot be mistaken for this run).
  *
  * @param command - The command line.
- * @returns The pane id, the marker id and the command run in the pane, or null when the call is anything else
- *   or its marker id already reported a run.
+ * @returns The pane id, the marker id and the command run in the pane, without a trailing marker echo, so two launches of one
+ *   command read alike; or null when the call is anything else or its marker id already reported a run.
  */
 export function readHerdrLaunch(command: string): HerdrLaunch | null {
   const [pane, ...rest] = readPaneCall(command, 'run') ?? []
   const inner = rest.join(' ')
   const id = /__EXIT_([A-Za-z0-9]+)=\$\?__/.exec(inner)?.[1]
-  return pane && id && !runs.consumed.has(id) ? { pane, id, command: inner } : null
+  const run = inner.replace(/\s*;\s*echo\s+\S*__EXIT_[A-Za-z0-9]+=\$\?__\S*\s*$/, '')
+  return pane && id && !runs.consumed.has(id) ? { pane, id, command: run } : null
 }
 
 /**

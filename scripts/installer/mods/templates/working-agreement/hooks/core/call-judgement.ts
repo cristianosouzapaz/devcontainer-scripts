@@ -1,11 +1,12 @@
 import type { BodyPart, CommandEvent } from '../domain/command-events'
+import { diagnosisHeadings, listMissingDiagnosis } from '../domain/diagnosis-comment'
 import { flowDefinitions } from '../domain/flow-definitions'
 import { writePolicy } from '../domain/messages'
 import { listMissingLines } from '../domain/pull-request-body'
 import { listUnrestored } from '../domain/tree-changes'
-import type { Session } from '../domain/records'
+import type { Session, UnexplainedWrites } from '../domain/records'
 import { branchFirstInstruction } from '../domain/requirements'
-import { findPullRequestStep, isOnBase } from '../domain/step-states'
+import { findDiagnoseStep, findPullRequestStep, isOnBase, isRedGreenSettled } from '../domain/step-states'
 import { ask, deny, pickStrictest } from '../domain/verdicts'
 import type { Judgement, Verdict } from '../domain/verdicts'
 import { judgeHandoffCall } from '../features/handoff'
@@ -17,6 +18,7 @@ import { listCallWrites, recogniseCall } from './command-observation'
 import type { EnginePort } from './engine-port'
 import { readGithubStatus } from './github-sync'
 import { canAskHuman, fileTools, readJudgedTool } from './judged-tools'
+import { worktreesFolder } from './main-checkout'
 import { hasIssueSkill, locatePosition } from './position'
 import { readSession } from './record-store'
 import { readDirtyTree, readRepositoryRoot } from './repository'
@@ -78,18 +80,32 @@ export async function judgeCall(port: EnginePort, tool: string, args: Record<str
   if (position) for (const parts of bodies) {
     if (position.git?.isDirty) verdicts.push(deny('working tree is dirty', 'commit (or stash) everything first so the PR holds what was committed'))
     const requires = findPullRequestStep(position.flow)?.requires ?? 'none'
-    const body = await readPullRequestBody(port, command, parts)
+    const body = await readBodyText(port, command, parts)
     if ((requires === 'refs' || requires === 'linked') && session.followUp === undefined) {
       verdicts.push(deny('the follow-up issue is unknown', 'ask the user to run /flow follow-up #<n> again'))
     }
-    const missing = listMissingLines(requires, session, body)
+    const missing = listMissingLines(requires, session, body, position.unit)
     if (missing.length) {
-      verdicts.push(deny(`PR body lacks ${missing.join(', ')}`, requires === 'linked'
+      verdicts.push(deny(`PR body lacks ${missing.join(', ')}`, missing.every(line => line.startsWith('the approved diagnosis comment link'))
+        ? 'add the approved diagnosis comment link to the body'
+        : requires === 'linked'
         ? `keep a line linking #${session.followUp} (Closes, Refs, Fixes or Resolves)`
         : `add a "${requires === 'refs' ? 'Refs' : 'Closes'} #<n>" line for every declared issue`))
     }
     // A PR shows only what is pushed, and the push is the user's, so it comes first.
     if (position.git && !position.git.isUpToDate) verdicts.push(deny('the branch is not pushed', 'stop and ask the user to push it, then retry'))
+  }
+  // A comment on the issue once the red and the green are settled is the diagnosis comment, which must hold everything the user reads to approve it.
+  const diagnose = position && findDiagnoseStep(position.flow)
+  if (position && diagnose && isRedGreenSettled(diagnose, position.unit)) {
+    for (const event of events) {
+      if (event.kind !== 'issue-comment' || !event.issues.length) continue
+      const missing = listMissingDiagnosis(position.unit, await readBodyText(port, command, event.body))
+      if (missing.length) {
+        verdicts.push(deny(`the diagnosis comment lacks ${missing.join('; ')}`,
+          `post it again with the headings ${diagnosisHeadings.join(', ')}, quoting the red command and naming every red file`))
+      }
+    }
   }
   return {
     ...pickStrictest(verdicts),
@@ -133,6 +149,11 @@ async function judgeWrite(port: EnginePort, session: Session, path: WriteTarget)
   if (!root) return null
   const file = path === null ? undefined : toRepoRelative(normalizePath(path, await port.readCwd()), root)
   if (file === null) return null
+  // A worktree's files are its own checkout's: only an unexplained write to the main checkout holds them back.
+  if (file !== undefined && `/${file}`.startsWith(worktreesFolder)) {
+    const position = session.flow ? await locatePosition(port, session) : null
+    return position ? await judgeUnexplained(port, root, position.unit.unexplained, undefined) : null
+  }
   if (file !== undefined && isPathMatched(flowDefinitions.paths.ephemeral, file)) {
     return deny(`${file} is an ephemeral planning file`, 'put plans, specs and todos in a GitHub issue, not in the repo')
   }
@@ -146,26 +167,21 @@ async function judgeWrite(port: EnginePort, session: Session, path: WriteTarget)
   if (position.flow.isReadOnly) {
     return deny(`${position.flow.label} never writes to the repository`, 'put the outcome in the tracker; code starts in a later session from its ticket')
   }
-  const verdicts: Verdict[] = []
-  const { unexplained } = position.unit
-  // A write to a recorded file is how the agent restores it, so it stays judged by the rules below alone.
-  if (unexplained && (file === undefined || !(file in unexplained.files))) {
-    const unrestored = listUnrestored(unexplained, Object.keys(unexplained.files).length ? await readDirtyTree(port, root) : null)
-    if (unexplained.isUnchecked) {
-      verdicts.push(deny('the working tree could not be read at a tool call or a turn end, so what changed it is unknown', `stop and ask the user to check the tree and run /flow override writes <reason>. ${writePolicy}`))
-    } else if (unrestored.length) {
-      verdicts.push(deny(`${unrestored.join(', ')} changed outside Edit or Write while a step held writes back, by a Bash call or by a writer outside any call (a background run, a herdr pane, a detached process)`,
-        `restore it to what it held before (git restore for a file that was committed unchanged, rm for one the call created), or stop and ask the user to run /flow override writes <reason>. ${writePolicy}`))
-    }
-  }
+  const unexplained = await judgeUnexplained(port, root, position.unit.unexplained, file)
+  const verdicts: Verdict[] = unexplained ? [unexplained] : []
   const unlock = position.states.findIndex(state => state.step.isUnlocking)
   for (const state of position.states.slice(0, Math.max(unlock, 0))) {
-    if (state.state !== 'current' && state.state !== 'pending') continue
-    if (!state.step.isWriteGated || (state.step.isTestExempt && file !== undefined && isPathMatched(flowDefinitions.testPaths, file))) continue
+    if ((state.state !== 'current' && state.state !== 'pending') || !state.step.isWriteGated) continue
+    // The main checkout is read-only for the whole of Diagnose, test files included: no approval lets a write through.
+    if (state.step.isInWorktree && state.state === 'current') {
+      verdicts.push(deny(`${position.flow.label}: ${state.step.label} not done, and the main checkout is read-only until its approval`,
+        `work in the worktree (EnterWorktree); a bug no command can reproduce needs the user's /flow override ${state.step.id} <reason>. ${writePolicy}`))
+      continue
+    }
     const todo = state.step.isHuman
       ? `stop and ask the user to run /${state.step.skill}, or /flow override ${state.step.id} <reason>`
-      : state.step.isTestExempt
-        ? `run the ${state.step.skill} skill and write the failing test first; a fix no test can reproduce needs the user's /flow override ${state.step.id} <reason>`
+      : state.step.isInWorktree
+        ? `run the ${state.step.skill} skill in a worktree and see the red and the green first; a bug no command can reproduce needs the user's /flow override ${state.step.id} <reason>`
         : `run the ${state.step.skill} skill, then retry`
     verdicts.push(ask(`${position.flow.label}: ${state.step.label} not done`, `${todo}. ${writePolicy}`))
   }
@@ -180,6 +196,20 @@ async function judgeWrite(port: EnginePort, session: Session, path: WriteTarget)
   return pickStrictest(verdicts)
 }
 
+// Holds a write back while the unit's unexplained writes are not restored; a write to a recorded file is how the agent
+// restores it, so it is not held back here.
+async function judgeUnexplained(port: EnginePort, root: string, unexplained: UnexplainedWrites | undefined, file: string | undefined): Promise<Verdict | null> {
+  if (!unexplained || (file !== undefined && file in unexplained.files)) return null
+  if (unexplained.isUnchecked) {
+    return deny('the working tree could not be read at a tool call or a turn end, so what changed it is unknown', `stop and ask the user to check the tree and run /flow override writes <reason>. ${writePolicy}`)
+  }
+  const unrestored = listUnrestored(unexplained, Object.keys(unexplained.files).length ? await readDirtyTree(port, root) : null)
+  return unrestored.length
+    ? deny(`${unrestored.join(', ')} changed outside Edit or Write while a step held writes back, by a Bash call or by a writer outside any call (a background run, a herdr pane, a detached process)`,
+      `restore it to what it held before (git restore for a file that was committed unchanged, rm for one the call created), or stop and ask the user to run /flow override writes <reason>. ${writePolicy}`)
+    : null
+}
+
 // The command a user's step event stands for, or none for an event the agent may cause.
 function nameUserStep(event: CommandEvent): string[] {
   if (event.kind === 'commit' || event.kind === 'push') return [`git ${event.kind}`]
@@ -188,9 +218,9 @@ function nameUserStep(event: CommandEvent): string[] {
   return []
 }
 
-// The text a gh pr command's body holds: its text parts and the contents of its files; a file that cannot be read leaves
+// The text a gh pr or gh issue command's body holds: its text parts and the contents of its files; a file that cannot be read leaves
 // the whole call's text standing in for it.
-async function readPullRequestBody(port: EnginePort, command: string, parts: BodyPart[]): Promise<string> {
+async function readBodyText(port: EnginePort, command: string, parts: BodyPart[]): Promise<string> {
   const texts: string[] = []
   for (const part of parts) {
     if (part.kind === 'text') texts.push(part.text)

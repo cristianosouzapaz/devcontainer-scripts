@@ -55,3 +55,13 @@ export const buildBackgroundedRun = (taskId: string, extra: Record<string, unkno
  */
 export const buildTaskNotification = (taskId: string, status: string): string =>
   `<task-notification>\n<task-id>${taskId}</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>${status}</status>\n<summary>Background command "tests" ${status}</summary>\n</task-notification>`
+
+/**
+ * Builds a diagnosis comment with every heading, quoting a red command and naming its files.
+ *
+ * @param command - The red command to quote.
+ * @param files - The red files to name.
+ * @returns The comment text, without double quotes, so it can sit inside a quoted `--body`.
+ */
+export const buildDiagnosis = (command: string, files: string[] = ['test/fix.bats']): string =>
+  `## Root cause\nThe loop skips the last item.\n## Evidence\n${command} fails.\n## Proposed fix\nStop one item later.\n## Regression test\n${files.length ? files.join(', ') : 'None: the bug lives in a script no test reaches.'}\n## Rejected hypotheses\nA stale cache.`

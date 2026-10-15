@@ -43,6 +43,13 @@ interface ListedIssue { number: number; title: string; offsetMs: number }
 interface UnmatchedIssueCase { name: string; command: string; listed: ListedIssue[] }
 
 const quiet: ToolRun = { result: { stdout: '' } }
+
+// A Fix session at Diagnose on #1 whose session works in the worktree the unit recorded, at the unit's start.
+const atDiagnoseInWorktree: Options = {
+  session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } },
+  unit: { skills: ['diagnosing-bugs'], start: 'c0', worktree: { name: 'diagnose-1', path: '/repo/.claude/worktrees/diagnose-1' } },
+  worktree: { name: 'diagnose-1', base: 'c0' }, verifyFile,
+}
 const closes = 'Closes #1\nCloses #2'
 
 const cases: ObservedCase[] = [
@@ -55,13 +62,12 @@ const cases: ObservedCase[] = [
     isObserved: async $ => (await readCurrentStep($)) === 'Commit',
   },
   {
-    name: 'a single test file',
+    name: 'a command in the Diagnose worktree',
     command: 'bats test/fix.bats',
-    git: () => ({ branch: 'fix', hashes: { 'test/fix.bats': 'h1' } }),
-    options: () => ({ session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } }, unit: { skills: ['diagnosing-bugs'], start: 'c0' }, verifyFile }),
-    setup: async $ => { await $.tool.call(buildWriteCall('test/fix.bats')) },
+    git: () => ({ branch: 'fix' }),
+    options: () => atDiagnoseInWorktree,
     effectOn: 1,
-    isObserved: async $ => (await readCurrentStep($)) === 'Code',
+    isObserved: async $ => ((await readFlowStatus($)) ?? '').includes('✓ Red'),
   },
   {
     name: 'gh pr create',
@@ -194,15 +200,20 @@ test('a herdr verify run stays in flight through a wait-output without its marke
   expect(await readCurrentStep($)).toBe('Commit')
 })
 
-test('a commit, a push, a PR merge, close or review, or another history-making git command is denied directly and through herdr, in every permission mode', async ($, on) => {
-  createWorld(on, { branch: 'feat', ahead: 1 }, { verifyFile, toolRun: quiet })
-  for (const mode of ['default', 'auto', 'bypassPermissions']) {
+// One test per mode: the whole list in every mode in one test outran the per-test time limit on a loaded machine.
+for (const mode of ['default', 'auto', 'bypassPermissions']) {
+  test(`a commit, a push, a PR merge, close or review, or another history-making git command is denied directly and through herdr in ${mode} mode`, async ($, on) => {
+    createWorld(on, { branch: 'feat', ahead: 1 }, { verifyFile, toolRun: quiet })
     await setPermissionMode($, mode)
     for (const command of userCommands) {
-      expect((await $.tool.call(buildBashCall(command))).deny, `${mode}: ${command}`).toContain("is the user's step")
-      expect((await $.tool.call(buildBashCall(`herdr pane run p1 '${command}'`))).deny, `${mode}: herdr ${command}`).toContain("is the user's step")
+      expect((await $.tool.call(buildBashCall(command))).deny, command).toContain("is the user's step")
+      expect((await $.tool.call(buildBashCall(`herdr pane run p1 '${command}'`))).deny, `herdr ${command}`).toContain("is the user's step")
     }
-  }
+  })
+}
+
+test('an override and a declared flow let no user step through, while read-only git and staging still run', async ($, on) => {
+  createWorld(on, { branch: 'feat', ahead: 1 }, { verifyFile, toolRun: quiet })
   await runFlowCommand($, 'override verify the user asked for it')
   expect((await $.tool.call(buildBashCall('git commit -m x'))).deny).toContain("is the user's step")
   expect((await declareFlow($, 'fix')).deny).toBeUndefined()
@@ -211,19 +222,17 @@ test('a commit, a push, a PR merge, close or review, or another history-making g
   }
 })
 
-test('a direct run of the reproduction test in flight shows Diagnose running', async ($, on) => {
+test('a direct run in the Diagnose worktree in flight shows Red running', async ($, on) => {
   const seen = { status: '' }
-  const git = { branch: 'fix', hashes: { 'test/fix.bats': 'h1' } }
-  createWorld(on, git, {
-    session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } }, unit: { skills: ['diagnosing-bugs'], start: 'c0' }, verifyFile,
+  createWorld(on, { branch: 'fix' }, {
+    ...atDiagnoseInWorktree,
     toolRun: async () => {
       seen.status = (await readFlowStatus($)) ?? ''
       return quiet
     },
   })
-  await $.tool.call(buildWriteCall('test/fix.bats'))
   await $.tool.call(buildBashCall('bats test/fix.bats'))
-  expect(seen.status).toContain('▸ Diagnose — running')
+  expect(seen.status).toContain('    ▸ Red — running')
   expect((await readFlowStatus($)) ?? '').not.toContain('running')
 })
 

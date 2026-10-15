@@ -57,9 +57,18 @@ export interface PullRequest {
   state: string
   isCreated?: boolean
 }
-/** Holds the reproduction test's red: the content hash of each test file the failing run exercised, '' for a file that was absent. */
+/**
+ * Holds the red: the failing command run in the worktree, and the content hash of each red file, the worktree's changes
+ * against the unit's start when it failed, '' for a file the change deleted.
+ */
 interface Red {
+  command: string
   fingerprints: Record<string, string>
+}
+/** Holds the worktree Diagnose runs in: its name under `.claude/worktrees/`, and its absolute path. */
+export interface Worktree {
+  name: string
+  path: string
 }
 /**
  * Holds the repository files changed outside Edit or Write, during a Bash call or between calls, while a step held writes
@@ -75,7 +84,9 @@ export interface UnexplainedWrites {
  * `start` is the HEAD when it was first declared, so only commits after it count as the unit's;
  * `prHead` is the PR head SHA at the last confirmed update, absent when none was confirmed;
  * `anchor` is the commit that completed the unit's Commit step, absent until a session sees the step done;
- * `testFiles` lists the repo-relative test files the unit wrote; `red` is the last observed failure of those tests on unfixed code;
+ * `worktree` is the worktree Diagnose entered; `red` is the last failing command there before the green, and `green` the red's
+ * command text once a run of it passed there; `diagnosis` is the URL of the latest valid diagnosis comment posted on the issue after
+ * the green, and `approval` the diagnosis comment URL the user approved, so a newer comment leaves the approval behind; a failing run of another command than the red's replaces the red and drops the green, the diagnosis and the approval;
  * `unexplained` holds back every repository write until its files are restored or the user overrides it.
  */
 export interface Unit {
@@ -85,8 +96,11 @@ export interface Unit {
   start?: string
   branch?: string
   pr?: PullRequest
-  testFiles?: string[]
+  worktree?: Worktree
   red?: Red
+  green?: string
+  diagnosis?: string
+  approval?: string
   prHead?: string
   anchor?: string
   unexplained?: UnexplainedWrites
@@ -108,10 +122,16 @@ function parseIssueInfo(value: unknown): Record<string, IssueInfo> {
     }]] : []))
 }
 
+// A red stored before reds carried their command (a reproduction test's) reads as none: no green could match it.
 function parseRed(value: unknown): Pick<Unit, 'red'> {
-  if (!isRecord(value) || !isRecord(value.fingerprints)) return {}
+  if (!isRecord(value) || !isRecord(value.fingerprints) || typeof value.command !== 'string' || !value.command) return {}
   const entries = Object.entries(value.fingerprints).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
-  return { red: { fingerprints: Object.fromEntries(entries) } }
+  return { red: { command: value.command, fingerprints: Object.fromEntries(entries) } }
+}
+
+function parseWorktree(value: unknown): Pick<Unit, 'worktree'> {
+  if (!isRecord(value) || typeof value.name !== 'string' || typeof value.path !== 'string' || !value.path) return {}
+  return { worktree: { name: value.name, path: value.path } }
 }
 
 function parseUnexplained(value: unknown): Pick<Unit, 'unexplained'> {
@@ -177,8 +197,11 @@ export function parseUnit(value: unknown): Unit {
     }),
     ...(typeof record.start === 'string' ? { start: record.start } : {}),
     ...(typeof record.branch === 'string' ? { branch: record.branch } : {}),
-    ...(Array.isArray(record.testFiles) ? { testFiles: asStrings(record.testFiles) } : {}),
+    ...parseWorktree(record.worktree),
     ...parseRed(record.red),
+    ...(typeof record.green === 'string' && record.green ? { green: record.green } : {}),
+    ...(typeof record.diagnosis === 'string' && record.diagnosis ? { diagnosis: record.diagnosis } : {}),
+    ...(typeof record.approval === 'string' && record.approval ? { approval: record.approval } : {}),
     ...parsePullRequest(record.pr),
     ...(typeof record.prHead === 'string' && record.prHead ? { prHead: record.prHead } : {}),
     ...(typeof record.anchor === 'string' && record.anchor ? { anchor: record.anchor } : {}),

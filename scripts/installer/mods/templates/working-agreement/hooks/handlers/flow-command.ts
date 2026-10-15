@@ -9,13 +9,14 @@ import { refreshView } from '../core/pane-view'
 import { readSession } from '../core/record-store'
 import { withRecordLock } from '../core/session-memory'
 import { markForAgent } from '../domain/messages'
+import { applyApproval } from '../features/approve'
 import { runFollowUpCommand } from '../features/follow-up'
 import { runHandoffCommand } from '../features/handoff'
 import { applyOverride } from '../features/override'
 import type { Result } from '../lib/result'
 import { renderStatusText } from '../ui/status-text'
 
-const humanOnly = ['trivial', 'follow-up', 'override', 'handoff']
+const humanOnly = ['trivial', 'follow-up', 'override', 'approve', 'handoff']
 
 /**
  * Runs `/flow`: opens the pane, prints its status, or runs one of the subcommands only the user may type.
@@ -31,6 +32,7 @@ export async function handleFlowCommand(port: EnginePort, event: Frozen<Args<'co
   if (subcommand === 'handoff') return runHandoffCommand(createFeaturePort(port), tail)
   if (subcommand === 'trivial') return unwrap(await withRecordLock(() => declareFlow(port, 'trivial', [], 'human')))
   if (subcommand === 'follow-up') return unwrap(await runFollowUpCommand(createFeaturePort(port), tail))
+  if (subcommand === 'approve') return unwrap(await applyApproval(createFeaturePort(port), tail))
   if (subcommand === 'override') return unwrap(await applyOverride(createFeaturePort(port), tail))
   const session = await readSession(port)
   if (!session.flow) return 'No flow declared (talk). The agent declares one before writing; you can run /flow trivial or /flow follow-up #n.'

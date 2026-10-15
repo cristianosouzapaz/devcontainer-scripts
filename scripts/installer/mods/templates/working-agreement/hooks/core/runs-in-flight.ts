@@ -8,11 +8,11 @@ interface TaskEnd { id: string; status: string }
 /** A run whose Bash call moved to the background: what was observed at launch, and whether a turn end found its task gone. */
 interface BackgroundRun { launched: LaunchedCommand; isEnded: boolean }
 
-/** Verify and test runs of Bash calls still executing; each is removed by identity when its call ends. */
+/** Verify runs and runs in the worktree of Bash calls still executing; each is removed by identity when its call ends. */
 const directRuns = new Set<LaunchedCommand>()
 
 /**
- * Verify and test runs of Bash calls moved to the background, by task id, until their task end is notified or they lapse.
+ * Verify runs and runs in the worktree of Bash calls moved to the background, by task id, until their task end is notified or they lapse.
  * They live for one module load, so a session restart leaves nothing in flight that nothing can report.
  */
 const backgroundRuns = new Map<string, BackgroundRun>()
@@ -138,11 +138,12 @@ export function reconcileBackgroundRuns(activeIds: string[]): boolean {
  * Finds a run in flight on a tree, direct, in the background or in a herdr pane.
  *
  * @param tree - The tree the run must have started on, or null when there is none.
- * @param kind - Whether the run must run the verify command, or some of the unit's tests.
+ * @param kind - Whether the run must run the verify command, or run in the unit's worktree before the green.
  * @returns How the run reports, or null when none is in flight on that tree.
  */
-export function findRunInFlight(tree: string | null, kind: 'verify' | 'test'): RunInFlight | null {
-  const isMatch = (launched: LaunchedCommand): boolean => !!tree && launched.tree === tree && launched.events.some(event => event.kind === kind)
+export function findRunInFlight(tree: string | null, kind: 'verify' | 'worktree'): RunInFlight | null {
+  const isMatch = (launched: LaunchedCommand): boolean =>
+    !!tree && launched.tree === tree && (kind === 'worktree' ? !!launched.worktree : launched.events.some(event => event.kind === 'verify'))
   if ([...directRuns].some(isMatch)) return { kind: 'direct' }
   if ([...backgroundRuns.values()].some(run => isMatch(run.launched))) return { kind: 'background' }
   const herdr = listHerdrRuns().find(run => isMatch(run.launched))

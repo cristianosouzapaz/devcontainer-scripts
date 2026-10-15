@@ -40,7 +40,7 @@ export const pillRowGap = 1
 /** The columns between an issue's number and its button. */
 export const issueGap = 2
 
-/** The columns a step's hint is indented by. */
+/** The columns a step's hint, and a sub-step under its step, are indented by. */
 export const hintIndent = 4
 
 /** The text between a flow's name and its progress, and between a step's label and its stale marker. */

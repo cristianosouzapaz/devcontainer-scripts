@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 import type { ToolRun } from '../../hooks/core/command-observation'
-import { sectionGap } from '../../hooks/ui/theme'
+import { hintIndent, sectionGap } from '../../hooks/ui/theme'
 import { buildBashCall, buildWriteCall, noFlow, twoIssueCloseOut, verifyFile } from '../support/builders'
 import { readFlowStatus, readPromptContext, runFlowCommand } from '../support/helpers'
 import { createWorld } from '../support/world'
@@ -116,3 +116,18 @@ for (const [count, labels] of [[1, oneRow], [2, twoRows], [3, threeRows]] as con
     await ui.unmount()
   })
 }
+
+test('the mounted pane draws the four Diagnose sub-steps indented under it, with the Approval hint, and keeps them under an override', async ($, on) => {
+  const red = { command: 'bats test/fix.bats', fingerprints: {} }
+  const unit: Record<string, unknown> = { skills: ['diagnosing-bugs'], start: 'c0', red }
+  createWorld(on, { branch: 'fix' }, { session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } }, unit })
+  await readFlowStatus($)
+  const ui = await mountPane($)
+  const indented = (await ui.findAll({ type: 'Box' })).filter(box => box.props['paddingLeft'] === hintIndent).map(readText)
+  expect(indented).toEqual(['✓ Red', '▸ Green', '○ Diagnosis', '○ Approvalrun /flow approve diagnose', 'run /flow approve diagnose'])
+  await ui.unmount()
+  await runFlowCommand($, 'override diagnose no loop')
+  await readFlowStatus($)
+  expect(await countPaneText($, /Green/)).toBeGreaterThan(0)
+  expect(await countPaneText($, /run \/flow approve diagnose/)).toBeGreaterThan(0)
+})

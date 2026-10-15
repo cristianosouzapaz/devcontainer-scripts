@@ -4,8 +4,8 @@ import type { Result } from './result'
 /** What a process printed and how it exited. */
 interface ProcessOutput { exitCode: number; stdout: string; stderr: string }
 
-/** How long a process may run before the engine stops it. */
-interface ProcessOptions { timeoutMs: number }
+/** How long a process may run before the engine stops it, and where it runs: the session's working directory when `cwd` is omitted. */
+interface ProcessOptions { timeoutMs: number; cwd?: string }
 
 /** The engine's process runner. */
 export interface ProcessPort { run: (commandLine: string[], options: ProcessOptions) => Promise<ProcessOutput> }

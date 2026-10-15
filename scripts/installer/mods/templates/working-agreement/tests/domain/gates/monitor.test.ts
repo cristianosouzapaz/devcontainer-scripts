@@ -6,7 +6,7 @@ import { endTurn, readPromptContext, setPermissionMode } from '../../support/hel
 import { createWorld } from '../../support/world'
 import type { Checkout } from '../../support/world'
 
-// A Fix session at Diagnose on #1, where every write but a test file's is held back.
+// A Fix session at Diagnose on #1, where the main checkout is read-only.
 const atDiagnose = { session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } }, unit: { skills: ['diagnosing-bugs'], start: 'c0' } }
 
 // The verdict a Monitor call running this command gets, in a mode that never asks, so an ask shows as a deny.

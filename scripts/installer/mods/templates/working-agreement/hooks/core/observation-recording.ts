@@ -1,5 +1,4 @@
 import type { CommandEvent, Observation } from '../domain/command-events'
-import { hasDiagnoseStep } from '../domain/flow-definitions'
 import { listMissingLines } from '../domain/pull-request-body'
 import { mergeSkills } from '../domain/records'
 import type { Session } from '../domain/records'
@@ -8,17 +7,18 @@ import { findPullRequest, listOwnIssues, viewPullRequest } from '../lib/github'
 import { unwrapOr } from '../lib/result'
 import { observeBashCall } from './command-observation'
 import type { DirectLaunch, ToolRun } from './command-observation'
+import { recordDiagnosis } from './diagnosis'
 import type { EnginePort } from './engine-port'
 import { mergeIssueInfo, readIssues } from './github-sync'
 import { hasIssueSkill, isSkillCounted, locatePosition } from './position'
 import { findUnitKey, readUnit, updateUnits, writeSession, writeStored } from './record-store'
-import { recordRed } from './red-state'
-import { readGit, readRepositoryRoot, readWorkingTreeKey } from './repository'
+import { recordWorktreeRun } from './red-state'
+import { readGit, readWorkingTreeKey } from './repository'
 import { readTaskEnds, settleBackgroundRun } from './runs-in-flight'
 
 /**
  * Records what a finished Bash call did for the unit, from the events the observation layer reports for the call itself
- * and for every herdr run it reported the end of: issues written, commits, pushes, PRs, verify runs and reds.
+ * and for every herdr run it reported the end of: issues written, commits, pushes, PRs, verify runs, reds and greens.
  *
  * @param port - The engine calls.
  * @param seen - The session as read under the lock.
@@ -84,10 +84,9 @@ async function applyObservation(port: EnginePort, seen: Session, observation: Ob
     const tree = observation.tree
     await updateUnits(port, session, unit => ({ ...unit, verify: tree }))
   }
-  // A red counts only when the tree held only test changes when the run started.
-  const testFiles = events.flatMap(event => (event.kind === 'test' ? event.testFiles : []))
-  const root = outcome === 'failed' && observation.isTestOnly && hasDiagnoseStep(session.flow) && testFiles.length ? await readRepositoryRoot(port) : null
-  if (root) await recordRed(port, session, root, testFiles)
+  const commented = isPassed ? events.flatMap(event => (event.kind === 'issue-comment' ? event.issues : [])) : []
+  if (commented.length) await recordDiagnosis(port, session, commented)
+  if (observation.worktree && outcome !== 'unfinished') await recordWorktreeRun(port, session, observation.worktree, observation.command, isPassed)
   return { ...session, info, output: session.output || isOutput, prCreated: session.prCreated || !!created || isConfirmed }
 }
 
@@ -128,7 +127,7 @@ async function confirmPullRequest(port: EnginePort, session: Session, stdout: st
   const viewed = await viewPullRequest(port.processes, found)
   if (!viewed.isOk) return false
   const { body, headRefOid } = viewed.value
-  if (!headRefOid || headRefOid !== position.git.head || listMissingLines(step.requires, session, body).length) return false
+  if (!headRefOid || headRefOid !== position.git.head || listMissingLines(step.requires, session, body, position.unit).length) return false
   await updateUnits(port, session, unit => ({ ...unit, prHead: headRefOid, pr: unit.pr?.state === 'OPEN' ? unit.pr : { number: found, state: 'OPEN' } }))
   return true
 }

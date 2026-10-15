@@ -22,6 +22,109 @@ export async function readRoot(processes: ProcessPort): Promise<Result<string | 
   return succeed(run.value.exitCode === 0 ? run.value.stdout.trim() : null)
 }
 
+/**
+ * Reads the main checkout of a directory that lies in a linked worktree.
+ * Git lists the main worktree first, by absolute path, from anywhere; `--git-common-dir` is relative in the main checkout.
+ *
+ * @param processes - The engine's process runner.
+ * @param cwd - The directory, absolute.
+ * @returns The main checkout's root, null when the directory is in no linked worktree, or a failure when git cannot list them.
+ */
+export async function readMainCheckout(processes: ProcessPort, cwd: string): Promise<Result<string | null>> {
+  const run = hasExitedZero(await runCommand(processes, ['git', 'worktree', 'list', '--porcelain']))
+  if (!run.isOk) return run
+  const [main, ...linked] = run.value.stdout.split('\n').filter(line => line.startsWith('worktree ')).map(line => line.slice('worktree '.length))
+  return succeed(main && linked.some(path => cwd === path || cwd.startsWith(`${path}/`)) ? main : null)
+}
+
+/**
+ * Reads the commit a linked worktree's HEAD points at; `-C` keeps it in the worktree whatever directory the runner pins.
+ *
+ * @param processes - The engine's process runner.
+ * @param path - The worktree's absolute path.
+ * @returns The commit id, or a failure when there is none or git cannot run.
+ */
+export async function readWorktreeHead(processes: ProcessPort, path: string): Promise<Result<string>> {
+  const run = hasExitedZero(await runCommand(processes, ['git', '-C', path, 'rev-parse', 'HEAD']))
+  if (!run.isOk) return run
+  const head = run.value.stdout.trim()
+  return head ? succeed(head) : fail('no HEAD commit')
+}
+
+/**
+ * Tells whether git still lists a linked worktree.
+ *
+ * @param processes - The engine's process runner.
+ * @param path - The worktree's absolute path.
+ * @returns Whether it is listed, or a failure when git cannot list the worktrees.
+ */
+export async function isWorktreeListed(processes: ProcessPort, path: string): Promise<Result<boolean>> {
+  const run = hasExitedZero(await runCommand(processes, ['git', 'worktree', 'list', '--porcelain']))
+  return run.isOk ? succeed(run.value.stdout.split('\n').includes(`worktree ${path}`)) : run
+}
+
+/**
+ * Tells whether a local branch exists.
+ *
+ * @param processes - The engine's process runner.
+ * @param branch - The branch's name.
+ * @returns Whether it exists, or a failure when git cannot tell.
+ */
+export async function hasBranch(processes: ProcessPort, branch: string): Promise<Result<boolean>> {
+  const run = await runCommand(processes, ['git', 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])
+  if (!run.isOk) return run
+  return run.value.exitCode === 0 || run.value.exitCode === 1 ? succeed(run.value.exitCode === 0) : fail(`git rev-parse exited ${run.value.exitCode}`)
+}
+
+/**
+ * Reads the id of a file's blob at a commit, which equals the file's content hash.
+ *
+ * @param processes - The engine's process runner.
+ * @param commit - The commit.
+ * @param file - The repo-relative path.
+ * @returns The blob id, or a failure when the commit holds no such file or git cannot run.
+ */
+export async function readBlobAt(processes: ProcessPort, commit: string, file: string): Promise<Result<string>> {
+  const run = hasExitedZero(await runCommand(processes, ['git', 'rev-parse', `${commit}:${file}`]))
+  return run.isOk ? succeed(run.value.stdout.trim()) : run
+}
+
+/**
+ * Tells whether a linked worktree holds no change, untracked files included.
+ *
+ * @param processes - The engine's process runner.
+ * @param path - The worktree's absolute path.
+ * @returns Whether it is clean, or a failure when git cannot read it.
+ */
+export async function isWorktreeClean(processes: ProcessPort, path: string): Promise<Result<boolean>> {
+  const run = hasExitedZero(await runCommand(processes, ['git', '-C', path, 'status', '--porcelain']))
+  return run.isOk ? succeed(run.value.stdout.trim() === '') : run
+}
+
+/**
+ * Moves a linked worktree's branch, index and files to a commit.
+ *
+ * @param processes - The engine's process runner.
+ * @param path - The worktree's absolute path.
+ * @param commit - The commit.
+ * @returns Nothing, or a failure carrying git's error.
+ */
+export async function resetWorktree(processes: ProcessPort, path: string, commit: string): Promise<Result<null>> {
+  const run = hasExitedZero(await runCommand(processes, ['git', '-C', path, 'reset', '--hard', commit]))
+  return run.isOk ? succeed(null) : run
+}
+
+/**
+ * Reads the absolute path of the repository's `info/exclude`: the common directory's, the same file from the main checkout and from any worktree.
+ *
+ * @param processes - The engine's process runner.
+ * @returns The path, or a failure when git cannot tell.
+ */
+export async function readExcludePath(processes: ProcessPort): Promise<Result<string>> {
+  const run = hasExitedZero(await runCommand(processes, ['git', 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude']))
+  return run.isOk ? succeed(run.value.stdout.trim()) : run
+}
+
 // The trimmed output of a git command, whatever its exit code; '' when git cannot run.
 async function readOutput(processes: ProcessPort, args: string[]): Promise<string> {
   const run = await runCommand(processes, ['git', ...args])

@@ -1,6 +1,6 @@
 import type { ElementTable, RenderElement } from 'claude-code'
 
-import type { FlowFooter, FlowIssue, FlowRow, FlowStep } from '../../types'
+import type { FlowFooter, FlowIssue, FlowRow, FlowStep, FlowSubStep } from '../../types'
 import { drawRule } from './pane-layout'
 import { hintIndent, inlineGap, issueGap, keyWidth, labelColor, palette, pillGap, pillRowGap, symbolColor, toneColor } from './theme'
 
@@ -142,23 +142,32 @@ export function drawMetaRows(elements: PaneElements, props: KeyedRowsProps): Ren
 }
 
 /**
- * Draws the flow's steps, each with its state's mark, a stale marker and its hint.
+ * Draws the flow's steps, each with its state's mark, a stale marker, its hint and, indented under it, its sub-steps.
  *
  * @param elements - The element table.
  * @param props - The steps.
  * @returns The step list.
  */
 export function drawStepList({ Box, Text }: PaneElements, props: StepListProps): RenderElement {
+  const drawLine = (step: FlowStep | FlowSubStep): RenderElement => (
+    <Text>
+      <Text color={symbolColor[step.state]}>{step.symbol} </Text>
+      <Text color={labelColor[step.state]} bold={step.state === 'current'}>{step.label}</Text>
+      {step.isStale && <Text color={palette.warn}>{inlineGap}stale</Text>}
+    </Text>
+  )
   return (
     <Box flexDirection="column">
       {props.steps.map(step => (
         <Box flexDirection="column">
-          <Text>
-            <Text color={symbolColor[step.state]}>{step.symbol} </Text>
-            <Text color={labelColor[step.state]} bold={step.state === 'current'}>{step.label}</Text>
-            {step.isStale && <Text color={palette.warn}>{inlineGap}stale</Text>}
-          </Text>
+          {drawLine(step)}
           {step.hint && <Box paddingLeft={hintIndent}><Text color={palette.muted}>{step.hint}</Text></Box>}
+          {step.subSteps.map(sub => (
+            <Box paddingLeft={hintIndent} flexDirection="column">
+              {drawLine(sub)}
+              {sub.hint && <Box paddingLeft={hintIndent}><Text color={palette.muted}>{sub.hint}</Text></Box>}
+            </Box>
+          ))}
         </Box>
       ))}
     </Box>

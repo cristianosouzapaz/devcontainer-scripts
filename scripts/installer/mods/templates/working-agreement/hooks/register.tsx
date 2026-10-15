@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { EnginePort } from './core/engine-port'
+import { pinToMainCheckout } from './core/main-checkout'
 import { markForAgent } from './domain/messages'
 import { setHandoffThreshold } from './features/handoff'
 import { handleDeclareFlowCall } from './handlers/declare-flow'
@@ -22,8 +23,8 @@ const view = atom({ plugin: 'working-agreement', key: 'view' } as const, null)
 // Builds the engine calls the core and the handlers make: `$` cannot be passed across an import, so every call on it stays written here.
 function createEnginePort($: EngineInterface): EnginePort {
   return {
-    processes: { run: (argv, options) => $.process.run(argv, options) },
-    files: { read: path => $.fs.read(path), stat: path => $.fs.stat(path) },
+    processes: pinToMainCheckout({ run: (argv, options) => $.process.run(argv, options) }, () => $.session.cwd()),
+    files: { read: path => $.fs.read(path), stat: path => $.fs.stat(path), write: async (path, text) => { await $.fs.write(path, text) } },
     clock: { sleep: (delayMs, signal) => $.clock.sleep(delayMs, { signal }) },
     store: { get: key => $.store.get(key), set: (key, value) => $.store.set(key, value) },
     now: () => $.clock.now(),
@@ -43,8 +44,8 @@ function createEnginePort($: EngineInterface): EnginePort {
     registerSurface: async () => {
       await $.command.register({
         name: 'flow',
-        description: 'Working agreement: open the pane; status | handoff [cancel] | trivial | follow-up #n | override <step> [#n] <reason>',
-        argumentHint: '[status|handoff [cancel]|trivial|follow-up #n|override <step> <reason>]',
+        description: 'Working agreement: open the pane; status | handoff [cancel] | trivial | follow-up #n | override <step> [#n] <reason> | approve diagnose',
+        argumentHint: '[status|handoff [cancel]|trivial|follow-up #n|override <step> <reason>|approve diagnose]',
       })
       await $.tool.register({
         name: 'declare_flow',

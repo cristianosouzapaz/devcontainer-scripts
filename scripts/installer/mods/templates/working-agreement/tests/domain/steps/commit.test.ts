@@ -20,7 +20,8 @@ test('a commit made after the declaration ticks Commit, even unseen by the sessi
 
 test('a unit declared again in a later session still sees its own earlier commits', async ($, on) => {
   createWorld(on, { branch: 'feat', ahead: 9, hashes: { 'test/fix.bats': 'h1' } }, {
-    session: noFlow, unit: { start: 'c8', skills: ['diagnosing-bugs', 'generate-commit'], testFiles: ['test/fix.bats'], red: { fingerprints: { 'test/fix.bats': 'h1' } } },
+    session: noFlow,
+    unit: { start: 'c8', skills: ['diagnosing-bugs', 'generate-commit'], red: { command: 'bats test/fix.bats', fingerprints: { 'test/fix.bats': 'h1' } }, green: 'bats test/fix.bats', diagnosis: 'https://github.com/o/r/issues/1#issuecomment-1', approval: 'https://github.com/o/r/issues/1#issuecomment-1' },
     issueLabels: { 1: ['ready-for-agent'] },
   })
   await declareFlow($, 'fix', [1])

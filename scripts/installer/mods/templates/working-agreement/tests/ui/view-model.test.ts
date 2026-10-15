@@ -15,7 +15,7 @@ const session = (overrides: Partial<Session> = {}): Session => ({
 })
 const positionOf = (overrides: Partial<Position> = {}, currentIndex = 0): Position => {
   const states: StepState[] = flow.steps.map((step, index) => ({ step, state: index < currentIndex ? 'done' : index === currentIndex ? 'current' : 'pending', isStale: false }))
-  return { flow, unit, git: null, states, current: states[currentIndex] ?? null, ownCommits: 0, isCodeChanged: false, verify: { command: undefined, isVerified: false, running: null }, anchored: null, red: 'none', testRun: null, checks: 'off', ...overrides }
+  return { flow, unit, git: null, states, current: states[currentIndex] ?? null, ownCommits: 0, isCodeChanged: false, verify: { command: undefined, isVerified: false, running: null }, anchored: null, worktree: null, redFiles: {}, worktreeRun: null, checks: 'off', ...overrides }
 }
 
 test('the progress counts the steps settled out of all of them', () => {
@@ -59,4 +59,14 @@ test('the footer offers the handoff once the unit finished, and not before', () 
   expect(buildView(session(), positionOf(), 'connected').footer).toBeNull()
   const done = positionOf({ unit: { ...unit, pr: { number: 5, state: 'OPEN' } } }, flow.steps.length)
   expect(buildView(session(), { ...done, current: null }, 'connected').footer).toEqual({ text: 'Unit finished.', isRunning: false })
+})
+
+test('the Worktree row names the worktree while it exists, and turns warn when it alone holds Code back', () => {
+  const worktree = { name: 'diagnose-1', head: 'c0', isEntered: false, isPresent: true }
+  expect(buildView(session(), positionOf({}), 'connected').meta).toEqual([])
+  expect(buildView(session(), positionOf({ worktree }), 'connected').meta).toEqual([{ key: 'Worktree', value: 'diagnose-1', tone: 'text' }])
+  const held = positionOf({ worktree })
+  held.states = held.states.map(entry => (entry.step.isUnlocking ? { ...entry, isHeldByWorktree: true } : entry))
+  expect(buildView(session(), held, 'connected').meta).toEqual([{ key: 'Worktree', value: 'diagnose-1 — remove it to finish Code', tone: 'warn' }])
+  expect(buildView(session(), positionOf({ worktree: { ...worktree, isPresent: false } }), 'connected').meta).toEqual([])
 })
