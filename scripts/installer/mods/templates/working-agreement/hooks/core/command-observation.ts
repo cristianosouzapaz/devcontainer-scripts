@@ -1,10 +1,11 @@
-import { recogniseCommand } from '../domain/command-events'
+import { isGitOutsideProject, recogniseCommand } from '../domain/command-events'
 import type { CommandContext, CommandEvent, CommandOutcome, LaunchedCommand, Observation } from '../domain/command-events'
 import { hasDiagnoseStep } from '../domain/flow-definitions'
 import type { Session } from '../domain/records'
 import { completeHerdrRuns, readHerdrLaunch, readHerdrPaneCommand, trackDetachedHerdrRun, trackHerdrRun } from '../features/herdr'
+import { listCheckouts } from '../lib/git'
 import { isRecord, toStringOrEmpty } from '../lib/json'
-import { formatError } from '../lib/result'
+import { formatError, unwrapOr } from '../lib/result'
 import { listWriteTargets } from '../lib/shell-parser'
 import type { ShellContext, WriteTarget } from '../lib/shell-parser'
 import type { EnginePort } from './engine-port'
@@ -15,8 +16,8 @@ import { readWorkingTreeKey } from './repository'
 import { trackBackgroundRun, trackDirectRun, untrackDirectRun } from './runs-in-flight'
 import { readVerifyCommand } from './verify-config'
 
-/** What a tool call returns: its result, flagged when the call failed. */
-export interface ToolRun { isError?: true; result?: unknown }
+/** What a tool call returns: its result, flagged when the call failed, and the result as the model read it. */
+export interface ToolRun { isError?: true; result?: unknown; text?: string }
 
 /** A Bash call observed before it executes, and whether a verify run, or a run in the worktree, is now in flight. */
 export interface DirectLaunch { launched: LaunchedCommand; isInFlight: boolean }
@@ -29,7 +30,14 @@ const isTracked = (launched: LaunchedCommand): boolean => !!launched.worktree ||
 // What recognising a command in the session needs beyond its text. A verify run in a worktree tests the worktree, not
 // the tree Verify judges, so there it is not recognised.
 async function readCommandContext(port: EnginePort, session: Session): Promise<CommandContext> {
-  return { verifyCommand: isInWorktree(await port.readCwd()) ? undefined : await readVerifyCommand(port), issues: session.issues }
+  const cwd = await port.readCwd()
+  const home = await port.readHome()
+  return {
+    verifyCommand: isInWorktree(cwd) ? undefined : await readVerifyCommand(port),
+    issues: session.issues,
+    shell: { cwd, ...(home ? { home } : {}) },
+    checkouts: unwrapOr(await listCheckouts(port.processes), null),
+  }
 }
 
 /**
@@ -128,6 +136,10 @@ export function endDirectRun(launch: DirectLaunch | null, ran: ToolRun | null): 
   if (launch.isInFlight && taskId && !result.backgroundEndsWithFinalResponse) trackBackgroundRun(taskId, launch.launched)
 }
 
+// Whether a Bash call ran its command. A non-zero exit comes back as an error whose text opens with its exit code; any other
+// error text is a call refused before it ran (a permission denied, the harness's own check), which ended nothing.
+const hasRun = (ran: ToolRun): boolean => ran.isError !== true || ran.text === undefined || /^(?:Error: )?Exit code \d+/.test(ran.text)
+
 // How a direct Bash call ended; the result carries no exit code, so a non-zero exit comes back as an error.
 function readDirectOutcome(ran: ToolRun): DirectOutcome {
   const result = isRecord(ran.result) ? ran.result : {}
@@ -153,7 +165,8 @@ function readReportedEvents(ran: ToolRun): CommandEvent[] {
  * herdr run whose exit marker a `wait-output` in it reported, with the marker's exit code as outcome. A `herdr pane run`
  * in the call starts tracking the command it runs, observed at launch as a direct call is, and is known as a writer
  * that may change the tree until its marker is reported. The git and PR operations the
- * engine reports for the call count as done even when the recogniser did not see them in its text.
+ * engine reports for the call count as done even when the recogniser did not see them in its text, unless every git
+ * command the call runs works outside the project. A call refused before it ran is not observed.
  *
  * @param port - The engine calls.
  * @param session - The session the call ran in.
@@ -163,9 +176,12 @@ function readReportedEvents(ran: ToolRun): CommandEvent[] {
  * @returns The observations, each with its events, launch state and outcome.
  */
 export async function observeBashCall(port: EnginePort, session: Session, command: string, ran: ToolRun, launch: DirectLaunch | null): Promise<Observation[]> {
+  if (!hasRun(ran)) return []
   const { outcome, output } = readDirectOutcome(ran)
   const launched = launch?.launched ?? { command, events: [], startedAt: await port.now(), tree: null, worktree: null }
-  const reported = readReportedEvents(ran)
+  // What git did in another repository (a scratch one) is not the unit's.
+  const engineReported = readReportedEvents(ran)
+  const reported = engineReported.length && !isGitOutsideProject(command, await readCommandContext(port, session)) ? engineReported : []
   const isPassed = outcome === 'passed'
   // On a passed call the engine's report replaces a recognised event of the same kind: it is what git did, and it carries the PR number.
   const events = isPassed ? [...launched.events.filter(event => !reported.some(other => other.kind === event.kind)), ...reported] : launched.events

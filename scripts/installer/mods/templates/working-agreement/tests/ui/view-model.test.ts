@@ -15,7 +15,7 @@ const session = (overrides: Partial<Session> = {}): Session => ({
 })
 const positionOf = (overrides: Partial<Position> = {}, currentIndex = 0): Position => {
   const states: StepState[] = flow.steps.map((step, index) => ({ step, state: index < currentIndex ? 'done' : index === currentIndex ? 'current' : 'pending', isStale: false }))
-  return { flow, unit, git: null, states, current: states[currentIndex] ?? null, ownCommits: 0, isCodeChanged: false, verify: { command: undefined, isVerified: false, running: null }, anchored: null, worktree: null, redFiles: {}, worktreeRun: null, checks: 'off', ...overrides }
+  return { flow, unit, git: null, states, current: states[currentIndex] ?? null, ownCommits: 0, isCodeChanged: false, verify: { command: undefined, isVerified: false, running: null }, anchored: null, worktree: null, redFiles: {}, worktreeRun: null, checks: 'off', judgedOn: null, isSubjectUnknown: false, ...overrides }
 }
 
 test('the progress counts the steps settled out of all of them', () => {

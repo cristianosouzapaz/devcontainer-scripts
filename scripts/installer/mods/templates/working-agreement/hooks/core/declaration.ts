@@ -4,7 +4,7 @@ import { composeInstruction, formatIssueReferences } from '../domain/instruction
 import { mergeSkills } from '../domain/records'
 import type { IssueInfo, Session } from '../domain/records'
 import { describeRequirement } from '../domain/requirements'
-import { formatStepLabel } from '../domain/step-states'
+import { findRecordableBranch, formatStepLabel } from '../domain/step-states'
 import { readIssue } from '../lib/github'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
@@ -62,7 +62,13 @@ export async function declareFlow(port: EnginePort, flow: string, issues: number
   // Flow steps that ran before the declaration count for the unit; Close out also owns the commits made before it.
   const before = session.skills ?? []
   const start = flow === 'close-out' ? undefined : await readHeadCommit(port)
-  await updateUnits(port, next, unit => ({ ...unit, skills: mergeSkills(unit.skills, before), start: unit.start ?? start }))
+  // A flow declared on a feature branch ties the unit to it at once, so a switch before the first write is judged against it.
+  const git = await readGit(port)
+  const branch = findRecordableBranch(git)
+  await updateUnits(port, next, unit => ({
+    ...unit, skills: mergeSkills(unit.skills, before), start: unit.start ?? start,
+    branch: branch && (!unit.branch || unit.branch === git?.base) ? branch : unit.branch,
+  }))
   // This runs inside `serial`, which syncPullRequests and syncIssues would wait on, so the PR read is stored lock-free here.
   sessionMemory.pullRequestsCheckedAt = await port.now()
   if (github === 'connected') await storePullRequests(port, await readPullRequests(port, next))

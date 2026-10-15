@@ -1,5 +1,6 @@
+import { normalizePath } from '../lib/paths'
 import { findRanCommands, hasExactSegment } from '../lib/shell-parser'
-import type { Invocation } from '../lib/shell-parser'
+import type { Invocation, ShellContext } from '../lib/shell-parser'
 
 /** Records a run of the repository's verify command. */
 interface VerifyEvent {
@@ -103,6 +104,10 @@ export interface CommandContext {
   verifyCommand: string | undefined
   /** The declared issues. */
   issues: number[]
+  /** Where the command runs, which the directory of each git command it runs is resolved against. */
+  shell: ShellContext
+  /** The project's checkouts, the main one and its worktrees, or null when they could not be listed. */
+  checkouts: string[] | null
 }
 
 // The global git options that consume the next word, which must not be mistaken for the subcommand.
@@ -121,12 +126,45 @@ function findGitSubcommand(args: string[]): string | undefined {
   return findGitSubcommand(gitValueOptions.includes(first) ? rest.slice(1) : rest)
 }
 
-// The git subcommands a line runs; for a line that cannot be parsed, the user's subcommands it names.
-function listGitSubcommands(command: string): string[] {
-  return findRanCommands(command, 'git').flatMap(run => {
+// The directory a git command works in: where it runs, moved by each -C; null when unknown, or when --git-dir or
+// --work-tree points it elsewhere.
+function readGitDirectory(args: string[], directory: string | null): string | null {
+  const [first, ...rest] = args
+  if (!first?.startsWith('-')) return directory
+  if (/^--(?:git-dir|work-tree)(?:=|$)/.test(first)) return null
+  if (first !== '-C') return readGitDirectory(gitValueOptions.includes(first) ? rest.slice(1) : rest, directory)
+  const target = rest[0] ?? ''
+  const isNamed = !!target && !/[$`~]/.test(target) && (target.startsWith('/') || directory !== null)
+  return readGitDirectory(rest.slice(1), isNamed ? normalizePath(target, directory ?? '/') : null)
+}
+
+// Whether a git command works in a repository other than the project's: its directory is known and lies in none of the
+// project's checkouts. A line that sets GIT_DIR or GIT_WORK_TREE, or checkouts that could not be listed, leave it the project's.
+function isOutsideProject(command: string, run: Invocation, context: CommandContext): boolean {
+  const directory = run.isParsed ? readGitDirectory(run.args, run.directory) : null
+  if (directory === null || !context.checkouts || /\bGIT_(?:DIR|WORK_TREE)=/.test(command)) return false
+  return !context.checkouts.some(checkout => directory === checkout || directory.startsWith(`${checkout}/`))
+}
+
+// The git subcommands a line runs in the project's repository; for a line that cannot be parsed, the user's subcommands it names.
+function listGitSubcommands(command: string, context: CommandContext): string[] {
+  return findRanCommands(command, 'git', context.shell).flatMap(run => {
     if (!run.isParsed) return new RegExp(`\\bgit\\s+(${userGitSubcommands.join('|')})\\b`).exec(command)?.[1] ?? []
-    return findGitSubcommand(run.args) ?? []
+    return isOutsideProject(command, run, context) ? [] : findGitSubcommand(run.args) ?? []
   })
+}
+
+/**
+ * Tells whether every git command a line runs works in a repository other than the project's, so what git reports
+ * for the line (a commit, a PR) is not the unit's.
+ *
+ * @param command - The command line.
+ * @param context - What recognising needs beyond the text.
+ * @returns True when the line runs git, and only outside the project.
+ */
+export function isGitOutsideProject(command: string, context: CommandContext): boolean {
+  const runs = findRanCommands(command, 'git', context.shell)
+  return runs.length > 0 && runs.every(run => isOutsideProject(command, run, context))
 }
 
 // The value a flag gives as its next word or after `=`; none when it is absent or still holds a variable or substitution the shell expands.
@@ -176,7 +214,7 @@ function readBodyParts(line: string, run: Invocation): BodyPart[] {
 export function recogniseCommand(command: string, context: CommandContext): CommandEvent[] {
   const events: CommandEvent[] = []
   if (context.verifyCommand && hasExactSegment(command, context.verifyCommand)) events.push({ kind: 'verify' })
-  const subcommands = listGitSubcommands(command)
+  const subcommands = listGitSubcommands(command, context)
   if (subcommands.includes('commit')) events.push({ kind: 'commit' })
   if (subcommands.includes('push')) events.push({ kind: 'push' })
   for (const subcommand of new Set(subcommands)) {

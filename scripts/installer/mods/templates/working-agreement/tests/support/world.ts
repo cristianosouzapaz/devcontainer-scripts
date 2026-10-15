@@ -22,12 +22,24 @@ type ToolRunSource = ToolRun | (() => ToolRun | Promise<ToolRun>)
  * so `c<i>` is an ancestor of `a<j>` only when i < j, and `a<n>` is an ancestor of itself alone.
  * `commitTrees` maps a commit id to its tree id, `tree` for the ones it omits. A diff between two commits reports `src/a.ts` when the second commit is past the first.
  * `atStart` maps a repo-relative path to its blob id at the unit's start commit; a path it omits is absent there, so reading its blob fails.
+ * `graph` replaces the linear history: git is then answered from its commits and refs, HEAD is `head` or the tip of `branch`
+ * (`HEAD` for a detached checkout), the working copy is HEAD's files with `dirty` laid over them, and its tree key is `tree`
+ * when given, else the HEAD commit's tree. `ahead`, `changed`, `before`, `hashes`, `commitTrees` and `atStart` are then ignored.
  */
 export interface Checkout {
   branch: string; isDirty?: boolean; tree?: string; ahead?: number; isPushed?: boolean
   changed?: string[]; before?: string[]; hashes?: Record<string, string>; dirty?: Record<string, string>
-  head?: string; commitTrees?: Record<string, string>; atStart?: Record<string, string>
+  head?: string; commitTrees?: Record<string, string>; atStart?: Record<string, string>; graph?: Graph
 }
+
+/** A commit of a graph: its parents, the first one first, and the content hash of every file it holds, by repo-relative path. */
+export interface Commit { parents: string[]; files: Record<string, string> }
+
+/**
+ * A commit graph: its commits by id, and its refs, each local branch (and `origin/main`, the default branch's upstream) mapped to its tip.
+ * Two commits with the same files have the same tree, as a squash merge of a branch has its tip's tree.
+ */
+export interface Graph { commits: Record<string, Commit>; refs: Record<string, string> }
 
 /**
  * A linked worktree under `.claude/worktrees/<name>` of the world's checkout, on branch `worktree-<name>` at its `base` commit until a
@@ -141,6 +153,136 @@ function listReachableCommits(id: string): Set<string> | null {
 }
 
 /**
+ * Resolves a revision of a graph to a commit id: a branch, `refs/heads/<branch>`, `origin/HEAD` (the default branch), `HEAD` or a commit id.
+ *
+ * @param graph - The graph.
+ * @param head - HEAD's commit.
+ * @param revision - The revision.
+ * @returns The commit id, or undefined when the graph does not know it.
+ */
+function resolveRevision(graph: Graph, head: string | undefined, revision: string): string | undefined {
+  const name = revision.replace(/^refs\/heads\//, '')
+  if (name === 'HEAD') return head
+  if (name === 'origin/HEAD') return graph.refs['origin/main'] ?? graph.refs.main
+  return graph.refs[name] ?? (graph.commits[name] ? name : undefined)
+}
+
+/**
+ * Lists the commits reachable from a commit of a graph, itself included.
+ *
+ * @param graph - The graph.
+ * @param id - The commit id.
+ * @returns The ids, in breadth-first order from the commit.
+ */
+function listAncestors(graph: Graph, id: string): string[] {
+  const seen: string[] = []
+  const queue = [id]
+  while (queue.length) {
+    const next = queue.shift() ?? ''
+    if (seen.includes(next) || !graph.commits[next]) continue
+    seen.push(next)
+    queue.push(...(graph.commits[next]?.parents ?? []))
+  }
+  return seen
+}
+
+/**
+ * Names the tree a set of files makes: the same files give the same tree.
+ *
+ * @param files - The content hash of every file, by path.
+ * @returns The tree id.
+ */
+const nameTree = (files: Record<string, string>): string =>
+  `tree:${Object.entries(files).filter(([, hash]) => hash).sort(([a], [b]) => a.localeCompare(b)).map(([path, hash]) => `${path}=${hash}`).join(',')}`
+
+/**
+ * Lists the paths whose content differs between two sets of files.
+ *
+ * @param from - The files compared against.
+ * @param to - The files compared.
+ * @returns The paths, sorted.
+ */
+const diffFiles = (from: Record<string, string>, to: Record<string, string>): string[] =>
+  [...new Set([...Object.keys(from), ...Object.keys(to)])].filter(path => (from[path] ?? '') !== (to[path] ?? '')).sort()
+
+/**
+ * Answers a git command from a checkout's commit graph, as git would in that repository.
+ *
+ * @param checkout - The checkout, which holds the graph.
+ * @param command - The whole command line.
+ * @param local - The command after `git -C <root> `, or '' when it is not run so.
+ * @returns The exit code and stdout, or undefined for a command the graph does not answer.
+ */
+function answerFromGraph(checkout: Checkout, command: string, local: string): { exitCode: number; stdout: string } | undefined {
+  const graph = checkout.graph
+  if (!graph) return undefined
+  const head = checkout.head ?? graph.refs[checkout.branch]
+  const resolve = (revision: string) => resolveRevision(graph, head, revision)
+  const filesAt = (id: string | undefined) => (id ? graph.commits[id]?.files ?? {} : {})
+  const working = Object.fromEntries(Object.entries({ ...filesAt(head), ...checkout.dirty }).filter(([, hash]) => hash))
+  const ok = (stdout: string) => ({ exitCode: 0, stdout })
+  const fatal = { exitCode: 128, stdout: '' }
+  if (command === 'git rev-parse HEAD' || local === 'rev-parse HEAD') return head ? ok(head) : fatal
+  const verify = command.match(/^git rev-parse --verify --quiet (\S+?)(\^\{commit\})?$/)
+  if (verify) {
+    const id = resolve(verify[1] ?? '')
+    return id ? ok(id) : { exitCode: 1, stdout: '' }
+  }
+  const range = command.match(/^git rev-list --count (\S+)\.\.(\S+)$/)
+  if (range && !range[1]?.startsWith('@')) {
+    const [from, to] = [resolve(range[1] ?? ''), resolve(range[2] ?? '')]
+    if (!from || !to) return fatal
+    const behind = listAncestors(graph, from)
+    return ok(String(listAncestors(graph, to).filter(id => !behind.includes(id)).length))
+  }
+  const ancestry = command.match(/^git merge-base --is-ancestor (\S+) (\S+)$/)
+  if (ancestry) {
+    const [ancestor, descendant] = [resolve(ancestry[1] ?? ''), resolve(ancestry[2] ?? '')]
+    if (!ancestor || !descendant) return fatal
+    return { exitCode: listAncestors(graph, descendant).includes(ancestor) ? 0 : 1, stdout: '' }
+  }
+  const mergeBase = command.match(/^git merge-base (\S+) (\S+)$/)
+  if (mergeBase) {
+    const [a, b] = [resolve(mergeBase[1] ?? ''), resolve(mergeBase[2] ?? '')]
+    const common = a && b ? listAncestors(graph, b).find(id => listAncestors(graph, a).includes(id)) : undefined
+    return common ? ok(common) : { exitCode: 1, stdout: '' }
+  }
+  const treeOf = command.match(/^git rev-parse (\S+)\^\{tree\}$/)
+  if (treeOf) {
+    const id = resolve(treeOf[1] ?? '')
+    return id ? ok(nameTree(filesAt(id))) : fatal
+  }
+  const blobAt = command.match(/^git rev-parse ([^\s:]+):(\S+)$/)
+  if (blobAt) {
+    const blob = filesAt(resolve(blobAt[1] ?? ''))[blobAt[2] ?? '']
+    return blob ? ok(blob) : fatal
+  }
+  const between = local.match(/^diff --name-only --no-renames (\S+) (\S+)$/)
+  if (between) {
+    const [from, to] = [resolve(between[1] ?? ''), resolve(between[2] ?? '')]
+    return from && to ? ok(diffFiles(filesAt(from), filesAt(to)).join('\n')) : fatal
+  }
+  const diff = local.match(/^diff --name-only --no-renames (\S+)$/)
+  if (diff) {
+    const from = resolve(diff[1] ?? '')
+    return from ? ok(diffFiles(filesAt(from), working).join('\n')) : fatal
+  }
+  if (local === 'ls-files --others --exclude-standard') return ok('')
+  const changed = diffFiles(filesAt(head), working)
+  if (command === 'git status --porcelain' || local === 'status --porcelain') return ok(changed.map(path => ` M ${path}`).join('\n'))
+  if (local === 'status --porcelain -z --no-renames --untracked-files=all') return ok(changed.map(path => `${working[path] ? ' M' : ' D'} ${path}\0`).join(''))
+  const hashed = local.match(/^hash-object -- (.+)$/)
+  if (hashed) return ok((hashed[1] ?? '').split(' ').map(path => `${working[path] ?? ''}\n`).join(''))
+  const hashedPath = command.match(/^git hash-object -- (\/.+)$/)?.[1]
+  if (hashedPath) {
+    const hash = hashedPath.startsWith(`${root}/`) ? working[hashedPath.slice(root.length + 1)] : undefined
+    return hash ? ok(hash) : fatal
+  }
+  if (command.startsWith('sh -c') && !command.includes('find')) return ok(checkout.tree ?? nameTree(working))
+  return undefined
+}
+
+/**
  * Mocks the engine beneath the mod: a Small feature session at Code on #1 (ready-for-agent) by default,
  * checked out on `git.branch`, with GitHub connected and every gh issue open unless `issues` says otherwise.
  *
@@ -190,8 +332,14 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     const git: Checkout = isInWorktree && worktree
       ? { branch: `worktree-${worktree.name}`, head: session.worktreeHead ?? worktree.base, changed: worktree.changed ?? [], hashes: worktree.hashes, isDirty: !!worktree.changed?.length }
       : checkout
+    const graphed = isInWorktree ? undefined : answerFromGraph(git, command, command.startsWith(`git -C ${root} `) ? command.slice(`git -C ${root} `.length) : '')
+    if (graphed) return buildResult(graphed.stdout, graphed.exitCode)
+    if (git.graph && command.startsWith('gh pr list --head ')) {
+      const branch = e.argv[e.argv.indexOf('--head') + 1]
+      return buildResult(JSON.stringify((options.prs ?? []).filter(pr => pr.headRefName === branch)))
+    }
     if (command === 'git worktree list --porcelain') {
-      const main = `worktree ${root}\nHEAD ${checkout.head ?? `c${checkout.ahead ?? 0}`}\nbranch refs/heads/${checkout.branch}\n`
+      const main = `worktree ${root}\nHEAD ${checkout.head ?? (checkout.graph?.refs[checkout.branch] ?? `c${checkout.ahead ?? 0}`)}\nbranch refs/heads/${checkout.branch}\n`
       return buildResult(worktree && worktreeRoot && !worktree.isRemoved ? `${main}\nworktree ${worktreeRoot}\nHEAD ${session.worktreeHead ?? worktree.base}\nbranch refs/heads/worktree-${worktree.name}\n` : main)
     }
     if (command === 'git rev-parse --show-toplevel') return buildResult(here)

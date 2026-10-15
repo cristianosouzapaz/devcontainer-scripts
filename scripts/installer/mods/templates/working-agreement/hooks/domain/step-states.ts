@@ -89,8 +89,12 @@ export interface Evidence {
   checks: CiState
   /** The worktree the unit recorded, or null when it recorded none. */
   worktree: WorktreeState | null
-  /** Where each red file stands in the main checkout; empty while the unit has no red. */
+  /** Where each red file stands in the main checkout, or in the subject commit off the unit's branch; empty while the unit has no red. */
   redFiles: Record<string, RedFileState>
+  /** The unit's branch while the checkout is elsewhere and the unit is judged on that branch's commit; null otherwise. */
+  judgedOn: string | null
+  /** Whether, off the unit's branch, that branch is gone and no confirmed PR head or anchor of it is here, so its state cannot be read. */
+  isSubjectUnknown: boolean
 }
 
 /** Holds where the session's unit stands in its flow, with the checkout, the Verify state and the CI state of its PR it was judged on. */
@@ -142,6 +146,15 @@ export const findDiagnoseStep = (flow: FlowDefinition): Step | undefined => flow
 export const isOnBase = (git: GitState | null): boolean => !!git && git.branch === git.base
 
 /**
+ * Names the checkout's branch when a unit may record it as its own: never the default branch, nor a detached HEAD, which git names `HEAD`.
+ *
+ * @param git - The checkout, or null outside a repository.
+ * @returns The branch, or undefined when there is none to record.
+ */
+export const findRecordableBranch = (git: GitState | null): string | undefined =>
+  git && !isOnBase(git) && git.branch !== 'HEAD' ? git.branch : undefined
+
+/**
  * Names a step as the pane and the instruction show it: the PR step says what it does to the unit's open PR, or names the one the unit created.
  *
  * @param step - The step.
@@ -149,6 +162,7 @@ export const isOnBase = (git: GitState | null): boolean => !!git && git.branch =
  * @returns The step's label.
  */
 export function formatStepLabel(step: Step, pullRequest: PullRequest | undefined): string {
+  if (step.observe === 'pr.created' && pullRequest?.state === 'CLOSED') return `${step.label} #${pullRequest.number} closed`
   if (step.observe !== 'pr.created' || pullRequest?.state !== 'OPEN') return step.label
   if (pullRequest.isCreated) return `PR #${pullRequest.number}`
   return step.skill ? `Update PR #${pullRequest.number}` : `Push to PR #${pullRequest.number}`
@@ -175,14 +189,14 @@ export const isCiWait = (position: Position): boolean =>
   position.current?.step.observe === 'pr.created' && position.checks !== 'off' && position.checks !== 'passing'
 
 /**
- * Tells whether the session's unit has reached its end: every step done and a PR on record, or, with no flow, a PR created here.
+ * Tells whether the session's unit has reached its end: its PR merged, or every step done and a PR on record, or, with no flow, a PR created here.
  *
  * @param session - The session.
  * @param position - The unit's position, or null with no flow declared.
  * @returns True once the unit is finished.
  */
 export const isUnitFinished = (session: Session, position: Position | null): boolean =>
-  position ? !position.current && (session.prCreated || !!position.unit.pr) : session.prCreated
+  position ? position.unit.pr?.state === 'MERGED' || (!position.current && (session.prCreated || !!position.unit.pr)) : session.prCreated
 
 /**
  * Finds a flow's PR step.
@@ -232,7 +246,8 @@ const isPullRequestDone = (unit: Unit, git: GitState | null): boolean => !!git?.
  * in the main checkout since it was proved reopens the step with Red and Green stale, the diagnosis and its approval kept (a red of another command drops them).
  * Code is done on a change handed to Verify: a passing or in-flight verify run on the current tree, an overridden Verify, or a done Commit.
  * In a flow with Diagnose it also needs every red file in the main checkout as proved and the unit's worktree and its branch gone.
- * While the unit's anchor holds, Commit is done by the unit's commits up to it and never stale, and the PR is done once its head contains the anchor.
+ * While a subject commit stands (the unit's holding anchor, or its branch's commit off that branch), Commit is done by the unit's
+ * commits up to it and never stale, and the PR is done once its head contains it. A merged PR is done; a closed one never is.
  * Every state carries a stale marker when the step's stored evidence exists but no longer holds; steps that rest on GitHub alone never lapse.
  *
  * @param flow - The declared flow.
@@ -271,7 +286,10 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
     if (step.isUnlocking) return isWorkTransferred && !worktree?.isPresent
     if (step.observe === 'verify.passed') return verify.isVerified
     if (step.observe === 'commit') return isCommitDone
-    if (step.observe === 'pr.created') return isCiGreen && (anchored ? anchored.isPullRequestContained : isPullRequestDone(unit, git))
+    // A merged PR ends the unit; a closed one never counts, whatever its head.
+    if (step.observe === 'pr.created') {
+      return unit.pr?.state === 'MERGED' || (unit.pr?.state !== 'CLOSED' && isCiGreen && (anchored ? anchored.isPullRequestContained : isPullRequestDone(unit, git)))
+    }
     // The mod sees a skill start, never its end: a talk step (Grill) is done once the next step's skill has started.
     const next = steps.slice(steps.indexOf(step) + 1).find(later => later.skill)
     return !!next?.skill && unit.skills.includes(next.skill)

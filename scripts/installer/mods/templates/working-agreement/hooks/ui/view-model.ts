@@ -37,7 +37,11 @@ export function buildView(session: Session, position: Position, github: GithubSt
     const bits = [position.git.branch, `${position.git.ahead} ahead of ${position.git.base}`]
     if (position.git.isDirty) bits.push('uncommitted')
     meta.push({ key: 'Branch', value: bits.join(' · '), tone: 'text' })
-    if (position.unit.branch && position.unit.branch !== position.git.branch) {
+    if (position.isSubjectUnknown) {
+      notes.push({ key: 'Branch', value: `${position.judgedOn} is gone and no PR head of it is here — state unknown; writes here ask`, tone: 'warn' })
+    } else if (position.judgedOn) {
+      notes.push({ key: 'Branch', value: `checkout on ${position.git.branch} — unit judged on ${position.judgedOn}; writes here ask`, tone: 'warn' })
+    } else if (position.unit.branch && position.unit.branch !== position.git.branch) {
       notes.push({ key: 'Branch', value: `issue work is on ${position.unit.branch} — writes here ask`, tone: 'warn' })
     }
   }

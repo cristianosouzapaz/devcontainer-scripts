@@ -35,7 +35,8 @@ export async function recordAnchor(port: EnginePort, session: Session): Promise<
   const git = await readGit(port)
   if (!git || git.isDirty || isOnBase(git) || !git.head) return
   const unit = mergeUnits(await Promise.all((await listUnitKeys(port, session)).map(key => readUnit(port, key))))
-  if (await findHoldingAnchor(port, session, unit, git)) return
+  // Another branch's commits are not the unit's to anchor.
+  if ((unit.branch && unit.branch !== git.branch && unit.branch !== git.base) || await findHoldingAnchor(port, session, unit, git)) return
   const ownCommits = unit.start ? await countCommitsAhead(port, unit.start) : git.ahead
   if (ownCommits <= 0) return
   await updateUnits(port, session, stored => ({ ...stored, anchor: git.head }))

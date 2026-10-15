@@ -107,6 +107,16 @@ test('a target the shell resolves at run time is judged as a repository write', 
   expect((await $.tool.call(buildBashCall('cd $X && echo x > /tmp/f'))).deny).toBeUndefined()
 })
 
+test('a target named through a literal assignment opening the line is resolved; one the line may change stays a repository write', async ($, on) => {
+  createWorld(on, { branch: 'main' })
+  for (const command of ['S=/tmp/s; rm -rf $S/mod && mkdir -p $S/mod && cp -a /repo/m/. $S/mod/', 'export S=/tmp/s && echo x > "${S}/a"']) {
+    expect((await $.tool.call(buildBashCall(command))).deny, command).toBeUndefined()
+  }
+  for (const command of ['S=src; echo x > $S/a', 'S=/tmp/s; S=src; echo x > $S/a', "S=/tmp/s; sh -c 'echo x > $S/a'"]) {
+    expect((await $.tool.call(buildBashCall(command))).deny, command).toContain('default branch')
+  }
+})
+
 test('an interpreter running code from the line or from stdin is judged as a repository write; one running a script file is not', async ($, on) => {
   createWorld(on, { branch: 'main' })
   for (const command of interpreterWrites) {

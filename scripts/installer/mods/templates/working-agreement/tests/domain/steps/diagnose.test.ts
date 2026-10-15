@@ -172,6 +172,15 @@ for (const { name, command, isPassed, isGreen } of greenCases) {
   })
 }
 
+test('a call refused before it ran is no red; a failing run, whose text opens with its exit code, is', async ($, on) => {
+  const { run } = await enterDiagnosis($, on)
+  await run(reproduction, { ...failed, text: 'This session is isolated in the worktree. Refusing to run it.' })
+  await run(reproduction, { ...failed, text: 'Permission to use Bash with command bats test/fix.bats has been denied.' })
+  expect(await readFlowStatus($)).toContain('    ▸ Red')
+  await run(reproduction, { ...failed, text: 'Exit code 1\nnot ok 1 fix' })
+  expect(await readFlowStatus($)).toContain('✓ Red')
+})
+
 test('a pass before any red is no green', async ($, on) => {
   const { run } = await enterDiagnosis($, on)
   await run(reproduction, passed)

@@ -23,17 +23,28 @@ export async function readRoot(processes: ProcessPort): Promise<Result<string | 
 }
 
 /**
- * Reads the main checkout of a directory that lies in a linked worktree.
- * Git lists the main worktree first, by absolute path, from anywhere; `--git-common-dir` is relative in the main checkout.
+ * Lists the repository's checkouts. Git lists the main worktree first, by absolute path, from anywhere.
+ *
+ * @param processes - The engine's process runner.
+ * @returns The main checkout's root followed by every linked worktree's, or a failure when git cannot list them.
+ */
+export async function listCheckouts(processes: ProcessPort): Promise<Result<string[]>> {
+  const run = hasExitedZero(await runCommand(processes, ['git', 'worktree', 'list', '--porcelain']))
+  if (!run.isOk) return run
+  return succeed(run.value.stdout.split('\n').filter(line => line.startsWith('worktree ')).map(line => line.slice('worktree '.length)))
+}
+
+/**
+ * Reads the main checkout of a directory that lies in a linked worktree; `--git-common-dir` is relative in the main checkout.
  *
  * @param processes - The engine's process runner.
  * @param cwd - The directory, absolute.
  * @returns The main checkout's root, null when the directory is in no linked worktree, or a failure when git cannot list them.
  */
 export async function readMainCheckout(processes: ProcessPort, cwd: string): Promise<Result<string | null>> {
-  const run = hasExitedZero(await runCommand(processes, ['git', 'worktree', 'list', '--porcelain']))
-  if (!run.isOk) return run
-  const [main, ...linked] = run.value.stdout.split('\n').filter(line => line.startsWith('worktree ')).map(line => line.slice('worktree '.length))
+  const listed = await listCheckouts(processes)
+  if (!listed.isOk) return listed
+  const [main, ...linked] = listed.value
   return succeed(main && linked.some(path => cwd === path || cwd.startsWith(`${path}/`)) ? main : null)
 }
 
@@ -138,6 +149,27 @@ async function findFirstRef(processes: ProcessPort, candidates: string[]): Promi
     if (run.isOk && run.value.exitCode === 0) return candidate
   }
   return null
+}
+
+/**
+ * Reads the ref of the default branch commits are counted from.
+ *
+ * @param processes - The engine's process runner.
+ * @returns The first candidate ref that exists, or null when none does.
+ */
+export const readBaseRef = (processes: ProcessPort): Promise<string | null> => findFirstRef(processes, baseCandidates)
+
+/**
+ * Resolves a revision to the commit it names, only when the repository holds that commit: a full id git has never seen
+ * would otherwise resolve to itself.
+ *
+ * @param processes - The engine's process runner.
+ * @param revision - A ref, such as `refs/heads/<branch>`, or a commit id.
+ * @returns The commit id, or null when the repository holds no such commit or git cannot run.
+ */
+export async function readCommit(processes: ProcessPort, revision: string): Promise<string | null> {
+  const run = await runCommand(processes, ['git', 'rev-parse', '--verify', '--quiet', `${revision}^{commit}`])
+  return run.isOk && run.value.exitCode === 0 ? run.value.stdout.trim() || null : null
 }
 
 /**

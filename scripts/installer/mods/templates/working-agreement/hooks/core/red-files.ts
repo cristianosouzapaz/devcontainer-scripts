@@ -13,12 +13,13 @@ import { readRepositoryRoot } from './repository'
  * @param port - The engine calls.
  * @param unit - The unit.
  * @param root - The main checkout's root.
+ * @param subject - The commit the unit is judged on instead of the main checkout, or null to read the main checkout.
  * @returns Each red file's state; empty while the unit has no red.
  */
-export async function readRedFiles(port: EnginePort, unit: Unit, root: string): Promise<Record<string, RedFileState>> {
+export async function readRedFiles(port: EnginePort, unit: Unit, root: string, subject: string | null = null): Promise<Record<string, RedFileState>> {
   const prints = Object.entries(unit.red?.fingerprints ?? {})
   const states = await Promise.all(prints.map(async ([file, print]): Promise<[string, RedFileState]> => {
-    const content = unwrapOr(await hashFile(port.processes, `${root}/${file}`), '')
+    const content = unwrapOr(subject ? await readBlobAt(port.processes, subject, file) : await hashFile(port.processes, `${root}/${file}`), '')
     if (content === print) return [file, 'transferred']
     if (!content) return [file, 'pending']
     const original = unit.start ? unwrapOr(await readBlobAt(port.processes, unit.start, file), '') : ''

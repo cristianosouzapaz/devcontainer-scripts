@@ -35,10 +35,10 @@ interface Parse { runs: Run[]; directory: string | null }
 interface ParseState { runs: Run[]; directories: Record<number, string | null> }
 
 /**
- * A command found in a parsed line: the words that matched, the words after them, and the variables that
- * earlier segments of the line assigned (the last assignment wins).
+ * A command found in a parsed line: the words that matched, the words after them, the variables that
+ * earlier segments of the line assigned (the last assignment wins), and the directory it runs in, null when unknown.
  */
-interface ParsedInvocation { isParsed: true; args: string[]; vars: Record<string, string> }
+interface ParsedInvocation { isParsed: true; args: string[]; vars: Record<string, string>; directory: string | null }
 
 /** A command found by matching the whole line, because the line could not be parsed: only the words that matched are known. */
 interface FallbackInvocation { isParsed: false }
@@ -70,6 +70,13 @@ const infoOptions = /^(?:-V|-v|--version|-h|--help)$/
 
 // The scope of the line itself, outside any subshell.
 const lineScope = -1
+
+// A literal assignment opening a line and the separator after it, which the shell runs before anything else in the line;
+// the value holds no character the shell would read as syntax once substituted.
+const leadingAssignment = /^\s*(?:export\s+)?([A-Za-z_]\w*)=(['"]?)([\w@%+=:,./-]*)\2[ \t]*(?:;|&&|\n)/
+
+// A $NAME or ${NAME} reference, read where a $ stands.
+const reference = /\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/y
 
 // Adds a word to the last segment, which runs in the subshells open at its first word.
 const addWord = (state: ScanState, word: Word): ScanState => {
@@ -158,7 +165,7 @@ export const splitShellWords = (text: string): Word[][] => scanWords(text).segme
  *   Paths under /dev are left out.
  */
 export function listWriteTargets(command: string, context: ShellContext): WriteTarget[] {
-  const parsed = parseLine(command, context.cwd, context.home)
+  const parsed = parseLine(expandLeadingAssignments(command), context.cwd, context.home)
   // A line the parser cannot follow may write anywhere: one target it cannot resolve stands in for its writes.
   if (!parsed) return [null]
   return parsed.runs
@@ -345,17 +352,19 @@ function resolvePath(word: string, directory: string | null, home: string | unde
  *
  * @param command - The command line.
  * @param pattern - The leading words as regular expression sources, with a space between words (e.g. `gh pr (?:create|edit)`).
- * @returns Each match with the words after its leading words and the variables assigned in earlier
- *   segments; a line that cannot be parsed yields a fallback invocation when the pattern matches the whole line.
+ * @param context - The shell's working directory and home directory, which the directory each match runs in is resolved against.
+ * @returns Each match with the words after its leading words, the variables assigned in earlier segments and the
+ *   directory it runs in; a line that cannot be parsed yields a fallback invocation when the pattern matches the whole line.
  */
-export function findRanCommands(command: string, pattern: string): Invocation[] {
-  const parsed = parseLine(command, null, undefined)
+export function findRanCommands(command: string, pattern: string, context: ShellContext = { cwd: null }): Invocation[] {
+  const parsed = parseLine(expandLeadingAssignments(command), context.cwd, context.home)
   if (!parsed) {
     const match = new RegExp(`\\b(?:${pattern.replace(/ /g, '\\s+')})\\b`).exec(command)
     return match ? [{ isParsed: false }] : []
   }
   const lead = pattern.split(' ').map(source => new RegExp(`^(?:${source})$`))
   const runs = parsed.runs.map(run => listCommandWords(run.words))
+  const directories = parsed.runs.map(run => run.directory)
   const assignment = /^([A-Za-z_]\w*)=(.*)$/s
   return runs.flatMap((run, index) => {
     // Assignments in the same run do not count: `f=x gh ... "$f"` expands $f before the assignment.
@@ -367,6 +376,34 @@ export function findRanCommands(command: string, pattern: string): Invocation[] 
     const vars: Record<string, string> = Object.assign(Object.create(null), Object.fromEntries(assigned.map(match => [match[1]!, match[2]!])))
     const leadIndex = findLead(run, lead)
     const texts = run.map(word => word.text)
-    return leadIndex < 0 ? [] : [{ isParsed: true, args: texts.slice(leadIndex + lead.length), vars }]
+    return leadIndex < 0 ? [] : [{ isParsed: true, args: texts.slice(leadIndex + lead.length), vars, directory: directories[index] ?? null }]
   })
+}
+
+// The line with each $NAME and ${NAME} outside single quotes replaced by the value a literal assignment opening the line
+// gives NAME, so `S=/tmp/x; cp a $S/b` names its target. A name the rest of the line mentions otherwise (assigned again,
+// read, a loop variable, unset) keeps its references, as does every name in a line with a heredoc.
+function expandLeadingAssignments(text: string): string {
+  const readAssignments = (rest: string, vars: Record<string, string>): { rest: string; vars: Record<string, string> } => {
+    const match = leadingAssignment.exec(rest)
+    return match ? readAssignments(rest.slice(match[0].length), { ...vars, [match[1]!]: match[3]! }) : { rest, vars }
+  }
+  if (text.includes('<<')) return text
+  const { rest, vars } = readAssignments(text, {})
+  const stable = Object.entries(vars).filter(([name]) => !new RegExp(`(?<![\\w$])(?<!\\$\\{)${name}(?!\\w)`).test(rest))
+  if (!stable.length) return text
+  const values: Record<string, string> = Object.assign(Object.create(null), Object.fromEntries(stable))
+  const scanned = rest.split('').reduce((state, character, index) => {
+    if (index < state.next) return state
+    const advanced = { ...state, next: index + 1, text: state.text + character }
+    if (state.quote === "'") return character === "'" ? { ...advanced, quote: '' } : advanced
+    if (character === '\\') return { ...advanced, next: index + 2, text: state.text + rest.slice(index, index + 2) }
+    if (character === "'" && !state.quote) return { ...advanced, quote: "'" }
+    if (character === '"') return { ...advanced, quote: state.quote ? '' : '"' }
+    reference.lastIndex = index
+    const match = character === '$' ? reference.exec(rest) : null
+    const value = match ? values[match[1] ?? match[2]!] : undefined
+    return match && value !== undefined ? { ...state, next: index + match[0].length, text: state.text + value } : advanced
+  }, { text: '', next: 0, quote: '' })
+  return text.slice(0, text.length - rest.length) + scanned.text
 }

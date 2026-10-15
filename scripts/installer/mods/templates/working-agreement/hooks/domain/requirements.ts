@@ -36,6 +36,7 @@ export function describeRequirement(state: StepState, session: Session, position
       : `run the ${step.skill} skill, then stop and ask the user to run the commands it produced and push the branch (never commit or push yourself)`
   }
   if (step.observe === 'pr.created') {
+    if (pullRequest?.state === 'CLOSED') return `PR #${pullRequest.number} is closed without merge: reopen it with gh pr reopen ${pullRequest.number}, or open a new one`
     const isOpen = pullRequest?.state === 'OPEN'
     // A PR shows only what is pushed, and the push is the user's: an unpushed branch waits for it first.
     const pushFirst = isPushed ? '' : 'stop and ask the user to push the branch, then '
@@ -60,7 +61,7 @@ function describeCode(position: Position): string {
   const isTransferring = !!worktree?.isPresent && !!path && (pending.length > 0 || !isCodeChanged)
   const removals = worktree?.isPresent && path ? [`git worktree remove --force ${path}`, `git branch -D worktree-${worktree.name}`] : []
   const steps = [
-    ...(isOnBase(git) ? [`${branchFirstInstruction} first`] : []),
+    ...(isOnBase(git) && !position.judgedOn ? [`${branchFirstInstruction} first`] : []),
     ...(worktree?.isEntered ? ['call ExitWorktree with action keep'] : []),
     ...(isTransferring ? ['remove the [DEBUG-…] instrumentation in the worktree', `transfer everything at once with git -C ${path} add -N . && git -C ${path} diff --binary ${unit.start ?? 'HEAD'} | git apply`] : []),
     ...removals,

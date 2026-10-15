@@ -78,10 +78,10 @@ test('hasExactSegment matches only a segment that is exactly the verify command'
 })
 
 test('findRanCommands finds a command behind a prefix, in sh -c, eval and substitutions, with its arguments', () => {
-  expect(findRanCommands('sudo gh pr create --body x', 'gh pr (?:create|edit)')).toEqual([{ isParsed: true, args: ['--body', 'x'], vars: {} }])
-  expect(findRanCommands("sh -c 'gh pr edit 5'", 'gh pr (?:create|edit)')).toEqual([{ isParsed: true, args: ['5'], vars: {} }])
-  expect(findRanCommands("eval 'gh issue create'", 'gh issue create')).toEqual([{ isParsed: true, args: [], vars: {} }])
-  expect(findRanCommands('echo "$(/usr/bin/gh pr merge 3)"', 'gh pr merge')).toEqual([{ isParsed: true, args: ['3'], vars: {} }])
+  expect(findRanCommands('sudo gh pr create --body x', 'gh pr (?:create|edit)')).toEqual([{ isParsed: true, args: ['--body', 'x'], vars: {}, directory: null }])
+  expect(findRanCommands("sh -c 'gh pr edit 5'", 'gh pr (?:create|edit)')).toEqual([{ isParsed: true, args: ['5'], vars: {}, directory: null }])
+  expect(findRanCommands("eval 'gh issue create'", 'gh issue create')).toEqual([{ isParsed: true, args: [], vars: {}, directory: null }])
+  expect(findRanCommands('echo "$(/usr/bin/gh pr merge 3)"', 'gh pr merge')).toEqual([{ isParsed: true, args: ['3'], vars: {}, directory: null }])
 })
 
 test('findRanCommands ignores quoted text and heredoc bodies', () => {
@@ -90,8 +90,34 @@ test('findRanCommands ignores quoted text and heredoc bodies', () => {
 })
 
 test('findRanCommands carries variables only from all-assignment segments before the command', () => {
-  const [run] = findRanCommands('F=/tmp/b; G=x gh pr edit 5 --body-file "$F"', 'gh pr edit')
-  expect(run).toEqual({ isParsed: true, args: ['5', '--body-file', '$F'], vars: { F: '/tmp/b' } })
+  const [run] = findRanCommands('cd sub; F=/tmp/b; G=x gh pr edit 5 --body-file "$F"', 'gh pr edit')
+  expect(run).toEqual({ isParsed: true, args: ['5', '--body-file', '$F'], vars: { F: '/tmp/b' }, directory: null })
+})
+
+test('findRanCommands gives the directory a command runs in, and substitutes a literal assignment opening the line', () => {
+  const [run] = findRanCommands('F=/tmp/b; cd sub && gh pr edit 5 --body-file "$F"', 'gh pr edit', context)
+  expect(run).toEqual({ isParsed: true, args: ['5', '--body-file', '/tmp/b'], vars: { F: '/tmp/b' }, directory: '/w/sub' })
+})
+
+test('listWriteTargets substitutes the literal value an assignment opening the line gives a variable', () => {
+  expect(listWriteTargets('S=/tmp/s; rm -rf $S/mod && mkdir -p $S/mod && cp -a /w/m/. $S/mod/', context)).toEqual(['/tmp/s/mod'])
+  expect(listWriteTargets('export S=/tmp/s && A="sub" && echo x > "${S}/a" && cd $A && echo y > b', context)).toEqual(['/tmp/s/a', '/w/sub/b'])
+  expect(listWriteTargets('S=/tmp/s; S=src; echo x > $S/a', context)).toEqual(['/w/src/a'])
+})
+
+test('listWriteTargets leaves a variable unresolved where its value is not that literal assignment for the whole line', () => {
+  // The value is no literal, the assignment comes after a command, prefixes only its command, or is followed by a pipe.
+  expect(listWriteTargets('S=$(pwd); echo x > $S/a', context)).toEqual([null])
+  expect(listWriteTargets('cd /tmp; S=/tmp/s; echo x > $S/a', context)).toEqual([null])
+  expect(listWriteTargets('S=/tmp/s echo x > $S/a', context)).toEqual([null])
+  expect(listWriteTargets('S=/tmp/s | echo x > $S/a', context)).toEqual([null])
+  // The rest of the line assigns it again, reads it, or loops over it.
+  expect(listWriteTargets('S=/tmp/s; cd /tmp; S=src; echo x > $S/a', context)).toEqual([null])
+  expect(listWriteTargets('S=/tmp/s; read S; echo x > $S/a', context)).toEqual([null])
+  expect(listWriteTargets('S=/tmp/s; for S in a b; do echo x > $S; done', context)).toEqual([null])
+  // A single-quoted reference is literal text, and a line with a heredoc is left as written.
+  expect(listWriteTargets("S=/tmp/s; echo x > '$S'", context)).toEqual([null])
+  expect(listWriteTargets('S=/tmp/s; cat <<EOF > $S/a\nx\nEOF', context)).toEqual([null])
 })
 
 test('findRanCommands falls back to the whole line when it cannot be parsed', () => {

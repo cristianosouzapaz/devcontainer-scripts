@@ -92,6 +92,13 @@ const cases: ObservedCase[] = [
 // herdr pane, so nothing runs to observe.
 const userCommands = ['gh pr merge 5 --squash', 'gh pr close 5', 'gh pr review 5 --approve', 'git commit -m x', 'git -C /repo commit --amend', 'git push', 'git push --force origin feat', 'git pull', 'git merge main', 'git rebase main', 'git cherry-pick c1', 'git revert c1', 'git am patch', "sh -c 'git commit -m x'", 'sudo /usr/bin/git push']
 
+// User steps run in a repository outside the project, and the same steps in forms that may reach the project.
+const foreignGitCommands = ['cd /tmp/scratch && git commit -m x', 'git -C /tmp/scratch commit -m x', 'S=/tmp/scratch; git -C "$S" push origin main', 'cd /tmp && git -C scratch rebase main']
+const projectGitCommands = [
+  'cd /tmp/scratch && git -C /repo commit -m x', 'cd /repo/.claude/worktrees/w1 && git commit -m x', 'git --git-dir=/tmp/scratch/.git commit -m x',
+  'GIT_DIR=/tmp/scratch/.git git -C /tmp/scratch commit -m x', 'cd $X && git commit -m x', 'cd /tmp/scratch && git -C $X commit -m x',
+]
+
 const reportedOnlyCases: ReportedOnlyCase[] = [
   {
     name: 'a commit made by a script', command: './scripts/commit.sh',
@@ -220,6 +227,26 @@ test('an override and a declared flow let no user step through, while read-only 
   for (const command of ['git status', 'git diff --stat', 'git log -1', 'git stash push -- src', 'git add -- src/a.ts', 'git fetch']) {
     expect((await $.tool.call(buildBashCall(command))).deny, command).toBeUndefined()
   }
+})
+
+test("a user step in a repository outside the project goes through; one that may reach the project's is denied", async ($, on) => {
+  createWorld(on, { branch: 'feat', ahead: 1 }, { verifyFile, toolRun: quiet })
+  for (const command of foreignGitCommands) expect((await $.tool.call(buildBashCall(command))).deny, command).toBeUndefined()
+  for (const command of projectGitCommands) expect((await $.tool.call(buildBashCall(command))).deny, command).toContain("is the user's step")
+})
+
+test("a user step outside the project is denied when the project's checkouts cannot be listed", async ($, on) => {
+  createWorld(on, { branch: 'feat', ahead: 1 }, { verifyFile, toolRun: quiet, failing: 'git worktree list' })
+  expect((await $.tool.call(buildBashCall('git -C /tmp/scratch commit -m x'))).deny).toContain("is the user's step")
+})
+
+test("a commit git reports from a repository outside the project is not the unit's output", async ($, on) => {
+  const channel = createToolRunChannel()
+  createWorld(on, { branch: 'feat', ahead: 1 }, { toolRun: channel.source })
+  channel.setToolRun({ result: { stdout: '', gitOperation: { commit: { sha: 'f1', kind: 'committed' } } } })
+  await $.tool.call(buildBashCall('cd /tmp/scratch && git commit -m x'))
+  channel.setToolRun(quiet)
+  expect((await declareFlow($, 'fix')).deny ?? '').not.toContain('already produced output')
 })
 
 test('a direct run in the Diagnose worktree in flight shows Red running', async ($, on) => {

@@ -4,7 +4,7 @@ import { mergeUnits } from '../domain/records'
 import type { Session, Unit } from '../domain/records'
 import { resolveStepStates } from '../domain/step-states'
 import type { Evidence, Position, StepState, WorktreeState } from '../domain/step-states'
-import { hasBranch, isWorktreeListed, readWorktreeHead } from '../lib/git'
+import { hasBranch, isWorktreeListed, readBaseRef, readCommit, readWorktreeHead } from '../lib/git'
 import type { GitState } from '../lib/git'
 import { unwrapOr } from '../lib/result'
 import { findHoldingAnchor } from './anchor'
@@ -15,6 +15,9 @@ import { countCommitsAhead, hasChanges, hasCommittedChanges, isCommitAncestor, r
 import { findRunInFlight, hasRunsInFlight, lapseBackgroundRuns } from './runs-in-flight'
 import { sessionMemory } from './session-memory'
 import { readVerifyCommand } from './verify-config'
+
+/** Holds what a unit is judged on: the commit standing in for the live checkout (null for the checkout itself), and the evidence fields it sets. */
+interface Subject extends Pick<Evidence, 'judgedOn' | 'isSubjectUnknown'> { commit: string | null }
 
 /**
  * Locates the session's unit in its flow: every step's state, read from the unit's record, git, the verify runs and CI.
@@ -33,12 +36,14 @@ export async function locatePosition(port: EnginePort, session: Session): Promis
   const verifyCommand = await readVerifyCommand(port)
   const tree = verifyCommand || hasRunsInFlight() ? await readWorkingTreeKey(port) : null
   lapseBackgroundRuns(tree)
-  // While the unit's anchor holds, its commits, Code, Verify and PR are judged on the anchor, not on the live checkout.
-  const anchor = await findHoldingAnchor(port, session, unit, git)
+  // While a subject commit stands, the unit's commits, Code, Verify, PR and red files are judged on it, not on the live checkout.
+  const { commit: anchor, judgedOn, isSubjectUnknown } = await findSubject(port, session, unit, git)
   const isVerified = !!verifyCommand && !!tree && unit.verify === tree
   // Commits before the unit's start belong to earlier work on the branch; a unit with no start (Close out) owns them all.
   const liveCommits = !git ? 0 : unit.start ? await countCommitsAhead(port, unit.start) : git.ahead
-  const ownCommits = !git || !anchor ? liveCommits : unit.start ? await countCommitsAhead(port, unit.start, anchor) : git.ahead - (await countCommitsAhead(port, anchor))
+  const baseRef = git && anchor && !unit.start && judgedOn ? await readBaseRef(port.processes) : null
+  const ownCommits = !git || !anchor ? liveCommits : unit.start ? await countCommitsAhead(port, unit.start, anchor)
+    : judgedOn ? (baseRef ? await countCommitsAhead(port, baseRef, anchor) : 0) : git.ahead - (await countCommitsAhead(port, anchor))
   const running = isVerified ? null : findRunInFlight(tree, 'verify')
   const worktreeRun = findRunInFlight(tree, 'worktree')
   const isAnchorVerified = !!anchor && !!verifyCommand && !!unit.verify && unit.verify === await readCommitTreeKey(port, anchor)
@@ -50,12 +55,27 @@ export async function locatePosition(port: EnginePort, session: Session): Promis
     (anchor && unit.start ? await hasCommittedChanges(port, git.root, unit.start, anchor) : !anchor && await hasChanges(port, git.root, unit.start)))
   const anchored = anchor ? { isPullRequestContained: !!unit.prHead && await isCommitAncestor(port, anchor, unit.prHead) } : null
   const worktree = await readWorktreeState(port, unit)
-  const redFiles = git ? await readRedFiles(port, unit, git.root) : {}
-  const evidence: Evidence = { git, ownCommits, isCodeChanged, verify, anchored, checks: 'off', worktree, redFiles }
+  const redFiles = git ? await readRedFiles(port, unit, git.root, anchor && unit.branch !== git.branch ? anchor : null) : {}
+  const evidence: Evidence = { git, ownCommits, isCodeChanged, verify, anchored, checks: 'off', worktree, redFiles, judgedOn, isSubjectUnknown }
   const unchecked = resolveStepStates(definition, session, unit, evidence)
   const checks = await readStepChecks(port, unchecked, unit, git)
   const states = checks === 'off' ? unchecked : resolveStepStates(definition, session, unit, { ...evidence, checks })
   return { ...evidence, checks, flow: definition, unit, states, current: states.find(state => state.state === 'current') ?? null, worktreeRun }
+}
+
+// The commit the unit is judged on instead of the live checkout, and the branch it is judged on while the checkout is elsewhere.
+// A merged PR is judged on its last confirmed head; on the unit's own branch, the holding anchor; elsewhere, the branch's tip,
+// or once that branch is gone, the confirmed PR head or the anchor. With none of them here the state is unknown: the unit is
+// judged on its start, so nothing of another branch counts for it. A null commit leaves the unit on the live checkout.
+async function findSubject(port: EnginePort, session: Session, unit: Unit, git: GitState | null): Promise<Subject> {
+  const isMerged = unit.pr?.state === 'MERGED'
+  if (!git || (!isMerged && (!unit.branch || unit.branch === git.branch))) {
+    return { commit: await findHoldingAnchor(port, session, unit, git), judgedOn: null, isSubjectUnknown: false }
+  }
+  const tip = !isMerged && unit.branch ? await readCommit(port.processes, `refs/heads/${unit.branch}`) : null
+  const recorded = tip ?? (unit.prHead ? await readCommit(port.processes, unit.prHead) : null) ?? (unit.anchor ? await readCommit(port.processes, unit.anchor) : null)
+  if (isMerged) return { commit: recorded, judgedOn: null, isSubjectUnknown: false }
+  return { commit: recorded ?? unit.start ?? null, judgedOn: unit.branch ?? null, isSubjectUnknown: !recorded }
 }
 
 // The worktree the unit recorded, with its HEAD, whether the session works in it and whether it still exists; null when it

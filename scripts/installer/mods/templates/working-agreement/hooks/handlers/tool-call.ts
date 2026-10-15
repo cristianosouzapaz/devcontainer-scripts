@@ -18,7 +18,7 @@ import { adoptWorktree, excludeWorktrees } from '../core/worktree-setup'
 import { flowDefinitions } from '../domain/flow-definitions'
 import { markForAgent } from '../domain/messages'
 import type { Session, Unit } from '../domain/records'
-import { isOnBase } from '../domain/step-states'
+import { findRecordableBranch } from '../domain/step-states'
 import { recordHandoffDocument } from '../features/handoff'
 import { isRecord, toStringOrEmpty } from '../lib/json'
 
@@ -86,8 +86,9 @@ export async function handleToolCall(port: EnginePort, event: Frozen<Args<'tool.
       const session = hasWritten ? await markWrite(port, saved) : saved
       const git = hasWritten ? await readGit(port) : null
       if (git) {
-        const isNewBranch = (unit: Unit): boolean => !isOnBase(git) && (!unit.branch || unit.branch === git.base)
-        await updateUnits(port, session, unit => ({ ...unit, branch: isNewBranch(unit) ? git.branch : unit.branch }))
+        const branch = findRecordableBranch(git)
+        const isNewBranch = (unit: Unit): boolean => !!branch && (!unit.branch || unit.branch === git.base)
+        await updateUnits(port, session, unit => ({ ...unit, branch: isNewBranch(unit) ? branch : unit.branch }))
       }
       // Compared before the command is observed, so a red this run records does not open the gate its own writes are judged by.
       await compareTree(port, session, verdict.decision === 'ask')
