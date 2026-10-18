@@ -35,5 +35,6 @@
     },
     "remoteUser": "root",
     "service": "project-name",
+    "shutdownAction": "none",
     "workspaceFolder": "/workspace/project-name"
 }

@@ -41,6 +41,7 @@
         "--name=project-name",
         "--privileged"
     ],
+    "shutdownAction": "none",
     "workspaceFolder": "/workspace/project-name",
     "workspaceMount": "source=project-name-data,target=/workspace,type=volume"
 }

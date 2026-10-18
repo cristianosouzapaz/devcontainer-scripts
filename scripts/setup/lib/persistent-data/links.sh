@@ -31,8 +31,8 @@ persistent_data_link_path() {
 # persistent_data_link_state <category_id>: prints the state of a category's managed link without touching it: none, ok, missing, foreign or unmanaged
 # Notes: the read-only counterpart of persistent_data_link_standard_path, deciding the
 #   same cases. ok points at the category directory, foreign is a symlink elsewhere,
-#   unmanaged is a file or directory at the link path; an empty directory counts as
-#   unmanaged, since only persistent_data_link_standard_path may replace one. The
+#   unmanaged is a file or directory at the link path; a tree of empty directories
+#   counts as unmanaged, since only persistent_data_link_standard_path may replace one. The
 #   category path is resolved first because persistent_data_link_path fails both for
 #   an unknown category and for one with no managed link.
 persistent_data_link_state() {
@@ -60,7 +60,7 @@ persistent_data_link_state() {
 	printf '%s\n' 'missing'
 }
 
-# persistent_data_link_standard_path <destination> <category_id>: links destination to the category directory, replacing only an empty directory and refusing a foreign symlink or unmanaged data
+# persistent_data_link_standard_path <destination> <category_id>: links destination to the category directory, replacing only a tree of empty directories and refusing a foreign symlink or unmanaged data
 persistent_data_link_standard_path() {
 	local destination="$1"
 	local category_id="$2"
@@ -78,10 +78,11 @@ persistent_data_link_standard_path() {
 	if [[ -e "$destination" ]]; then
 		entries=''
 		if [[ -d "$destination" ]]; then
-			entries="$(find "$destination" -mindepth 1 -print -quit)"
+			entries="$(find "$destination" -mindepth 1 ! -type d -print -quit)"
 		fi
 		if [[ -d "$destination" ]] && [[ -z "$entries" ]]; then
-			rmdir "$destination" || return 1
+			# why: -type d -delete only ever rmdirs, so a file written mid-walk makes it fail instead of being lost
+			find "$destination" -depth -type d -delete || return 1
 		else
 			log_error "Persistent-data path contains unmanaged data: ${destination}"
 			return 1
