@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 ARG NODE_IMAGE="node:lts-slim"
 FROM ${NODE_IMAGE}
 
@@ -26,32 +27,11 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Reject malformed fork coordinates before using the build argument in a GitHub URL.
 RUN node -e "process.exit(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,38}\\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(process.env.SCRIPTS_REPO || '') ? 0 : 1)"
 
-# Cache-buster for the scripts fetch RUN below, keyed to ${SCRIPTS_REF}'s commit.
-ADD https://api.github.com/repos/${SCRIPTS_REPO}/commits/${SCRIPTS_REF} /tmp/scripts.rev
-
-# Fetch the setup scripts from the immutable commit Docker cached above, then seed the
-# first release through the same root bootstrap used at runtime.
-RUN mkdir -p /tmp/dc-init \
-    && node --input-type=module -e " \
-      import {readFileSync} from 'node:fs'; \
-      const repo = process.env.SCRIPTS_REPO; \
-      const sha = JSON.parse(readFileSync('/tmp/scripts.rev', 'utf8')).sha; \
-      if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error('Invalid scripts SHA'); \
-      const res = await fetch('https://github.com/' + repo + '/archive/' + sha + '.tar.gz'); \
-      if (!res.ok) throw new Error('Download failed: ' + res.status + ' ' + res.statusText); \
-      const buf = Buffer.from(await res.arrayBuffer()); \
-      const {spawnSync} = await import('child_process'); \
-      const r = spawnSync('tar', ['-xz', '-C', '/tmp/dc-init', '--strip-components=1'], {input: buf}); \
-      if (r.status !== 0) throw new Error('tar failed: ' + (r.stderr || Buffer.alloc(0)).toString()); \
-    " \
-    && mv /tmp/dc-init/scripts /opt/devcontainer \
-    && SCRIPTS_REF="$(jq -r '.sha' /tmp/scripts.rev)" SCRIPTS_REPO="$SCRIPTS_REPO" bash /opt/devcontainer/installer/install.sh \
-    && rm -rf /tmp/dc-init /tmp/scripts.rev \
-    && find /opt/devcontainer -name "*.sh" -exec chmod +x {} + \
-    && chmod +x /opt/devcontainer/bin/* \
-    && install -m 0755 /opt/devcontainer/bin/* /usr/local/bin/ \
-    && ln -sf /opt/devcontainer/bin/devcontainer-data /usr/local/bin/devcontainer-data \
-    && ln -sf /opt/devcontainer/bin/devcontainer-install /usr/local/bin/devcontainer-install
+# Fetch the setup scripts at ${SCRIPTS_REF}: BuildKit resolves the ref to a commit on every
+# build, so the commit itself invalidates the cache, and the kept .git/HEAD hands that commit
+# to image-bootstrap.sh, which seeds the first installer release from the same commit.
+ADD --keep-git-dir=true https://github.com/${SCRIPTS_REPO}.git#${SCRIPTS_REF} /tmp/dc-init
+RUN bash /tmp/dc-init/scripts/image-bootstrap.sh /tmp/dc-init
 
 # Install herdr, verified against its published checksum, with the scripts tree's
 # installer, which the CI Bash job also runs. Its path is an interface between this
