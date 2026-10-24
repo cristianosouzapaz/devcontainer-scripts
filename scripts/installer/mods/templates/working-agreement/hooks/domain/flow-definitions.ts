@@ -1,18 +1,13 @@
-/**
- * Names what a PR body must carry: `closes` a Closes line per declared issue, `refs` a Refs line for the followed-up issue,
- * `linked` a line linking the followed-up issue with any of Closes, Refs, Fixes or Resolves.
- */
-type PullRequestRequirement = 'closes' | 'refs' | 'linked' | 'none'
+/** Names whether the PR must close every declared issue. */
+type PullRequestRequirement = 'closes' | 'none'
 
-/** Names the observed evidence that completes a step: the declared issue's sub-issues, a passing verify run, the unit's commit, or its confirmed PR. */
-type StepEvidence = 'sub-issues' | 'verify.passed' | 'commit' | 'pr.created'
+/** Names the observed evidence that completes a step: a passing verify run, the unit's commit, or its confirmed PR. */
+type StepEvidence = 'verify.passed' | 'commit' | 'pr.created'
 
 /**
- * Describes one step of a flow: the skill that runs it, the observed evidence that completes it, and how it gates repository writes:
- * only an `isWriteGated` step before the `isUnlocking` one asks before a write, so every other step never does;
- * an `isInWorktree` step (Diagnose) runs in a worktree, denies every write to the main checkout while current, and is completed by its sub-steps;
- * `doneLabels` makes it follow GitHub: it is done while a declared issue carries any of them, and the steps before it show as skipped unless they are done or overridden.
- * An `isOptional` step is skipped until its skill starts or its evidence appears, never gates a write, and never holds the steps after it back.
+ * Describes a flow step and the evidence that completes it.
+ * The Diagnose step is completed by its sub-steps; an optional unfinished step is skipped
+ * without holding later steps back.
  */
 export interface Step {
   id: string
@@ -20,8 +15,6 @@ export interface Step {
   skill?: string
   isHuman?: boolean
   isOptional?: boolean
-  doneLabels?: string[]
-  isWriteGated?: boolean
   isUnlocking?: boolean
   observe?: StepEvidence
   requires?: PullRequestRequirement
@@ -39,39 +32,28 @@ export interface FlowDefinition {
   label: string
   issue: IssueRelation
   declaredBy: Declarer
-  isReadOnly?: boolean
   steps: Step[]
 }
 
-/** Holds the repository paths no flow may write: planning files and generated copies. */
-interface PathGlobs {
-  ephemeral: string[]
-  generated: string[]
-}
-
-/** Holds everything the hooks enforce, keyed by flow id, with the globs the write checks use. */
-interface AgreementDefinitions {
-  flows: Record<string, FlowDefinition>
-  issueSkills: string[]
-  paths: PathGlobs
-}
+/** Holds the flow definitions keyed by flow id. */
+interface AgreementDefinitions { flows: Record<string, FlowDefinition> }
 
 /** Holds the working agreement's flows; typed code rather than JSON, so the compiler checks every definition. */
 export const flowDefinitions: AgreementDefinitions = {
   flows: {
     'large-feature': {
-      label: 'Large feature', issue: 'produced', declaredBy: 'agent', isReadOnly: true,
+      label: 'Large feature', issue: 'produced', declaredBy: 'agent',
       steps: [
-        { id: 'map', label: 'Map', skill: 'wayfinder', isHuman: true, doneLabels: ['wayfinder:map'] },
-        { id: 'tickets', label: 'Tickets', skill: 'to-tickets', isHuman: true, observe: 'sub-issues' },
+        { id: 'map', label: 'Map', skill: 'wayfinder', isHuman: true },
+        { id: 'tickets', label: 'Tickets', skill: 'to-tickets', isHuman: true },
       ],
     },
     'small-feature': {
       label: 'Small feature', issue: 'produced', declaredBy: 'agent',
       steps: [
-        { id: 'grill', label: 'Grill', skill: 'grilling', isWriteGated: true },
-        { id: 'spec', label: 'Spec', skill: 'to-spec', isHuman: true, doneLabels: ['ready-for-agent'], isWriteGated: true },
-        { id: 'tickets', label: 'Tickets', skill: 'to-tickets', isHuman: true, observe: 'sub-issues', isOptional: true },
+        { id: 'grill', label: 'Grill', skill: 'grilling' },
+        { id: 'spec', label: 'Spec', skill: 'to-spec', isHuman: true },
+        { id: 'tickets', label: 'Tickets', skill: 'to-tickets', isHuman: true, isOptional: true },
         { id: 'code', label: 'Code', isUnlocking: true },
         ...buildDeliverySteps('closes'),
       ],
@@ -79,8 +61,8 @@ export const flowDefinitions: AgreementDefinitions = {
     fix: {
       label: 'Fix', issue: 'produced', declaredBy: 'agent',
       steps: [
-        { id: 'triage', label: 'Triage', skill: 'triage', isHuman: true, doneLabels: ['ready-for-agent', 'ready-for-human', 'needs-info', 'wontfix'], isWriteGated: true },
-        { id: 'diagnose', label: 'Diagnose', skill: 'diagnosing-bugs', isWriteGated: true, isInWorktree: true },
+        { id: 'triage', label: 'Triage', skill: 'triage', isHuman: true },
+        { id: 'diagnose', label: 'Diagnose', skill: 'diagnosing-bugs', isInWorktree: true },
         { id: 'code', label: 'Code', isUnlocking: true },
         ...buildDeliverySteps('closes'),
       ],
@@ -89,18 +71,11 @@ export const flowDefinitions: AgreementDefinitions = {
       label: 'Close out', issue: 'required', declaredBy: 'agent',
       steps: buildDeliverySteps('closes'),
     },
-    'follow-up-open': {
+    'follow-up': {
       label: 'Follow-up', issue: 'inherited', declaredBy: 'human',
       steps: [
         { id: 'code', label: 'Code', isUnlocking: true },
-        ...buildDeliverySteps('linked'),
-      ],
-    },
-    'follow-up-merged': {
-      label: 'Follow-up', issue: 'inherited', declaredBy: 'human',
-      steps: [
-        { id: 'code', label: 'Code', isUnlocking: true },
-        ...buildDeliverySteps('refs'),
+        ...buildDeliverySteps('closes'),
       ],
     },
     trivial: {
@@ -111,12 +86,30 @@ export const flowDefinitions: AgreementDefinitions = {
       ],
     },
   },
-  issueSkills: ['to-spec', 'triage', 'to-tickets', 'wayfinder'],
-  paths: {
-    ephemeral: ['**/PLAN.md', '**/SPEC.md', '**/TODO.md', '**/TODOS.md', '**/plans/**', 'docs/plans/**', '**/*.plan.md'],
-    generated: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/vendor/**', '**/.venv/**'],
-  },
 }
+
+/**
+ * Looks up a declared flow without accepting inherited object properties.
+ * @param id - The declared flow id, or null with none declared.
+ * @returns The matching definition, or undefined for an unknown id.
+ */
+export function findFlow(id: string | null): FlowDefinition | undefined {
+  return id && Object.hasOwn(flowDefinitions.flows, id) ? flowDefinitions.flows[id] : undefined
+}
+
+/**
+ * Tells whether a flow judges Diagnose runs and approval.
+ * @param flow - The declared flow, if known.
+ * @returns True when the flow has a worktree Diagnose step.
+ */
+export const hasDiagnoseStep = (flow: FlowDefinition | undefined): boolean => !!flow?.steps.some(step => step.isInWorktree)
+
+/**
+ * Tells whether a flow judges an issue's sub-issue tree.
+ * @param flow - The declared flow, if known.
+ * @returns True when Map or Tickets is present.
+ */
+export const hasIssueTreeStep = (flow: FlowDefinition | undefined): boolean => !!flow?.steps.some(step => step.id === 'map' || step.id === 'tickets')
 
 /**
  * Builds the Verify, Commit and PR steps every repository-writing flow ends with.
@@ -131,14 +124,4 @@ function buildDeliverySteps(requires: PullRequestRequirement, hasSkills = true):
     { id: 'commit', label: 'Commit', ...(hasSkills ? { skill: 'generate-commit' } : {}), observe: 'commit' },
     { id: 'pr', label: 'PR', ...(hasSkills ? { skill: 'create-pr' } : {}), observe: 'pr.created', requires },
   ]
-}
-
-/**
- * Tells whether a flow has a worktree step (Diagnose), the only one a red and a green complete.
- *
- * @param flow - The declared flow's id, or null with none declared.
- * @returns True when the flow has a Diagnose step.
- */
-export function hasDiagnoseStep(flow: string | null): boolean {
-  return !!flow && !!flowDefinitions.flows[flow]?.steps.some(step => step.isInWorktree)
 }

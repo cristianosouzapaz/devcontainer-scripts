@@ -1,8 +1,19 @@
-import type { FlowRow, FlowSubStep, FlowView } from '../../types'
+import type { FlowRow, FlowView } from '../../types'
 import type { GithubStatus, Session } from '../domain/records'
-import { formatStepLabel, isCiWait, isUnitFinished, listDeclaredLabels } from '../domain/step-states'
-import type { Position, StepState, SubStepState } from '../domain/step-states'
+import { formatStepLabel, isUnitFinished, listDeclaredLabels } from '../domain/step-states'
+import type { DiagnoseNeed, Position } from '../domain/step-states'
 import { stepSymbol } from './theme'
+
+/**
+ * Uses the pane's short wording for the resolved Diagnose requirement.
+ * @param need - The first unmet Diagnose requirement, if any.
+ * @param fact - The domain fact used for all other requirements.
+ * @returns The pane detail without rejudging the unit.
+ */
+function describeDiagnoseFact(need: DiagnoseNeed | undefined, fact: string | undefined): string | undefined {
+  return need === 'red' ? 'no red run yet'
+    : need === 'approval' ? 'needs /flow approve' : fact
+}
 
 /**
  * Counts a noun in English.
@@ -16,6 +27,15 @@ function pluralize(count: number, word: string): string {
 }
 
 /**
+ * Keeps handoff failures visible even when carry-over left no declared unit.
+ * @param session - The current session.
+ * @returns The failure note, or no notes after success.
+ */
+export function handoffNotes(session: Session): FlowRow[] {
+  return session.handoff?.state === 'failed' ? [{ key: 'Handoff', value: `not completed — ${session.handoff.reason}.`, tone: 'error' }] : []
+}
+
+/**
  * Builds what the Flow pane shows for the session's unit.
  *
  * @param session - The session.
@@ -24,77 +44,54 @@ function pluralize(count: number, word: string): string {
  * @returns The pane's view.
  */
 export function buildView(session: Session, position: Position, github: GithubStatus): FlowView {
-  const isRunning = (entry: StepState | SubStepState): boolean => entry.state === 'current' &&
-    ('step' in entry ? !!position.verify.running && entry.step.observe === 'verify.passed' : !!position.worktreeRun)
-  // A step's sub-steps show only while it is current; a run in the worktree runs its current sub-step.
-  const listSubSteps = (entry: StepState): FlowSubStep[] => entry.state !== 'current' ? [] : (entry.subSteps ?? []).map(sub => ({
-    symbol: stepSymbol[sub.state], label: sub.label + (isRunning(sub) ? ' — running' : ''), state: sub.state, isStale: sub.isStale && !isRunning(sub),
-    ...(sub.hint ? { hint: sub.hint } : {}),
-  }))
   const meta: FlowRow[] = []
   const notes: FlowRow[] = []
-  if (position.git) {
-    const bits = [position.git.branch, `${position.git.ahead} ahead of ${position.git.base}`]
-    if (position.git.isDirty) bits.push('uncommitted')
-    meta.push({ key: 'Branch', value: bits.join(' · '), tone: 'text' })
-    if (position.isSubjectUnknown) {
-      notes.push({ key: 'Branch', value: `${position.judgedOn} is gone and no PR head of it is here — state unknown; writes here ask`, tone: 'warn' })
-    } else if (position.judgedOn) {
-      notes.push({ key: 'Branch', value: `checkout on ${position.git.branch} — unit judged on ${position.judgedOn}; writes here ask`, tone: 'warn' })
-    } else if (position.unit.branch && position.unit.branch !== position.git.branch) {
-      notes.push({ key: 'Branch', value: `issue work is on ${position.unit.branch} — writes here ask`, tone: 'warn' })
-    }
+  if (session.unit || position.git) {
+    const suffix = position.slice?.isRewritten ? { text: 'rewritten', tone: 'error' as const }
+      : position.slice?.isFrozen ? { text: 'frozen', tone: 'inactive' as const } : undefined
+    meta.push({ key: 'Branch', value: session.unit?.branch ?? position.git?.branch ?? '', tone: 'text', ...(suffix ? { suffix } : {}) })
   }
-  if (position.worktree?.isPresent) {
-    const isHolding = position.states.some(entry => entry.isHeldByWorktree)
-    meta.push({ key: 'Worktree', value: isHolding ? `${position.worktree.name} — remove it to finish Code` : position.worktree.name, tone: isHolding ? 'warn' : 'text' })
+  if (session.unit && position.git && session.unit.branch !== position.git.branch) {
+    notes.push({ key: 'Checkout', value: `${position.git.branch}, not this unit's branch`, tone: 'warn' })
   }
-  if (session.followUp) meta.push({ key: 'Refs', value: `#${session.followUp}`, tone: 'text' })
   if (github === 'unauth') meta.push({ key: 'GitHub', value: 'not authenticated — run gh auth login', tone: 'warn' })
-  if (github === 'unreachable') {
-    const isUnverified = session.issues.some(issue => !session.info[issue])
-    meta.push({ key: 'GitHub', value: isUnverified ? 'unreachable — writes ask until the declared issue is verified' : 'unreachable — issue labels and PR state are not refreshed', tone: 'warn' })
+  if (github === 'unreachable') meta.push({ key: 'GitHub', value: 'unreachable · not refreshed', tone: 'warn' })
+  const { edits } = session.blocked
+  if (edits) {
+    notes.push({ key: 'Blocked', value: pluralize(edits, 'edit'), tone: 'error' })
   }
-  for (const override of position.unit.overrides) {
-    const label = position.flow.steps.find(step => step.id === override.step)?.label ?? override.step
-    notes.push({ key: 'Override', value: `${label} — "${override.reason}" (by user)`, tone: 'warn' })
-  }
-  const { edits, shell } = session.blocked
-  if (edits + shell) {
-    const parts = [edits && pluralize(edits, 'edit'), shell && pluralize(shell, 'shell write')]
-    notes.push({ key: 'Blocked', value: parts.filter(Boolean).join(', '), tone: 'error' })
-  }
-  const { unexplained } = position.unit
-  if (unexplained) {
-    const value = unexplained.isUnchecked
-      ? 'the tree could not be read at a tool call or a turn end — writes held until /flow override writes'
-      : `${Object.keys(unexplained.files).join(', ')} changed outside Edit or Write, by a Bash call or a writer outside any call — writes held until restored or /flow override writes`
-    notes.push({ key: 'Unexplained', value, tone: 'error' })
-  }
-  if (session.handoff?.state === 'failed') {
-    notes.push({ key: 'Handoff', value: `not completed — ${session.handoff.reason}. Nothing cleared.`, tone: 'error' })
-  }
-  const isFinished = isUnitFinished(session, position)
+  notes.push(...handoffNotes(session))
+  const isFinished = !position.slice?.isRewritten && isUnitFinished(position)
   const settled = position.states.filter(entry => entry.state !== 'current' && entry.state !== 'pending').length
   return {
     flow: position.flow.label,
-    progress: `${settled}/${position.states.length}`,
-    issues: session.issues.map(issueNumber => ({ number: issueNumber, title: session.info[issueNumber]?.title ?? '' })),
+    progress: `${position.slice?.isRewritten ? '?' : settled}/${position.states.length}`,
+    issues: session.issues.map(issueNumber => {
+      const info = session.info[issueNumber]
+      return { number: issueNumber, title: info && 'title' in info ? info.title : '' }
+    }),
     pending: !session.issues.length && position.flow.issue === 'produced' ? 'issue not yet created' : null,
     meta,
     labels: [...new Set(listDeclaredLabels(session))],
-    steps: position.states.map(entry => ({
-      symbol: stepSymbol[entry.state],
-      label: formatStepLabel(entry.step, position.unit.pr) + (isRunning(entry) ? ' — running' : ''),
-      state: entry.state,
-      hint: entry.state === 'current' && entry.step.isHuman && entry.step.skill ? `run /${entry.step.skill}`
-        : entry.state === 'current' && isCiWait(position) ? `waiting for CI (${position.checks})` : undefined,
-      isStale: entry.isStale && !isRunning(entry),
-      subSteps: listSubSteps(entry),
-    })),
+    steps: position.states.map(entry => {
+      const isMerged = position.isConcluded && entry.step.observe === 'pr.created' && !!position.pullRequest
+      const isError = !position.slice?.isRewritten && entry.isError && entry.state === 'current' && (entry.step.observe === 'verify.passed' || entry.step.observe === 'pr.created')
+      const diagnoseFact = describeDiagnoseFact(entry.need, entry.fact)
+      return {
+        id: entry.step.id,
+        symbol: isMerged ? '✓' : position.slice?.isRewritten ? '?' : isError ? '✗' : stepSymbol[entry.state],
+        label: formatStepLabel(entry.step, position.pullRequest, entry.state === 'current'),
+        state: entry.state,
+        isError,
+        isMerged,
+        detail: position.slice?.isRewritten ? undefined : isMerged ? 'merged'
+          : entry.state === 'skipped' ? entry.reason || 'optional'
+          : entry.state === 'current' ? diagnoseFact : undefined,
+      }
+    }),
     notes,
     footer: isFinished || session.isLong || session.handoff
-      ? { text: isFinished ? 'Unit finished.' : null, isRunning: session.handoff?.state === 'running' }
+      ? { action: session.handoff?.state === 'running' ? 'continue' : isFinished ? 'start' : 'continue', isRunning: session.handoff?.state === 'running' }
       : null,
   }
 }

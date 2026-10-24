@@ -12,6 +12,9 @@ Issue tracker: **GitHub Issues**, via the `gh` CLI. Triage labels: `needs-triage
 If `gh repo view` fails, say so and ask. Never fall back to writing planning
 files into the repo.
 
+Tickets split from an issue are its native sub-issues; blocking uses native issue
+dependencies.
+
 **Ephemeral goes to the tracker. Durable stays in the repo.** Specs, plans,
 ticket lists, design notes and open questions are ephemeral: they exist only to
 reach an implementation, and afterwards they are noise. Product documentation,
@@ -60,7 +63,8 @@ Two more flows are never chosen by the agent: the user declares them.
 **Follow-up** — more work on an issue whose PR already exists. Write the code,
 verify it, write the commit messages (`generate-commit`) for the user to commit
 and push to the open PR, then update it with `create-pr` — or, once that PR is
-merged, open a new one that refs the issue.
+merged, open a new one that carries `Closes #<n>` again. While its PR is open,
+work on that PR's head branch.
 
 **Trivial change** — work that needs no issue (see above). Make the change,
 verify it, give the user the commit to run and push, then open a PR with no
@@ -70,6 +74,9 @@ verify it, give the user the commit to run and push, then open a PR with no
 stop. The next unit starts in a fresh session, from its issue. If this session
 produced context that no issue captured — a dead end explored, an approach ruled
 out, work interrupted mid-way — tell the user to run `/handoff` before clearing.
+To work on two units at once, give each its own worktree (`git worktree add`, or
+`herdr worktree create|open --branch <branch>` under herdr), run one session per
+worktree, and name the flow there.
 
 **Writing code is not a flow, it is a constant.** Whenever code gets written, in
 any flow, take the laziest solution that actually works (`ponytail`). A ticket

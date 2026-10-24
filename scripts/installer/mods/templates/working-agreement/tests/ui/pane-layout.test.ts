@@ -13,9 +13,16 @@ test('a label that would overflow the width starts the next row, at the exact bo
   expect(layoutLabelRows(['aa', 'bbb', 'c'], 16)).toEqual([['aa', 'bbb', 'c']])
 })
 
-test('a label wider than the width sits alone on its row and is never dropped', () => {
-  expect(layoutLabelRows(['a', 'very-long-label', 'b'], 8)).toEqual([['a'], ['very-long-label'], ['b']])
-  expect(layoutLabelRows(['very-long-label'], 4)).toEqual([['very-long-label']])
+test('a label wider than the width is truncated at the end to fill its own row and is never dropped', () => {
+  expect(layoutLabelRows(['a', 'very-long-label', 'b'], 8)).toEqual([['a'], ['very-…'], ['b']])
+  expect(layoutLabelRows(['very-long-label'], 4)).toEqual([['v…']])
+})
+
+test('a pill truncates only below its padded width, and the truncated width decides the next row', () => {
+  expect(layoutLabelRows(['ready-for-agent'], 17)).toEqual([['ready-for-agent']])
+  expect(layoutLabelRows(['ready-for-agent'], 16)).toEqual([['ready-for-age…']])
+  expect(layoutLabelRows(['ready-for-agent'], 15)).toEqual([['ready-for-ag…']])
+  expect(layoutLabelRows(['ready-for-agent', 'b'], 16)).toEqual([['ready-for-age…'], ['b']])
 })
 
 test('no labels make no rows', () => {

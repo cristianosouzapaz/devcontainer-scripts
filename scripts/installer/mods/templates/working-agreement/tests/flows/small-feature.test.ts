@@ -1,40 +1,41 @@
 import { expect, test } from 'claude-code/testing'
 
-import { buildBashCall, buildWriteCall, noFlow, verifyFile } from '../support/builders'
+import { noFlow, verifyFile } from '../support/builders'
 import { declareFlow, readCurrentStep, readFlowStatus, startSkill } from '../support/helpers'
-import { createWorld } from '../support/world'
+import { completeDelivery } from '../support/delivery'
+import { createWorld, linearGraph } from '../support/world'
 import type { Checkout, Options } from '../support/world'
 
-test('a Small feature runs from Grill through Spec, Code, Verify and Commit to a PR that finishes the unit', async ($, on) => {
+test('a Small feature keeps Grill current until GitHub marks its issue ready', async ($, on) => {
   const git: Checkout = { branch: 'feat' }
   const options: Options = { session: noFlow, verifyFile, issueLabels: { 1: ['needs-triage'] } }
   createWorld(on, git, options)
   await declareFlow($, 'small-feature', [1])
   expect(await readCurrentStep($)).toBe('Grill')
-  expect((await $.tool.call(buildWriteCall('src/a.ts'))).deny).toBeDefined()
 
   await startSkill($, 'grilling')
   await startSkill($, 'to-spec')
-  expect(await readCurrentStep($)).toBe('Spec')
+  expect(await readCurrentStep($)).toBe('Grill')
+})
+
+test('a Small feature unit runs from Grill to a merged PR', async ($, on) => {
+  const graph = linearGraph({ feat: 0 }, verifyFile, 1)
+  const git: Checkout = { branch: 'feat', graph }
+  const options: Options = { session: noFlow, verifyFile, issueLabels: { 1: ['needs-triage'] } }
+  const { clock, views } = createWorld(on, git, options)
+  expect((await declareFlow($, 'small-feature', [1])).result).toContain('current step: Grill')
+  await startSkill($, 'grilling')
+  await startSkill($, 'to-spec')
   options.issueLabels = { 1: ['ready-for-agent'] }
-  options.toolRun = { result: { stdout: 'https://github.com/o/r/issues/1\n' } }
-  await $.tool.call(buildBashCall('gh issue edit 1 --body-file spec.md --add-label ready-for-agent'))
+  await clock.advance(61000)
+  const specified = await readFlowStatus($)
+  expect(specified).toContain('✓ Grill')
+  expect(specified).toContain('✓ Spec')
+  expect(specified).toContain('↷ Tickets · optional')
   expect(await readCurrentStep($)).toBe('Code')
-
-  expect((await $.tool.call(buildWriteCall('src/a.ts'))).deny).toBeUndefined()
   git.isDirty = true
-  options.toolRun = { result: { stdout: '' } }
-  await $.tool.call(buildBashCall('./test/run.sh'))
-  expect(await readCurrentStep($)).toBe('Commit')
-
-  await startSkill($, 'generate-commit')
-  git.isDirty = false
-  git.ahead = 1
-  expect(await readCurrentStep($)).toBe('PR')
-
-  await startSkill($, 'create-pr')
-  options.prView = { body: 'Closes #1', headRefOid: 'c1' }
-  options.toolRun = { result: { stdout: 'https://github.com/o/r/pull/5\n', gitOperation: { pr: { number: 5, action: 'created' } } } }
-  await $.tool.call(buildBashCall('gh pr create --title t --body "Closes #1"'))
-  expect(await readFlowStatus($)).toContain('Unit finished.')
+  git.changed = ['src/a.ts']
+  git.tree = 'tree'
+  expect(await readCurrentStep($)).toBe('Verify')
+  await completeDelivery($, { git, options, clock, views })
 })

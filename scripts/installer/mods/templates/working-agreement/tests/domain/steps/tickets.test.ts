@@ -13,52 +13,54 @@ const buildSpecDoneOptions = (): Options => ({
 
 test('a Small feature that never runs to-tickets shows Tickets skipped and reaches Code', async ($, on) => {
   createWorld(on, { branch: 'feat' }, buildSpecDoneOptions())
-  expect(await readFlowStatus($)).toContain('↷ Tickets')
+  expect(await readFlowStatus($)).toContain('↷ Tickets · optional')
   expect(await readCurrentStep($)).toBe('Code')
 })
 
-test('Tickets is current once to-tickets starts', async ($, on) => {
+test('optional Tickets stays skipped when to-tickets starts', async ($, on) => {
   createWorld(on, { branch: 'feat' }, buildSpecDoneOptions())
   await startSkill($, 'to-tickets')
-  expect(await readCurrentStep($)).toBe('Tickets')
+  expect(await readCurrentStep($)).toBe('Code')
 })
 
-test('Tickets is done once the issue has sub-issues, and falls back when they are gone', async ($, on) => {
+test('Tickets is done only with a ready-for-agent sub-issue, and falls back when it is gone', async ($, on) => {
   const options = buildSpecDoneOptions()
   const { clock } = createWorld(on, { branch: 'feat' }, options)
   await startSkill($, 'to-tickets')
-  options.subIssues = { 1: 2 }
+  options.subIssues = { 1: [{ state: 'open', labels: ['wayfinder:map'] }, { state: 'closed', labels: ['ready-for-agent'] }] }
   await clock.advance(61000)
   expect(await readFlowStatus($)).toContain('✓ Tickets')
   expect(await readCurrentStep($)).toBe('Code')
-  options.subIssues = { 1: 0 }
+  options.subIssues = { 1: [{ state: 'closed', labels: ['wayfinder:map'] }] }
   await clock.advance(61000)
-  expect(await readCurrentStep($)).toBe('Tickets')
+  expect(await readCurrentStep($)).toBe('Code')
 })
 
-test('Tickets stays done when GitHub cannot count the sub-issues on a later read', async ($, on) => {
+test('an errored optional Tickets read is skipped with the error as its reason', async ($, on) => {
   const options = buildSpecDoneOptions()
   const { clock } = createWorld(on, { branch: 'feat' }, options)
   await startSkill($, 'to-tickets')
-  options.subIssues = { 1: 2 }
+  options.subIssues = { 1: [{ state: 'open', labels: ['ready-for-agent'] }] }
   await clock.advance(61000)
   expect(await readFlowStatus($)).toContain('✓ Tickets')
   options.failing = 'gh api repos/'
   await clock.advance(61000)
-  expect(await readFlowStatus($)).toContain('✓ Tickets')
+  expect(await readFlowStatus($)).toContain('✓ Grill')
+  expect(await readFlowStatus($)).toContain('✓ Spec')
+  expect(await readFlowStatus($)).toContain('↷ Tickets · gh could not run:')
   expect(await readCurrentStep($)).toBe('Code')
 })
 
 test('a started Tickets with no sub-issues is skipped, not current, once Code has a change', async ($, on) => {
-  createWorld(on, { branch: 'feat', changed: ['src/a.ts'] }, { ...buildSpecDoneOptions(), unit: { skills: ['grilling', 'to-spec', 'to-tickets'], start: 'c0' } })
-  expect(await readFlowStatus($)).toContain('↷ Tickets')
-  expect(await readCurrentStep($)).not.toBe('Tickets')
+  createWorld(on, { branch: 'feat', changed: ['src/a.ts'] }, { ...buildSpecDoneOptions(), unit: { skills: ['grilling', 'to-spec', 'to-tickets'], } })
+  expect(await readFlowStatus($)).toContain('↷ Tickets · optional')
+  expect(await readCurrentStep($)).not.toBe('Code')
 })
 
-test('a repository write while Tickets is current is not stopped because of Tickets', async ($, on) => {
+test('a repository write while optional Tickets is skipped is allowed', async ($, on) => {
   createWorld(on, { branch: 'feat' }, buildSpecDoneOptions())
   await startSkill($, 'to-tickets')
-  expect(await readCurrentStep($)).toBe('Tickets')
+  expect(await readCurrentStep($)).toBe('Code')
   const verdict = await $.tool.call(buildWriteCall('src/a.ts'))
   expect(verdict.deny).toBeUndefined()
   expect(JSON.stringify(verdict)).not.toContain('Tickets')

@@ -1,40 +1,63 @@
-import type { CiState } from '../domain/ci-blocker'
+import { createQueue } from '../lib/queue'
+import type { CommitCheck, Comparison, PullRequestCandidate, RequiredChecks } from '../lib/github'
+import type { Result } from '../lib/result'
+import type { PullRequest } from '../domain/records'
 import type { GithubStatus } from '../domain/records'
-import type { DirtyFiles } from '../domain/tree-changes'
+import type { Identity, RunView } from '../../types'
+
+/**
+ * Describes repeated failures from the first observation through the latest attempt.
+ */
+export interface ErrorWindow { error: string; firstSeen: number; lastSeen: number; failures: number }
 
 /** The last GitHub reachability probe and when it ran. */
 interface GithubCache { at: number; status: GithubStatus }
 
-/** The last CI state read for a PR at a given head, keyed `<pr>@<head>`, and when it was read. */
-interface ChecksCache { key: string; at: number; checks: CiState }
+/** A refreshable GitHub response, including read failures. */
+interface Cached<T> { at: number; result: Result<T> }
 
-/** The working tree as the mod last read it: the repository root and the files that differ from HEAD. */
-interface TreeRecord { root: string; files: DirtyFiles }
+/** Holds this chat's display for one declared unit generation. */
+export interface RunDisplay {
+  identity: Identity
+  generation?: string
+  live: RunView | null
+  published: RunView
+  last: RunView | null
+}
 
 /** What the hooks share between events for the life of one module load. */
 interface SessionMemory {
-  /** The tree every boundary compares a fresh read with, null until the first read of a declared flow. */
-  tree: TreeRecord | null
-  /** Every skill started in the current turn: a nested skill (generate-pr inside create-pr) does not end the one that started it. */
-  turnSkills: string[]
+  herdrError: ErrorWindow | null
+  recordError: ErrorWindow | null
   githubCache: GithubCache | null
-  permissionMode: string | null
-  pullRequestsCheckedAt: number
+  githubLastOk: number | null
+  githubError: string | null
   issuesCheckedAt: number
-  checksCache: ChecksCache | null
-  lock: Promise<unknown>
+  candidates: Map<string, Cached<PullRequestCandidate[]>>
+  checks: Map<string, Cached<CommitCheck[]>>
+  rules: Map<string, Cached<RequiredChecks>>
+  comparisons: Map<string, Comparison>
+  concluded: Map<string, PullRequest>
+  runViews: Map<string, RunDisplay>
+  /** The command the engine last showed as the prompt suggestion, until the step stops waiting on one. */
+  shownSuggestion: string | null
 }
 
 /** The hooks' shared in-memory state; a reload evaluates the module again, so it starts over. */
 export const sessionMemory: SessionMemory = {
-  tree: null,
-  turnSkills: [],
+  herdrError: null,
+  recordError: null,
   githubCache: null,
-  permissionMode: null,
-  pullRequestsCheckedAt: 0,
+  githubLastOk: null,
+  githubError: null,
   issuesCheckedAt: 0,
-  checksCache: null,
-  lock: Promise.resolve(),
+  candidates: new Map(),
+  checks: new Map(),
+  rules: new Map(),
+  comparisons: new Map(),
+  concluded: new Map(),
+  runViews: new Map(),
+  shownSuggestion: null,
 }
 
 /**
@@ -43,9 +66,15 @@ export const sessionMemory: SessionMemory = {
  * @param work - The read-modify-write to run.
  * @returns What `work` resolves to; its failure reaches the caller.
  */
-export function withRecordLock<T>(work: () => Promise<T>): Promise<T> {
-  const queued = sessionMemory.lock.then(work)
-  // The caller receives the failure; the queue only needs to know the work ended, so the next one still runs.
-  sessionMemory.lock = queued.then(() => undefined, () => undefined)
-  return queued
+export const withRecordLock: <T>(work: () => Promise<T>) => Promise<T> = createQueue()
+
+/**
+ * Retains the first failure time while recording the latest failure and attempt count.
+ * @param previous - The current error window, if any.
+ * @param error - The latest failure message.
+ * @param now - The failure time.
+ * @returns The replacement error window.
+ */
+export function holdError(previous: ErrorWindow | null, error: string, now: number): ErrorWindow {
+  return { error, firstSeen: previous?.firstSeen ?? now, lastSeen: now, failures: (previous?.failures ?? 0) + 1 }
 }

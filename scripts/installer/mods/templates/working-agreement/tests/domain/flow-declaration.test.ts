@@ -1,37 +1,30 @@
 import { expect, test } from 'claude-code/testing'
 
-import { buildBashCall, noFlow } from '../support/builders'
-import { declareFlow, runFlowCommand } from '../support/helpers'
-import { createWorld } from '../support/world'
+import { noFlow } from '../support/builders'
+import { declareFlow } from '../support/helpers'
+import { createWorld, root } from '../support/world'
+
+test('run, verify and declare_flow register in front of ToolSearch', async ($, on) => {
+  const { registeredTools } = createWorld(on, { branch: 'feat' }, { session: noFlow })
+  await $.session.start({ cwd: root, surface: null, isInteractive: false })
+  expect(registeredTools).toEqual([
+    { name: 'run', isDeferred: false }, { name: 'verify', isDeferred: false }, { name: 'declare_flow', isDeferred: false },
+  ])
+})
 
 test('the agent cannot declare a flow that only the user declares', async ($, on) => {
   createWorld(on, { branch: 'feat' }, { session: noFlow })
-  for (const flow of ['trivial', 'follow-up-open', 'follow-up-merged']) {
+  for (const flow of ['trivial', 'follow-up']) {
     expect((await declareFlow($, flow)).deny, flow).toContain('declared only by the user')
   }
 })
 
-test('a flow that requires an issue needs one, and it must exist and be open', async ($, on) => {
+test('every named issue must exist and be open', async ($, on) => {
   createWorld(on, { branch: 'feat' }, { session: noFlow, issues: { 7: 'CLOSED' }, missing: [9] })
-  expect((await declareFlow($, 'close-out')).deny).toContain('needs an issue')
   expect((await declareFlow($, 'fix', [9])).deny).toContain('check the number')
   expect((await declareFlow($, 'close-out', [7])).deny).toContain('is closed')
   expect((await declareFlow($, 'fix', [7])).deny).toContain('is closed')
   expect((await declareFlow($, 'fix', [3])).deny).toBeUndefined()
-})
-
-test('no flow is declared after a PR was created in the session', async ($, on) => {
-  createWorld(on, { branch: 'feat' }, { session: { ...noFlow, prCreated: true } })
-  expect((await declareFlow($, 'fix')).deny).toContain('PR was already created')
-})
-
-test('a flow is reclassified until a commit produces output, then only when the user overrides it', async ($, on) => {
-  createWorld(on, { branch: 'feat' }, { toolRun: { result: { gitOperation: { commit: { sha: 'c1', kind: 'committed' } } } } })
-  expect((await declareFlow($, 'fix')).deny).toBeUndefined()
-  await $.tool.call(buildBashCall('./scripts/commit.sh'))
-  expect((await declareFlow($, 'fix')).deny).toContain('already produced output')
-  await runFlowCommand($, 'override reclassify scope changed')
-  expect((await declareFlow($, 'fix')).deny).toBeUndefined()
 })
 
 test('a flow-step skill is denied until a flow is declared', async ($, on) => {
@@ -45,4 +38,9 @@ test('a flow-step skill is denied until a flow is declared', async ($, on) => {
 test('a subagent cannot declare a flow', async ($, on) => {
   createWorld(on, { branch: 'feat' }, { session: noFlow })
   expect((await declareFlow($, 'fix', [], 'agent-1')).deny).toContain('Subagents')
+})
+
+test('a no-issue declaration is allowed on the default branch without GitHub', async ($, on) => {
+  createWorld(on, { branch: 'main' }, { session: noFlow, failing: 'gh' })
+  expect((await declareFlow($, 'close-out')).deny).toBeUndefined()
 })

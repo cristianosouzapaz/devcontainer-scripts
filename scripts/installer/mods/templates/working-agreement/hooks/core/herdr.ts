@@ -1,0 +1,57 @@
+import { createQueue } from '../lib/queue'
+import { executeProcess } from '../lib/process'
+import type { Session } from '../domain/records'
+import { formatStepLabel } from '../domain/step-states'
+import type { Position } from '../domain/step-states'
+import { formatError } from '../lib/result'
+import type { EnginePort } from './engine-port'
+import { sessionMemory, holdError } from './session-memory'
+import { tickMs } from './timing'
+
+const herdrTimeoutMs = 5000
+const queueReport = createQueue()
+/** The report lifetime spans two and a half background refresh intervals. */
+const herdrReportTtlMs = 2.5 * tickMs
+
+/**
+ * Reports a full sidebar snapshot, serializing callers and holding failures only in memory.
+ * @param port - The engine calls.
+ * @param session - The freshly read session.
+ * @param position - The current unit position, if declared.
+ * @param dismissed - Shared violation dismissals.
+ * @returns Once this report finishes, including a failed attempt.
+ */
+export function reportHerdr(port: EnginePort, session: Session, position: Position | null, dismissed: Set<string>): Promise<void> {
+  const unit = position ? `${position.flow.label}${session.issues.length
+    ? ` #${session.issues[0]}${session.issues.length > 1 ? ` +${session.issues.length - 1}` : ''}`
+    : ` · ${session.unit?.branch ?? position.git?.branch ?? ''}`}` : ''
+  const current = position?.isConcluded ? position.states.find(state => state.step.observe === 'pr.created') : position?.current
+  const prefix = position?.slice?.isRewritten ? '? ' : position?.isConcluded ? '✓ ' : current?.isError ? '✗ ' : current?.isWaitingApproval ? '● ' : ''
+  const step = current && position ? `${prefix}${formatStepLabel(current.step, position.pullRequest, current.state === 'current')}` : ''
+  const violations = (session.violations ?? []).filter(record => record.kind !== 'unchecked' && !dismissed.has(record.factId)).sort((a, b) => b.end - a.end)
+  const alert = violations[0] ? `✗ ${violations[0].kind} by agent${violations.length > 1 ? ` +${violations.length - 1}` : ''}` : ''
+  const report = async (): Promise<void> => {
+    try {
+      const { environment, paneId } = await port.readHerdrEnv()
+      if (environment !== '1' || !paneId) return
+      const result = await executeProcess(port.processes, [
+        // herdr 0.9.5's parser rejects options before the pane id, although its usage line puts the id last.
+        'herdr', 'pane', 'report-metadata', paneId, '--source', 'working-agreement', '--ttl-ms', String(herdrReportTtlMs),
+        ...[unit, step, alert].flatMap((value, index) => ['--token', `${['flow_unit', 'flow_step', 'flow_alert'][index]}=${[...value].slice(0, 80).join('')}`]),
+      ], { timeoutMs: herdrTimeoutMs })
+      if (result.exitCode !== 0) {
+        const message = `exit ${result.exitCode}${result.stderr.trim().split(/\r?\n/)[0] ? `: ${result.stderr.trim().split(/\r?\n/)[0]}` : ''}`
+        const now = await port.now()
+        sessionMemory.herdrError = holdError(sessionMemory.herdrError, message, now)
+        return
+      }
+      sessionMemory.herdrError = null
+    } catch (error) {
+      const message = `could not run: ${formatError(error).split(/\r?\n/)[0]}`
+      const now = await port.now()
+      sessionMemory.herdrError = holdError(sessionMemory.herdrError, message, now)
+    }
+  }
+  // report holds the error in the herdr error window.
+  return queueReport(report).catch(() => {})
+}

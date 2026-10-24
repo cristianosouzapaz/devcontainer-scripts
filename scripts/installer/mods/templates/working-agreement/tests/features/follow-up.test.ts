@@ -1,63 +1,48 @@
 import { expect, test } from 'claude-code/testing'
 
-import { buildBashCall, buildWriteCall, noFlow } from '../support/builders'
-import { readFlowStatus, runFlowCommand, startSkill } from '../support/helpers'
+import { noFlow } from '../support/builders'
+import { readFlowStatus, runFlowCommand } from '../support/helpers'
 import { createWorld } from '../support/world'
-import type { Options } from '../support/world'
 
-// Every test starts with no flow declared, as a follow-up starts only in a new session; with no prompt yet the permission mode is unknown, so an ask denies.
-const write = buildWriteCall('src/a.ts')
+const closing = { number: 5, state: 'OPEN', headRefName: 'feature', isCrossRepository: false, baseRepository: { nameWithOwner: 'owner/repo' } }
 
-const buildPr = (state: string, body = 'Closes #1') => ({ number: 5, state, headRefName: 'feat-1', headRefOid: 'c3', body })
-const buildPrCreate = (body: string) => buildBashCall(`gh pr create --title t --body "${body}"`)
-const buildPrEdit = (body: string) => buildBashCall(`gh pr edit 5 --body "${body}"`)
+for (const state of ['OPEN', 'CLOSED']) {
+  test(`Follow-up accepts a ${state.toLowerCase()} issue with an open closing PR on the checkout branch`, async ($, on) => {
+    const { sessions } = createWorld(on, { branch: 'feature', ahead: 2 }, { session: noFlow, issues: { 1: state }, closingPrs: { 1: [closing] } })
+    const reply = (await runFlowCommand($, 'follow-up #1')).text
+    expect(reply).toContain('Flow declared: Follow-up')
+    expect(reply).toContain('2 commits already on this branch are not counted for this unit')
+    expect(sessions.get('sid')?.units[0]?.base).toBe('c2')
+    expect(await readFlowStatus($)).not.toContain('Refs')
+  })
+}
 
-test('a follow-up is refused for an issue no PR resolves', async ($, on) => {
-  createWorld(on, { branch: 'feat' }, { session: noFlow, prs: [buildPr('OPEN', 'Closes #2')] })
-  expect((await runFlowCommand($, 'follow-up #1')).text).toContain('has no PR')
-  expect((await $.tool.call(write)).deny).toContain('no flow declared')
+for (const prs of [[], [{ ...closing, state: 'CLOSED' }], [{ ...closing, isCrossRepository: true }], [{ ...closing, baseRepository: { nameWithOwner: 'another/repo' } }]]) {
+  test(`Follow-up without an eligible closing PR is refused: ${JSON.stringify(prs)}`, async ($, on) => {
+    createWorld(on, { branch: 'feature' }, { session: noFlow, closingPrs: { 1: prs } })
+    expect((await runFlowCommand($, 'follow-up #1')).text).toContain('declare its own flow')
+  })
+}
+
+test('an open closing PR requires checkout of one of its head branches even if another PR merged', async ($, on) => {
+  createWorld(on, { branch: 'elsewhere' }, { session: noFlow, closingPrs: { 1: [closing, { ...closing, state: 'MERGED', headRefName: 'elsewhere' }] } })
+  expect((await runFlowCommand($, 'follow-up #1')).text).toContain('check out its head branch (feature)')
 })
 
-test('a follow-up on an open PR continues on the PR head branch', async ($, on) => {
-  const git = { branch: 'other', ahead: 3 }
-  createWorld(on, git, { session: noFlow, prs: [buildPr('OPEN')] })
-  await runFlowCommand($, 'follow-up #1')
-  expect((await $.tool.call(write)).deny).toContain('is on feat-1')
-  git.branch = 'feat-1'
-  expect((await $.tool.call(write)).deny).toBeUndefined()
+test('after merge a Follow-up may use a different branch and takes the declaration tip as base', async ($, on) => {
+  const { sessions } = createWorld(on, { branch: 'new-branch', ahead: 3 }, { session: noFlow, issues: { 1: 'CLOSED' }, closingPrs: { 1: [{ ...closing, state: 'MERGED' }] } })
+  expect((await runFlowCommand($, 'follow-up #1')).text).toContain('Flow declared')
+  expect(sessions.get('sid')?.units[0]?.base).toBe('c3')
 })
 
-test('a follow-up on a merged PR needs a Refs line on its own PR', async ($, on) => {
-  createWorld(on, { branch: 'feat-2' }, { session: noFlow, prs: [buildPr('MERGED')] })
-  await runFlowCommand($, 'follow-up #1')
-  expect((await $.tool.call(buildPrCreate('Closes #1'))).deny).toContain('lacks Refs #1')
-  expect((await $.tool.call(buildPrCreate('Refs #1'))).deny).toBeUndefined()
-})
+for (const extra of [{ isLoggedOut: true }, { failing: 'gh api graphql' }, { closingHasNextPage: true }]) {
+  test(`an unreadable or partial Follow-up lookup is refused: ${JSON.stringify(extra)}`, async ($, on) => {
+    createWorld(on, { branch: 'feature' }, { session: noFlow, closingPrs: { 1: [closing] }, ...extra })
+    expect((await runFlowCommand($, 'follow-up #1')).text).toContain('GitHub unreachable — retry')
+  })
+}
 
-test('a follow-up on an open PR ends on updating that PR', async ($, on) => {
-  createWorld(on, { branch: 'feat-1' }, { session: noFlow, prs: [buildPr('OPEN')] })
-  await runFlowCommand($, 'follow-up #1')
-  expect(await readFlowStatus($)).toContain('Update PR #5')
-})
-
-test('a follow-up on an open PR is done once an update keeps a line linking its issue', async ($, on) => {
-  const options: Options = { session: noFlow, prs: [buildPr('OPEN')], prView: { body: 'no link', headRefOid: 'c4' } }
-  createWorld(on, { branch: 'feat-1', ahead: 4 }, options)
-  await runFlowCommand($, 'follow-up #1')
-  await startSkill($, 'generate-commit')
-  await startSkill($, 'create-pr')
-  await $.tool.call(buildPrEdit('Refs #1'))
-  expect(await readFlowStatus($)).not.toContain('Unit finished.')
-  options.prView = { body: 'Refs #1', headRefOid: 'c4' }
-  await $.tool.call(buildPrEdit('Refs #1'))
-  expect(await readFlowStatus($)).toContain('Unit finished.')
-})
-
-test('a follow-up on an open PR denies an edit whose body drops the line linking its issue', async ($, on) => {
-  createWorld(on, { branch: 'feat-1' }, { session: noFlow, prs: [buildPr('OPEN')] })
-  await runFlowCommand($, 'follow-up #1')
-  expect((await $.tool.call(buildPrEdit('no link'))).deny).toContain('lacks Closes|Refs|Fixes|Resolves #1')
-  expect((await $.tool.call(buildPrEdit('no link'))).deny).toContain('keep a line linking #1 (Closes, Refs, Fixes or Resolves)')
-  expect((await $.tool.call(buildPrEdit('Fixes #1'))).deny).toBeUndefined()
-  expect((await $.tool.call(buildPrEdit('Closes #1'))).deny).toBeUndefined()
+test('a missing issue is still refused for Follow-up', async ($, on) => {
+  createWorld(on, { branch: 'feature' }, { session: noFlow, missing: [1] })
+  expect((await runFlowCommand($, 'follow-up #1')).text).toContain('check the number')
 })

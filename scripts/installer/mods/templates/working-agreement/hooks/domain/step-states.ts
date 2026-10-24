@@ -1,100 +1,97 @@
+import type { FlowStepState, IssueComment, IssueRead, RunRecord } from '../../types'
 import type { GitState } from '../lib/git'
 import type { CiState } from './ci-blocker'
+import { hasDiagnoseStep } from './flow-definitions'
 import type { FlowDefinition, Step } from './flow-definitions'
-import type { PullRequest, Session, Unit } from './records'
+import type { Identity, IssueInfo, PullRequest, Session, Unit } from './records'
 
-/** Names where a step stands for the session's unit. */
-type StepStatus = 'done' | 'current' | 'pending' | 'skipped' | 'override'
-
-/** Holds a sub-step of a step and where it stands, judged as a step is. */
-export interface SubStepState {
-  label: string
-  state: StepStatus
-  /** The user's command that completes the sub-step, if it is theirs. */
-  hint?: string
-  isStale: boolean
-}
+/** Selects an action independently of the displayed fact's wording. */
+type FactCode = 'verify-config-missing' | 'github-unreachable' | 'ci-unreadable' | 'push-required'
 
 /** Holds a step of the declared flow and where it stands. */
-export interface StepState {
+interface StepStateFields {
   step: Step
-  state: StepStatus
-  /** Whether the step's stored evidence exists but no longer holds: a verify run, a commit or a PR head that the tree has moved past. */
-  isStale: boolean
-  /** The step's sub-steps, in order; only a worktree step (Diagnose) has any. */
-  subSteps?: SubStepState[]
-  /** Set on the current Code step when the unit's worktree is the only thing holding it back. */
-  isHeldByWorktree?: boolean
+  fact?: string
+  factCode?: FactCode
+  need?: DiagnoseNeed
+  /** The user-only `/flow` command the current step waits on, offered as the prompt suggestion. */
+  command?: string
+  isError: boolean
+  isWaitingApproval: boolean
 }
 
-/** Holds the repository's verify command, if it has one, and whether a run of it passed on the current tree. */
+interface SkippedStepState extends StepStateFields { state: 'skipped'; reason: string | undefined }
+interface ActiveStepState extends StepStateFields { state: Exclude<FlowStepState, 'skipped'> }
+/** Holds a step and the facts permitted by its resolved state. */
+export type StepState = SkippedStepState | ActiveStepState
+
+/** Holds the Verify fact and whether selected commands passed on the current slice. */
 interface VerifyState {
-  command: string | undefined
+  fact: string
+  factCode?: FactCode
+  command?: string
+  isError?: boolean
+  isWaitingApproval?: boolean
   isVerified: boolean
-  running: RunInFlight | null
 }
 
-/** Marks a run in flight in a Bash call that has not returned. */
-interface DirectRunInFlight {
-  kind: 'direct'
+/** Holds whether a GitHub-judged step is done and the first fact that prevents it. */
+type IssueJudgement = IssueDone | IssuePending
+interface IssueJudgementFlags { isError?: boolean; isWaitingApproval?: boolean }
+interface IssueDone extends IssueJudgementFlags { done: true; fact?: never }
+interface IssuePending extends IssueJudgementFlags { done: false; fact: string }
+
+interface DiagnosePending extends IssuePending {
+  need: DiagnoseNeed
+  command?: string
 }
 
-/** Marks a run whose Bash call moved to the background, which reports through its task notification. */
-interface BackgroundRunInFlight {
-  kind: 'background'
+/** Names the first unmet Diagnose requirement independently of its wording. */
+export type DiagnoseNeed = 'red' | 'issue' | 'comments' | 'comment' | 'approval'
+
+/** Holds a done Diagnose with the creation time of its approved comment; a concluded unit has none. */
+interface DiagnoseDone extends IssueDone { approvedAt?: number }
+
+/** Keeps agent requirements separate from the pane's short facts. */
+export type DiagnoseJudgement = DiagnoseDone | DiagnosePending
+
+/** Names the steps whose state comes entirely from declared issue facts. */
+type IssueStepId = 'grill' | 'spec' | 'triage' | 'map' | 'tickets'
+interface IssueStepIdentity { id: IssueStepId }
+type IssueStep = Step & IssueStepIdentity
+
+/** Holds a fact that prevents an issue step completing. */
+interface IssueProblem { fact: string; isError?: boolean }
+
+/** The branch slice and content used to judge Code and Commit. */
+export interface UnitSlice {
+  base: string | null
+  end: string
+  tree: string | null
+  baseTree: string | null
+  commits: number
+  isClean: boolean
+  isFrozen: boolean
+  isRewritten: boolean
+  isShared: boolean
 }
 
-/** Marks a run launched in a herdr pane, which reports through that pane. */
-interface HerdrRunInFlight {
-  kind: 'herdr'
-  pane: string
-}
-
-/** Names a verify run, or a run in the worktree, in flight on the current tree. */
-export type RunInFlight = DirectRunInFlight | BackgroundRunInFlight | HerdrRunInFlight
-
-/** Names where a red file stands in the main checkout: identical to its fingerprint, not yet there, or changed since. */
-export type RedFileState = 'transferred' | 'pending' | 'stale'
-
-/**
- * Holds the worktree the unit recorded: its name, the commit its HEAD is at (null when it cannot be read), whether the
- * session works in it and whether it still exists, as a listed worktree or a branch that is left.
- */
-export interface WorktreeState {
-  name: string
-  head: string | null
-  isEntered: boolean
-  isPresent: boolean
-}
-
-/** Holds what a holding anchor adds to the evidence. */
-interface AnchoredEvidence {
-  /** Whether the unit's confirmed PR head contains the anchor. */
-  isPullRequestContained: boolean
-}
+interface CodeSlice extends UnitSlice { tree: string }
 
 /** Holds what the step states are judged on, beyond the unit's record: observed evidence, read afresh at each judgement. */
 export interface Evidence {
   /** The checkout, or null outside a repository. */
   git: GitState | null
-  /** How many commits the unit made since its start, or up to its anchor while that holds; every commit ahead of base for a unit with no start. */
-  ownCommits: number
-  /** Whether the unit changed a file since its start, in its commits or in the working tree, or up to its anchor while that holds. */
-  isCodeChanged: boolean
-  /** The verify command and whether a run of it passed on the current tree. */
+  /** The declared unit's slice, independent of the checkout. */
+  slice: UnitSlice | null
+  /** The Verify fact and result recomputed for the current slice. */
   verify: VerifyState
-  /** Set while the unit's anchor holds: Commit and the PR are then judged on the anchor, not on the live checkout. */
-  anchored: AnchoredEvidence | null
-  /** The CI state of the unit's PR; the PR step is done only when it is passing or off. */
+  /** The CI state read on the slice end SHA. */
   checks: CiState
-  /** The worktree the unit recorded, or null when it recorded none. */
-  worktree: WorktreeState | null
-  /** Where each red file stands in the main checkout, or in the subject commit off the unit's branch; empty while the unit has no red. */
-  redFiles: Record<string, RedFileState>
-  /** The unit's branch while the checkout is elsewhere and the unit is judged on that branch's commit; null otherwise. */
-  judgedOn: string | null
-  /** Whether, off the unit's branch, that branch is gone and no confirmed PR head or anchor of it is here, so its state cannot be read. */
-  isSubjectUnknown: boolean
+  pullRequest?: PullRequest
+  prFact?: string
+  prFactCode?: FactCode
+  isConcluded: boolean
 }
 
 /** Holds where the session's unit stands in its flow, with the checkout, the Verify state and the CI state of its PR it was judged on. */
@@ -103,39 +100,7 @@ export interface Position extends Evidence {
   unit: Unit
   states: StepState[]
   current: StepState | null
-  /** A run in the worktree in flight before the green, if any. */
-  worktreeRun: RunInFlight | null
 }
-
-/** The user's command that approves the diagnosis comment. */
-const approvalHint = 'run /flow approve diagnose'
-
-/**
- * Tells whether the user approved the unit's latest diagnosis comment: the approval is bound to a comment id, so a newer comment leaves it behind.
- *
- * @param unit - The unit.
- * @returns True when a diagnosis comment is on record and the approval names it.
- */
-export const isApproved = (unit: Unit): boolean => !!unit.diagnosis && unit.approval === unit.diagnosis
-
-/**
- * Tells whether Diagnose's Red and Green are settled: the red's command passed in the worktree, or the user overrode the step,
- * which skips them alone. The diagnosis comment counts only from here on.
- *
- * @param step - The worktree step.
- * @param unit - The unit.
- * @returns True once the green is on record or the step is overridden.
- */
-export const isRedGreenSettled = (step: Step, unit: Unit): boolean =>
-  (!!unit.red && unit.green === unit.red.command) || unit.overrides.some(override => override.step === step.id)
-
-/**
- * Finds a flow's worktree step.
- *
- * @param flow - The flow.
- * @returns Diagnose, if the flow has it.
- */
-export const findDiagnoseStep = (flow: FlowDefinition): Step | undefined => flow.steps.find(step => step.isInWorktree)
 
 /**
  * Tells whether the checkout is on its default branch.
@@ -146,38 +111,37 @@ export const findDiagnoseStep = (flow: FlowDefinition): Step | undefined => flow
 export const isOnBase = (git: GitState | null): boolean => !!git && git.branch === git.base
 
 /**
- * Names the checkout's branch when a unit may record it as its own: never the default branch, nor a detached HEAD, which git names `HEAD`.
- *
- * @param git - The checkout, or null outside a repository.
- * @returns The branch, or undefined when there is none to record.
+ * Tells whether the declared unit belongs to the default branch, regardless of the checkout.
+ * @param identity - The declared unit, if any.
+ * @param git - The checkout's repository and default branch.
+ * @returns True when the unit's branch is the default branch.
  */
-export const findRecordableBranch = (git: GitState | null): string | undefined =>
-  git && !isOnBase(git) && git.branch !== 'HEAD' ? git.branch : undefined
+export const isUnitOnBase = (identity: Identity | null | undefined, git: GitState | null): boolean => !!git && identity?.branch === git.base
 
 /**
- * Names a step as the pane and the instruction show it: the PR step says what it does to the unit's open PR, or names the one the unit created.
- *
- * @param step - The step.
- * @param pullRequest - The unit's PR on record, if any.
- * @returns The step's label.
+ * Recomputes a position after its session facts change.
+ * @param position - The unit and evidence to judge.
+ * @param session - The current session facts.
+ * @returns The position with freshly resolved states and current step.
  */
-export function formatStepLabel(step: Step, pullRequest: PullRequest | undefined): string {
-  if (step.observe === 'pr.created' && pullRequest?.state === 'CLOSED') return `${step.label} #${pullRequest.number} closed`
-  if (step.observe !== 'pr.created' || pullRequest?.state !== 'OPEN') return step.label
-  if (pullRequest.isCreated) return `PR #${pullRequest.number}`
-  return step.skill ? `Update PR #${pullRequest.number}` : `Push to PR #${pullRequest.number}`
+export function withStates(position: Omit<Position, 'states' | 'current'>, session: Session): Position {
+  const states = resolveStepStates(position.flow, session, position.unit, position)
+  return { ...position, states, current: states.find(state => state.state === 'current') ?? null }
 }
 
 /**
- * Tells whether a step is a PR update gone stale: its last confirmed head is no longer the checkout's HEAD.
+ * Names a step as the pane and the instruction show it: the PR step names its PR, and says what it does to an open PR only while current.
  *
  * @param step - The step.
- * @param unit - The unit.
- * @param git - The checkout, or null outside a repository.
- * @returns True for a confirmable PR step whose recorded head differs from HEAD.
+ * @param pullRequest - The unit's PR read from GitHub, if any.
+ * @param isCurrent - Whether the step is the unit's current step.
+ * @returns The step's label.
  */
-const isPullRequestStale = (step: Step, unit: Unit, git: GitState | null): boolean =>
-  step.observe === 'pr.created' && !!unit.prHead && !!git?.head && unit.prHead !== git.head
+export function formatStepLabel(step: Step, pullRequest: PullRequest | undefined, isCurrent: boolean): string {
+  if (step.observe !== 'pr.created' || !pullRequest || pullRequest.state === 'CLOSED') return step.label
+  if (!isCurrent || pullRequest.state === 'MERGED') return `PR #${pullRequest.number}`
+  return step.skill ? `Update PR #${pullRequest.number}` : `Push to PR #${pullRequest.number}`
+}
 
 /**
  * Tells whether the unit's current step is its PR step, held back only by a PR whose CI has not passed.
@@ -189,22 +153,13 @@ export const isCiWait = (position: Position): boolean =>
   position.current?.step.observe === 'pr.created' && position.checks !== 'off' && position.checks !== 'passing'
 
 /**
- * Tells whether the session's unit has reached its end: its PR merged, or every step done and a PR on record, or, with no flow, a PR created here.
+ * Tells whether the unit concluded or every step is done with an open PR.
  *
- * @param session - The session.
  * @param position - The unit's position, or null with no flow declared.
  * @returns True once the unit is finished.
  */
-export const isUnitFinished = (session: Session, position: Position | null): boolean =>
-  position ? position.unit.pr?.state === 'MERGED' || (!position.current && (session.prCreated || !!position.unit.pr)) : session.prCreated
-
-/**
- * Finds a flow's PR step.
- *
- * @param flow - The flow.
- * @returns The step that observes the PR, if the flow has one.
- */
-export const findPullRequestStep = (flow: FlowDefinition): Step | undefined => flow.steps.find(step => step.observe === 'pr.created')
+export const isUnitFinished = (position: Position | null): boolean =>
+  !!position && (position.isConcluded || (!position.current && position.pullRequest?.state === 'OPEN'))
 
 /**
  * Lists the labels of the session's declared issues, as last read from GitHub.
@@ -212,136 +167,192 @@ export const findPullRequestStep = (flow: FlowDefinition): Step | undefined => f
  * @param session - The session.
  * @returns Every declared issue's labels, in issue order.
  */
-export const listDeclaredLabels = (session: Session): string[] => session.issues.flatMap(number => session.info[number]?.labels ?? [])
+export const listDeclaredLabels = (session: Session): string[] => session.issues.flatMap(number => {
+  const info = session.info[number]
+  return info && 'labels' in info ? info.labels : []
+})
 
 /**
- * Names the branch a unit's PR lives on: the branch the unit recorded, else the checkout's branch unless it is the default one
- * or the unit has a start and no commit past it, since a branch it has no work on carries other work's PR.
- *
- * @param unit - The unit.
- * @param git - The checkout, or null outside a repository.
- * @param ownCommits - The unit's commits past its start; ignored for a unit with no start.
- * @returns The branch, or undefined when there is none to look on.
+ * Judges every declared issue, stopping at its first unmet condition.
+ * @param declared - The declared issues as last read from GitHub.
+ * @param judge - The condition each readable issue must satisfy.
+ * @returns Completion or the first missing fact or unmet condition.
  */
-export const findPullRequestBranch = (unit: Unit, git: GitState | null, ownCommits: number): string | undefined =>
-  unit.branch ?? (git && !isOnBase(git) && (!unit.start || ownCommits > 0) ? git.branch : undefined)
+const judgeIssues = (declared: (IssueInfo | undefined)[], judge: (info: IssueRead) => IssueProblem | undefined): IssueJudgement => {
+  if (!declared.length) return { done: false, fact: 'issue not yet created' }
+  for (const info of declared) {
+    if (!info) return { done: false, fact: 'issue facts unavailable', isError: true }
+    if ('error' in info) return { done: false, fact: info.error, isError: true }
+    const problem = judge(info)
+    if (problem) return { done: false, ...problem }
+  }
+  return { done: true }
+}
 
 /**
- * Tells whether a PR step's own work is done, CI aside: GitHub, read back, reports a PR whose head is HEAD and whose body carries the step's required lines.
- *
- * @param unit - The unit.
- * @param git - The checkout, or null outside a repository.
- * @returns True once the confirmed PR head is HEAD.
+ * Tells whether a step's id is judged from declared issue facts.
+ * @param step - The flow step to classify.
+ * @returns Whether the step depends on declared issue facts.
  */
-const isPullRequestDone = (unit: Unit, git: GitState | null): boolean => !!git?.head && unit.prHead === git.head
+const isIssueStep = (step: Step): step is IssueStep => ['grill', 'spec', 'triage', 'map', 'tickets'].includes(step.id)
 
 /**
- * Decides where each step of the unit's flow stands: done, skipped, overridden, the current one, or pending.
- * A step still open before the last done issue-producing step (Spec, Triage, Map) is skipped: the issue's labels show it was passed.
- * An optional step (Tickets) that is not done is skipped until its skill starts, and again once a later step is done.
- * A step is done only on evidence that still holds, so it falls back when that evidence lapses; a skill starting never
- * completes its own step. Grill is the one exception, since a conversation leaves no artefact: the next step's skill starting ends it.
- * A worktree step (Diagnose) is done once its green (a passing run of the red's command after the red) or its override has
- * a valid diagnosis comment, and the user approved that comment; an override skips its Red and Green alone. A red file changed
- * in the main checkout since it was proved reopens the step with Red and Green stale, the diagnosis and its approval kept (a red of another command drops them).
- * Code is done on a change handed to Verify: a passing or in-flight verify run on the current tree, an overridden Verify, or a done Commit.
- * In a flow with Diagnose it also needs every red file in the main checkout as proved and the unit's worktree and its branch gone.
- * While a subject commit stands (the unit's holding anchor, or its branch's commit off that branch), Commit is done by the unit's
- * commits up to it and never stale, and the PR is done once its head contains it. A merged PR is done; a closed one never is.
- * Every state carries a stale marker when the step's stored evidence exists but no longer holds; steps that rest on GitHub alone never lapse.
+ * Judges an issue-driven step from the facts already read from GitHub.
+ * @param id - The issue-driven step to judge.
+ * @param declared - The declared issues as last read from GitHub.
+ * @returns Completion or the first fact preventing the step from completing.
+ */
+const judgeIssueStep = (id: IssueStepId, declared: (IssueInfo | undefined)[]): IssueJudgement => {
+  /** Judges readiness labels for Spec and Grill. */
+  const spec = (): IssueJudgement => judgeIssues(declared, info => info.labels.includes('ready-for-agent') ? undefined : { fact: 'no ready-for-agent label' })
+  if (id === 'grill' || id === 'spec') return spec()
+  if (id === 'triage') return judgeIssues(declared, info => {
+    if (info.labels.includes('ready-for-agent') || info.labels.includes('ready-for-human')) return undefined
+    return { fact: info.labels.find(label => label === 'needs-info' || label === 'wontfix') ?? 'no triage label' }
+  })
+  if (id === 'map') return judgeIssues(declared, info => {
+    if (!info.labels.includes('wayfinder:map')) return { fact: 'no wayfinder:map label' }
+    if (info.subIssues && !Array.isArray(info.subIssues)) return { fact: info.subIssues.error, isError: true }
+    const mapped = (info.subIssues ?? []).filter(subIssue => subIssue.labels.some(label => label.startsWith('wayfinder:')))
+    if (!mapped.length) return { fact: 'no wayfinder:* sub-issue' }
+    const open = mapped.filter(subIssue => subIssue.state !== 'closed').length
+    return open ? { fact: `${open} wayfinder:* sub-issue${open === 1 ? '' : 's'} open` } : undefined
+  })
+  return judgeIssues(declared, info => {
+    if (info.subIssues && !Array.isArray(info.subIssues)) return { fact: info.subIssues.error, isError: true }
+    return info.subIssues?.some(subIssue => subIssue.labels.includes('ready-for-agent')) ? undefined : { fact: 'no ready-for-agent sub-issue' }
+  })
+}
+
+/**
+ * Decides where each step stands from its stored evidence, issue labels and the live checkout.
+ * Done wins over explicit skips; optional steps are skipped whenever they are not done.
  *
  * @param flow - The declared flow.
  * @param session - The session, which holds the declared issues as last read from GitHub.
  * @param unit - The unit.
  * @param evidence - What the checkout, the verify runs and CI show now.
- * @returns The flow's steps with their states; Verify is left out when the repository has no verify command.
+ * @returns The flow's steps with their states; Verify is always present.
  */
 export function resolveStepStates(flow: FlowDefinition, session: Session, unit: Unit, evidence: Evidence): StepState[] {
-  const { git, ownCommits, isCodeChanged, verify, checks, anchored, redFiles, worktree } = evidence
-  const steps = flow.steps.filter(step => step.observe !== 'verify.passed' || verify.command)
-  const isCommitted = !!git && !git.isDirty && ownCommits > 0
-  const isCiGreen = checks === 'off' || checks === 'passing'
+  const { git, slice, verify, checks } = evidence
+  const steps = flow.steps
+  const hasSlice = !!slice && !slice.isRewritten
+  const isOnDefault = isUnitOnBase(session.unit, git)
+  const isCodeChanged = hasCodeChange(slice)
+  const isCommitDone = hasSlice && slice.commits > 0 && slice.isClean
+  const isCiGreen = checks === 'passing'
+  const diagnose: DiagnoseJudgement = evidence.isConcluded ? { done: true } : judgeDiagnose(unit, session.issues, session.info)
+  const isFixJudged = isCodeJudgedByFix(flow, unit)
+  const hasFixGreen = diagnose.done && diagnose.approvedAt !== undefined && !!findFixGreen(unit.runs, diagnose.approvedAt)
   const declared = session.issues.map(number => session.info[number])
-  const isCommitDone = anchored ? ownCommits > 0 : isCommitted
-  // Code ↔ Verify is a loop: a change counts as Code only once it is handed to Verify. A later PR does not count, since its head
-  // can match HEAD on a dirty tree; without a verify command nothing marks the hand-off, so the change alone counts.
-  const isHandedOff = !verify.command || verify.isVerified || !!verify.running || isCommitDone ||
-    unit.overrides.some(override => steps.some(step => step.id === override.step && step.observe === 'verify.passed'))
-
-  // A red file changed in the main checkout since it was proved reopens Diagnose's Red and Green, unless the step is overridden.
-  const isRedStale = (step: Step): boolean => Object.values(redFiles).includes('stale') && !unit.overrides.some(override => override.step === step.id)
-  // In a flow with Diagnose, Code also needs every red file in the main checkout as proved, and the worktree and its branch gone;
-  // an overridden Diagnose has no red to hold Code to.
-  const isRedTransferred = Object.values(redFiles).every(state => state === 'transferred')
-  const isRedGate = steps.some(step => step.isInWorktree && !unit.overrides.some(override => override.step === step.id))
-  const isWorkTransferred = isCodeChanged && isHandedOff && (!isRedGate || isRedTransferred)
+  const issueJudgements: Map<Step, IssueJudgement> = new Map(steps.filter(isIssueStep).map(step => [step, judgeIssueStep(step.id, declared)]))
 
   const isDone = (step: Step): boolean => {
-    if (step.isInWorktree) return isRedGreenSettled(step, unit) && isApproved(unit) && !isRedStale(step)
-    if (step.doneLabels) {
-      const doneLabels = step.doneLabels
-      return declared.some(info => !!info?.labels.some(label => doneLabels.includes(label)))
-    }
-    if (step.observe === 'sub-issues') return declared.some(info => (info?.subIssues ?? 0) > 0)
-    if (step.isUnlocking) return isWorkTransferred && !worktree?.isPresent
-    if (step.observe === 'verify.passed') return verify.isVerified
+    if (evidence.isConcluded) return true
+    if (step.isInWorktree) return diagnose.done
+    if (isIssueStep(step)) return issueJudgements.get(step)?.done ?? false
+    if (step.isUnlocking) return isCodeChanged && (!isFixJudged || hasFixGreen)
+    if (step.observe === 'verify.passed') return isCodeChanged && verify.isVerified
     if (step.observe === 'commit') return isCommitDone
-    // A merged PR ends the unit; a closed one never counts, whatever its head.
+    // Only a qualifying open PR can complete delivery before conclusion.
     if (step.observe === 'pr.created') {
-      return unit.pr?.state === 'MERGED' || (unit.pr?.state !== 'CLOSED' && isCiGreen && (anchored ? anchored.isPullRequestContained : isPullRequestDone(unit, git)))
+      return evidence.pullRequest?.state === 'OPEN' && isCiGreen
     }
-    // The mod sees a skill start, never its end: a talk step (Grill) is done once the next step's skill has started.
-    const next = steps.slice(steps.indexOf(step) + 1).find(later => later.skill)
-    return !!next?.skill && unit.skills.includes(next.skill)
+    return false
   }
-  const isLapsed = (step: Step): boolean => {
-    if (step.observe === 'verify.passed') return !!unit.verify && !verify.isVerified
-    if (step.observe === 'commit') return !anchored && ownCommits > 0 && !!git?.isDirty
-    if (anchored && step.observe === 'pr.created') return !!unit.prHead && !anchored.isPullRequestContained
-    return isPullRequestStale(step, unit, git)
-  }
-  // A step before the last done issue-producing step was passed over by the issue's labels, not run.
-  const producedIndex = steps.findLastIndex(step => !!step.doneLabels && isDone(step))
-  // Null marks a step still open: the first open one is current, the rest pending.
-  const settled = steps.map((step, index): StepStatus | null => {
-    // An override of the worktree step (Diagnose) skips its Red and Green only: its diagnosis and approval stay required.
-    if (!step.isInWorktree && unit.overrides.some(override => override.step === step.id)) return 'override'
-    // Done wins over skipped: /to-spec itself applies ready-for-agent, and its steps did run.
+  const settled = steps.map((step): FlowStepState | null => {
     if (isDone(step)) return 'done'
-    if (index < producedIndex) return 'skipped'
-    if (step.isOptional && (!step.skill || !unit.skills.includes(step.skill) || steps.slice(index + 1).some(isDone))) return 'skipped'
+    if (unit.skips?.some(skip => skip.step === step.id) || step.isOptional) return 'skipped'
     return null
   })
   const currentIndex = settled.indexOf(null)
   return steps.map((step, index): StepState => {
     const state = settled[index] ?? (index === currentIndex ? 'current' : 'pending')
-    return {
-      step, state, isStale: isLapsed(step),
-      ...(step.isInWorktree ? { subSteps: resolveDiagnoseSubSteps(step, unit, isRedStale(step)) } : {}),
-      ...(step.isUnlocking && state === 'current' && isWorkTransferred && worktree?.isPresent ? { isHeldByWorktree: true } : {}),
+    const shared = {
+      step,
+      isError: !!(isIssueStep(step) ? issueJudgements.get(step)?.isError : step.isInWorktree ? diagnose.isError
+        : step.observe === 'verify.passed' ? verify.isError : step.observe === 'pr.created' && checks === 'failing'),
+      isWaitingApproval: step.observe === 'verify.passed' ? verify.isWaitingApproval === true : !!step.isInWorktree && diagnose.isWaitingApproval === true,
+      ...(state === 'current' && isIssueStep(step) ? { fact: issueJudgements.get(step)?.fact } : {}),
+      ...(step.isUnlocking || step.observe === 'commit' ? { fact: isOnDefault ? "check out the unit's branch and re-declare"
+        : !slice ? 'slice unavailable — re-declare'
+        : step.isUnlocking ? (isCodeChanged ? 'no green after the approval' : 'no change from the base') : slice.commits === 0 ? 'no commit in the slice' : 'uncommitted changes' } : {}),
+      ...(step.observe === 'verify.passed' ? { fact: verify.fact, factCode: verify.factCode } : {}),
+      ...(state === 'current' && step.observe === 'verify.passed' && verify.command ? { command: verify.command } : {}),
+      ...(step.observe === 'pr.created' ? { fact: evidence.isConcluded ? `merged #${evidence.pullRequest?.number}` : evidence.prFact ?? 'no PR', factCode: evidence.prFactCode } : {}),
+      ...(step.isInWorktree ? { fact: diagnose.fact, ...(!diagnose.done ? { need: diagnose.need } : {}) } : {}),
+      ...(state === 'current' && step.isInWorktree && !diagnose.done && diagnose.command ? { command: diagnose.command } : {}),
     }
+    if (state === 'skipped') {
+      const reason = unit.skips?.find(skip => skip.step === step.id)?.reason
+        ?? (step.isOptional && isIssueStep(step) && issueJudgements.get(step)?.isError ? issueJudgements.get(step)?.fact : 'optional')
+      return { ...shared, state, reason }
+    }
+    return { ...shared, state }
   })
 }
 
 /**
- * Decides where Diagnose's sub-steps stand: Red once a failing run in the worktree is on record, Green once the same
- * command passed there after it, Diagnosis once a valid diagnosis comment is on record, Approval once the user approved
- * that comment; the first one not done is current. An override of Diagnose overrides Red and Green only. While a red file is
- * stale, Red is current and Green pending, both stale, whatever is recorded; the diagnosis and the approval keep their state, which a new red of another command has already cleared.
- *
- * @param step - The worktree step.
- * @param unit - The unit.
- * @param isRedStale - Whether a red file changed in the main checkout since it was proved.
- * @returns Red, Green, Diagnosis and Approval, in order.
+ * Tells whether Code waits for the approved fix to pass: the flow has a Diagnose step and the unit has not skipped it.
+ * @param flow - The declared flow.
+ * @param unit - The unit and its skips.
+ * @returns True when Code needs a fix green besides a change.
  */
-function resolveDiagnoseSubSteps(step: Step, unit: Unit, isRedStale: boolean): SubStepState[] {
-  const isOverridden = unit.overrides.some(override => override.step === step.id)
-  const done = [isOverridden || !!unit.red, isRedGreenSettled(step, unit), !!unit.diagnosis, isApproved(unit)]
-  const current = isRedStale ? 0 : done.indexOf(false)
-  return ['Red', 'Green', 'Diagnosis', 'Approval'].map((label, index) => ({
-    label,
-    state: isRedStale && index < 2 ? (index === 0 ? 'current' : 'pending') : isOverridden && index < 2 ? 'override' : done[index] ? 'done' : index === current ? 'current' : 'pending',
-    ...(label === 'Approval' ? { hint: approvalHint } : {}),
-    isStale: isRedStale && index < 2,
-  }))
+export const isCodeJudgedByFix = (flow: FlowDefinition, unit: Pick<Unit, 'skips'>): boolean =>
+  hasDiagnoseStep(flow) && !unit.skips?.some(skip => skip.step === 'diagnose')
+
+/**
+ * Finds the earliest failing run, the reference Diagnose measures its comment against.
+ * @param runs - The unit's command history.
+ * @returns The earliest failing run, if any.
+ */
+export const findEarliestRed = (runs: RunRecord[]): RunRecord | undefined =>
+  runs.filter(run => run.outcome.kind !== 'pass').sort((a, b) => a.at - b.at)[0]
+
+/**
+ * Finds the latest pass after a time with an earlier failing run of the same argv on different content.
+ * @param runs - The unit's command history.
+ * @param after - The time the pass must come strictly after.
+ * @returns The matching pass, if any.
+ */
+export function findFixGreen(runs: RunRecord[], after: number): RunRecord | undefined {
+  return [...runs].sort((a, b) => b.at - a.at).find(green => green.outcome.kind === 'pass' && green.at > after && runs.some(red =>
+    red.outcome.kind !== 'pass' && red.at < green.at && red.tree !== green.tree && JSON.stringify(red.argv) === JSON.stringify(green.argv)))
 }
+
+/**
+ * Judges Diagnose from command history, live issue comments and the user's approval.
+ * @param unit - The unit's runs and approval.
+ * @param issues - The declared issues.
+ * @param info - Their current GitHub facts.
+ * @returns Completion, with the approved comment's creation time, or the first unmet condition; a wait for approval carries the command that approves the newest comment.
+ */
+export function judgeDiagnose(unit: Pick<Unit, 'runs' | 'approval'>, issues: number[], info: Record<string, IssueInfo>): DiagnoseJudgement {
+  const red = findEarliestRed(unit.runs)
+  if (!red) return { done: false, need: 'red', fact: 'no red run' }
+  if (!issues.length) return { done: false, need: 'issue', fact: 'issue not yet created' }
+  const comments: IssueComment[] = []
+  for (const number of issues) {
+    const issue = info[number]
+    if (!issue || 'error' in issue) return { done: false, need: 'comments', fact: issue && 'error' in issue ? issue.error : 'issue facts unavailable' }
+    if (!issue.comments || !Array.isArray(issue.comments)) return { done: false, need: 'comments', fact: issue.comments?.error ?? 'issue comments unavailable' }
+    comments.push(...issue.comments)
+  }
+  if (unit.approval && !comments.some(comment => comment.url === unit.approval)) return { done: false, need: 'comment', fact: 'approved comment deleted' }
+  const after = comments.filter(comment => Date.parse(comment.createdAt) > red.at)
+  if (!after.length) return { done: false, need: 'comment', fact: 'no comment after the red' }
+  const approved = after.find(comment => comment.url === unit.approval)
+  if (!approved) {
+    const newest = after.reduce((latest, comment) => Date.parse(comment.createdAt) >= Date.parse(latest.createdAt) ? comment : latest)
+    return { done: false, need: 'approval', fact: 'waiting for /flow approve <url>', isWaitingApproval: true, command: `/flow approve ${newest.url}` }
+  }
+  return { done: true, approvedAt: Date.parse(approved.createdAt) }
+}
+
+/**
+ * Identifies an available, unrevised slice with content different from its base.
+ * @param slice - The current unit slice, or null when unavailable.
+ * @returns Whether the slice has a code change and a usable tree.
+ */
+export const hasCodeChange = (slice: UnitSlice | null): slice is CodeSlice => !!slice && !slice.isRewritten && !!slice.tree && (slice.base === null || (!!slice.baseTree && slice.tree !== slice.baseTree))

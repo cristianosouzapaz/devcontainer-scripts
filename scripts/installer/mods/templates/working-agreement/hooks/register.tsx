@@ -2,53 +2,80 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { EnginePort } from './core/engine-port'
-import { pinToMainCheckout } from './core/main-checkout'
 import { markForAgent } from './domain/messages'
 import { setHandoffThreshold } from './features/handoff'
 import { handleDeclareFlowCall } from './handlers/declare-flow'
 import { handleFlowCommand } from './handlers/flow-command'
-import { handlePaneRender } from './handlers/pane-render'
-import { handleClassicPromptSubmit, handlePromptSubmit } from './handlers/prompt'
-import { handleClassicSessionStart, handleSessionStart } from './handlers/session'
+import { handlePaneClose, handlePaneRender } from './handlers/pane-render'
+import { handlePromptSubmit } from './handlers/prompt'
+import { handleClassicSessionStart, handleFileChanged, handleSessionStart } from './handlers/session'
 import { handleSkillPrompt } from './handlers/skill'
 import { handleToolCall } from './handlers/tool-call'
-import { handleToolCheck } from './handlers/tool-check'
-import { handleClassicStop, handleTurnComplete } from './handlers/turn'
+import { handleRun } from './handlers/run'
+import { handleVerify } from './handlers/verify'
+import { handleTurnComplete } from './handlers/turn'
 
 const paneId = 'working-agreement'
 const declareTool = 'mcp__working-agreement__declare_flow'
 const checkFailed = markForAgent('The check failed, so the call is denied — retry; if it keeps failing, stop and tell the user.')
+const session = { plugin: 'working-agreement', key: 'session' } as const
 const view = atom({ plugin: 'working-agreement', key: 'view' } as const, null)
+const paneView = atom({ plugin: 'working-agreement', key: 'paneView' } as const, 'flow')
 
-// Builds the engine calls the core and the handlers make: `$` cannot be passed across an import, so every call on it stays written here.
+/**
+ * Builds the engine port as closures over `$`, which cannot be passed across an import.
+ * @param $ - The hook's engine interface.
+ * @returns The engine operations used by the core and handlers.
+ */
 function createEnginePort($: EngineInterface): EnginePort {
   return {
-    processes: pinToMainCheckout({ run: (argv, options) => $.process.run(argv, options) }, () => $.session.cwd()),
-    files: { read: path => $.fs.read(path), stat: path => $.fs.stat(path), write: async (path, text) => { await $.fs.write(path, text) } },
+    processes: { spawn: request => $.process.spawn(request), run: (argv, options) => $.process.run(argv, options) },
+    files: { stat: path => $.fs.stat(path, { resolve: true }), read: path => $.fs.read(path), write: (path, text) => $.fs.write(path, text), list: path => $.fs.list(path) },
     clock: { sleep: (delayMs, signal) => $.clock.sleep(delayMs, { signal }) },
-    store: { get: key => $.store.get(key), set: (key, value) => $.store.set(key, value) },
+    clearLegacyStore: async () => { for (const key of await $.store.keys()) await $.store.delete(key) },
+    readSessionState: () => $.state.get(session),
+    writeSessionState: async (value, version) => (await $.state.set(session, value, { ifVersion: version })).isSet,
+    logDebug: text => { $.ui.log(text, { to: 'debug' }) },
     now: () => $.clock.now(),
     repeat: (delayMs, work) => { $.clock.every(delayMs, work) },
     defer: work => { $.clock.after(0, work) },
-    readRepository: () => $.session.repo(),
+    readHerdrEnv: async () => ({ environment: await $.env.get('HERDR_ENV'), paneId: await $.env.get('HERDR_PANE_ID') }),
     readCwd: () => $.session.cwd(),
-    readHome: () => $.env.get('HOME'),
+    readPluginRoot: async () => $.plugin.root,
     readSessionId: () => $.session.id(),
-    readContextTokens: async () => (await $.session.usage()).context.tokens ?? 0,
+    readContext: async () => (await $.session.usage({ breakdown: 'summary' })).context,
     readView: () => read($, view),
     writeView: async next => { await update($, view, () => next) },
-    openPane: async () => { await $.ui.open({ id: paneId, title: 'Flow' }) },
-    toast: text => { $.ui.toast(text) },
+    readPaneView: () => read($, paneView),
+    writePaneView: async next => { await update($, paneView, () => next) },
+    openPane: async closeOnEscape => { await $.ui.open(closeOnEscape ? { id: paneId, title: 'Flow', closeOnEscape } : { id: paneId, title: 'Flow' }) },
     runSlashCommand: async (command, args) => { await $.command.run(args === undefined ? { command } : { command, args }) },
     submitPrompt: async text => { await $.prompt.submit({ text, asUser: true }) },
+    suggestPrompt: async text => (await $.prompt.suggest({ text })).isShown,
     registerSurface: async () => {
       await $.command.register({
         name: 'flow',
-        description: 'Working agreement: open the pane; status | handoff [cancel] | trivial | follow-up #n | override <step> [#n] <reason> | approve diagnose',
-        argumentHint: '[status|handoff [cancel]|trivial|follow-up #n|override <step> <reason>|approve diagnose]',
+        description: 'Working agreement: open the pane; status | handoff [cancel] | trivial | follow-up #n | skip <step> <reason> | approve <comment-url> | approve verify [id]',
+        argumentHint: '[status|handoff [cancel]|trivial|follow-up #n|skip <step> <reason>|approve <comment-url>|approve verify [id]]',
+      })
+      await $.tool.register({
+        name: 'run',
+        isDeferred: false,
+        description: 'Runs an argv for Diagnose, recording red/green evidence. Red/green runs made through Bash never count.',
+        inputSchema: {
+          type: 'object', properties: { argv: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } } },
+          required: ['argv'], additionalProperties: false,
+        },
+      })
+      await $.tool.register({
+        name: 'verify',
+        isDeferred: false,
+        description: "Runs commands selected from .claude/working-agreement.json for the unit's change. Verify counts only through this tool.",
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       })
       await $.tool.register({
         name: 'declare_flow',
+        isDeferred: false,
         description:
           'Declare the AGENTS.md flow of this session before its first flow step (grilling, to-spec, triage…) or the first write in the repository; ' +
           'when the session starts from an issue, read it and classify it. ' +
@@ -69,7 +96,11 @@ function createEnginePort($: EngineInterface): EnginePort {
   }
 }
 
-// The notice a prompt carries instead of the flow instruction when the flow state could not be read, with the cause.
+/**
+ * Creates the prompt notice used when flow state cannot be read.
+ * @param cause - The read failure.
+ * @returns The notice for the agent.
+ */
 function describeUnreadState(cause: string): string {
   return markForAgent(`The flow state could not be read (${cause}), so this prompt carries no flow instruction — if it keeps happening, stop and tell the user.`)
 }
@@ -85,9 +116,9 @@ export const register: Register = (on, options): void => {
 
   on('session.start', ($, e, next) => handleSessionStart(createEnginePort($), e, next))
 
-  on('classic.SessionStart', (_$, e, next) => handleClassicSessionStart(e, next))
+  on('classic.SessionStart', ($, e, next) => handleClassicSessionStart(createEnginePort($), e, next))
 
-  on('classic.UserPromptSubmit', (_$, e, next) => handleClassicPromptSubmit(e, next))
+  on('classic.FileChanged', ($, e, next) => handleFileChanged(createEnginePort($), e, next))
 
   // The read-only side fails open: a failed read submits the prompt with the notice instead of the flow line; a chain already called is passed through.
   on('prompt.submit', ($, e, next) => handlePromptSubmit(createEnginePort($), e, next))
@@ -97,16 +128,20 @@ export const register: Register = (on, options): void => {
 
   on('turn.complete', ($, e, next) => handleTurnComplete(createEnginePort($), e, next))
 
-  on('classic.Stop', ($, e, next) => handleClassicStop(createEnginePort($), e, next))
+  on('tool.call', { tool: declareTool }, ($, e) => handleDeclareFlowCall(createEnginePort($), e)).catch((_$, _e, next) => ({ deny: `${checkFailed} ${next.error.message ?? next.error.kind}` }))
 
-  on('tool.call', { tool: declareTool }, ($, e) => handleDeclareFlowCall(createEnginePort($), e)).catch(() => ({ deny: checkFailed }))
-
+  // Registration order nests hooks: the window must precede Verify and Run, which answer without next.
   // Its .catch also answers a call re-entered beneath the hook's own $ calls (next.called false): the check never ran on it, so it is denied.
   on('tool.call', ($, e, next) => handleToolCall(createEnginePort($), e, next)).catch((_$, e, next) => next.called ? next(e) : { deny: checkFailed })
 
-  on('tool.check', ($, e, next) => handleToolCheck(createEnginePort($), e, next)).catch(() => ({ decision: 'deny', reason: checkFailed }))
+  on('tool.call', { tool: 'mcp__working-agreement__verify' }, ($, _e, next) => handleVerify(createEnginePort($), next.signal))
+    .catch((_$, _e, next) => ({ result: `Verify could not run: ${next.error.message ?? next.error.kind}` }))
+
+  on('tool.call', { tool: 'mcp__working-agreement__run' }, ($, e, next) => handleRun(createEnginePort($), { argv: e.argv }, next.signal))
+    .catch((_$, _e, next) => ({ result: `Run could not run: ${next.error.message ?? next.error.kind}` }))
 
   on('command.run', { command: 'flow' }, async ($, e) => ({ text: await handleFlowCommand(createEnginePort($), e) }))
 
-  on('ui.render', { component: 'Pane', requestId: paneId }, ($, e) => handlePaneRender(createEnginePort($), $.ui.resolve(e), e.props))
+  on('ui.render', { component: 'Pane', requestId: paneId }, ($, e, next) => handlePaneRender(createEnginePort($), $.ui.resolve(e), e.props, next.signal))
+  on('ui.close', { id: paneId }, ($, e, next) => handlePaneClose(createEnginePort($), e, next))
 }

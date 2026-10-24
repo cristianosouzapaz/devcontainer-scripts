@@ -1,20 +1,17 @@
 import type { Args, EventResult, Frozen, Next } from 'claude-code'
 
-import { recordAnchor } from '../core/anchor'
+import { bestEffort } from '../core/best-effort'
 import type { EnginePort } from '../core/engine-port'
-import { toastFailure } from '../core/failure-toast'
 import { createFeaturePort } from '../core/feature-port'
-import { syncIssues } from '../core/github-sync'
-import { refreshView } from '../core/pane-view'
-import { readSession } from '../core/record-store'
-import { sessionMemory, withRecordLock } from '../core/session-memory'
-import { recoverHandoff } from '../features/handoff'
-
-const tickMs = 15000
+import { reread } from '../core/pane-view'
+import { initializeSession, mirrorSession, readCommonDir, readSession } from '../core/record-store'
+import { withRecordLock } from '../core/session-memory'
+import { tickMs } from '../core/timing'
+import { pruneConcluded } from '../core/pruning'
+import { recoverHandoff, trackSessionLength } from '../features/handoff'
 
 /**
- * Starts the session: recovers an interrupted handoff, registers `/flow` and `declare_flow`, redraws the pane of a flow
- * already declared, and keeps the pane in step with GitHub and the tree.
+ * Starts the session, registers `/flow` and the `declare_flow`, `verify`, and `run` tools, and keeps the pane current.
  *
  * @param port - The engine calls.
  * @param event - The session start.
@@ -22,30 +19,55 @@ const tickMs = 15000
  * @returns What the chain answers.
  */
 export async function handleSessionStart(port: EnginePort, event: Frozen<Args<'session.start'>>, next: Next<'session.start'>): Promise<EventResult<'session.start'>> {
+  await port.clearLegacyStore()
+  await initializeSession(port)
+  await withRecordLock(() => trackSessionLength(createFeaturePort(port)))
   await recoverHandoff(createFeaturePort(port))
+  await withRecordLock(() => pruneConcluded(port))
   await port.registerSurface()
-  if ((await readSession(port)).flow) {
-    await refreshView(port)
+  const session = await readSession(port)
+  if (session.flow || session.violations?.length) {
+    await reread(port, true)
     void port.openPane()
   }
   port.repeat(tickMs, async () => {
-    const session = await readSession(port)
-    if (!session.flow) return
-    await syncIssues(port, session)
-    await withRecordLock(() => recordAnchor(port, session)).catch(toastFailure(port, "record the unit's commit"))
-    await refreshView(port, true)
+    // atomicReplace holds the error in sessionMemory.recordError.
+    try { await mirrorSession(port) } catch {}
+    await reread(port, true)
   })
   return next(event)
 }
 
 /**
- * Records the permission mode the classic session start reports.
+ * Watches shared and linked-worktree refs for changes outside the session.
  *
+ * @param port - The engine calls.
  * @param event - The classic session start.
  * @param next - The rest of the chain.
  * @returns What the chain answers.
  */
-export function handleClassicSessionStart(event: Frozen<Args<'classic.SessionStart'>>, next: Next<'classic.SessionStart'>): Promise<EventResult<'classic.SessionStart'>> {
-  sessionMemory.permissionMode = event.permission_mode ?? sessionMemory.permissionMode
-  return next(event)
+export async function handleClassicSessionStart(port: EnginePort, event: Frozen<Args<'classic.SessionStart'>>, next: Next<'classic.SessionStart'>): Promise<EventResult<'classic.SessionStart'>> {
+  const result = await next(event)
+  const common = await readCommonDir(port)
+  return common ? { ...result, watchPaths: [...new Set([...(result.watchPaths ?? []), `${common}/HEAD`, `${common}/packed-refs`, `${common}/refs`, `${common}/worktrees`])] } : result
+}
+
+/**
+ * Queues a refresh of repository and GitHub facts after watched ref changes.
+ * @param port - The engine calls.
+ * @param event - The watched file event.
+ * @param next - The rest of the chain.
+ * @returns The chain's answer.
+ */
+export async function handleFileChanged(port: EnginePort, event: Frozen<Args<'classic.FileChanged'>>, next: Next<'classic.FileChanged'>): Promise<EventResult<'classic.FileChanged'>> {
+  const result = await next(event)
+  const common = await readCommonDir(port)
+  if (!common) return result
+  const path = event.file_path
+  const relative = path.startsWith(`${common}/`) ? path.slice(common.length + 1) : ''
+  // A forced GitHub read can outlast the hook's budget, so it runs on a timer's dispatch.
+  if (relative === 'HEAD' || relative === 'packed-refs' || relative.startsWith('refs/') || /^worktrees\/[^/]+\/HEAD$/.test(relative)) {
+    port.defer(() => { void bestEffort(port, 'ref change reread', () => reread(port, true, true), undefined) })
+  }
+  return result
 }

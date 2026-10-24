@@ -6,8 +6,23 @@ interface LabelLayout {
   used: number
 }
 
+/**
+ * Reserves the label's surrounding padding during pill layout.
+ * @param label - The displayed label.
+ * @returns The columns occupied by the padded pill.
+ */
 function pillWidth(label: string): number {
   return label.length + 2
+}
+
+/**
+ * Truncates a label at the end so its padded pill fits the row, since a wrapped pill splits its padding from its text.
+ * @param label - The label name.
+ * @param width - The columns a row of pills may span.
+ * @returns The label, or its start and an ellipsis.
+ */
+function fitLabel(label: string, width: number): string {
+  return pillWidth(label) <= width ? label : `${label.slice(0, Math.max(width - 3, 0))}…`
 }
 
 /**
@@ -15,11 +30,11 @@ function pillWidth(label: string): number {
  *
  * @param labels - The label names, in order.
  * @param width - The columns a row of pills may span.
- * @returns The rows; a pill wider than the width sits alone on its row.
+ * @returns The rows of displayed labels; a label wider than the width is truncated to fill its own row.
  */
 export function layoutLabelRows(labels: string[], width: number): string[][] {
   const initial: LabelLayout = { rows: [], used: 0 }
-  return labels.reduce((layout, label) => {
+  return labels.map(label => fitLabel(label, width)).reduce((layout, label) => {
     const row = layout.rows[layout.rows.length - 1]
     const extended = layout.used + pillGap + pillWidth(label)
     return row && extended <= width

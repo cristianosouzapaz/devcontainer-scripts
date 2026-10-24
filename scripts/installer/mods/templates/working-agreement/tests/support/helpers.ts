@@ -1,7 +1,8 @@
 import type { CommandRunResult, PromptOrigin, ToolCallResult } from 'claude-code'
-import type { Engine } from 'claude-code/testing'
+import type { Engine, Mounted } from 'claude-code/testing'
+import type { World } from './world'
 
-import type { IssueComment } from './world'
+interface PaneOptions { columns?: number; rows?: number; requestId?: string; title?: string }
 
 /**
  * Runs `/flow` with these arguments, typed at the prompt unless another origin is given.
@@ -41,15 +42,12 @@ export const readPromptContext = async ($: Engine): Promise<string> =>
 export const readCurrentStep = async ($: Engine): Promise<string | undefined> => (await readPromptContext($)).match(/current step: (\w+)/)?.[1]
 
 /**
- * Submits a prompt under a permission mode, which the mod records.
- *
- * @param $ - The test's engine.
- * @param permissionMode - The mode.
- * @returns Once the prompt hook ran.
+ * Reads the current step's label from the latest published pane view.
+ * @param views - The pane views published by the test world.
+ * @returns The current step's label, or undefined when none is published.
  */
-export const setPermissionMode = async ($: Engine, permissionMode: string): Promise<void> => {
-  await $.classic.UserPromptSubmit({ prompt: 'go', permission_mode: permissionMode })
-}
+export const readPaneCurrentStep = (views: World['views']): string | undefined =>
+  views.at(-1)?.steps.find(step => step.state === 'current')?.label
 
 /**
  * Calls declare_flow as the agent, or as a subagent when an agent id is given.
@@ -74,27 +72,6 @@ export const endTurn = async ($: Engine): Promise<void> => {
 }
 
 /**
- * Delivers a task notification, as the engine does when a background task ends.
- *
- * @param $ - The test's engine.
- * @param text - The notification's text.
- * @returns The context lines the mod adds to the notification's own turn, joined.
- */
-export const notifyTask = async ($: Engine, text: string): Promise<string> =>
-  (await $.prompt.submit({ text, wait: false, origin: { kind: 'task-notification' } })).context?.join('\n') ?? ''
-
-/**
- * Ends the main agent's turn as the classic stop reports it, with the background tasks still running.
- *
- * @param $ - The test's engine.
- * @param activeIds - The ids of the background tasks still running.
- * @returns Once the stop hooks ran.
- */
-export const stopTurn = async ($: Engine, activeIds: string[]): Promise<void> => {
-  await $.classic.Stop({ stop_hook_active: false, background_tasks: activeIds.map(id => ({ id, type: 'shell', status: 'running', description: '' })) })
-}
-
-/**
  * Starts a skill.
  *
  * @param $ - The test's engine.
@@ -106,15 +83,15 @@ export const startSkill = async ($: Engine, skill: string): Promise<void> => {
 }
 
 /**
- * Posts a comment on issue #1 as the agent does with `gh issue comment`; GitHub then holds it as the issue's latest comment.
- *
- * @param $ - The test's engine.
- * @param comments - The world's `issueComments`, which the comment is added to.
- * @param body - The comment text.
- * @returns What the Bash call answered.
+ * Mounts the stored pane view without requesting another refresh.
+ * @param $ - The test engine.
+ * @param options - Dimensions and pane identity varied by the scenario.
+ * @returns The mounted terminal pane.
  */
-export function postComment($: Engine, comments: Record<number, IssueComment[]>, body: string): Promise<ToolCallResult> {
-  const list = (comments[1] ??= [])
-  list.push({ url: `https://github.com/o/r/issues/1#issuecomment-${list.length + 1}`, body })
-  return $.tool.call({ tool: 'Bash', command: `gh issue comment 1 --body "${body}"` })
+export function mountPane($: Engine, options: PaneOptions = {}): Promise<Mounted<'terminal', 'Pane'>> {
+  const { columns = 80, rows = 50, requestId = 'working-agreement', title = 'Flow' } = options
+  return $.ui.mount({ plugin: 'working-agreement', surface: 'terminal', component: 'Pane', requestId,
+    props: { title, isFocused: true, bodyColumns: columns, placement: 'dock', scroll: { offset: 0, bodyRows: rows }, view: {} },
+    viewport: { columns, rows },
+  })
 }

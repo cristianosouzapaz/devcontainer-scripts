@@ -1,7 +1,5 @@
-import type { CheckReport } from '../lib/github'
-
 /** Names where a unit's CI stands: what the PR's checks report, off when the repository has no CI to wait for, or unknown when that could not be read. */
-export type CiState = CheckReport | 'off' | 'unknown'
+export type CiState = 'passing' | 'failing' | 'pending' | 'off' | 'unknown'
 
 /** Holds why a PR's CI holds the unit back, and what the agent does about it. */
 interface CiBlocker {

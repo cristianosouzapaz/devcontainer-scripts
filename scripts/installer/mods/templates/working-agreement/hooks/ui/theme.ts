@@ -1,26 +1,21 @@
+import type { ThemeKey } from 'claude-code'
 import type { FlowStepState, FlowTone } from '../../types'
 
-/** The Flow pane's colors. */
-export const palette = {
-  bg: '#23272e', text: '#d8dee9', muted: '#616e88', accent: '#88c0d0',
-  done: '#a3be8c', warn: '#ebcb8b', error: '#bf616a', pill: '#3b4252',
-}
-
 /** The color of a row's value, by its tone. */
-export const toneColor: Record<FlowTone, string> = { text: palette.text, warn: palette.warn, error: palette.error }
+export const toneColor: Record<FlowTone, ThemeKey> = { text: 'text', warn: 'warning', error: 'error', inactive: 'inactive' }
 
 /** The color of a step's symbol, by its state. */
-export const symbolColor: Record<FlowStepState, string> = {
-  done: palette.done, current: palette.accent, pending: palette.muted, skipped: palette.muted, override: palette.warn,
+export const symbolColor: Record<FlowStepState, ThemeKey> = {
+  done: 'success', current: 'suggestion', pending: 'inactive', skipped: 'inactive',
 }
 
 /** The color of a step's label, by its state. */
-export const labelColor: Record<FlowStepState, string> = {
-  done: palette.text, current: palette.accent, pending: palette.muted, skipped: palette.muted, override: palette.text,
+export const labelColor: Record<FlowStepState, ThemeKey> = {
+  done: 'text', current: 'text', pending: 'inactive', skipped: 'inactive',
 }
 
 /** The mark the pane draws beside a step in each state. */
-export const stepSymbol: Record<FlowStepState, string> = { done: '✓', current: '▸', pending: '○', skipped: '↷', override: '⚑' }
+export const stepSymbol: Record<FlowStepState, string> = { done: '✓', current: '▸', pending: '○', skipped: '↷' }
 
 /** The width of a row's key column, in characters. */
 export const keyWidth = 10
@@ -40,10 +35,7 @@ export const pillRowGap = 1
 /** The columns between an issue's number and its button. */
 export const issueGap = 2
 
-/** The columns a step's hint, and a sub-step under its step, are indented by. */
-export const hintIndent = 4
-
-/** The text between a flow's name and its progress, and between a step's label and its stale marker. */
+/** The text between a flow's name and its progress in plain text. */
 export const inlineGap = '  '
 
 /** The columns `/flow status` lays out at. */

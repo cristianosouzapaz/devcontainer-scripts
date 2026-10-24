@@ -1,12 +1,10 @@
-import type { ToolRun } from '../../hooks/core/command-observation'
+import type { RunRecord, Unit } from '../../types'
+import { githubSamples } from './github-samples'
 import { root } from './world'
 import type { Options } from './world'
 
 /** A Write call's input. */
 interface WriteCall { tool: 'Write'; file_path: string; content: string }
-
-/** A Bash call's input. */
-interface BashCall { tool: 'Bash'; command: string }
 
 /** The session record of a session with no flow declared. */
 export const noFlow = { flow: null, issues: [], info: {} }
@@ -17,7 +15,27 @@ export const twoIssueCloseOut: Options = {
 }
 
 /** A repository verify file naming `./test/run.sh`. */
-export const verifyFile = JSON.stringify({ verify: './test/run.sh' })
+export const verifyFile = JSON.stringify({ verify: ['./test/run.sh'] })
+
+/** A Close out with committed work and Verify skipped, awaiting only its PR. */
+export const pushedCloseOut: Options = {
+  ...twoIssueCloseOut,
+  unit: { skips: [{ step: 'verify', reason: 'covered separately' }] },
+  prs: [buildPullRequest()],
+}
+/** A completed red/green pair, before the diagnosis comment. */
+export const diagnoseRuns: RunRecord[] = [
+  { argv: ['./check'], tree: 'red', outcome: { kind: 'fail', code: 1, signal: null }, runId: 'red', at: 1 },
+  { argv: ['./check'], tree: 'green', outcome: { kind: 'pass' }, runId: 'green', at: 2 },
+]
+/** A diagnosis comment created after the fixture's green. */
+export const diagnosisComment = { url: 'https://github.com/o/r/issues/1#issuecomment-1', createdAt: new Date(3).toISOString() }
+/** A unit whose red run and diagnosis comment have the user's approval. */
+export const diagnosed: Pick<Unit, 'runs' | 'approval'> = { runs: diagnoseRuns, approval: diagnosisComment.url }
+/** The fix green: the red command passing on another tree after the approved comment. */
+const fixGreen: RunRecord = { argv: ['./check'], tree: 'fixed', outcome: { kind: 'pass' }, runId: 'fixed', at: 4 }
+/** A diagnosed unit whose approved fix passes the red command. */
+export const fixed: Pick<Unit, 'runs' | 'approval'> = { runs: [fixGreen, ...diagnoseRuns], approval: diagnosisComment.url }
 
 /**
  * Builds a Write call that writes an empty file.
@@ -29,39 +47,12 @@ export const buildWriteCall = (path: string): WriteCall =>
   ({ tool: 'Write', file_path: path.startsWith('/') ? path : `${root}/${path}`, content: '' })
 
 /**
- * Builds a Bash call.
- *
- * @param command - The command line.
- * @returns The call.
+ * Builds the fields returned by the candidate-list command with realistic GitHub shapes.
+ * @param changes - Fields that replace the open, pushed PR closing both declared issues.
+ * @returns A candidate response sample.
  */
-export const buildBashCall = (command: string): BashCall => ({ tool: 'Bash', command })
-
-/**
- * Builds the result of a Bash call the engine moved to the background, as it answers when a message is delivered mid-run.
- *
- * @param taskId - The background task's id.
- * @param extra - Further result fields, such as `backgroundEndsWithFinalResponse`.
- * @returns The tool run.
- */
-export const buildBackgroundedRun = (taskId: string, extra: Record<string, unknown> = {}): ToolRun =>
-  ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: taskId, backgroundedToDeliverMessage: true, ...extra } })
-
-/**
- * Builds a task notification's text as the engine submits it.
- *
- * @param taskId - The task's id.
- * @param status - How the task ended: `completed`, `failed`, `killed`.
- * @returns The envelope.
- */
-export const buildTaskNotification = (taskId: string, status: string): string =>
-  `<task-notification>\n<task-id>${taskId}</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>${status}</status>\n<summary>Background command "tests" ${status}</summary>\n</task-notification>`
-
-/**
- * Builds a diagnosis comment with every heading, quoting a red command and naming its files.
- *
- * @param command - The red command to quote.
- * @param files - The red files to name.
- * @returns The comment text, without double quotes, so it can sit inside a quoted `--body`.
- */
-export const buildDiagnosis = (command: string, files: string[] = ['test/fix.bats']): string =>
-  `## Root cause\nThe loop skips the last item.\n## Evidence\n${command} fails.\n## Proposed fix\nStop one item later.\n## Regression test\n${files.length ? files.join(', ') : 'None: the bug lives in a script no test reaches.'}\n## Rejected hypotheses\nA stale cache.`
+export function buildPullRequest(changes: Record<string, unknown> = {}): Record<string, unknown> {
+  const sample = githubSamples['pull-requests'][0].body.data.repository.pullRequests.nodes[0]!
+  const { closingIssuesReferences, ...pullRequest } = sample
+  return { ...pullRequest, closingIssuesReferences: closingIssuesReferences.nodes, ...changes }
+}

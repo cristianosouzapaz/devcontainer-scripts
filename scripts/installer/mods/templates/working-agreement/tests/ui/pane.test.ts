@@ -1,113 +1,133 @@
 import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-
-import type { ToolRun } from '../../hooks/core/command-observation'
-import { hintIndent, sectionGap } from '../../hooks/ui/theme'
-import { buildBashCall, buildWriteCall, noFlow, twoIssueCloseOut, verifyFile } from '../support/builders'
-import { readFlowStatus, readPromptContext, runFlowCommand } from '../support/helpers'
+import type { FlowView } from '../../types'
+import { sectionGap } from '../../hooks/ui/theme'
+import { buildWriteCall, buildPullRequest, noFlow, pushedCloseOut, twoIssueCloseOut } from '../support/builders'
+import { declareFlow, mountPane, endTurn, readFlowStatus, readPromptContext, runFlowCommand } from '../support/helpers'
 import { createWorld } from '../support/world'
 
 /** A node of a mounted pane's tree, as far as these tests read it. */
 interface PaneNode { children?: unknown[] }
-
-// A changed tree, so Verify is the step a verify run moves.
-const changed = { branch: 'feat', ahead: 8, isDirty: true }
-const green: ToolRun = { result: { stdout: '' } }
-// Issue #1 carries these labels; the status layout fits 26 columns of pills, so one, two and three labels wrap into that many rows.
+// These labels occupy different numbers of pill rows in the pane.
 const oneRow = ['bug', 'ready-for-agent']
 const twoRows = ['ready-for-agent', 'needs-triage']
 const threeRows = ['ready-for-agent', 'needs-triage', 'needs-info']
 
 const labelsOf = (labels: string[]) => ({ session: { info: { 1: { title: 'feat', labels } } } })
 // The pane draws the view the mod stored last, without refreshing it.
-const mountPane = ($: Engine) => $.ui.mount({
-  plugin: 'working-agreement', surface: 'terminal', component: 'Pane', requestId: 'working-agreement',
-  props: { title: 'Flow', isFocused: true, bodyColumns: 40, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
-  viewport: { columns: 40, rows: 30 },
-})
+
 const isPaneNode = (value: unknown): value is PaneNode => typeof value === 'object' && value !== null
 const readText = (node: unknown): string => {
   if (typeof node === 'string') return node
   return isPaneNode(node) ? (node.children ?? []).map(readText).join('') : ''
 }
 const countPaneText = async ($: Engine, text: RegExp): Promise<number> => {
-  const ui = await mountPane($)
+  const ui = await mountPane($, { columns: 40, rows: 30 })
   const found = await ui.findAll({ type: 'Text', text })
   await ui.unmount()
   return found.length
 }
 
-test('a direct verify run refreshes the pane before the command executes', async ($, on) => {
-  const seen = { running: 0 }
-  createWorld(on, changed, { verifyFile, toolRun: async () => { seen.running = await countPaneText($, /Verify — running/); return green } })
-  await $.tool.call(buildBashCall('./test/run.sh'))
-  expect(seen.running).toBeGreaterThan(0)
-})
-
 test('the PR step reads Update PR #<n> with an open PR on record, and PR without one', async ($, on) => {
-  createWorld(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, unit: { skills: ['generate-commit'], pr: { number: 5, state: 'OPEN' } } })
+  createWorld(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, unit: { skips: [{ step: 'verify', reason: 'covered separately' }], skills: ['generate-commit'] }, prs: [buildPullRequest({ closingIssuesReferences: [] })] })
   expect(await readFlowStatus($)).toContain('Update PR #5')
   expect(await readPromptContext($)).toContain('current step: Update PR #5')
 })
 
+test('the PR step reads PR #<n> once done, in the status and in the declaration steps', async ($, on) => {
+  createWorld(on, { branch: 'feat', ahead: 1 }, pushedCloseOut)
+  expect(await readFlowStatus($)).toContain('✓ PR #5')
+  expect(await readFlowStatus($)).not.toContain('Update PR')
+  const declared = (await declareFlow($, 'close-out', [1, 2])).result
+  expect(declared).toContain('✓ PR #5 (')
+  expect(declared).not.toContain('Update PR')
+})
+
 test('the PR step reads PR with no PR on record', async ($, on) => {
-  createWorld(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, unit: { skills: ['generate-commit'] } })
+  createWorld(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, unit: { skips: [{ step: 'verify', reason: 'covered separately' }], skills: ['generate-commit'] } })
   expect(await readFlowStatus($)).not.toContain('Update PR')
   expect(await readPromptContext($)).toContain('current step: PR.')
 })
 
-test('the pane marks a lapsed step stale as /flow status does', async ($, on) => {
+test('the pane shows the current Commit fact after a new edit and turn end', async ($, on) => {
   const git = { branch: 'feat', ahead: 8, isDirty: false }
   createWorld(on, git, { session: noFlow })
   await runFlowCommand($, 'trivial')
+  await runFlowCommand($, 'skip verify covered separately')
   git.ahead = 9
-  await $.tool.call(buildBashCall('true'))
-  expect(await countPaneText($, /stale/)).toBe(0)
   await $.tool.call(buildWriteCall('src/a.ts'))
   git.isDirty = true
-  await $.tool.call(buildBashCall('true'))
-  expect(await readFlowStatus($)).toMatch(/Commit {2}stale/)
-  expect(await countPaneText($, /stale/)).toBeGreaterThan(0)
+  await endTurn($)
+  expect(await readFlowStatus($)).toContain('▸ Commit · uncommitted changes')
+  expect(await countPaneText($, /uncommitted changes/)).toBeGreaterThan(0)
 })
 
-test('the pane says writes ask while GitHub is unreachable and a declared issue is unverified', async ($, on) => {
+test('the pane reports stale GitHub facts while a declared issue is unverified', async ($, on) => {
   createWorld(on, { branch: 'feat', ahead: 1 }, { failing: 'gh', session: { flow: 'small-feature', issues: [1], info: {} } })
-  expect(await readFlowStatus($)).toContain('unreachable — writes ask until the declared issue is verified')
+  await readFlowStatus($)
+  expect(await countPaneText($, /unreachable · not refreshed/)).toBe(1)
 })
 
 test('the pane says labels and PR state are not refreshed while GitHub is unreachable and every declared issue is verified', async ($, on) => {
   createWorld(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, failing: 'gh' })
-  expect(await readFlowStatus($)).toContain('unreachable — issue labels and PR state are not refreshed')
+  await readFlowStatus($)
+  expect(await countPaneText($, /unreachable · not refreshed/)).toBe(1)
 })
 
 for (const [count, labels] of [[1, oneRow], [2, twoRows], [3, threeRows]] as const) {
-  test(`/flow status keeps one blank line before Branch with ${count} label row${count === 1 ? '' : 's'}, and between pill rows`, async ($, on) => {
+  test(`/flow status keeps ${count} labels on one line before Branch`, async ($, on) => {
     createWorld(on, { branch: 'feat', ahead: 1 }, labelsOf([...labels]))
     const lines = ((await readFlowStatus($)) ?? '').split('\n')
     const first = lines.findIndex(line => line.startsWith('Labels'))
     const branch = lines.findIndex(line => line.startsWith('Branch'))
     expect(lines[branch - 1]).toBe('')
     expect(lines[branch - 2]).not.toBe('')
-    expect(lines.slice(first, branch - 1).filter(line => line !== '')).toHaveLength(count)
-    expect(lines.slice(first, branch - 1).filter(line => line === '')).toHaveLength(count - 1)
+    expect(lines.slice(first, branch - 1)).toEqual(['Labels'.padEnd(10) + labels.map(label => ` ${label} `).join('  ')])
   })
 }
 
 test('the mounted pane draws the label rows /flow status prints', async ($, on) => {
   createWorld(on, { branch: 'feat', ahead: 1 }, labelsOf(threeRows))
   const status = (await readFlowStatus($)) ?? ''
-  const ui = await mountPane($)
+  const ui = await mountPane($, { columns: 40, rows: 30 })
   const pills = (await ui.findAll({ type: 'Text', text: /^ [a-z-]+ $/ })).map(pill => pill.text)
   expect(pills).toEqual(threeRows.map(label => ` ${label} `))
   for (const label of threeRows) expect(status).toContain(` ${label} `)
   await ui.unmount()
 })
 
+test('every keyed Flow button draws only its clean label, keeps its hotkey and fits the footer inline once the labels fit', async ($, on) => {
+  createWorld(on, { branch: 'feat' })
+  const value: FlowView = {
+    flow: 'Small feature', progress: '0/1', issues: [{ number: 1, title: 'First' }, { number: 2, title: 'Second' }], pending: null,
+    meta: [], labels: [], steps: [], notes: [], footer: { action: 'continue', isRunning: false }, hasRunLog: true,
+    violations: [{ factId: 'fact', text: 'needs attention', tone: 'warn' }],
+  }
+  const displayed = { value }
+  on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: displayed.value, version: 0 } }))
+  const pane = await mountPane($)
+  const buttons = await pane.findAll({ type: 'Button' })
+  expect(buttons.map(button => button.props['label'])).toEqual(['open', 'open', 'dismiss', 'Run log', 'Continue in new session'])
+  expect(buttons.map(button => button.props['hotkey'])).toEqual(['o', undefined, 'd', 'l', 'c'])
+  for (const key of ['o', 'd', 'l', 'c']) expect(await pane.findAll({ type: 'Text', text: new RegExp(`^${key}$`) })).toHaveLength(0)
+  displayed.value = { ...value, footer: { action: 'start', isRunning: false } }
+  await pane.redraw()
+  expect((await pane.find({ key: 'n' }))?.props['label']).toBe('Start new session')
+  expect((await pane.find({ key: 'n' }))?.props['hotkey']).toBe('n')
+  expect(await pane.findAll({ type: 'Text', text: /^n$/ })).toHaveLength(0)
+  await pane.unmount()
+  // `[ Run log ]` and `[ Continue in new session ]` take 40 columns with their gap, the body's width less its padding.
+  displayed.value = value
+  const narrow = await mountPane($, { columns: 44 })
+  expect((await narrow.findAll({ type: 'Box' })).some(box => box.props['alignItems'] === 'flex-end' && box.props['flexDirection'] === 'row')).toBe(true)
+  await narrow.unmount()
+})
+
 for (const [count, labels] of [[1, oneRow], [2, twoRows], [3, threeRows]] as const) {
   test(`the mounted pane puts the Branch section right after the Labels section, one section gap apart, with ${count} label row${count === 1 ? '' : 's'}`, async ($, on) => {
     createWorld(on, { branch: 'feat', ahead: 1 }, labelsOf([...labels]))
     await readFlowStatus($)
-    const ui = await mountPane($)
+    const ui = await mountPane($, { columns: 40, rows: 30 })
     const sections = (await ui.findAll({ type: 'Box' })).find(box => {
       const labelsIndex = box.children.findIndex(child => readText(child).startsWith('Labels'))
       return labelsIndex >= 0 && box.children.findIndex(child => readText(child).startsWith('Branch')) === labelsIndex + 1
@@ -117,17 +137,26 @@ for (const [count, labels] of [[1, oneRow], [2, twoRows], [3, threeRows]] as con
   })
 }
 
-test('the mounted pane draws the four Diagnose sub-steps indented under it, with the Approval hint, and keeps them under an override', async ($, on) => {
-  const red = { command: 'bats test/fix.bats', fingerprints: {} }
-  const unit: Record<string, unknown> = { skills: ['diagnosing-bugs'], start: 'c0', red }
-  createWorld(on, { branch: 'fix' }, { session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } }, unit })
-  await readFlowStatus($)
-  const ui = await mountPane($)
-  const indented = (await ui.findAll({ type: 'Box' })).filter(box => box.props['paddingLeft'] === hintIndent).map(readText)
-  expect(indented).toEqual(['✓ Red', '▸ Green', '○ Diagnosis', '○ Approvalrun /flow approve diagnose', 'run /flow approve diagnose'])
+for (const [columns, pill] of [[31, ' ready-for-agent '], [30, ' ready-for-age… '], [29, ' ready-for-ag… ']] as const) {
+  test(`the mounted pane draws the ready-for-agent pill as ${pill.trim()} on one row at ${columns} columns`, async ($, on) => {
+    createWorld(on, { branch: 'feat', ahead: 1 }, labelsOf(['ready-for-agent']))
+    await readFlowStatus($)
+    const ui = await mountPane($, { columns, rows: 30 })
+    const pills = await ui.findAll({ type: 'Text', text: /ready-for/ })
+    expect(pills.map(readText)).toEqual([pill])
+    expect(pills[0]?.props['wrap']).toBe('truncate-end')
+    await ui.unmount()
+  })
+}
+
+test('the mounted pane draws Diagnose as one row with its first unmet fact', async ($, on) => {
+  createWorld(on, { branch: 'fix' }, { session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } } })
+  expect(await readFlowStatus($)).toContain('▸ Diagnose · no red run yet')
+  const ui = await mountPane($, { columns: 40, rows: 30 })
+  const text = (await ui.findAll({ type: 'Text' })).map(readText).join(' ')
+  expect(text).toContain('Diagnose')
+  expect(text).toContain('no red run yet')
+  expect(text).not.toContain('Diagnosis')
+  expect(text).not.toContain('Approval')
   await ui.unmount()
-  await runFlowCommand($, 'override diagnose no loop')
-  await readFlowStatus($)
-  expect(await countPaneText($, /Green/)).toBeGreaterThan(0)
-  expect(await countPaneText($, /run \/flow approve diagnose/)).toBeGreaterThan(0)
 })

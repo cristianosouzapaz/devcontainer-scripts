@@ -16,7 +16,8 @@ import { toStringOrEmpty } from '../lib/json'
 export async function handleDeclareFlowCall(port: EnginePort, event: Frozen<Args<'tool.call'>>): Promise<EventResult<'tool.call'>> {
   if (event.agentId) return { deny: markForAgent('Subagents inherit the session flow and cannot declare one — return to the main agent.') }
   const args: Record<string, unknown> = { ...event }
-  const issues = Array.isArray(args.issues) ? args.issues.filter((issue): issue is number => typeof issue === 'number') : []
+  if (args.issues !== undefined && (!Array.isArray(args.issues) || !args.issues.every(issue => typeof issue === 'number'))) return { deny: markForAgent('Issue numbers must be positive integers.') }
+  const issues = args.issues ?? []
   const declared = await withRecordLock(() => declareFlow(port, toStringOrEmpty(args.flow), issues, 'agent'))
   return declared.isOk ? { result: markForAgent(declared.value) } : { deny: markForAgent(declared.error) }
 }

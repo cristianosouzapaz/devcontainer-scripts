@@ -1,102 +1,89 @@
 import { expect, test } from 'claude-code/testing'
-import type { Engine } from 'claude-code/testing'
+import type { IssueInfo, RunRecord } from '../../../types'
+import { findFixGreen, judgeDiagnose } from '../../../hooks/domain/step-states'
+import { describeDiagnoseNeed } from '../../../hooks/domain/instruction'
+import { diagnosed, diagnoseRuns, diagnosisComment } from '../../support/builders'
 
-import type { ToolRun } from '../../../hooks/core/command-observation'
-import { buildBashCall, buildDiagnosis, noFlow } from '../../support/builders'
-import { postComment, readCurrentStep, readFlowStatus, readPromptContext, runFlowCommand } from '../../support/helpers'
-import { createWorld, root } from '../../support/world'
-import type { IssueComment } from '../../support/world'
+const red = diagnoseRuns[0]!
+const green = diagnoseRuns[1]!
+const info = { 1: { title: 'bug', labels: [], comments: [diagnosisComment] } }
 
-const failed = { isError: true as const, result: { stdout: '', stderr: '', interrupted: false } }
-const passed = { isError: undefined, result: { stdout: '', stderr: '', interrupted: false } }
-const reproduction = 'bats test/fix.bats'
-const composer = { kind: 'composer' } as const
-
-// A Fix at Diagnose whose red and green are done in the worktree: the diagnosis comment is next.
-async function atGreen($: Engine, on: Parameters<typeof createWorld>[0], files: string[] = ['test/fix.bats']) {
-  const toolRun: ToolRun = { ...failed }
-  const comments: Record<number, IssueComment[]> = {}
-  const worktree = { name: 'diagnose-1', base: 'c0', changed: files, hashes: Object.fromEntries(files.map(file => [file, 'h1'])) }
-  createWorld(on, { branch: 'fix', dirty: {} }, {
-    session: { ...noFlow, flow: 'fix', issues: [1], info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } },
-    unit: { skills: ['diagnosing-bugs'], start: 'c0' }, issueLabels: { 1: ['ready-for-agent'] }, worktree, cwd: root, toolRun, issueComments: comments,
+for (const [runs, fact, need] of [
+  [[], 'no red run', 'red'],
+  [[green], 'no red run', 'red'],
+] as [RunRecord[], string, 'red'][]) {
+  test(`Diagnose needs a failing run first: ${JSON.stringify(runs)}`, () => {
+    expect(judgeDiagnose({ runs }, [1], info)).toEqual({ done: false, fact, need })
   })
-  await $.tool.call({ tool: 'EnterWorktree', name: 'diagnose-1' })
-  await $.tool.call(buildBashCall(reproduction))
-  Object.assign(toolRun, passed)
-  await $.tool.call(buildBashCall(reproduction))
-  return comments
 }
 
-test('after the green the instruction asks for the diagnosis comment, naming the headings, the red command and the red files', async ($, on) => {
-  await atGreen($, on)
-  const context = await readPromptContext($)
-  expect(await readCurrentStep($)).toBe('Diagnose')
-  for (const text of ['gh issue comment', 'Root cause, Evidence, Proposed fix, Regression test, Rejected hypotheses', reproduction, 'test/fix.bats']) expect(context).toContain(text)
+test('Diagnose is done by a red, a later comment and its approval, with no green and no code change', () => {
+  const approved = { runs: [red], approval: diagnosisComment.url }
+  expect(judgeDiagnose(approved, [1], info)).toEqual({ done: true, approvedAt: Date.parse(diagnosisComment.createdAt) })
+  expect(judgeDiagnose({ runs: [{ ...red, outcome: { kind: 'timeout', minutes: 1 } }], approval: approved.approval }, [1], info).done).toBe(true)
 })
 
-test('Diagnose shows its four sub-steps, and Approval carries the hint', async ($, on) => {
-  const comments = await atGreen($, on)
-  expect(await readFlowStatus($)).toContain('▸ Diagnose\n    ✓ Red\n    ✓ Green\n    ▸ Diagnosis\n    ○ Approval\n        run /flow approve diagnose')
-  await postComment($, comments, buildDiagnosis(reproduction))
-  expect(await readFlowStatus($)).toContain('    ✓ Diagnosis\n    ▸ Approval')
-  expect(await readPromptContext($)).toContain('/flow approve diagnose')
+test('a red recorded after the approval does not undo Diagnose, because the earliest red is the reference', () => {
+  const later = { ...red, runId: 'later', tree: 'attempt', at: 50 }
+  expect(judgeDiagnose({ runs: [later, red], approval: diagnosisComment.url }, [1], info).done).toBe(true)
 })
 
-test('a diagnosis comment that falls short is denied with the list of what is missing', async ($, on) => {
-  const comments = await atGreen($, on, ['test/fix.bats', 'test/other.bats'])
-  const body = '## Root cause\nx\n## Evidence\nbats test/fix.bats\n## Proposed fix\nx\n## Regression test\ntest/fix.bats'
-  const denial = (await postComment($, comments, body)).deny
-  expect(denial).toContain('the heading "Rejected hypotheses"')
-  expect(denial).toContain('the red file test/other.bats')
-  expect(denial).not.toContain('the red command "')
-  expect((await postComment($, comments, buildDiagnosis('bats other', ['test/fix.bats', 'test/other.bats']))).deny).toContain('the red command "bats test/fix.bats"')
-  expect(await readFlowStatus($)).toContain('▸ Diagnosis')
+test('Diagnose waits for a comment strictly after the earliest red, then approval naming that comment', () => {
+  const second = { ...red, runId: 'second', at: 5 }
+  for (const at of [0.5, 1]) expect(judgeDiagnose({ runs: [red, second] }, [1], {
+    1: { ...info[1], comments: [{ ...diagnosisComment, createdAt: new Date(at).toISOString() }] },
+  }).fact).toBe('no comment after the red')
+  expect(judgeDiagnose({ runs: [red] }, [1], info)).toMatchObject({ fact: 'waiting for /flow approve <url>', need: 'approval', isWaitingApproval: true })
+  expect(judgeDiagnose({ runs: [red], approval: 'other' }, [1], info).done).toBe(false)
 })
 
-test('a red with no files needs a Regression test section that explains why there is no test', async ($, on) => {
-  const comments = await atGreen($, on, [])
-  const empty = buildDiagnosis(reproduction, []).replace('None: the bug lives in a script no test reaches.\n', '')
-  expect((await postComment($, comments, empty)).deny).toContain('a Regression test section that explains why there is no test')
-  expect((await postComment($, comments, buildDiagnosis(reproduction, []))).deny).toBeUndefined()
+test('findFixGreen needs a pass after the bound with an earlier red of the same argv on another tree', () => {
+  const latest = { ...green, runId: 'latest', at: 4 }
+  expect(findFixGreen([latest, red, green, { ...green, argv: ['unrelated'], runId: 'unpaired', at: 5 }], 0)).toEqual(latest)
+  expect(findFixGreen([red, green, latest], 2)).toEqual(latest)
+  expect(findFixGreen([red, green], 2)).toBeUndefined()
+  expect(findFixGreen([red, { ...green, tree: red.tree }], 0)).toBeUndefined()
+  expect(findFixGreen([red, { ...green, argv: ['other'] }], 0)).toBeUndefined()
+  expect(findFixGreen([{ ...red, at: green.at }, green], 0)).toBeUndefined()
+  expect(findFixGreen([{ ...red, outcome: { kind: 'timeout', minutes: 1 } }, green], 0)).toEqual(green)
 })
 
-test('a comment before the green is no diagnosis', async ($, on) => {
-  const comments: Record<number, IssueComment[]> = {}
-  createWorld(on, { branch: 'fix' }, { session: { ...noFlow, flow: 'fix', issues: [1], info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } }, unit: { start: 'c0' }, issueComments: comments })
-  expect((await postComment($, comments, 'a remark')).deny).toBeUndefined()
-  await runFlowCommand($, 'approve diagnose')
-  expect(await readFlowStatus($)).not.toContain('✓ Diagnosis')
+test('a deleted approved comment reopens Diagnose, while a newer comment does not', () => {
+  const approved = { runs: [red], approval: diagnosisComment.url }
+  expect(judgeDiagnose(approved, [1], { 1: { ...info[1], comments: [] } }).fact).toBe('approved comment deleted')
+  const newer = { ...diagnosisComment, url: 'https://github.com/o/r/issues/1#issuecomment-2', createdAt: new Date(10).toISOString() }
+  expect(judgeDiagnose(approved, [1], { 1: { ...info[1], comments: [newer] } }).fact).toBe('approved comment deleted')
+  expect(judgeDiagnose(approved, [1], { 1: { ...info[1], comments: [diagnosisComment, newer] } }).done).toBe(true)
 })
 
-test('/flow approve diagnose from the composer approves the latest comment and finishes Diagnose', async ($, on) => {
-  const comments = await atGreen($, on)
-  await postComment($, comments, buildDiagnosis(reproduction))
-  expect((await runFlowCommand($, 'approve diagnose', composer)).text).toContain('Diagnosis approved')
-  expect(await readCurrentStep($)).toBe('Code')
+test('Diagnose displays unavailable issue and comment facts, including a comments read error', () => {
+  expect(judgeDiagnose(diagnosed, [], {}).fact).toBe('issue not yet created')
+  expect(judgeDiagnose(diagnosed, [1], {}).fact).toBe('issue facts unavailable')
+  expect(judgeDiagnose(diagnosed, [1], { 1: { error: 'issue missing' } }).fact).toBe('issue missing')
+  expect(judgeDiagnose(diagnosed, [1], { 1: { title: 'bug', labels: [] } }).fact).toBe('issue comments unavailable')
+  expect(judgeDiagnose(diagnosed, [1], { 1: { ...info[1], comments: { error: 'comments unreadable' } } }).fact).toBe('comments unreadable')
+  expect(judgeDiagnose(diagnosed, [], {})).toMatchObject({ need: 'issue' })
+  const unreadableIssues: Record<string, IssueInfo>[] = [{}, { 1: { error: 'issue missing' } }, { 1: { title: 'bug', labels: [] } }, { 1: { ...info[1], comments: { error: 'comments unreadable' } } }]
+  for (const unreadable of unreadableIssues) {
+    expect(judgeDiagnose(diagnosed, [1], unreadable)).toMatchObject({ need: 'comments' })
+  }
 })
 
-test('/flow approve diagnose from any other origin is refused and approves nothing', async ($, on) => {
-  const comments = await atGreen($, on)
-  await postComment($, comments, buildDiagnosis(reproduction))
-  const refused = await runFlowCommand($, 'approve diagnose', { kind: 'plugin', name: 'working-agreement' })
-  expect(refused.text).toContain("is the user's to run from the prompt")
-  expect(await readCurrentStep($)).toBe('Diagnose')
-})
-
-test('/flow approve diagnose with no diagnosis comment is refused', async ($, on) => {
-  await atGreen($, on)
-  expect((await runFlowCommand($, 'approve diagnose')).text).toContain('no diagnosis comment to approve')
-})
-
-test('a newer diagnosis comment voids an earlier approval', async ($, on) => {
-  const comments = await atGreen($, on)
-  await postComment($, comments, buildDiagnosis(reproduction))
-  await runFlowCommand($, 'approve diagnose')
-  expect(await readCurrentStep($)).toBe('Code')
-  await postComment($, comments, buildDiagnosis(reproduction).replace('Stop one item later.', 'Stop two items later.'))
-  expect(await readCurrentStep($)).toBe('Diagnose')
-  expect(await readFlowStatus($)).toContain('▸ Approval')
-  await runFlowCommand($, 'approve diagnose')
-  expect(await readCurrentStep($)).toBe('Code')
+test('Diagnose agent sentences follow the requirement, independently of pane wording', () => {
+  const noComment = { 1: { ...info[1], comments: [] } }
+  const cases = [
+    [judgeDiagnose({ runs: [] }, [1], info), 'Diagnose next needs a failing red run through the run tool'],
+    [judgeDiagnose(diagnosed, [], {}), 'Diagnose next needs the issue to exist, for the diagnosis comment'],
+    [judgeDiagnose(diagnosed, [1], {}), 'Diagnose cannot read the comments on #1 yet; retry, and if it keeps failing, stop and tell the user'],
+    [judgeDiagnose({ runs: [red] }, [1], noComment), "Diagnose next needs a diagnosis comment on #1 after the red run, then the user's /flow approve <comment URL>"],
+    [judgeDiagnose(diagnosed, [1], noComment), "Diagnose next needs a diagnosis comment on #1 after the red run, then the user's /flow approve <comment URL>"],
+    [judgeDiagnose({ runs: [red] }, [1], info), "Diagnose next needs the user's /flow approve <comment URL> naming the diagnosis comment after the red run"],
+    [judgeDiagnose(diagnosed, [1], info), 'Diagnose is done'],
+  ] as const
+  for (const [judgement, sentence] of cases) {
+    expect(describeDiagnoseNeed(judgement.done ? undefined : judgement.need, [1])).toBe(sentence)
+  }
+  const missing = judgeDiagnose({ runs: [red] }, [12, 13], { 12: { ...info[1], comments: [] }, 13: { ...info[1], comments: [] } })
+  expect(missing).toMatchObject({ need: 'comment', fact: 'no comment after the red' })
+  expect(describeDiagnoseNeed(missing.done ? undefined : missing.need, [12, 13])).toBe("Diagnose next needs a diagnosis comment on #12 or #13 after the red run, then the user's /flow approve <comment URL>")
 })

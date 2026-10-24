@@ -1,13 +1,7 @@
+import type { FilePort } from './files'
+import { isRecord } from './guards'
 import { fail, formatError, succeed } from './result'
 import type { Result } from './result'
-
-/**
- * Tells a plain object from an array, null or a primitive.
- *
- * @param value - The value to test.
- * @returns Whether the value is a plain object.
- */
-export const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 
 /**
  * Reads a string field, falling back to empty.
@@ -37,4 +31,18 @@ export function parseJson(text: string): Result<unknown> {
   } catch (error) {
     return fail(`not JSON: ${formatError(error)}`)
   }
+}
+
+/**
+ * Reads external JSON, retaining absence and malformed content as an undefined value.
+ * @param files - The engine's file reader.
+ * @param path - The file to read.
+ * @returns The decoded value, or undefined when reading or parsing fails.
+ */
+export async function readJson(files: FilePort, path: string): Promise<unknown> {
+  // Absence is part of the readJson contract.
+  try {
+    const parsed = parseJson(await files.read(path))
+    return parsed.isOk ? parsed.value : undefined
+  } catch { return undefined }
 }

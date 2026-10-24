@@ -1,13 +1,33 @@
-import type { FlowRow, FlowStep, FlowSubStep, FlowView } from '../../types'
-import { drawRule, layoutLabelRows, measureLabelWidth } from './pane-layout'
-import { hintIndent, inlineGap, keyWidth, pillGap, pillRowGap, sectionGap, statusColumns } from './theme'
+import type { FlowRow, FlowStep, FlowView } from '../../types'
+import { drawRule } from './pane-layout'
+import { inlineGap, keyWidth, pillGap, sectionGap, statusColumns } from './theme'
 
-function keyedLine(row: FlowRow): string {
-  return `${row.key.padEnd(keyWidth)}${row.value}`
+/**
+ * Aligns a status value beneath the shared key column.
+ * @param key - The row label.
+ * @param value - The complete displayed value.
+ * @returns The padded label followed by the value.
+ */
+export function keyedLine(key: string, value: string): string {
+  return `${key.padEnd(keyWidth)}${value}`
 }
 
-function stepLine(step: FlowStep | FlowSubStep): string {
-  return `${step.symbol} ${step.label}${step.isStale ? `${inlineGap}stale` : ''}`
+/**
+ * Includes a pane row's suffix in its plain status line.
+ * @param row - The pane row.
+ * @returns The aligned row including its optional suffix.
+ */
+function rowLine(row: FlowRow): string {
+  return keyedLine(row.key, `${row.value}${row.suffix ? ` · ${row.suffix.text}` : ''}`)
+}
+
+/**
+ * Retains a flow step's symbol and optional detail in plain-text status.
+ * @param step - The displayed flow step.
+ * @returns The complete step line.
+ */
+function stepLine(step: FlowStep): string {
+  return `${step.symbol} ${step.label}${step.detail ? ` · ${step.detail}` : ''}`
 }
 
 /**
@@ -17,19 +37,14 @@ function stepLine(step: FlowStep | FlowSubStep): string {
  * @returns The pane's lines, joined.
  */
 export function renderStatusText(view: FlowView): string {
-  const labelRows = layoutLabelRows(view.labels, measureLabelWidth(statusColumns))
-  const labelLines = labelRows.map((row, index) => (index === 0 ? 'Labels'.padEnd(keyWidth) : ' '.repeat(keyWidth)) + row.map(label => ` ${label} `).join(' '.repeat(pillGap)))
   const sections: string[][] = [
     [`${view.flow}${inlineGap}${view.progress}`, drawRule(statusColumns)],
     [...(view.pending ? [view.pending] : []), ...view.issues.flatMap(issue => [`#${issue.number}`, ...(issue.title ? [issue.title] : [])])],
-    // A blank line between pill rows, as the pane has.
-    labelLines.flatMap((line, index) => (index === 0 ? [line] : [...Array<string>(pillRowGap).fill(''), line])),
-    view.meta.map(keyedLine),
-    view.steps.flatMap(step => [
-      stepLine(step), ...(step.hint ? [`${' '.repeat(hintIndent)}${step.hint}`] : []), ...step.subSteps.flatMap(sub => [`${' '.repeat(hintIndent)}${stepLine(sub)}`, ...(sub.hint ? [`${' '.repeat(hintIndent * 2)}${sub.hint}`] : [])]),
-    ]),
-    view.notes.map(keyedLine),
-    view.footer ? [`${view.footer.text ? `${view.footer.text} ` : ''}Continue in new session: /flow handoff`] : [],
+    view.labels.length ? [keyedLine('Labels', view.labels.map(label => ` ${label} `).join(' '.repeat(pillGap)))] : [],
+    view.meta.filter(row => row.key !== 'GitHub').map(rowLine),
+    view.steps.map(stepLine),
+    view.notes.map(rowLine),
+    view.footer ? [view.footer.action === 'start' ? 'Start new session: /clear' : 'Continue in new session: /flow handoff'] : [],
   ]
   return sections.filter(section => section.length > 0).map(section => section.join('\n')).join('\n'.repeat(sectionGap + 1))
 }

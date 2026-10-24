@@ -1,19 +1,3 @@
-function compileGlob(pattern: string): RegExp {
-  const source = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*\//g, '\u0000').replace(/\*\*/g, '\u0001').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')
-    .replace(/\u0000/g, '(?:.*/)?').replace(/\u0001/g, '.*')
-  return new RegExp(`^${source}$`)
-}
-
-/**
- * Tells whether a repository-relative path matches any of the globs.
- *
- * @param globs - Globs where `**` spans directories and `*` stays within one.
- * @param relativePath - The path, relative to the repository root.
- * @returns True on the first match.
- */
-export const isPathMatched = (globs: string[], relativePath: string): boolean => globs.some(glob => compileGlob(glob).test(relativePath))
-
 /**
  * Resolves a path against a directory and folds its `.` and `..` parts, without touching the file system.
  *

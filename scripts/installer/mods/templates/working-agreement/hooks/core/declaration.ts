@@ -1,84 +1,115 @@
-import { flowDefinitions } from '../domain/flow-definitions'
+import { createReadPort } from './read-port'
+import { flowDefinitions, findFlow } from '../domain/flow-definitions'
 import type { FlowDefinition } from '../domain/flow-definitions'
 import { composeInstruction, formatIssueReferences } from '../domain/instruction'
-import { mergeSkills } from '../domain/records'
+import { createEmptyUnit, mergeSkills } from '../domain/records'
 import type { IssueInfo, Session } from '../domain/records'
 import { describeRequirement } from '../domain/requirements'
-import { findRecordableBranch, formatStepLabel } from '../domain/step-states'
-import { readIssue } from '../lib/github'
+import { formatStepLabel, isUnitOnBase } from '../domain/step-states'
+import { isAncestor, readGitOutput, runGit, readDefaultRef } from '../lib/git'
+import { readClosingPullRequests, readIssue } from '../lib/github'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
 import { stepSymbol } from '../ui/theme'
 import type { EnginePort } from './engine-port'
-import { describeIssue, readGithubStatus, readPullRequests, storePullRequests } from './github-sync'
+import { describeIssue, readGithubStatus } from './github-sync'
 import { refreshView } from './pane-view'
 import { locatePosition } from './position'
-import { readSession, updateUnits, writeSession } from './record-store'
-import { readGit, readHeadCommit } from './repository'
+import { nextGeneration, readBranchUnits, readDeclaration, readSession, readUnit, sameIdentity, writeDeclaration, writeSession, replaceUnitEntry } from './record-store'
 import { sessionMemory } from './session-memory'
+import { readGit } from './repository'
+import { readUnitSlice } from './unit-slice'
+import { readCandidates, readConclusion } from './unit-github'
+import { pruneConcluded } from './pruning'
 
 /**
- * Declares the session's flow and the issues its unit resolves; runs inside `serial`.
+ * Declares the session's flow and the issues its unit resolves; runs inside `withRecordLock`.
  *
- * @param port - The engine calls.
+ * @param engine - The engine calls.
  * @param flow - The flow's id.
  * @param issues - The declared issue numbers.
  * @param declaredBy - Who declares it: a flow the user owns refuses the agent.
  * @returns The declaration with the flow's steps and next action, or why it was refused.
  */
-export async function declareFlow(port: EnginePort, flow: string, issues: number[], declaredBy: FlowDefinition['declaredBy']): Promise<Result<string>> {
-  const definition = flowDefinitions.flows[flow]
+export async function declareFlow(engine: EnginePort, flow: string, issues: number[], declaredBy: FlowDefinition['declaredBy']): Promise<Result<string>> {
+  const port = createReadPort(engine)
+  const definition = findFlow(flow)
   if (!definition) return fail(`Unknown flow "${flow}" — use one of ${Object.keys(flowDefinitions.flows).join(', ')}.`)
   if (definition.declaredBy === 'human' && declaredBy === 'agent') {
     return fail(`${definition.label} is declared only by the user — tell the user why and ask them to run /flow.`)
   }
+  const checked = await runGit(port.processes, ['symbolic-ref', '--short', '-q', 'HEAD'])
+  if (checked.exitCode !== 0 || !checked.stdout.trim()) return fail('check out a branch first')
   const session = await readSession(port)
-  if (session.prCreated) return fail('A PR was already created in this session — one unit of work per session: run /handoff, then /clear, then declare the next flow.')
-  if (session.flow && session.output && !session.reclassifyOk) {
-    return fail(`${flowDefinitions.flows[session.flow]?.label} already produced output (issue or commit) — reclassification needs /flow override reclassify <reason>.`)
-  }
-  if (definition.issue === 'required' && !issues.length) return fail(`${definition.label} needs an issue — pass its number.`)
-  const declared = definition.issue === 'none' ? [] : issues
+  if (!issues.every(issue => Number.isSafeInteger(issue) && issue > 0)) return fail('Issue numbers must be positive integers.')
+  const declared = [...new Set(issues)].sort((a, b) => a - b)
 
+  const identity = { branch: checked.stdout.trim(), issues: declared }
+  const git = await readGit(port)
+  if (!git?.head) return fail('check out a branch with a commit first')
+  const isOnDefault = isUnitOnBase(identity, git)
   const github = await readGithubStatus(port, true)
+  const candidates = await readCandidates(port, identity.branch, git.base, false, true)
+  if ((!isOnDefault || declared.length) && (github !== 'connected' || !candidates.isOk)) return fail('GitHub unreachable — retry')
   const info: Record<string, IssueInfo> = {}
-  if (github === 'connected') {
-    for (const issue of declared) {
-      const read = await readIssue(port.processes, issue)
-      if (!read.isOk) return fail(`Issue #${issue}: ${read.error} — check the number.`)
-      if (read.value.state !== 'OPEN') return fail(`Issue #${issue} is ${read.value.state.toLowerCase()} — declare an open issue.`)
-      info[issue] = await describeIssue(port, flow, issue, read.value)
-    }
+  for (const issue of declared) {
+    const read = await readIssue(port.processes, issue)
+    if (!read.isOk) return fail(`Issue #${issue}: ${read.error} — check the number.`)
+    if (flow === 'follow-up') {
+      const closing = await readClosingPullRequests(port.processes, issue)
+      if (!closing.isOk) return fail('GitHub unreachable — retry')
+      if (!closing.value.length) return fail(`Issue #${issue} has no open or merged closing PR — declare its own flow.`)
+      const open = closing.value.filter(pr => pr.state === 'OPEN')
+      if (open.length && !open.some(pr => pr.headRefName === identity.branch)) return fail(`Issue #${issue} has an open PR — check out its head branch (${open.map(pr => pr.headRefName).join(', ')}).`)
+    } else if (read.value.state !== 'OPEN') return fail(`Issue #${issue} is ${read.value.state.toLowerCase()} — declare an open issue.`)
+    info[issue] = await describeIssue(port, flow, issue, read.value)
   }
-  if (flow === 'close-out') {
-    const git = await readGit(port)
-    if (!git || (git.ahead === 0 && !git.isDirty)) return fail('Close out needs code on the issue branch — nothing ahead of base and no changes here.')
+  const declaration = await readDeclaration(port, identity)
+  const previous = await readUnit(port, identity)
+  const conclusion = candidates.isOk ? await readConclusion(port, identity, previous, candidates.value) : null
+  if (conclusion && !conclusion.isOk) return fail('GitHub unreachable — retry')
+  const isConcluded = !!(conclusion?.isOk && conclusion.value)
+  // Allocate before pruning so even mixed mirrors from a dead chat cannot name the new lifetime.
+  const generation = declaration && !isConcluded ? declaration.generation : await nextGeneration(port)
+  await pruneConcluded(port)
+  const current = await readSession(port)
+  const inherited = isConcluded ? createEmptyUnit() : previous
+  const entries = isOnDefault ? [] : await readBranchUnits(port, identity.branch)
+  const existing = !isConcluded && entries.some(entry => sameIdentity(entry.identity, identity))
+  const slice = await readUnitSlice(port, identity, inherited, git, flow === 'close-out')
+  if (existing && slice?.isFrozen && flow !== 'close-out') return fail('This unit is frozen — declare on a new branch.')
+  if (!existing && entries.length && flow !== 'close-out') {
+    const slices = await Promise.all(entries.map(entry => readUnitSlice(port, entry.identity, entry, git)))
+    if (slices.some(previous => previous && !previous.isFrozen && previous.base === git.head)) return fail('The previous unit has an empty slice — commit work before declaring a new unit.')
   }
+  const merged = candidates.isOk ? candidates.value.filter(pr => pr.state === 'MERGED') : []
+  const delivered = await Promise.all(merged.map(async pr => await isAncestor(port.processes, pr.headRefOid, git.head)))
+  const keepsBase = existing && (!inherited.base || await isAncestor(port.processes, inherited.base, git.head))
+  const defaultRef = await readDefaultRef(port.processes, git.base)
+  const base = isOnDefault ? undefined
+    : keepsBase ? inherited.base ?? slice?.base ?? undefined
+    : flow === 'follow-up' || delivered.some(Boolean) || entries.some(entry => !sameIdentity(entry.identity, identity)) ? git.head
+    : await readGitOutput(port.processes, ['merge-base', defaultRef, git.head]) ?? undefined
+  if (!isOnDefault && !base) return fail('Cannot read unit base — retry.')
+  const entry = { ...inherited, base, generation, identity, skills: mergeSkills(inherited.skills, session.skills ?? []) }
+  await writeDeclaration(port, { v: 1, identity, flow, generation })
   const next: Session = {
-    ...session, flow, issues: declared, info, gh: github, reclassifyOk: false, followUp: undefined,
-    skills: undefined,
+    ...replaceUnitEntry(current, identity, entry), unit: identity,
+    flow, issues: declared, info, gh: github, skills: undefined,
   }
   await writeSession(port, next)
-  // Flow steps that ran before the declaration count for the unit; Close out also owns the commits made before it.
-  const before = session.skills ?? []
-  const start = flow === 'close-out' ? undefined : await readHeadCommit(port)
-  // A flow declared on a feature branch ties the unit to it at once, so a switch before the first write is judged against it.
-  const git = await readGit(port)
-  const branch = findRecordableBranch(git)
-  await updateUnits(port, next, unit => ({
-    ...unit, skills: mergeSkills(unit.skills, before), start: unit.start ?? start,
-    branch: branch && (!unit.branch || unit.branch === git?.base) ? branch : unit.branch,
-  }))
-  // This runs inside `serial`, which syncPullRequests and syncIssues would wait on, so the PR read is stored lock-free here.
-  sessionMemory.pullRequestsCheckedAt = await port.now()
-  if (github === 'connected') await storePullRequests(port, await readPullRequests(port, next))
   sessionMemory.issuesCheckedAt = await port.now()
-  await refreshView(port, false, true)
-  void port.openPane()
+  sessionMemory.checks.clear()
+  sessionMemory.rules.clear()
   const position = await locatePosition(port, next)
+  await refreshView(port, true, true)
+  void port.openPane()
   if (!position) return fail('The flow was declared but its position could not be located.')
-  const warning = github === 'connected' ? '' : ` (GitHub ${github}: issues not verified)`
+  const localMerged = await Promise.all(merged.map(pr => readGitOutput(port.processes, ['rev-parse', '--verify', '--quiet', pr.headRefOid])))
+  const excluded = base === git.head ? Number(await readGitOutput(port.processes, ['rev-list', '--count', git.head, '--not', git.base,
+    ...localMerged.filter((sha): sha is string => !!sha)]) ?? 0) : 0
+  const notice = excluded > 0 ? ` ${excluded} commits already on this branch are not counted for this unit.` : ''
   const which = declared.length ? ` for ${formatIssueReferences(declared, ', ')}` : ''
-  const steps = position.states.map(state => `${stepSymbol[state.state]} ${formatStepLabel(state.step, position.unit.pr)} (${describeRequirement(state, next, position)})`).join('; ')
-  return succeed(`Flow declared: ${definition.label}${which}${warning}. Steps: ${steps}. ${composeInstruction(position, next)}`)
+  const steps = position.states.map(state => `${stepSymbol[state.state]} ${formatStepLabel(state.step, position.pullRequest, state.state === 'current')} (${describeRequirement(state, next, position)})`).join('; ')
+  return succeed(`Flow declared: ${definition.label}${which}.${notice} Steps: ${steps}. ${composeInstruction(position, next)}`)
 }

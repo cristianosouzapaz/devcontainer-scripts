@@ -53,33 +53,12 @@ RUN mkdir -p /tmp/dc-init \
     && ln -sf /opt/devcontainer/bin/devcontainer-data /usr/local/bin/devcontainer-data \
     && ln -sf /opt/devcontainer/bin/devcontainer-install /usr/local/bin/devcontainer-install
 
-# Install herdr, verified against its published checksum. HERDR_VERSION is empty
-# by default (latest release); set it to pin a release and bust this layer.
+# Install herdr, verified against its published checksum, with the scripts tree's
+# installer, which the CI Bash job also runs. Its path is an interface between this
+# Dockerfile and the scripts tree. HERDR_VERSION is empty by default (latest release);
+# set it to pin a release and bust this layer.
 ARG HERDR_VERSION=""
-RUN set -eux; \
-    case "$(uname -m)" in \
-        x86_64) herdr_arch='x86_64' ;; \
-        aarch64|arm64) herdr_arch='aarch64' ;; \
-        *) exit 1 ;; \
-    esac; \
-    if [ -n "${HERDR_VERSION}" ]; then \
-        herdr_release_url="https://api.github.com/repos/herdrdev/herdr/releases/tags/${HERDR_VERSION}"; \
-    else \
-        herdr_release_url='https://api.github.com/repos/herdrdev/herdr/releases/latest'; \
-    fi; \
-    release_file="$(mktemp)"; \
-    curl --fail --location --silent --show-error \
-        "$herdr_release_url" \
-        --output "$release_file"; \
-    herdr_asset="herdr-linux-${herdr_arch}"; \
-    herdr_url="$(jq -r --arg asset "$herdr_asset" '.assets[] | select(.name == $asset) | .browser_download_url' "$release_file")"; \
-    herdr_digest="$(jq -r --arg asset "$herdr_asset" '.assets[] | select(.name == $asset) | .digest' "$release_file")"; \
-    test -n "$herdr_url" && test "$herdr_url" != null; \
-    test "${herdr_digest#sha256:}" != "$herdr_digest"; \
-    curl --fail --location --silent --show-error "$herdr_url" --output /tmp/herdr; \
-    printf '%s  %s\n' "${herdr_digest#sha256:}" /tmp/herdr | sha256sum --check --status; \
-    install -D -m 0755 /tmp/herdr /usr/local/lib/herdr/herdr; \
-    rm -f /tmp/herdr "$release_file"
+RUN bash /opt/devcontainer/herdr-install.sh /usr/local/lib/herdr/herdr
 
 # Pre-create the workspace folder and its schema marker in the image so a freshly
 # created project volume already has them before any lifecycle command runs.

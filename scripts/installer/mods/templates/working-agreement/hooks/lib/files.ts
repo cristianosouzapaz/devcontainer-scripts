@@ -1,45 +1,22 @@
-import { withTimeout } from './result'
-import type { ClockPort, Result } from './result'
+import { runProcess } from './process'
+import type { ProcessPort, ProcessResult } from './process'
 
-/** What a stat reports of a file: its size and when it last changed. */
-interface FileStat { size: number; mtimeMs: number }
+/** A directory entry used when scanning session mirrors. */
+interface FileEntry { name: string }
+
+/** The path resolved by the engine's file system. */
+type FileKind = 'file' | 'dir' | 'other'
+interface FileStat { kind: FileKind; realPath?: string }
 
 /** The engine's file system. */
-export interface FilePort { read: (path: string) => Promise<string>; stat: (path: string) => Promise<FileStat>; write: (path: string, text: string) => Promise<void> }
-
-/** How long a file-system call may take. */
-const fileTimeoutMs = 5000
+export interface FilePort { stat: (path: string) => Promise<FileStat>; read: (path: string) => Promise<string>; write: (path: string, text: string) => Promise<void>; list: (path: string) => Promise<FileEntry[]> }
 
 /**
- * Reads a text file.
- *
- * @param files - The engine's file system.
- * @param clock - The clock the timeout waits on.
- * @param path - The file's path.
- * @returns Its contents, or a failure when it cannot be read in time.
+ * Removes named files while retaining rejected runs as failures and non-zero exits as output.
+ * @param processes - The engine's process runner.
+ * @param paths - The exact paths to remove.
+ * @returns The process output, or a failure retaining the original rejection.
  */
-export const readTextFile = (files: FilePort, clock: ClockPort, path: string): Promise<Result<string>> =>
-  withTimeout(clock, fileTimeoutMs, `read ${path}`, () => files.read(path))
-
-/**
- * Stats a file.
- *
- * @param files - The engine's file system.
- * @param clock - The clock the timeout waits on.
- * @param path - The file's path.
- * @returns Its size and change time, or a failure when it is missing or cannot be read in time.
- */
-export const statFile = (files: FilePort, clock: ClockPort, path: string): Promise<Result<FileStat>> =>
-  withTimeout(clock, fileTimeoutMs, `stat ${path}`, () => files.stat(path))
-
-/**
- * Writes a text file whole.
- *
- * @param files - The engine's file system.
- * @param clock - The clock the timeout waits on.
- * @param path - The file's path.
- * @param text - Its new contents.
- * @returns Nothing, or a failure when it cannot be written in time.
- */
-export const writeTextFile = (files: FilePort, clock: ClockPort, path: string, text: string): Promise<Result<void>> =>
-  withTimeout(clock, fileTimeoutMs, `write ${path}`, () => files.write(path, text))
+export function removeFile(processes: ProcessPort, ...paths: string[]): Promise<ProcessResult> {
+  return runProcess(processes, ['rm', '-f', '--', ...paths])
+}
