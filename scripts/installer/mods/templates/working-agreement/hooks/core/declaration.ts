@@ -3,11 +3,13 @@ import { flowDefinitions, findFlow } from '../domain/flow-definitions'
 import type { FlowDefinition } from '../domain/flow-definitions'
 import { composeInstruction, formatIssueReferences } from '../domain/instruction'
 import { createEmptyUnit, mergeSkills } from '../domain/records'
-import type { IssueInfo, Session } from '../domain/records'
+import type { Identity, IssueInfo, Session, Unit, UnitRecord } from '../domain/records'
 import { describeRequirement } from '../domain/requirements'
 import { formatStepLabel, isUnitOnBase } from '../domain/step-states'
 import { isAncestor, readGitOutput, runGit, readDefaultRef } from '../lib/git'
+import type { GitState } from '../lib/git'
 import { readClosingPullRequests, readIssue } from '../lib/github'
+import type { PullRequestCandidate } from '../lib/github'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
 import { stepSymbol } from '../ui/theme'
@@ -15,12 +17,15 @@ import type { EnginePort } from './engine-port'
 import { describeIssue, readGithubStatus } from './github-sync'
 import { refreshView } from './pane-view'
 import { locatePosition } from './position'
-import { nextGeneration, readBranchUnits, readDeclaration, readSession, readUnit, sameIdentity, writeDeclaration, writeSession, replaceUnitEntry } from './record-store'
+import { deleteDeclaration, nextGeneration, readBranchUnits, readDeclaration, readSession, readUnit, sameIdentity, writeDeclaration, writeSession, replaceUnitEntry } from './record-store'
 import { sessionMemory } from './session-memory'
 import { readGit } from './repository'
 import { readUnitSlice } from './unit-slice'
 import { readCandidates, readConclusion } from './unit-github'
 import { pruneConcluded } from './pruning'
+
+/** The unit a new identity continues: an attach re-keys it, a hop copies its evidence without its base. */
+interface Predecessor { declaration: UnitRecord; unit: Unit; isAttach: boolean }
 
 /**
  * Declares the session's flow and the issues its unit resolves; runs inside `withRecordLock`.
@@ -65,17 +70,22 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
     info[issue] = await describeIssue(port, flow, issue, read.value)
   }
   const declaration = await readDeclaration(port, identity)
-  const previous = await readUnit(port, identity)
+  const predecessor = declaration ? null : await readPredecessor(port, flow, identity, git, candidates.isOk ? candidates.value : [])
+  if (predecessor && !predecessor.isOk) return fail('GitHub unreachable — retry')
+  const carried = predecessor?.value ?? null
+  const previous = carried?.unit ?? await readUnit(port, identity)
   const conclusion = candidates.isOk ? await readConclusion(port, identity, previous, candidates.value) : null
   if (conclusion && !conclusion.isOk) return fail('GitHub unreachable — retry')
   const isConcluded = !!(conclusion?.isOk && conclusion.value)
+  const continued = declaration ?? (carried?.isAttach ? carried.declaration : null)
   // Allocate before pruning so even mixed mirrors from a dead chat cannot name the new lifetime.
-  const generation = declaration && !isConcluded ? declaration.generation : await nextGeneration(port)
+  const generation = continued && !isConcluded ? continued.generation : await nextGeneration(port)
   await pruneConcluded(port)
   const current = await readSession(port)
   const inherited = isConcluded ? createEmptyUnit() : previous
-  const entries = isOnDefault ? [] : await readBranchUnits(port, identity.branch)
-  const existing = !isConcluded && entries.some(entry => sameIdentity(entry.identity, identity))
+  const entries = isOnDefault ? [] : (await readBranchUnits(port, identity.branch))
+    .filter(entry => !carried?.isAttach || !sameIdentity(entry.identity, carried.declaration.identity))
+  const existing = !isConcluded && (!!carried?.isAttach || entries.some(entry => sameIdentity(entry.identity, identity)))
   const slice = await readUnitSlice(port, identity, inherited, git, flow === 'close-out')
   if (existing && slice?.isFrozen && flow !== 'close-out') return fail('This unit is frozen — declare on a new branch.')
   if (!existing && entries.length && flow !== 'close-out') {
@@ -93,8 +103,11 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
   if (!isOnDefault && !base) return fail('Cannot read unit base — retry.')
   const entry = { ...inherited, base, generation, identity, skills: mergeSkills(inherited.skills, session.skills ?? []) }
   await writeDeclaration(port, { v: 1, identity, flow, generation })
+  const attached = carried?.isAttach ? carried.declaration.identity : null
+  if (attached) await deleteDeclaration(port, attached)
+  const kept = attached ? { ...current, units: current.units.filter(unit => !sameIdentity(unit.identity, attached)) } : current
   const next: Session = {
-    ...replaceUnitEntry(current, identity, entry), unit: identity,
+    ...replaceUnitEntry(kept, identity, entry), unit: identity,
     flow, issues: declared, info, gh: github, skills: undefined,
   }
   await writeSession(port, next)
@@ -112,4 +125,36 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
   const which = declared.length ? ` for ${formatIssueReferences(declared, ', ')}` : ''
   const steps = position.states.map(state => `${stepSymbol[state.state]} ${formatStepLabel(state.step, position.pullRequest, state.state === 'current')} (${describeRequirement(state, next, position)})`).join('; ')
   return succeed(`Flow declared: ${definition.label}${which}.${notice} Steps: ${steps}. ${composeInstruction(position, next)}`)
+}
+
+/**
+ * Finds the unit a new identity continues: the same branch's issue-less unit when a produced issue is attached,
+ * or the default branch's unit for the same issues when the unit hops to its own branch.
+ *
+ * @param port - The engine calls.
+ * @param flow - The declared flow's id; the predecessor must carry the same one.
+ * @param identity - The new identity, which has no declaration yet.
+ * @param git - The checkout's repository and default branch.
+ * @param candidates - The branch's pull requests, for an attached unit's conclusion.
+ * @returns The predecessor's declaration and the evidence the new unit starts from, null when there is none, or a comparison failure.
+ */
+async function readPredecessor(port: EnginePort, flow: string, identity: Identity, git: GitState, candidates: PullRequestCandidate[]): Promise<Result<Predecessor | null>> {
+  if (!identity.issues.length) return succeed(null)
+  if (findFlow(flow)?.issue === 'produced') {
+    const issueless = { branch: identity.branch, issues: [] }
+    const declaration = await readDeclaration(port, issueless)
+    if (declaration?.flow === flow) {
+      const unit = await readUnit(port, issueless)
+      const conclusion = await readConclusion(port, issueless, unit, candidates)
+      if (!conclusion.isOk) return conclusion
+      const slice = await readUnitSlice(port, issueless, unit, git)
+      if (!conclusion.value && !slice?.isFrozen) return succeed({ declaration, unit, isAttach: true })
+    }
+  }
+  if (isUnitOnBase(identity, git)) return succeed(null)
+  const declaration = await readDeclaration(port, { branch: git.base, issues: identity.issues })
+  if (declaration?.flow !== flow) return succeed(null)
+  // The default branch has no slice, so the branch computes its own base.
+  const { base: _base, ...unit } = await readUnit(port, declaration.identity)
+  return succeed({ declaration, unit, isAttach: false })
 }
