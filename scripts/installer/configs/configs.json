@@ -35,8 +35,8 @@
     {
         "name": "Commitlint",
         "filename": "commitlint.config.js",
-        "version": "1.0.0",
-        "description": "Conventional Commits rules — restricts commit types and caps header/body/footer line lengths.",
+        "version": "1.1.0",
+        "description": "Conventional Commits rules — restricts commit types and caps header length; body and footer line lengths are unlimited.",
         "tags": [
             "git"
         ],

@@ -73,7 +73,13 @@ Wrap every path and message in single quotes. An apostrophe inside a message is 
 
 ## 5. OUTPUT FORMAT
 
-For more than one commit, open with a summary list in application order:
+The output always starts with a copyable block that enters the repository root, because the user's shell may be elsewhere (another worktree, a subdirectory). Take the absolute path from `git rev-parse --show-toplevel`, single-quoted:
+
+```bash
+cd '/absolute/path/to/repo'
+```
+
+After it, for more than one commit, a summary list in application order:
 
 ```
 **N commits proposed:**
@@ -106,7 +112,7 @@ git commit \
 
 A file kept whole across two concerns gets a one-line `Note:` directly above that commit's `git add` block.
 
-For a single commit, emit just the two code blocks — no summary list, no label.
+For a single commit, emit just the `cd` block and the two commit code blocks — no summary list, no label.
 
 ---
 
@@ -114,6 +120,7 @@ For a single commit, emit just the two code blocks — no summary list, no label
 
 Silently verify before emitting:
 
+- the output opens with a `cd` block to the absolute path `git rev-parse --show-toplevel` returned, before any `git add`
 - every file in the analyzed set appears in exactly one `git add`, and no in-scope untracked file was dropped because the diff was silent about it
 - headers are valid types, imperative, within the configured length; scope omitted when unclear
 - body and footer justified by the diff; no authorship or tooling trailers anywhere

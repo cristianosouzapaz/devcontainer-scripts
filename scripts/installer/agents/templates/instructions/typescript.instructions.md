@@ -29,7 +29,8 @@ applyTo: "**/*.{ts,tsx}"
 - **C7:** Optional properties MUST represent values that callers may omit.
 - **C8:** Bindings MUST use `const`.
 - **C9:** TypeScript code MUST NOT use `let` or `var`.
-- **C10:** Publicly exported functions MUST declare explicit return types.
+- **C10:** Exported functions MUST declare their return type as a TypeScript annotation in the signature.
+- **C11:** React components in `.tsx` files MUST NOT have JSDoc comments.
 
 ## Behavior and Reliability
 
