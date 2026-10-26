@@ -1,5 +1,6 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
 
+import { test } from '../../support/kit'
 import { buildWriteCall, noFlow } from '../../support/builders'
 import { readFlowStatus, readPromptContext } from '../../support/helpers'
 import { common, createWorld, root } from '../../support/world'

@@ -1,11 +1,14 @@
 import type { SessionContextBreakdown, SessionContextUsage } from 'claude-code'
 import { isLongSession } from '../../hooks/features/handoff'
 import { diagnosed, diagnosisComment, pushedCloseOut } from '../support/builders'
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
 
+import { test } from '../support/kit'
 import { endTurn, readCurrentStep, readFlowStatus, readPromptContext, runFlowCommand } from '../support/helpers'
 import { createWorld, root } from '../support/world'
 import type { Options } from '../support/world'
+
+interface Release { open: () => void }
 
 test('a handoff whose /handoff turn leaves one document clears and continues from it in a new session', async ($, on) => {
   const { commands, prompts, clock } = createWorld(on, { branch: 'feat', isDirty: true })
@@ -34,7 +37,7 @@ test('a handoff cancelled with /flow handoff cancel runs no /clear', async ($, o
 test('labels an issue sync stores while a handoff starts survive the handoff\'s own write', async ($, on) => {
   const options: Options = { issueLabels: { 1: ['ready-for-agent'] } }
   const { clock } = createWorld(on, { branch: 'feat', isDirty: true }, options)
-  const release: { open: () => void } = { open: () => undefined }
+  const release: Release = { open: () => undefined }
   options.statusGate = new Promise<void>(resolve => { release.open = resolve })
   const starting = runFlowCommand($, 'handoff')
   await clock.settle()

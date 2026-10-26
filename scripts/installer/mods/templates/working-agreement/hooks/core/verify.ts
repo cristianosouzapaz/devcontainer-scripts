@@ -5,6 +5,7 @@ import type { VerifyRecord } from '../../types'
 import type { Unit } from '../domain/records'
 import type { Evidence, UnitSlice } from '../domain/step-states'
 import type { EnginePort } from './engine-port'
+import { logEvent } from './flow-log'
 import { atomicReplace, readCommonDir, readSession, readUnit, recordsPath } from './record-store'
 import { readGit } from './repository'
 import type { FinishedCommand } from './run-command'
@@ -50,6 +51,7 @@ export async function approveVerify(port: EnginePort, id?: string): Promise<Resu
   const common = await readCommonDir(port)
   if (!common) return fail('Cannot locate the repository metadata.')
   await atomicReplace(port, recordsPath(common, 'ok', `${blob}.json`), '{"v":1}')
+  logEvent(port, session, 'approve', { config: blob })
   return succeed(`Verify config ${short} approved.`)
 }
 

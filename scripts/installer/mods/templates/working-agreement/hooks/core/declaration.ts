@@ -4,7 +4,7 @@ import type { FlowDefinition } from '../domain/flow-definitions'
 import { composeInstruction, composeStart, formatIssueReferences } from '../domain/instruction'
 import type { DeclaredFlow } from '../domain/instruction'
 import { createEmptyUnit, mergeSkills } from '../domain/records'
-import type { Identity, IssueInfo, Session, Unit, UnitRecord } from '../domain/records'
+import type { Identity, IssueInfo, Unit, UnitRecord } from '../domain/records'
 import { describeRequirement } from '../domain/requirements'
 import { formatStepLabel, isUnitOnBase, projectDisplayStates } from '../domain/step-states'
 import { isAncestor, readGitOutput, runGit, readDefaultRef } from '../lib/git'
@@ -16,9 +16,10 @@ import type { Result } from '../lib/result'
 import { stepSymbol } from '../ui/theme'
 import type { EnginePort } from './engine-port'
 import { describeIssue, readGithubStatus } from './github-sync'
+import { carryLog, logEvent } from './flow-log'
 import { refreshView } from './pane-view'
 import { locatePosition } from './position'
-import { deleteDeclaration, nextGeneration, readBranchUnits, readDeclaration, readSession, readUnit, sameIdentity, writeDeclaration, writeSession, replaceUnitEntry } from './record-store'
+import { deleteDeclaration, nextGeneration, readBranchUnits, readDeclaration, readSession, readUnit, sameIdentity, writeDeclaration, updateSession, replaceUnitEntry } from './record-store'
 import { sessionMemory } from './session-memory'
 import { readGit } from './repository'
 import { readUnitSlice } from './unit-slice'
@@ -46,7 +47,6 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
   }
   const checked = await runGit(port.processes, ['symbolic-ref', '--short', '-q', 'HEAD'])
   if (checked.exitCode !== 0 || !checked.stdout.trim()) return fail('check out a branch first')
-  const session = await readSession(port)
   if (!issues.every(issue => Number.isSafeInteger(issue) && issue > 0)) return fail('Issue numbers must be positive integers.')
   const declared = [...new Set(issues)].sort((a, b) => a - b)
 
@@ -86,7 +86,6 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
   // Allocate before pruning so even mixed mirrors from a dead chat cannot name the new lifetime.
   const generation = continued && !isConcluded ? continued.generation : await nextGeneration(port)
   await pruneConcluded(port)
-  const current = await readSession(port)
   const inherited = isConcluded ? createEmptyUnit() : previous
   const entries = isOnDefault ? [] : (await readBranchUnits(port, identity.branch))
     .filter(entry => !carried?.isAttach || !sameIdentity(entry.identity, carried.declaration.identity))
@@ -115,17 +114,22 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
   // Close out spans the live merge-base with its branch; a declaration tip comes from no branch.
   const recordedBranch = isOnDefault ? undefined : flow === 'close-out' ? baseBranch
     : keepsBase && inherited.base ? inherited.baseBranch : isTip ? undefined : baseBranch
-  const entry = { ...inherited, base, baseBranch: recordedBranch,
-    generation, identity, skills: mergeSkills(inherited.skills, session.skills ?? []) }
+  const held = (await readSession(port)).unit
   await writeDeclaration(port, { v: 1, identity, flow, generation })
   const attached = carried?.isAttach ? carried.declaration.identity : null
-  if (attached) await deleteDeclaration(port, attached)
-  const remaining = attached ? { ...current, units: current.units.filter(unit => !sameIdentity(unit.identity, attached)) } : current
-  const next: Session = {
-    ...replaceUnitEntry(remaining, identity, entry), unit: identity,
-    flow, issues: declared, info, gh: github, skills: undefined,
+  if (attached) {
+    await deleteDeclaration(port, attached)
+    carryLog(port, attached, identity)
   }
-  await writeSession(port, next)
+  const written = await updateSession(port, current => {
+    const remaining = attached ? { ...current, units: current.units.filter(unit => !sameIdentity(unit.identity, attached)) } : current
+    const entry = { ...inherited, base, baseBranch: recordedBranch, generation, identity, skills: mergeSkills(inherited.skills, current.skills ?? []) }
+    return { ...replaceUnitEntry(remaining, identity, entry), unit: identity, flow, issues: declared, info, gh: github, skills: undefined }
+  })
+  if (!written) return fail('The declaration could not be recorded — retry.')
+  const next = written.session
+  const replaced = attached ?? (held && !sameIdentity(held, identity) ? held : undefined)
+  logEvent(port, next, 'declare', { flow, declaredBy, ...(replaced ? { replaces: replaced } : {}) })
   sessionMemory.issuesCheckedAt = await port.now()
   sessionMemory.checks.clear()
   sessionMemory.rules.clear()

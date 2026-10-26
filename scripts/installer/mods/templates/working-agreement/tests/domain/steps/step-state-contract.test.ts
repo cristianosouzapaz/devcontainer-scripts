@@ -1,13 +1,14 @@
 import type { On } from 'claude-code'
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from '../../support/kit'
 import type { Engine, MockClock } from 'claude-code/testing'
 import { buildWriteCall, pushedCloseOut } from '../../support/builders'
 import { readFlowStatus, readPromptContext, startSkill } from '../../support/helpers'
 import { createWorld } from '../../support/world'
 import type { Checkout, Options } from '../../support/world'
 
-/** How a row's test moves the world: to where the step's evidence holds, then to where it lapses, for a step whose evidence can lapse. */
-interface Moves { establish: () => Promise<void>; lapse?: () => Promise<void> }
+/** How a row's test moves the world: to where the step's evidence holds, then to where it lapses. */
+interface Moves { establish: () => Promise<void>; lapse: () => Promise<void> }
 
 /**
  * One row of the step-state contract: the step as the pane names it, what makes it done and what makes it fall back (null for a step
@@ -114,7 +115,7 @@ for (const row of rows) {
     const moves = await row.start($, on)
     await moves.establish()
     await expectDone($, row)
-    await moves.lapse?.()
+    await moves.lapse()
     await expectCurrent($, row, row.failureFact)
   })
 }

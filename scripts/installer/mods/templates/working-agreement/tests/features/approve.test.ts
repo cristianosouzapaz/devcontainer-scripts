@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from '../support/kit'
 import { diagnosed, diagnoseRuns, diagnosisComment } from '../support/builders'
 import { readCurrentStep, readFlowStatus, runFlowCommand } from '../support/helpers'
 import { createWorld } from '../support/world'
@@ -19,6 +20,8 @@ test('composer approval reads comments fresh and completes the unit Diagnose row
   setup.comments = { 1: [diagnosisComment] }
   expect((await runFlowCommand($, `approve ${url}`, { kind: 'composer' })).text).toContain('Diagnosis approved')
   expect(sessions.get('sid')?.units[0]?.approval).toBe(url)
+  const { outcome: _outcome, ...pinned } = diagnoseRuns[0]!
+  expect(sessions.get('sid')?.units[0]?.approvedRed).toEqual(pinned)
   expect(await readCurrentStep($)).toBe('Code')
   expect(await readFlowStatus($)).toContain('✓ Diagnose')
 })

@@ -6,7 +6,7 @@ import { bestEffort } from './best-effort'
 import type { EnginePort } from './engine-port'
 import { isJudgedTool } from './judged-tools'
 import { createReadPort } from './read-port'
-import { readCommonDir, readSession, sameIdentity, temporaryPath, writeSession, recordsPath } from './record-store'
+import { readCommonDir, readSession, sameIdentity, temporaryPath, updateSession, recordsPath } from './record-store'
 import { withRecordLock } from './session-memory'
 import { readCandidates, selectBasePullRequest } from './unit-github'
 
@@ -53,10 +53,7 @@ export async function refreshPrSnapshot(port: EnginePort, number?: number): Prom
   const read = await readPrFields(port.processes, selected)
   if (!read.isOk) throw new Error(read.error)
   const snapshot = { unit: session.unit, number: selected, fields: read.value }
-  await withRecordLock(async () => {
-    const current = await readSession(port)
-    if (current.unit && sameIdentity(current.unit, snapshot.unit)) await writeSession(port, { ...current, prSnapshot: snapshot })
-  })
+  await withRecordLock(() => updateSession(port, current => current.unit && sameIdentity(current.unit, snapshot.unit) ? { ...current, prSnapshot: snapshot } : null))
   return snapshot
 }
 

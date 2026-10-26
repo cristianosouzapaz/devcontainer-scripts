@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from '../support/kit'
 import { flowDefinitions } from '../../hooks/domain/flow-definitions'
 import { createEmptySession, createEmptyUnit } from '../../hooks/domain/records'
 import { describeRequirement } from '../../hooks/domain/requirements'

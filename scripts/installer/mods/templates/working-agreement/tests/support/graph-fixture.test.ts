@@ -1,6 +1,7 @@
 import type { On } from 'claude-code'
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
 
+import { test } from './kit'
 import { readContentTree } from '../../hooks/lib/git'
 import { conformanceCheckout, gitCheckArgs, gitChecks, treeChecks } from './graph-fixture'
 import { createTestPort, createWorld, gitAnswerNames, root } from './world'

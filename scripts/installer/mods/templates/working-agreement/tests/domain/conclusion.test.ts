@@ -1,5 +1,6 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
 
+import { test } from '../support/kit'
 import { buildPullRequest, diagnoseRuns, noFlow, verifyFile } from '../support/builders'
 import { conformanceGraph } from '../support/graph-fixture'
 import { declareFlow, readFlowStatus, readStepStates, runFlowCommand } from '../support/helpers'

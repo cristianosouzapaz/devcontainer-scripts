@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from '../support/kit'
 import { diagnoseRuns, diagnosisComment, noFlow, verifyFile } from '../support/builders'
 import { readCurrentStep, runFlowCommand } from '../support/helpers'
 import { configBlob, createWorld, root } from '../support/world'

@@ -2,6 +2,8 @@ import type { Args, EventResult, Frozen } from 'claude-code'
 
 import { declareFlow } from '../core/declaration'
 import type { EnginePort } from '../core/engine-port'
+import { logEvent } from '../core/flow-log'
+import { readSession } from '../core/record-store'
 import { withRecordLock } from '../core/session-memory'
 import { markForAgent } from '../domain/messages'
 import { toStringOrEmpty } from '../lib/json'
@@ -19,5 +21,8 @@ export async function handleDeclareFlowCall(port: EnginePort, event: Frozen<Args
   if (args.issues !== undefined && (!Array.isArray(args.issues) || !args.issues.every(issue => typeof issue === 'number'))) return { deny: markForAgent('Issue numbers must be positive integers.') }
   const issues = args.issues ?? []
   const declared = await withRecordLock(() => declareFlow(port, toStringOrEmpty(args.flow), issues, 'agent'))
-  return declared.isOk ? { result: markForAgent(declared.value.reply) } : { deny: markForAgent(declared.error) }
+  if (declared.isOk) return { result: markForAgent(declared.value.reply) }
+  // A refusal before any unit exists has no log to go to.
+  void readSession(port).then(session => logEvent(port, session, 'deny', { tool: event.tool, reason: declared.error }), () => {})
+  return { deny: markForAgent(declared.error) }
 }

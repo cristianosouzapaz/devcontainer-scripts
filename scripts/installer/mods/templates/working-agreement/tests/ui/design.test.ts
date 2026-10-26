@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from '../support/kit'
 import type { Mounted } from 'claude-code/testing'
 import type { ThemeKey } from 'claude-code'
 import type { FlowView, IssueComment, ReadFailure } from '../../types'
@@ -15,6 +16,7 @@ import { createWorld } from '../support/world'
 
 interface DiagnoseComments { comments: IssueComment[] | ReadFailure }
 interface Node { props?: Record<string, unknown>; children?: unknown[] }
+interface Displayed { value: FlowView }
 
 const themeKeys: ThemeKey[] = ['text', 'inverseText', 'inactive', 'subtle', 'suggestion', 'remember', 'success', 'error', 'warning', 'merged', 'claude', 'permission', 'planMode', 'autoAccept', 'promptBorder', 'bashBorder', 'ide', 'diffAdded', 'diffRemoved', 'diffAddedDimmed', 'diffRemovedDimmed', 'diffAddedWord', 'diffRemovedWord']
 const declared: Session = { ...createEmptySession('sid'), flow: 'fix', unit: { branch: 'feature/a-long-branch-name', issues: [1] }, issues: [1], info: { 1: { title: 'A long issue title', labels: ['ready-for-agent', 'needs-triage', 'needs-info'] } } }
@@ -55,7 +57,7 @@ for (const columns of [30, 60]) {
     const slice = { base: 'a', end: 'b', tree: 'tree', baseTree: 'base', commits: 1, isClean: true, isFrozen: true, isRewritten: false, isShared: false }
     const session: Session = { ...declared, blocked: { edits: 2 }, handoff: { state: 'failed', reason: 'unavailable' } }
     const base = buildView(session, withStates(position('diagnose', { slice }), session), 'unreachable')
-    const displayed: { value: FlowView } = { value: { ...base, hasRunLog: true, footer: { action: 'continue', isRunning: false },
+    const displayed: Displayed = { value: { ...base, hasRunLog: true, footer: { action: 'continue', isRunning: false },
       notes: [...base.notes, { key: 'Checkout', value: "other, not this unit's branch", tone: 'warn' }],
       violations: [{ factId: 'v', text: 'a commit appeared', tone: 'error' }, { factId: 'u', text: 'could not check', tone: 'warn' }],
       steps: [...base.steps, { isError: false, isMerged: false, id: 'tickets', symbol: '↷', label: 'Tickets', state: 'skipped', detail: 'optional for this unit' }] } }

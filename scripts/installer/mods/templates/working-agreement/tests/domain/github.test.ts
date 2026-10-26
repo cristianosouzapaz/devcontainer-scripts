@@ -1,6 +1,7 @@
 import type { On } from 'claude-code'
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
 
+import { test } from '../support/kit'
 import { listPullRequests, readClosingPullRequests, readIssue } from '../../hooks/lib/github'
 import type { ProcessPort } from '../../hooks/lib/process'
 import { buildPullRequest } from '../support/builders'

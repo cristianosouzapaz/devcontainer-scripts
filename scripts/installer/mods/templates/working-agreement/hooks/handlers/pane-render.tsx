@@ -59,7 +59,7 @@ async function drawPane(port: EnginePort, elements: PaneElements, props: PanePro
       if (current) await port.writeView({ ...current, selectedRunId })
     }, () => { void showPaneView(port, 'flow') })
   }
-  return renderFlowPane(elements, view, { columns: props.bodyColumns, rows: props.scroll.bodyRows }, {
+  return renderFlowPane(elements, view, await port.readLiveRun(), { columns: props.bodyColumns, rows: props.scroll.bodyRows }, {
     openIssue: async issueNumber => {
       await openIssueInBrowser(port.processes, issueNumber)
     },

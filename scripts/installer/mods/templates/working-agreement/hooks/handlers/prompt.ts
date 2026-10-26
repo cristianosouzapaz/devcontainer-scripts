@@ -4,7 +4,7 @@ import type { EnginePort } from '../core/engine-port'
 import { createReadPort } from '../core/read-port'
 import { syncIssues } from '../core/github-sync'
 import { locatePosition } from '../core/position'
-import { readSession } from '../core/record-store'
+import { readVersionedSession } from '../core/record-store'
 import { composeFlowLine } from '../domain/instruction'
 import { markForAgent } from '../domain/messages'
 import { isUnitFinished, withStates } from '../domain/step-states'
@@ -25,10 +25,11 @@ const noFlowLine = markForAgent('No flow is declared. Reading and talking need n
 export async function handlePromptSubmit(engine: EnginePort, event: Frozen<Args<'prompt.submit'>>, next: Next<'prompt.submit'>): Promise<EventResult<'prompt.submit'>> {
   const port = createReadPort(engine)
   armHandoff(event.origin, event.text)
-  const saved = await readSession(port)
+  const held = await readVersionedSession(port)
+  const saved = held.session
   const located = saved.flow ? await locatePosition(port, saved) : null
   if (located?.isConcluded) return next(event)
-  const session = saved.flow ? await syncIssues(port, saved) : saved
+  const session = saved.flow ? (await syncIssues(port, held)).session : saved
   const position = located ? withStates(located, session) : null
   if (isUnitFinished(position) && !position?.slice?.isRewritten) return next(event)
   const line = position ? composeFlowLine(position, session) : noFlowLine

@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from '../support/kit'
 import type { Engine } from 'claude-code/testing'
 import type { FlowView } from '../../types'
 import { sectionGap } from '../../hooks/ui/theme'

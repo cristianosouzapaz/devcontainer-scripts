@@ -1,12 +1,13 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
 
+import { test } from '../support/kit'
 import { renderStatusText } from '../../hooks/ui/status-text'
 import { buildPullRequest, buildWriteCall, noFlow, verifyFile } from '../support/builders'
 import { endTurn, readCurrentStep, runFlowCommand } from '../support/helpers'
 import { completeDelivery } from '../support/delivery'
 import { conformanceGraph } from '../support/graph-fixture'
 import { common, createWorld, linearGraph, root } from '../support/world'
-import type { Checkout, Options } from '../support/world'
+import type { Checkout, Gate, Options } from '../support/world'
 
 test('a Trivial change starts at Code and permits file writes', async ($, on) => {
   const git: Checkout = { branch: 'feat' }
@@ -78,7 +79,7 @@ test('a squash merge ref change publishes only the fresh conclusion after deleti
 })
 
 test('a merge ref change queues a fresh conclusion behind an older read without publishing the older view', async ($, on) => {
-  const gate: { open?: () => void } = {}
+  const gate: Gate = {}
   const checkout: Checkout = { branch: 'feat', graph: structuredClone(conformanceGraph) }
   const options: Options = {
     session: { flow: 'trivial', issues: [], info: {} },

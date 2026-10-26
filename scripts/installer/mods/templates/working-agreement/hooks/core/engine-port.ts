@@ -1,5 +1,5 @@
 import type { SessionContextUsage, HookStream, PluginState, ProcessSpawnChunk, ProcessSpawnRequest, ProcessSpawnResult } from 'claude-code'
-import type { FlowView } from '../../types'
+import type { FlowView, RunView } from '../../types'
 import type { FilePort } from '../lib/files'
 import type { ProcessPort } from '../lib/process'
 import type { SessionRecord } from '../domain/records'
@@ -17,6 +17,8 @@ export type PaneView = PluginState['working-agreement']['paneView']
 
 /** The engine calls the core and the handlers make, each a closure over `$` that the entry file builds: `$` cannot be passed across an import. */
 export interface EnginePort {
+  /** The engine event the port was built for, which the transition log names as a refresh's cause. */
+  cause: string
   processes: StreamingProcesses
   files: FilePort
   clock: ClockPort
@@ -35,6 +37,9 @@ export interface EnginePort {
   readContext: () => Promise<SessionContextUsage>
   readView: () => Promise<FlowView | null>
   writeView: (view: FlowView | null) => Promise<void>
+  /** The run the pane shows live, kept apart from the view so its once-a-second writes never rewrite the view. */
+  readLiveRun: () => Promise<RunView | null>
+  writeLiveRun: (run: RunView | null) => Promise<void>
   readPaneView: () => Promise<PaneView>
   writePaneView: (view: PaneView) => Promise<void>
   openPane: (closeOnEscape?: true) => Promise<void>

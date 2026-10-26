@@ -1,11 +1,14 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
 
+import { test } from '../../support/kit'
 import { pushedCloseOut } from '../../support/builders'
 import { readFlowStatus, readPromptContext } from '../../support/helpers'
 import { common, createWorld, linearGraph, root } from '../../support/world'
 import type { Gate, Options } from '../../support/world'
 
-const cases: { name: string; extra: Options; fact: string; isDone: boolean }[] = [
+interface CiCase { name: string; extra: Options; fact: string; isDone: boolean }
+
+const cases: CiCase[] = [
   ...['success', 'neutral', 'skipped'].map(conclusion => ({ name: conclusion, extra: { checkRuns: { c1: [{ name: 'test', status: 'completed', conclusion }] } }, fact: '✓ PR #5', isDone: true })),
   ...['failure', 'cancelled', 'timed_out', 'action_required', 'stale', 'startup_failure', null].map(conclusion => ({ name: `completed ${conclusion}`, extra: { checkRuns: { c1: [{ name: 'test', status: 'completed', conclusion }] } }, fact: 'CI failing: test', isDone: false })),
   ...['queued', 'in_progress', 'waiting', 'pending', 'requested'].map(status => ({ name: status, extra: { checkRuns: { c1: [{ name: 'test', status, conclusion: null }] } }, fact: 'CI pending: test', isDone: false })),

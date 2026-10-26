@@ -20,15 +20,18 @@ const declareTool = 'mcp__working-agreement__declare_flow'
 const checkFailed = markForAgent('The check failed, so the call is denied — retry; if it keeps failing, stop and tell the user.')
 const session = { plugin: 'working-agreement', key: 'session' } as const
 const view = atom({ plugin: 'working-agreement', key: 'view' } as const, null)
+const liveRun = atom({ plugin: 'working-agreement', key: 'liveRun' } as const, null)
 const paneView = atom({ plugin: 'working-agreement', key: 'paneView' } as const, 'flow')
 
 /**
  * Builds the engine port as closures over `$`, which cannot be passed across an import.
  * @param $ - The hook's engine interface.
+ * @param cause - The engine event the hook answers.
  * @returns The engine operations used by the core and handlers.
  */
-function createEnginePort($: EngineInterface): EnginePort {
+function createEnginePort($: EngineInterface, cause: string): EnginePort {
   return {
+    cause,
     processes: { spawn: request => $.process.spawn(request), run: (argv, options) => $.process.run(argv, options) },
     files: { stat: path => $.fs.stat(path, { resolve: true }), read: path => $.fs.read(path), write: (path, text) => $.fs.write(path, text), list: path => $.fs.list(path) },
     clock: { sleep: (delayMs, signal) => $.clock.sleep(delayMs, { signal }) },
@@ -46,6 +49,8 @@ function createEnginePort($: EngineInterface): EnginePort {
     readContext: async () => (await $.session.usage({ breakdown: 'summary' })).context,
     readView: () => read($, view),
     writeView: async next => { await update($, view, () => next) },
+    readLiveRun: () => read($, liveRun),
+    writeLiveRun: async next => { await update($, liveRun, () => next) },
     readPaneView: () => read($, paneView),
     writePaneView: async next => { await update($, paneView, () => next) },
     openPane: async closeOnEscape => { await $.ui.open(closeOnEscape ? { id: paneId, title: 'Flow', closeOnEscape } : { id: paneId, title: 'Flow' }) },
@@ -114,34 +119,34 @@ function describeUnreadState(cause: string): string {
 export const register: Register = (on, options): void => {
   setHandoffThreshold(options.handoffTokens)
 
-  on('session.start', ($, e, next) => handleSessionStart(createEnginePort($), e, next))
+  on('session.start', ($, e, next) => handleSessionStart(createEnginePort($, 'session start'), e, next))
 
-  on('classic.SessionStart', ($, e, next) => handleClassicSessionStart(createEnginePort($), e, next))
+  on('classic.SessionStart', ($, e, next) => handleClassicSessionStart(createEnginePort($, 'session start'), e, next))
 
-  on('classic.FileChanged', ($, e, next) => handleFileChanged(createEnginePort($), e, next))
+  on('classic.FileChanged', ($, e, next) => handleFileChanged(createEnginePort($, 'ref change'), e, next))
 
   // The read-only side fails open: a failed read submits the prompt with the notice instead of the flow line; a chain already called is passed through.
-  on('prompt.submit', ($, e, next) => handlePromptSubmit(createEnginePort($), e, next))
+  on('prompt.submit', ($, e, next) => handlePromptSubmit(createEnginePort($, 'prompt'), e, next))
     .catch((_$, e, next) => next.called ? next(e) : next({ ...e, context: [...(e.context ?? []), describeUnreadState(next.error.message ?? next.error.kind)] }))
 
-  on('skill.prompt', ($, e, next) => handleSkillPrompt(createEnginePort($), e, next))
+  on('skill.prompt', ($, e, next) => handleSkillPrompt(createEnginePort($, `skill ${e.skill}`), e, next))
 
-  on('turn.complete', ($, e, next) => handleTurnComplete(createEnginePort($), e, next))
+  on('turn.complete', ($, e, next) => handleTurnComplete(createEnginePort($, 'turn end'), e, next))
 
-  on('tool.call', { tool: declareTool }, ($, e) => handleDeclareFlowCall(createEnginePort($), e)).catch((_$, _e, next) => ({ deny: `${checkFailed} ${next.error.message ?? next.error.kind}` }))
+  on('tool.call', { tool: declareTool }, ($, e) => handleDeclareFlowCall(createEnginePort($, 'declare_flow'), e)).catch((_$, _e, next) => ({ deny: `${checkFailed} ${next.error.message ?? next.error.kind}` }))
 
   // Registration order nests hooks: the window must precede Verify and Run, which answer without next.
   // Its .catch also answers a call re-entered beneath the hook's own $ calls (next.called false): the check never ran on it, so it is denied.
-  on('tool.call', ($, e, next) => handleToolCall(createEnginePort($), e, next)).catch((_$, e, next) => next.called ? next(e) : { deny: checkFailed })
+  on('tool.call', ($, e, next) => handleToolCall(createEnginePort($, `tool ${e.tool}`), e, next)).catch((_$, e, next) => next.called ? next(e) : { deny: checkFailed })
 
-  on('tool.call', { tool: 'mcp__working-agreement__verify' }, ($, _e, next) => handleVerify(createEnginePort($), next.signal))
+  on('tool.call', { tool: 'mcp__working-agreement__verify' }, ($, _e, next) => handleVerify(createEnginePort($, 'verify'), next.signal))
     .catch((_$, _e, next) => ({ result: `Verify could not run: ${next.error.message ?? next.error.kind}` }))
 
-  on('tool.call', { tool: 'mcp__working-agreement__run' }, ($, e, next) => handleRun(createEnginePort($), { argv: e.argv }, next.signal))
+  on('tool.call', { tool: 'mcp__working-agreement__run' }, ($, e, next) => handleRun(createEnginePort($, 'run'), { argv: e.argv }, next.signal))
     .catch((_$, _e, next) => ({ result: `Run could not run: ${next.error.message ?? next.error.kind}` }))
 
-  on('command.run', { command: 'flow' }, async ($, e) => ({ text: await handleFlowCommand(createEnginePort($), e) }))
+  on('command.run', { command: 'flow' }, async ($, e) => ({ text: await handleFlowCommand(createEnginePort($, `/flow ${e.args.trim().split(/\s+/)[0] ?? ''}`.trim()), e) }))
 
-  on('ui.render', { component: 'Pane', requestId: paneId }, ($, e, next) => handlePaneRender(createEnginePort($), $.ui.resolve(e), e.props, next.signal))
-  on('ui.close', { id: paneId }, ($, e, next) => handlePaneClose(createEnginePort($), e, next))
+  on('ui.render', { component: 'Pane', requestId: paneId }, ($, e, next) => handlePaneRender(createEnginePort($, 'pane'), $.ui.resolve(e), e.props, next.signal))
+  on('ui.close', { id: paneId }, ($, e, next) => handlePaneClose(createEnginePort($, 'pane close'), e, next))
 }

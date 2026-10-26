@@ -1,5 +1,6 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
 
+import { test } from '../../support/kit'
 import { buildWriteCall } from '../../support/builders'
 import { declareFlow } from '../../support/helpers'
 import { createWorld } from '../../support/world'

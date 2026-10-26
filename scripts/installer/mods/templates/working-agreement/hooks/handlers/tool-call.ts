@@ -4,9 +4,10 @@ import { bestEffort } from '../core/best-effort'
 import { judgeToolCall } from '../core/call-judgement'
 import type { EnginePort } from '../core/engine-port'
 import { createFeaturePort } from '../core/feature-port'
+import { logEvent } from '../core/flow-log'
 import { isJudgedTool } from '../core/judged-tools'
 import { refreshView } from '../core/pane-view'
-import { readSession, writeSession } from '../core/record-store'
+import { readSession, updateSession } from '../core/record-store'
 import { withRecordLock } from '../core/session-memory'
 import { flowDefinitions } from '../domain/flow-definitions'
 import { markForAgent } from '../domain/messages'
@@ -51,8 +52,8 @@ async function handleGatedCall(port: EnginePort, event: Frozen<Args<'tool.call'>
   if (verdict.decision === 'deny') {
     // The deny never waits for the lock: a hook past its budget fails, and its .catch denies without the verdict's reason.
     void bestEffort(port, 'blocked edit record', () => withRecordLock(async () => {
-      const session = await readSession(port)
-      await writeSession(port, { ...session, blocked: { ...session.blocked, edits: session.blocked.edits + 1 } })
+      const written = await updateSession(port, session => ({ ...session, blocked: { ...session.blocked, edits: session.blocked.edits + 1 } }))
+      if (written) logEvent(port, written.session, 'deny', { tool: event.tool, reason: verdict.reason })
       await refreshView(port, true)
     }), undefined)
     return { deny: verdict.reason }

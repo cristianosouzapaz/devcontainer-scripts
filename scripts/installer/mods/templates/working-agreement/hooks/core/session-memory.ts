@@ -19,16 +19,20 @@ interface Cached<T> { at: number; result: Result<T> }
 /** Holds this chat's display for one declared unit generation. */
 export interface RunDisplay {
   identity: Identity
-  generation?: string
+  generation: string | undefined
   live: RunView | null
   published: RunView
   last: RunView | null
 }
 
+/** The session version the Flow pane's view was built from, for the chat it belongs to. */
+interface PaintedVersion { sessionId: string; version: number }
+
 /** What the hooks share between events for the life of one module load. */
 interface SessionMemory {
   herdrError: ErrorWindow | null
   recordError: ErrorWindow | null
+  logError: ErrorWindow | null
   githubCache: GithubCache | null
   githubLastOk: number | null
   githubError: string | null
@@ -39,6 +43,8 @@ interface SessionMemory {
   comparisons: Map<string, Comparison>
   concluded: Map<string, PullRequest>
   runViews: Map<string, RunDisplay>
+  /** An observation of an older session never repaints over a view built from a newer one. */
+  painted: PaintedVersion | null
   /** The command the engine last showed as the prompt suggestion, until the step stops waiting on one. */
   shownSuggestion: string | null
 }
@@ -47,6 +53,7 @@ interface SessionMemory {
 export const sessionMemory: SessionMemory = {
   herdrError: null,
   recordError: null,
+  logError: null,
   githubCache: null,
   githubLastOk: null,
   githubError: null,
@@ -57,6 +64,7 @@ export const sessionMemory: SessionMemory = {
   comparisons: new Map(),
   concluded: new Map(),
   runViews: new Map(),
+  painted: null,
   shownSuggestion: null,
 }
 

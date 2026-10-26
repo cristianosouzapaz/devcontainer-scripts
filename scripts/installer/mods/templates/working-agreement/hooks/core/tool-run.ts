@@ -2,7 +2,7 @@ import { executeProcess } from '../lib/process'
 import type { Identity, Unit, UnitEntry } from '../../types'
 import type { CommandRun, RunRequest } from './run-command'
 import type { EnginePort } from './engine-port'
-import { readCommonDir, readSession, readUnit, sameIdentity, writeSession, replaceUnitEntry, recordsPath } from './record-store'
+import { readCommonDir, readUnit, sameIdentity, updateSession, replaceUnitEntry, recordsPath } from './record-store'
 import { closeCommandLog, runCommand } from './run-command'
 import { formatExit, updateRunCommand } from './run-view'
 import { withRecordLock } from './session-memory'
@@ -95,11 +95,11 @@ export async function executeCommand(port: EnginePort, sid: string, index: numbe
 export const recordToolRun = (port: EnginePort, identity: Identity, unit: Unit, signal: AbortSignal, change: (own: UnitEntry) => Partial<Unit>): Promise<boolean> =>
   withRecordLock(async () => {
     if (signal.aborted) return false
-    const current = await readSession(port)
-    if ((await readUnit(port, identity)).generation !== unit.generation) return false
-    const own = current.units.find(entry => sameIdentity(entry.identity, identity) && entry.generation === unit.generation)
-      ?? { ...createEmptyUnit(), identity, base: unit.base, baseBranch: unit.baseBranch, generation: unit.generation }
-    if (signal.aborted) return false
-    await writeSession(port, replaceUnitEntry(current, identity, { ...own, ...change(own) }))
-    return true
+    const written = await updateSession(port, async current => {
+      if (signal.aborted || (await readUnit(port, identity)).generation !== unit.generation) return null
+      const own = current.units.find(entry => sameIdentity(entry.identity, identity) && entry.generation === unit.generation)
+        ?? { ...createEmptyUnit(), identity, base: unit.base, baseBranch: unit.baseBranch, generation: unit.generation }
+      return replaceUnitEntry(current, identity, { ...own, ...change(own) })
+    })
+    return written !== null
   })

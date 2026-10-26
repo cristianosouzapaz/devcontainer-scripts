@@ -1,7 +1,9 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from '../../support/kit'
 import { conformanceGraph } from '../../support/graph-fixture'
 import { declareFlow, readFlowStatus, readPromptContext, readStepStates, runFlowCommand } from '../../support/helpers'
 import { buildPullRequest, noFlow } from '../../support/builders'
+import { parseSession } from '../../../hooks/domain/records'
 import { common, createWorld } from '../../support/world'
 import type { Checkout, Graph, Options } from '../../support/world'
 
@@ -222,8 +224,8 @@ test('skip unions across session records and done wins over a recorded skip', as
   chat.id = 'second'
   await runFlowCommand($, 'trivial')
   expect(await readFlowStatus($)).toContain('↷ Code · reviewed elsewhere')
-  const saved = JSON.parse(files.get(`${common}/working-agreement/s/sid.json`)!)
-  expect(saved.units[0].skips).toEqual([{ step: 'code', reason: 'reviewed elsewhere' }])
+  const saved = parseSession(JSON.parse(files.get(`${common}/working-agreement/s/sid.json`) ?? 'null'))
+  expect(saved?.units[0]?.skips).toEqual([{ step: 'code', reason: 'reviewed elsewhere' }])
   checkout.graph!.refs.feat = 'f1'
   expect(await readFlowStatus($)).toContain('✓ Code')
   expect(await readFlowStatus($)).not.toContain('reviewed elsewhere')

@@ -1,5 +1,6 @@
 import type { PromptOrigin } from 'claude-code'
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from '../support/kit'
 import { buildPullRequest, noFlow, pushedCloseOut, verifyFile } from '../support/builders'
 import { runFlowCommand } from '../support/helpers'
 import { common, configBlob, createWorld, root } from '../support/world'

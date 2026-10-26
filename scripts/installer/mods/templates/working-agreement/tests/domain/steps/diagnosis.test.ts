@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from '../../support/kit'
 import type { IssueInfo, RunRecord } from '../../../types'
 import { findFixGreen, judgeDiagnose } from '../../../hooks/domain/step-states'
 import { describeDiagnoseNeed } from '../../../hooks/domain/instruction'
@@ -46,6 +47,26 @@ test('findFixGreen needs a pass after the bound with an earlier red of the same 
   expect(findFixGreen([red, { ...green, argv: ['other'] }], 0)).toBeUndefined()
   expect(findFixGreen([{ ...red, at: green.at }, green], 0)).toBeUndefined()
   expect(findFixGreen([{ ...red, outcome: { kind: 'timeout', minutes: 1 } }, green], 0)).toEqual(green)
+})
+
+test('a pinned red keeps Diagnose done whatever the retained runs hold, while the approved comment exists', () => {
+  const { outcome: _outcome, ...approvedRed } = red
+  for (const runs of [[], [green], [{ ...red, runId: 'later', at: 50 }]]) {
+    expect(judgeDiagnose({ runs, approval: diagnosisComment.url, approvedRed }, [1], info)).toEqual({ done: true, approvedAt: Date.parse(diagnosisComment.createdAt) })
+  }
+  expect(judgeDiagnose({ runs: [], approval: diagnosisComment.url, approvedRed }, [1], { 1: { ...info[1], comments: [] } }).fact).toBe('approved comment deleted')
+})
+
+test('a pinned red takes only its own argv passing on another tree after the bound as the fix green', () => {
+  const { outcome: _outcome, ...approvedRed } = red
+  const regressionRed = { ...red, argv: ['./regression'], runId: 'regression-red', at: 4 }
+  const regressionGreen = { ...green, argv: ['./regression'], runId: 'regression-green', at: 5 }
+  const fix = { ...green, runId: 'fix', at: 6 }
+  expect(findFixGreen([regressionGreen, regressionRed], 3, approvedRed)).toBeUndefined()
+  expect(findFixGreen([regressionGreen, fix, regressionRed], 3, approvedRed)).toEqual(fix)
+  expect(findFixGreen([{ ...fix, tree: red.tree }], 3, approvedRed)).toBeUndefined()
+  expect(findFixGreen([fix], 7, approvedRed)).toBeUndefined()
+  expect(findFixGreen([regressionGreen, regressionRed], 3)).toEqual(regressionGreen)
 })
 
 test('a deleted approved comment reopens Diagnose, while a newer comment does not', () => {

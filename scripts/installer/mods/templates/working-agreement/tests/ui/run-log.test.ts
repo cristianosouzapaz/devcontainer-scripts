@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from '../support/kit'
 import type { Next, On, PaneCloseInput } from 'claude-code'
 import type { Mounted } from 'claude-code/testing'
 import type { FlowView, RunCommandView, RunView, VerifyRecord } from '../../types'
@@ -13,6 +14,7 @@ import { common, configBlob, createTestPort, createWorld } from '../support/worl
 import type { World, Gate, Options } from '../support/world'
 
 interface Node { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+interface RenderTable { elements?: PaneElements }
 
 const config = JSON.stringify({ verify: ['./check'], always: [['./lint']] })
 
@@ -345,7 +347,7 @@ test('a person close returns Run log to Flow but passes through from Flow', asyn
 
 for (const sidecar of ['missing', 'invalid']) {
   test(`a ${sidecar} sidecar leaves the recorded run summary readable`, async ($, on) => {
-    const { files, chat, sessions } = createWorld(on, { branch: 'feat', isDirty: true, tree: 'changed' }, { approvedConfig: config, verifyFile: config, spawnOutput: 'output' })
+    const { files, chat, sessions, seedChat } = createWorld(on, { branch: 'feat', isDirty: true, tree: 'changed' }, { approvedConfig: config, verifyFile: config, spawnOutput: 'output' })
     await $.tool.call({ tool: 'mcp__working-agreement__verify' })
     for (const path of files.keys()) {
       if (path.includes('/runs/') && path.endsWith('.json')) {
@@ -355,7 +357,7 @@ for (const sidecar of ['missing', 'invalid']) {
     }
     const previous = sessions.get('sid')!
     chat.id = 'reader'
-    sessions.set(chat.id, { ...previous, sessionId: chat.id, units: [] })
+    seedChat(chat.id, { ...previous, sessionId: chat.id, units: [] })
     await readFlowStatus($)
     const log = await mountRunLog($)
     expect(textOf(await log.drawn())).toContain('Verify · passed')
@@ -559,8 +561,9 @@ test('step rows keep fixed names and symbols, wrap current facts, and truncate s
       { isError: false, isMerged: false, id: 'pr', symbol: '○', label: 'PR', state: 'pending' },
       { isError: false, isMerged: false, id: 'tickets', symbol: '↷', label: 'Tickets', state: 'skipped', detail: 'optional for this unit' },
     ] }
-  const displayed = { value }
+  const displayed = { value, run: null as RunView | null }
   on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: displayed.value, version: 0 } }))
+  on('state.get', { plugin: 'working-agreement', key: 'liveRun' }, () => ({ value: { value: displayed.run, version: 0 } }))
   const flow = await mountPane($, { columns: 47 })
   await expectText(flow, '✓ ', { color: 'success' })
   await expectText(flow, 'Verify', { color: 'text', weight: undefined })
@@ -576,7 +579,8 @@ test('step rows keep fixed names and symbols, wrap current facts, and truncate s
   await expectText(flow, 'A long issue title', { color: 'inactive', wrap: 'truncate-end' })
   expect(textOf(await flow.drawn())).not.toContain('Unit finished.')
   const run = savedRun({ status: 'running', duration: 65, commands: [command('passed', 'exit 0', '', 65), command('failed', 'exit 7'), command('timeout', 'timed out after 30 min'), command('running', '', 'tail\n\nlast'), command('waiting', '')] })
-  displayed.value = { ...value, run, hasRunLog: true }
+  displayed.value = { ...value, hasRunLog: true }
+  displayed.run = run
   await flow.redraw()
   await expectText(flow, 'Verify', { color: 'text', weight: 'semibold' })
   await expectText(flow, '  rules: hooks/**', { color: 'inactive', wrap: 'truncate-end' })
@@ -601,11 +605,13 @@ test('a live red or green run marks the current step without its fact and leaves
       { isError: false, isMerged: false, id: 'code', symbol: '▸', label: 'Code', state: 'current', detail: 'no green run on this tree' },
       { isError: false, isMerged: false, id: 'verify', symbol: '○', label: 'Verify', state: 'pending' },
     ] }
-  const displayed = { value }
+  const displayed = { value, run: null as RunView | null }
   on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: displayed.value, version: 0 } }))
+  on('state.get', { plugin: 'working-agreement', key: 'liveRun' }, () => ({ value: { value: displayed.run, version: 0 } }))
   const flow = await mountPane($, { columns: 47 })
   for (const kind of ['green', 'red'] as const) {
-    displayed.value = { ...value, run: savedRun({ kind, status: 'running', commands: [command('running', '')] }), hasRunLog: true }
+    displayed.value = { ...value, hasRunLog: true }
+    displayed.run = savedRun({ kind, status: 'running', commands: [command('running', '')] })
     await flow.redraw()
     const drawn = textOf(await flow.drawn())
     expect(drawn).toContain('✓ Diagnose')
@@ -680,7 +686,7 @@ test('a Run log render the host abandons ends quietly, while an unabandoned fail
   // The host cuts an abandoned render's `$` calls.
   const port: EnginePort = { ...base, processes: { ...base.processes, run: () => Promise.reject(new Error('$.process.run(git) aborted')) } }
   world.paneViews.push('run-log')
-  const table: { elements?: PaneElements } = {}
+  const table: RenderTable = {}
   const render = new AbortController()
   render.abort()
   on('ui.render', { component: 'Pane', requestId: 'probe' }, (engine, e) => {

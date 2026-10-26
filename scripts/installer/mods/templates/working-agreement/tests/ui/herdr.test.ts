@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from '../support/kit'
 import { reportHerdr } from '../../hooks/core/herdr'
 import { reread, refreshView } from '../../hooks/core/pane-view'
 import { readVerifyState } from '../../hooks/core/verify'
@@ -10,9 +11,21 @@ import type { Evidence, Position } from '../../hooks/domain/step-states'
 import { diagnoseRuns, diagnosisComment, noFlow, verifyFile } from '../support/builders'
 import { endTurn, readFlowStatus } from '../support/helpers'
 import { common, configBlob, createTestPort, createWorld, root } from '../support/world'
-import type { Gate } from '../support/world'
+import type { Gate, World } from '../support/world'
+
+/** An assertion the world runs just before its next herdr call, once a test sets it. */
+interface HerdrCheck { run?: () => void }
 
 const inside = { HERDR_ENV: '1', HERDR_PANE_ID: 'pane id' }
+
+/**
+ * Lists every shared declaration; deleting them leaves the chat's unit with no flow.
+ * @param world - The test world.
+ * @returns The declarations' paths.
+ */
+function listDeclarations(world: World): string[] {
+  return [...world.files.keys()].filter(path => path.startsWith(`${common}/working-agreement/u/`))
+}
 
 for (const env of [{}, { HERDR_ENV: '0', HERDR_PANE_ID: 'p' }, { HERDR_ENV: '1' }, { HERDR_ENV: '1', HERDR_PANE_ID: '' }] as Record<string, string>[]) {
   test(`no sidebar command outside herdr: ${JSON.stringify(env)}`, async ($, on) => {
@@ -33,8 +46,7 @@ test('every reread reports all three tokens, even an unchanged view; no flow cle
   expect(current).toBeDefined()
   expect(calls.at(-1)).toEqual({ argv: ['herdr', 'pane', 'report-metadata', 'pane id', '--source', 'working-agreement', '--ttl-ms', '150000',
     '--token', 'flow_unit=Small feature #1', '--token', `flow_step=${current!.label}`, '--token', 'flow_alert='], timeoutMs: 5000 })
-  const saved = world.sessions.get('sid')!
-  world.sessions.set('sid', { ...saved, ...noFlow, unit: null })
+  for (const path of listDeclarations(world)) world.files.delete(path)
   await endTurn($)
   expect(calls.at(-1)?.argv).toContain('flow_unit=')
   expect(calls.at(-1)?.argv).toContain('flow_step=')
@@ -185,11 +197,11 @@ test('watched refs and the 60 second tick each report a fresh snapshot', async (
 })
 
 test('clearing a flow updates the pane before reporting, including an unchanged empty view', async (_$, on) => {
-  const check: { run?: () => void } = {}
+  const check: HerdrCheck = {}
   const world = createWorld(on, { branch: 'feat' }, { herdrEnv: inside, beforeHerdr: () => check.run?.() })
   const port = createTestPort(world)
   await refreshView(port, true)
-  world.sessions.set('sid', { ...world.sessions.get('sid')!, ...noFlow, unit: null })
+  for (const path of listDeclarations(world)) world.files.delete(path)
   check.run = () => { expect(world.views.at(-1)).toBe(null) }
   const initial = world.herdrCalls.length
   await refreshView(port, true)

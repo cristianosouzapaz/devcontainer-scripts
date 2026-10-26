@@ -1,8 +1,9 @@
-import type { FlowStepState, IssueComment, IssueRead, RunRecord } from '../../types'
+import type { ApprovedRed, FlowStepState, IssueComment, IssueRead, RunRecord } from '../../types'
 import type { GitState } from '../lib/git'
 import type { CiState } from './ci-blocker'
 import { hasDiagnoseStep } from './flow-definitions'
 import type { FlowDefinition, Step } from './flow-definitions'
+import { findEarliestRed } from './records'
 import type { Identity, IssueInfo, PullRequest, Session, Unit } from './records'
 
 /** Selects an action independently of the displayed fact's wording. */
@@ -260,7 +261,7 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
   const isCiGreen = checks === 'passing'
   const diagnose: DiagnoseJudgement = evidence.isConcluded ? { done: true } : judgeDiagnose(unit, session.issues, session.info)
   const isFixJudged = isCodeJudgedByFix(flow, unit)
-  const hasFixGreen = diagnose.done && diagnose.approvedAt !== undefined && !!findFixGreen(unit.runs, diagnose.approvedAt)
+  const hasFixGreen = diagnose.done && diagnose.approvedAt !== undefined && !!findFixGreen(unit.runs, diagnose.approvedAt, unit.approvedRed)
   const declared = session.issues.map(number => session.info[number])
   const issueJudgements: Map<Step, IssueJudgement> = new Map(steps.filter(isIssueStep).map(step => [step, judgeIssueStep(step.id, declared)]))
 
@@ -319,33 +320,28 @@ export const isCodeJudgedByFix = (flow: FlowDefinition, unit: Pick<Unit, 'skips'
   hasDiagnoseStep(flow) && !unit.skips?.some(skip => skip.step === 'diagnose')
 
 /**
- * Finds the earliest failing run, the reference Diagnose measures its comment against.
- * @param runs - The unit's command history.
- * @returns The earliest failing run, if any.
- */
-export const findEarliestRed = (runs: RunRecord[]): RunRecord | undefined =>
-  runs.filter(run => run.outcome.kind !== 'pass').sort((a, b) => a.at - b.at)[0]
-
-/**
- * Finds the latest pass after a time with an earlier failing run of the same argv on different content.
+ * Finds the latest pass after a time of a red's argv on different content: the approval's pinned red when given, otherwise
+ * any earlier failing run, the rule for approvals recorded before the pin existed.
  * @param runs - The unit's command history.
  * @param after - The time the pass must come strictly after.
+ * @param pinned - The red the approval was granted on, if recorded.
  * @returns The matching pass, if any.
  */
-export function findFixGreen(runs: RunRecord[], after: number): RunRecord | undefined {
-  return [...runs].sort((a, b) => b.at - a.at).find(green => green.outcome.kind === 'pass' && green.at > after && runs.some(red =>
-    red.outcome.kind !== 'pass' && red.at < green.at && red.tree !== green.tree && JSON.stringify(red.argv) === JSON.stringify(green.argv)))
+export function findFixGreen(runs: RunRecord[], after: number, pinned?: ApprovedRed): RunRecord | undefined {
+  const reds = pinned ? [pinned] : runs.filter(run => run.outcome.kind !== 'pass')
+  return [...runs].sort((a, b) => b.at - a.at).find(green => green.outcome.kind === 'pass' && green.at > after && reds.some(red =>
+    red.at < green.at && red.tree !== green.tree && JSON.stringify(red.argv) === JSON.stringify(green.argv)))
 }
 
 /**
- * Judges Diagnose from command history, live issue comments and the user's approval.
- * @param unit - The unit's runs and approval.
+ * Judges Diagnose from the approval's pinned red, or else the command history, against live issue comments and the user's approval.
+ * @param unit - The unit's runs, approval and pinned red.
  * @param issues - The declared issues.
  * @param info - Their current GitHub facts.
  * @returns Completion, with the approved comment's creation time, or the first unmet condition; a wait for approval carries the command that approves the newest comment.
  */
-export function judgeDiagnose(unit: Pick<Unit, 'runs' | 'approval'>, issues: number[], info: Record<string, IssueInfo>): DiagnoseJudgement {
-  const red = findEarliestRed(unit.runs)
+export function judgeDiagnose(unit: Pick<Unit, 'runs' | 'approval' | 'approvedRed'>, issues: number[], info: Record<string, IssueInfo>): DiagnoseJudgement {
+  const red = (unit.approval && unit.approvedRed) || findEarliestRed(unit.runs)
   if (!red) return { done: false, need: 'red', fact: 'no red run' }
   if (!issues.length) return { done: false, need: 'issue', fact: 'issue not yet created' }
   const comments: IssueComment[] = []

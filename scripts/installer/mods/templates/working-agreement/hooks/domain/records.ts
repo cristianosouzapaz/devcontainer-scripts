@@ -1,4 +1,4 @@
-import type { GithubStatus, IssueInfo, Identity, SessionRecord, Unit, UnitEntry, UnitRecord, VerifyRecord, RunRecord, Violation } from '../../types'
+import type { ApprovedRed, GithubStatus, IssueInfo, Identity, SessionRecord, Unit, UnitEntry, UnitRecord, VerifyRecord, RunRecord, Violation } from '../../types'
 import { hasOnlyKeys, isStringArray, isFiniteNumber, isNonEmptyString, isSafeInteger, isRecord } from '../lib/guards'
 import { isPrFields } from '../lib/github-rows'
 import { flowDefinitions } from './flow-definitions'
@@ -9,6 +9,10 @@ export type { GithubStatus, Identity, IssueInfo, PullRequest, SessionRecord, Uni
 export interface Session extends SessionRecord { flow: string | null; issues: number[] }
 
 const githubStatuses: GithubStatus[] = ['connected', 'unreachable', 'unauth', 'unknown']
+// why: Every run of a unit is written into its record on each write; the bounds keep that record small
+// while a red-to-green loop and the regression tests beside it still fit.
+const runsPerArgv = 10
+const totalRuns = 50
 
 /**
  * Identifies issue facts or their read failure.
@@ -68,10 +72,28 @@ function isOutcome(outcome: unknown): outcome is VerifyRecord['outcome'] {
  * @returns Whether the command record is valid.
  */
 function isRunRecord(value: unknown): value is RunRecord {
-  return isRecord(value) && hasOnlyKeys(value, ['argv', 'tree', 'outcome', 'runId', 'at'])
-    && isStringArray(value.argv) && value.argv.length > 0 && value.argv.every(arg => !!arg.length)
+  return isRecord(value) && hasOnlyKeys(value, ['argv', 'tree', 'outcome', 'runId', 'at']) && hasRunIdentity(value)
+    && isRecord(value.outcome) && isOutcome(value.outcome)
+}
+
+/**
+ * Identifies the red an approval pins.
+ * @param value - The decoded value.
+ * @returns Whether the pinned red is valid.
+ */
+function isApprovedRed(value: unknown): value is ApprovedRed {
+  return isRecord(value) && hasOnlyKeys(value, ['argv', 'tree', 'runId', 'at']) && hasRunIdentity(value)
+}
+
+/**
+ * Checks the fields that identify a run: its command, content and time.
+ * @param value - The decoded record.
+ * @returns Whether every identifying field is valid.
+ */
+function hasRunIdentity(value: Record<string, unknown>): boolean {
+  return isStringArray(value.argv) && value.argv.length > 0 && value.argv.every(arg => !!arg.length)
     && typeof value.tree === 'string' && !!value.tree && typeof value.runId === 'string' && /^[a-zA-Z0-9-]+$/.test(value.runId)
-    && isFiniteNumber(value.at) && isRecord(value.outcome) && isOutcome(value.outcome)
+    && isFiniteNumber(value.at)
 }
 
 /**
@@ -80,10 +102,11 @@ function isRunRecord(value: unknown): value is RunRecord {
  * @returns Whether the unit entry is valid.
  */
 function isUnit(value: unknown): value is UnitEntry {
-  return isRecord(value) && hasOnlyKeys(value, ['identity', 'skills', 'verifyRuns', 'runs', 'approval', 'generation', 'base', 'baseBranch', 'skips']) && isIdentity(value.identity) && isStringArray(value.skills)
+  return isRecord(value) && hasOnlyKeys(value, ['identity', 'skills', 'verifyRuns', 'runs', 'approval', 'approvedRed', 'generation', 'base', 'baseBranch', 'skips']) && isIdentity(value.identity) && isStringArray(value.skills)
     && Array.isArray(value.verifyRuns) && value.verifyRuns.every(isVerifyRecord)
     && Array.isArray(value.runs) && value.runs.every(isRunRecord)
     && ['approval', 'generation', 'base', 'baseBranch'].every(key => value[key] === undefined || typeof value[key] === 'string')
+    && (value.approvedRed === undefined || (value.approval !== undefined && isApprovedRed(value.approvedRed)))
     && (value.base === undefined || !!value.base) && (value.baseBranch === undefined || (!!value.base && !!value.baseBranch))
     && (value.skips === undefined || (Array.isArray(value.skips) && value.skips.every(skip => isRecord(skip) && hasOnlyKeys(skip, ['step', 'reason'])
       && typeof skip.step === 'string' && !!skip.step.trim() && typeof skip.reason === 'string' && !!skip.reason.trim())))
@@ -195,12 +218,37 @@ export const createEmptyUnit = (): Unit => ({ skills: [], verifyRuns: [], runs: 
 export const mergeSkills = (recorded: string[], added: string[]): string[] => [...new Set([...recorded, ...added])]
 
 /**
- * Keeps distinct runs for the newest argv, newest first, across chat contributions.
+ * Orders runs newest first, breaking time ties by run id so the order never depends on input order.
+ * @param a - One run.
+ * @param b - The other run.
+ * @returns The sort comparison.
+ */
+const newestFirst = (a: RunRecord, b: RunRecord): number => b.at - a.at || (a.runId < b.runId ? 1 : a.runId > b.runId ? -1 : 0)
+
+/**
+ * Finds the earliest failing run, the reference Diagnose measures its comment against.
+ * @param runs - The unit's command history.
+ * @returns The earliest failing run, if any.
+ */
+export const findEarliestRed = (runs: RunRecord[]): RunRecord | undefined =>
+  runs.filter(run => run.outcome.kind !== 'pass').sort(newestFirst).at(-1)
+
+/**
+ * Keeps, newest first across chat contributions, each argv's newest runs and its earliest red, newest argvs first up to a
+ * total cap; the unit's earliest red survives the cap, so a red no approval pins yet stays the Diagnose reference.
  * @param runs - The contributed runs.
  * @returns The bounded command history.
  */
 export function retainRuns(runs: RunRecord[]): RunRecord[] {
-  const ordered = [...runs].sort((a, b) => b.at - a.at)
-  const argv = JSON.stringify(ordered[0]?.argv)
-  return [...new Map(ordered.filter(run => JSON.stringify(run.argv) === argv).map(run => [run.runId, run])).values()]
+  const ordered = [...new Map(runs.map(run => [run.runId, run])).values()].sort(newestFirst)
+  const argvs = [...new Set(ordered.map(run => JSON.stringify(run.argv)))]
+  const kept = argvs.flatMap(argv => {
+    const history = ordered.filter(run => JSON.stringify(run.argv) === argv)
+    const red = findEarliestRed(history)
+    const newest = history.slice(0, runsPerArgv)
+    return red && !newest.includes(red) ? [...newest.slice(0, -1), red] : newest
+  })
+  const red = findEarliestRed(ordered)
+  const capped = kept.slice(0, totalRuns)
+  return (red && !capped.includes(red) ? [...capped.slice(0, -1), red] : capped).sort(newestFirst)
 }

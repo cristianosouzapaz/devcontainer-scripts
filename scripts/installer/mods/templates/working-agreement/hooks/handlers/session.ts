@@ -33,7 +33,7 @@ export async function handleSessionStart(port: EnginePort, event: Frozen<Args<'s
   port.repeat(tickMs, async () => {
     // atomicReplace holds the error in sessionMemory.recordError.
     try { await mirrorSession(port) } catch {}
-    await reread(port, true)
+    await reread({ ...port, cause: 'tick' }, true)
   })
   return next(event)
 }

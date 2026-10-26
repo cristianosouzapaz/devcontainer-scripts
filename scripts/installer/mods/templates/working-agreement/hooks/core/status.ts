@@ -10,7 +10,7 @@ import { readGithubStatus } from './github-sync'
 import { reread } from './pane-view'
 import { locatePosition } from './position'
 import { readGit, readRepositoryRoot } from './repository'
-import { readSession } from './record-store'
+import { readSession, unitLogPath } from './record-store'
 import { sessionMemory } from './session-memory'
 import { isVerifyApproved } from './verify'
 import { readVerifyConfig, selectVerify } from './verify-config'
@@ -121,6 +121,7 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
     const root = await worktree(statusPort, session.unit.branch)
     if (root) rows.push(keyedLine('Worktree', root))
     if (candidate) rows.push(keyedLine('PR', candidate.url))
+    rows.push(keyedLine('Log', await unitLogPath(statusPort, session.unit)))
     const checks = slice ? sessionMemory.checks.get(slice.end)?.result : undefined
     if (slice && checks?.isOk && checks.value.length) rows.push(keyedLine('CI', `${short(slice.end)} · ${checks.value.map(check => `${check.name}: ${check.state}`).join(' · ')}`))
     groups.push(rows)
@@ -143,6 +144,7 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
   if (violations.length) groups.push(violations.map(record => keyedLine('Violation', `✗ ${describeViolation(record, 'user', root ?? undefined)} · ${time(record.end)} · ${[...record.toolUseIds, ...(record.agentIds ?? [])].join(', ')} · ${dismissed.has(record.factId) ? 'dismissed' : record.kind === 'unchecked' ? 'unchecked' : 'open'}`)))
   const errors = [formatErrorWindow('herdr', 'report-metadata', sessionMemory.herdrError),
     formatErrorWindow('Records', 'record write', sessionMemory.recordError),
+    formatErrorWindow('Log', 'log append', sessionMemory.logError),
     session.handoff?.state === 'failed' ? keyedLine('Handoff', `handoff not completed · ${session.handoff.reason}`) : null].filter((value): value is string => value !== null)
   if (errors.length) groups.push(errors)
   const manifest = await bestEffort(port, 'manifest read', async () => readJson(port.files, `${await port.readPluginRoot()}/.claude-plugin/plugin.json`), undefined)

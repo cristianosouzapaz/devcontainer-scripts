@@ -64,13 +64,13 @@ export async function withRunView(port: EnginePort, sid: string, identity: Ident
       const saved = (await port.readSessionState()).value
       if (!saved?.unit || saved.sessionId !== sid || !sameIdentity(saved.unit, identity)
         || saved.units.some(unit => sameIdentity(unit.identity, identity) && unit.generation !== generation)) return
-      const view = await port.readView()
-      if (view && !control.signal.aborted) await port.writeView({ ...view, run: next, hasRunLog: true })
+      if (!control.signal.aborted) await port.writeLiveRun(next)
     }
   }
   const polling = { task: Promise.resolve() }
   try {
     await bestEffort(port, 'run view refresh', () => refreshView(port, true, true), undefined)
+    await bestEffort(port, 'live run start', () => port.writeLiveRun(initial), undefined)
     polling.task = bestEffort(port, 'run view paint', paint, undefined)
     return await work()
   } finally {
@@ -82,11 +82,8 @@ export async function withRunView(port: EnginePort, sid: string, identity: Ident
     }
     const memory = sessionMemory.runViews.get(sid)
     if (memory) sessionMemory.runViews.set(sid, { ...memory, live: null })
-    const refreshed = await bestEffort(port, 'final run view refresh', async () => { await refreshView(port, true, true); return true }, false)
-    if (!refreshed) await bestEffort(port, 'run view fallback', async () => {
-      const view = await port.readView()
-      if (view?.run) await port.writeView({ ...view, run: undefined, hasRunLog: true })
-    }, undefined)
+    await bestEffort(port, 'final run view refresh', () => refreshView(port, true, true), undefined)
+    await bestEffort(port, 'live run clear', () => port.writeLiveRun(null), undefined)
   }
 }
 

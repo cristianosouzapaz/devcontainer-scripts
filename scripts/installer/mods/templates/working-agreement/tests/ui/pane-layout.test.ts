@@ -1,5 +1,6 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
 
+import { test } from '../support/kit'
 import { layoutLabelRows, measureLabelWidth } from '../../hooks/ui/pane-layout'
 
 // A pill is ` label ` wide, two columns apart: `aa` and `bbb` take 4 + 2 + 5 = 11 columns.

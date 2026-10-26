@@ -11,6 +11,15 @@ import type { RunDisplay } from './session-memory'
 
 interface SessionMirror { path: string; session: SessionRecord }
 
+/** A session with the version of the authoritative value it was read from. */
+export interface VersionedSession { session: Session; version: number }
+
+/** Maps the fresh session to the next one, or to null for no write; it may run more than once, so it has no side effects. */
+export type SessionChange = (session: Session) => Session | null | Promise<Session | null>
+
+// A miss means another dispatch wrote in between; this many in a row means a writer that never settles.
+const sessionWriteAttempts = 5
+
 const temp = { sequence: 0 }
 const queueMirror = createQueue()
 // Caches live with the port: one engine event, or the session.start port's session refresh loop.
@@ -120,9 +129,11 @@ export async function initializeSession(port: EnginePort): Promise<void> {
  * Hashes the canonical identity using the repository's object format.
  * @param port - The engine calls.
  * @param identity - The branch and sorted issue set.
- * @returns The shared declaration path.
+ * @param bucket - The record bucket holding the unit's file.
+ * @param extension - The file's extension.
+ * @returns The unit's file in that bucket.
  */
-async function unitPath(port: EnginePort, identity: Identity): Promise<string> {
+async function unitPath(port: EnginePort, identity: Identity, bucket = 'u', extension = 'json'): Promise<string> {
   const common = await readCommonDir(port)
   if (!common) throw new Error('check out a branch first')
   const text = canonical(identity)
@@ -130,13 +141,21 @@ async function unitPath(port: EnginePort, identity: Identity): Promise<string> {
   const memo = identityHashes.get(port.readCwd) ?? new Map<string, string>()
   identityHashes.set(port.readCwd, memo)
   const cached = memo.get(key)
-  if (cached !== undefined) return recordsPath(common, 'u', `${cached}.json`)
+  if (cached !== undefined) return recordsPath(common, bucket, `${cached}.${extension}`)
   const run = await hashObject(port.processes, text)
   if (run.exitCode !== 0 || !run.stdout.trim()) throw new Error(run.stderr || 'cannot hash unit identity')
   const hash = run.stdout.trim()
   memo.set(key, hash)
-  return recordsPath(common, 'u', `${hash}.json`)
+  return recordsPath(common, bucket, `${hash}.${extension}`)
 }
+
+/**
+ * Names a unit's transition log, which shares its declaration's hash.
+ * @param port - The engine calls.
+ * @param identity - The unit identity.
+ * @returns The log path.
+ */
+export const unitLogPath = (port: EnginePort, identity: Identity): Promise<string> => unitPath(port, identity, 'log', 'jsonl')
 
 /**
  * Writes the shared flow declaration at declaration time only.
@@ -153,9 +172,22 @@ export async function writeDeclaration(port: EnginePort, record: UnitRecord): Pr
  * @returns The session with its current flow and issue set.
  */
 export async function readSession(port: EnginePort): Promise<Session> {
-  const saved = (await port.readSessionState()).value ?? stripSession(createEmptySession(await port.readSessionId()))
+  return (await readVersionedSession(port)).session
+}
+
+/**
+ * Reads this chat's authoritative state with its version, deriving its flow solely from the shared declaration.
+ *
+ * Within one dispatch the value is the dispatch's moment: only its own writes and a missed compare-and-set move it on.
+ * @param port - The engine calls.
+ * @returns The session with its current flow and issue set, and the version it was read at.
+ */
+export async function readVersionedSession(port: EnginePort): Promise<VersionedSession> {
+  const held = await port.readSessionState()
+  const saved = held.value ?? stripSession(createEmptySession(await port.readSessionId()))
   const declaration = saved.unit ? parseUnitRecord(await readJson(port.files, await unitPath(port, saved.unit))) : null
-  return { ...saved, flow: declaration && saved.unit && sameIdentity(declaration.identity, saved.unit) ? declaration.flow : null, issues: saved.unit?.issues ?? [] }
+  const flow = declaration && saved.unit && sameIdentity(declaration.identity, saved.unit) ? declaration.flow : null
+  return { session: { ...saved, flow, issues: saved.unit?.issues ?? [] }, version: held.version }
 }
 
 /**
@@ -169,14 +201,27 @@ function stripSession(session: Session): SessionRecord {
 }
 
 /**
- * Writes authoritative state with compare-and-set and mirrors the resulting whole value.
+ * Applies a change to the fresh session with compare-and-set and mirrors the resulting whole value.
+ *
+ * A missed write re-reads, which the engine answers with the current value, and applies the change again,
+ * so a record is never built from a read older than the one it replaces.
  * @param port - The engine calls.
- * @param session - The new chat record.
+ * @param change - Builds the next session from the fresh one.
+ * @param attempt - The attempt this call makes.
+ * @returns The written session with its version, or null when the change wrote nothing.
  */
-export async function writeSession(port: EnginePort, session: Session): Promise<void> {
-  const held = await port.readSessionState()
-  if (!await port.writeSessionState(stripSession(session), held.version)) return writeSession(port, session)
-  await mirrorSession(port, false)
+export async function updateSession(port: EnginePort, change: SessionChange, attempt = 1): Promise<VersionedSession | null> {
+  const held = await readVersionedSession(port)
+  const next = await change(held.session)
+  if (!next) return null
+  if (await port.writeSessionState(stripSession(next), held.version)) {
+    await mirrorSession(port, false)
+    return { session: next, version: held.version + 1 }
+  }
+  if (attempt < sessionWriteAttempts) return updateSession(port, change, attempt + 1)
+  const error = `session record: ${attempt} writes in a row lost to newer ones`
+  sessionMemory.recordError = holdError(sessionMemory.recordError, error, await port.now())
+  throw new Error(error)
 }
 
 /**
@@ -221,7 +266,8 @@ async function mergeUnits(port: EnginePort, units: UnitEntry[]): Promise<Unit> {
       .filter((run, index, runs) => runs.findIndex(other => other.tree === run.tree && other.base === run.base) === index),
     base: merged.base ?? unit.base, baseBranch: merged.base ? merged.baseBranch : unit.baseBranch, skips: [...(merged.skips ?? []), ...(unit.skips ?? [])]
       .filter((skip, index, skips) => skips.findIndex(other => other.step === skip.step && other.reason === skip.reason) === index),
-    approval: merged.approval ?? unit.approval,
+    // why: A pin judges only the approval it was stored with, so both come from the same entry.
+    ...(merged.approval ? { approval: merged.approval, approvedRed: merged.approvedRed } : { approval: unit.approval, approvedRed: unit.approvedRed }),
   }), createEmptyUnit())
   const merged = { ...evidence, runs: retainRuns(units.flatMap(unit => unit.runs)) }
   const bases = [...new Set(units.flatMap(unit => unit.base ? [unit.base] : []))]
@@ -316,9 +362,7 @@ export async function readBranchUnits(port: EnginePort, branch: string): Promise
 export async function updateUnits(port: EnginePort, session: Session, change: (unit: Unit) => Unit): Promise<void> {
   if (!session.unit) return
   const identity = session.unit
-  const changed = { ...change(await readUnit(port, identity)), identity }
-  const current = await readSession(port)
-  await writeSession(port, replaceUnitEntry(current, identity, changed))
+  await updateSession(port, async current => replaceUnitEntry(current, identity, { ...change(await readUnit(port, identity)), identity }))
 }
 
 /**

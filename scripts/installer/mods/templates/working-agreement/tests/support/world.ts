@@ -1,6 +1,6 @@
 import type { Args, CommandSpec, On, PaneOpenArgs, ProcessRunResult, SessionContextUsage, ToolSpec, UiLogSink } from 'claude-code'
 import { mock } from 'claude-code/testing'
-import type { FlowView, ReadFailure } from '../../types'
+import type { FlowView, ReadFailure, RunView } from '../../types'
 import type { ProcessPort } from '../../hooks/lib/process'
 import type { EnginePort, PaneView } from '../../hooks/core/engine-port'
 import { createEmptySession } from '../../hooks/domain/records'
@@ -73,6 +73,7 @@ export interface Options {
   statusGate?: Promise<void>
   failing?: string
   removeExitCode?: number
+  appendExitCode?: number
   listFailurePrefix?: string
   isLoggedOut?: boolean
   isOutsideRepo?: boolean
@@ -80,6 +81,8 @@ export interface Options {
   casMisses?: number
   watchPaths?: string[]
   isStateAbsent?: boolean
+  /** Holds the first GitHub issue read until it opens. */
+  issueGate?: Promise<void>
   legacy?: Record<string, unknown>
   issueLabels?: Record<number, string[]>
   checkRuns?: Record<string, CheckRun[]>
@@ -105,8 +108,11 @@ export interface Options {
   ignored?: string[]
 }
 
-/** The mutable chat id lets a test move to a separate engine session. */
+/** The mutable chat id lets a test move to another chat; only the first one has the engine's session store. */
 interface Chat { id: string }
+
+/** A session store value the world holds, at the version the engine would give it. */
+interface HeldSession { value: SessionRecord | undefined; version: number }
 
 interface WorldBoundaries extends Pick<EnginePort, 'files' | 'readCwd' | 'readSessionId' | 'readHerdrEnv'> { processes: ProcessPort }
 interface LogEntry { text: string; to: UiLogSink }
@@ -121,7 +127,8 @@ export interface World {
   answeredEntries: Set<string>
   herdrActivity: HerdrActivity
   boundaries: WorldBoundaries
-  sessionState: Pick<EnginePort, 'readSessionState' | 'writeSessionState'>
+  /** The session store of a direct-dispatch port, which runs mod code beside the engine and so reaches no engine store. */
+  directSessionState: Pick<EnginePort, 'readSessionState' | 'writeSessionState'>
   herdrCalls: HerdrCall[]
   registeredCommands: CommandSpec[]
   registeredTools: Pick<ToolSpec, 'name' | 'isDeferred'>[]
@@ -133,9 +140,18 @@ export interface World {
   files: Map<string, string>
   runs: string[]
   chat: Chat
-  sessions: Map<string, SessionRecord>
+  /** Each chat's session record as its last landed write, or its seed, left it; only the mod writes it. */
+  sessions: ReadonlyMap<string, SessionRecord>
+  /**
+   * Gives a chat other than the first the record its session start would have loaded.
+   * @param id - The chat id.
+   * @param record - The record.
+   */
+  seedChat: (id: string, record: SessionRecord) => void
   legacy: Set<string>
   views: (FlowView | null)[]
+  /** Every live-run display written, in order. */
+  liveRuns: (RunView | null)[]
   paneViews: PaneView[]
   opened: PaneOpenArgs[]
   approveConfig: (text: string) => void
@@ -406,6 +422,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   const registeredCommands: World['registeredCommands'] = []
   const registeredTools: World['registeredTools'] = []
   const statusGates = new Set<Promise<void>>()
+  const issueGates = new Set<Promise<void>>()
   const prompts: string[] = []
   const suggestions: string[] = []
   const files = new Map<string, string>()
@@ -416,8 +433,10 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   const approveConfig = (text: string): void => { files.set(`${common}/working-agreement/ok/${configBlob(text)}.json`, '{"v":1}') }
   if (options.approvedConfig !== undefined) approveConfig(options.approvedConfig)
   files.set('/plugin/.claude-plugin/plugin.json', JSON.stringify({ version: '1.2.3' }))
+  const engineChat = chat.id
   const sessions = new Map<string, SessionRecord>()
-  const versions = new Map<string, number>()
+  const held = new Map<string, HeldSession>()
+  const engineStore = { isWritten: false }
   const failures = { renames: options.renameFailures ?? 0, compares: options.casMisses ?? 0 }
   const identity = { branch: checkout.branch, issues: (options.session?.flow === null && options.unit ? [1] : options.session?.issues ?? [1]) as number[] }
   // Custom issue state does not inherit the default at-Code skill evidence.
@@ -425,13 +444,15 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     info: { 1: { title: 'feat', labels: ['ready-for-agent'] } }, gh: 'connected', ...options.session }
   const { flow: _flow, issues: _issues, ...record } = seeded
   const initial: SessionRecord = { ...record, unit: options.session?.flow === null ? null : identity } as SessionRecord
-  if (!options.isStateAbsent) sessions.set(chat.id, initial)
+  const seed = options.isStateAbsent ? undefined : initial
+  if (seed) sessions.set(chat.id, seed)
   const flow = options.session?.flow ?? (options.session?.flow === null ? null : 'small-feature')
   const ready = flow ? hashBlob(JSON.stringify(identity)).then(hash => {
     files.set(`${common}/working-agreement/u/${hash}.json`, JSON.stringify({ v: 1, identity, flow }))
   }) : Promise.resolve()
   const legacy = new Set(Object.keys(options.legacy ?? {}))
   const views: (FlowView | null)[] = []
+  const liveRuns: (RunView | null)[] = []
   const paneViews: PaneView[] = []
   const opened: PaneOpenArgs[] = []
   const logs: LogEntry[] = []
@@ -454,21 +475,49 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   on('store.keys', () => ({ value: [...legacy] }))
   on('store.delete', (_$, e) => { legacy.delete(e.key); return { value: undefined } })
   on('state.set', { plugin: 'working-agreement', key: 'view' }, (_$, e, next) => { views.push(e.value); return next(e) })
-  const sessionState: World['sessionState'] = {
-    readSessionState: async () => ({ value: sessions.get(chat.id), version: versions.get(chat.id) ?? 0 }),
+  on('state.set', { plugin: 'working-agreement', key: 'liveRun' }, (_$, e, next) => { liveRuns.push(e.value); return next(e) })
+  // why: The kit hosts one engine session, so only the first chat has the engine's store; another chat is another
+  // session, and a direct-dispatch port runs beside the engine. The world holds those stores, so they answer live
+  // reads rather than one moment per dispatch; a held store and the engine's never share a record.
+  const readHeld = (id: string): HeldSession => held.get(id) ?? { value: sessions.get(id), version: 0 }
+  const writeHeld = (id: string, value: SessionRecord, expected: number): boolean => {
+    const { version } = readHeld(id)
+    if (failures.compares > 0) { failures.compares -= 1; return false }
+    if (expected !== version) return false
+    held.set(id, { value, version: version + 1 })
+    sessions.set(id, value)
+    return true
+  }
+  const refuseMixed = (): void => {
+    if (chat.id === engineChat && held.has(engineChat)) throw new Error('a direct-dispatch port wrote this chat\'s record, which the engine store does not hold')
+  }
+  const directSessionState: World['directSessionState'] = {
+    readSessionState: async () => readHeld(chat.id),
     writeSessionState: async (value, expected) => {
-      const version = versions.get(chat.id) ?? 0
-      if (failures.compares > 0) { failures.compares -= 1; return false }
-      if (expected !== version) return false
-      sessions.set(chat.id, value)
-      versions.set(chat.id, version + 1)
-      return true
+      if (chat.id === engineChat && engineStore.isWritten) throw new Error('the engine store holds this chat\'s record, which a direct-dispatch port cannot write')
+      return writeHeld(chat.id, value, expected)
     },
   }
-  on('state.get', { plugin: 'working-agreement', key: 'session' }, async () => ({ value: await sessionState.readSessionState() }))
-  on('state.set', { plugin: 'working-agreement', key: 'session' }, async (_$, e) => ({ value: {
-    isSet: await sessionState.writeSessionState(e.value, e.ifVersion ?? versions.get(chat.id) ?? 0), version: versions.get(chat.id) ?? 0,
-  } }))
+  const seedChat: World['seedChat'] = (id, record) => {
+    if (id === engineChat) throw new Error('the first chat starts from the world options')
+    held.set(id, { value: record, version: 1 })
+    sessions.set(id, record)
+  }
+  on('state.get', { plugin: 'working-agreement', key: 'session' }, async (_$, e, next) => {
+    if (chat.id !== engineChat) return { value: readHeld(chat.id) }
+    refuseMixed()
+    const read = await next(e)
+    // why: The chat starts as one whose session already started: until the mod writes, the store holds what its start loaded.
+    return seed && read.value && read.value.value === undefined && read.value.version === 0 ? { value: { value: seed, version: 0 } } : read
+  })
+  on('state.set', { plugin: 'working-agreement', key: 'session' }, async (_$, e, next) => {
+    if (chat.id !== engineChat) return { value: { isSet: writeHeld(chat.id, e.value, e.ifVersion ?? readHeld(chat.id).version), version: readHeld(chat.id).version } }
+    refuseMixed()
+    if (failures.compares > 0) { failures.compares -= 1; return { value: { isSet: false, version: e.ifVersion ?? 0 } } }
+    const written = await next(e)
+    if (written.value?.isSet) { engineStore.isWritten = true; sessions.set(engineChat, e.value) }
+    return written
+  })
   const clock = mock.clock(on)
   on('session.id', async () => ({ value: await boundaries.readSessionId() }))
   on('session.cwd', () => ({ value: session.cwd }))
@@ -503,6 +552,12 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     if (e.argv[0] === 'tail') return buildResult((options.spawnOutput ?? '').replace(/\n$/, '').split('\n').slice(-4).join('\n'))
     if (e.argv[0] === 'sh') return buildResult(options.spawnOutput ?? '')
     if (e.argv[0] === 'cp' || e.argv[0] === 'mkdir') return buildResult('')
+    if (e.argv[0] === 'tee') {
+      if (options.appendExitCode) return buildResult('', options.appendExitCode, 'append failed')
+      const target = e.argv[3] ?? ''
+      files.set(target, (files.get(target) ?? '') + (e.init?.stdin ?? ''))
+      return buildResult(e.init?.stdin ?? '')
+    }
     if (e.argv[0] === 'rm') {
       if (options.removeExitCode) return buildResult('', options.removeExitCode, 'delete failed')
       files.delete(e.argv[3] ?? '')
@@ -659,6 +714,8 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     if (issue && options.missing?.includes(Number(issue[1]))) return buildResult('', 1)
     if (issue) {
       const number = Number(issue[1])
+      const gate = options.issueGate
+      if (gate && !issueGates.has(gate)) { issueGates.add(gate); await gate }
       const held = initial.info[String(number)]
       const info = held && !('error' in held) ? held : undefined
       const sample = githubSamples.issue[0].body.data.repository.issue
@@ -739,8 +796,8 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   })
   on('turn.complete', () => ({ text: '' }))
   on('classic.UserPromptSubmit', () => ({}))
-  return { ready, answeredEntries, herdrActivity, approveConfig, boundaries, sessionState, herdrCalls, registeredCommands, registeredTools,
-    commands, prompts, suggestions, clock, files, runs, chat, sessions, legacy, views, paneViews, opened, logs }
+  return { ready, answeredEntries, herdrActivity, approveConfig, boundaries, directSessionState, herdrCalls, registeredCommands, registeredTools,
+    commands, prompts, suggestions, clock, files, runs, chat, sessions, seedChat, legacy, views, liveRuns, paneViews, opened, logs }
 }
 
 /**
@@ -750,13 +807,14 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
  */
 export function createTestPort(world: World): EnginePort {
   return {
-    ...world.boundaries, ...world.sessionState,
+    ...world.boundaries, ...world.directSessionState, cause: 'test',
     logDebug: text => { world.logs.push({ text, to: 'debug' }) },
     processes: { ...world.boundaries.processes, spawn: () => { throw new Error('unexpected spawn') } },
     clock: { sleep: delayMs => world.clock.sleep(delayMs) },
     clearLegacyStore: async () => {}, now: async () => world.clock.now(), repeat: () => {}, defer: work => { work() },
     readPluginRoot: async () => '/plugin', readContext: async () => ({ window: 200000 }), readView: async () => world.views.at(-1) ?? null,
-    writeView: async view => { world.views.push(view) }, readPaneView: async () => world.paneViews.at(-1) ?? 'flow',
+    writeView: async view => { world.views.push(view) }, readLiveRun: async () => world.liveRuns.at(-1) ?? null,
+    writeLiveRun: async run => { world.liveRuns.push(run) }, readPaneView: async () => world.paneViews.at(-1) ?? 'flow',
     writePaneView: async view => { world.paneViews.push(view) }, openPane: async closeOnEscape => { world.opened.push({ id: 'working-agreement', title: 'Flow', closeOnEscape }) },
     runSlashCommand: async () => {}, submitPrompt: async () => {}, suggestPrompt: async () => false, registerSurface: async () => {},
   }

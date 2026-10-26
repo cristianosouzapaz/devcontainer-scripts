@@ -2,7 +2,7 @@ import type { Args, EventResult, Frozen, Next } from 'claude-code'
 
 import type { EnginePort } from '../core/engine-port'
 import { refreshView } from '../core/pane-view'
-import { readSession, updateUnits, writeSession } from '../core/record-store'
+import { readSession, updateSession, updateUnits } from '../core/record-store'
 import { withRecordLock } from '../core/session-memory'
 import { mergeSkills } from '../domain/records'
 
@@ -19,7 +19,7 @@ export async function handleSkillPrompt(port: EnginePort, event: Frozen<Args<'sk
   await withRecordLock(async () => {
     const session = await readSession(port)
     if (!session.flow) {
-      if (!session.skills?.includes(name)) await writeSession(port, { ...session, skills: mergeSkills(session.skills ?? [], [name]) })
+      await updateSession(port, current => current.flow || current.skills?.includes(name) ? null : { ...current, skills: mergeSkills(current.skills ?? [], [name]) })
       return
     }
     await updateUnits(port, session, unit => ({ ...unit, skills: mergeSkills(unit.skills, [name]) }))

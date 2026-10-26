@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from '../../support/kit'
 import { noFlow, verifyFile } from '../../support/builders'
 import { readCurrentStep, readFlowStatus, readPromptContext, runFlowCommand } from '../../support/helpers'
 import { configBlob, createWorld } from '../../support/world'
@@ -124,14 +125,21 @@ test('passes are bound to tree, base, config and recomputed command set; records
   expect(await readCurrentStep($)).toBe('Verify')
   expect(await readFlowStatus($)).toContain('not run on this tree')
   checkout.tree = 'one'
-  const record = world.sessions.get('sid')!
-  world.sessions.set('sid', { ...record, units: record.units.map(unit => ({ ...unit, verifyRuns: unit.verifyRuns.map(run => ({ ...run, commands: [['partial']] })) })) })
-  expect(await readCurrentStep($)).toBe('Verify')
-  world.sessions.set('sid', { ...record, units: record.units.map(unit => ({ ...unit, base: 'c1' })) })
-  expect(await readCurrentStep($)).toBe('Verify')
   options.verifyFile = JSON.stringify({ verify: ['different'] })
   expect(await readFlowStatus($)).toContain('config not approved')
 })
+
+for (const [scenario, run, unit, step] of [
+  ['the recomputed command set on its base', {}, {}, 'Commit'],
+  ['another command set', { commands: [['partial']] }, {}, 'Verify'],
+  ['another unit base', {}, { base: 'c1' }, 'Verify'],
+] as const) {
+  test(`a recorded pass counts only for ${scenario}`, async ($, on) => {
+    const pass = { tree: 'one', base: 'c0', configBlob: configBlob(verifyFile), commands: [['./test/run.sh']], outcome: { kind: 'pass' }, runId: 'r', at: 1, ...run }
+    createWorld(on, { ...changed }, { approvedConfig: verifyFile, verifyFile, unit: { verifyRuns: [pass], ...unit } })
+    expect(await readCurrentStep($)).toBe(step)
+  })
+}
 
 test('a Verify on a new tree replaces the previous tree record in the session', async ($, on) => {
   const checkout = { ...changed }

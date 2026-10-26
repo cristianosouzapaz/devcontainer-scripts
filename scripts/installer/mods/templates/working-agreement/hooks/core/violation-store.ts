@@ -3,11 +3,12 @@ import type { Violation, ViolationFact } from '../../types'
 import { readJson } from '../lib/json'
 import { isRecord } from '../lib/guards'
 import type { EnginePort } from './engine-port'
-import { atomicReplace, readCommonDir, readSession, writeSession, recordsPath } from './record-store'
+import { logEvent } from './flow-log'
+import { atomicReplace, readCommonDir, readSession, updateSession, recordsPath } from './record-store'
 import { withRecordLock } from './session-memory'
 
 /** Attribution shared by facts observed in one window. */
-export interface WindowAttribution { toolUseId: string; agentId?: string; start: number; end: number }
+export interface WindowAttribution { toolUseId: string; agentId: string | undefined; start: number; end: number }
 
 /**
  * Reads every valid shared dismissal, retaining them independently of session lifetimes.
@@ -34,7 +35,11 @@ export async function readDismissals(port: EnginePort): Promise<Set<string>> {
 export async function dismissViolations(port: EnginePort, factIds: string[]): Promise<void> {
   const common = await readCommonDir(port)
   if (!common) throw new Error('repository unreadable')
-  for (const factId of factIds) await atomicReplace(port, recordsPath(common, 'd', `${factId}.json`), JSON.stringify({ v: 1, factId }))
+  const session = await readSession(port)
+  for (const factId of factIds) {
+    await atomicReplace(port, recordsPath(common, 'd', `${factId}.json`), JSON.stringify({ v: 1, factId }))
+    logEvent(port, session, 'violation', { action: 'dismissed', factId })
+  }
 }
 
 /**
@@ -51,8 +56,7 @@ export async function recordViolations(port: EnginePort, facts: ViolationFact[],
     if (run.exitCode !== 0 || !run.stdout.trim()) throw new Error('cannot hash guarantee fact')
     return { ...fact, factId: run.stdout.trim(), toolUseIds: [window.toolUseId], agentIds: window.agentId ? [window.agentId] : [], start: window.start, end: window.end, sessionId }
   }))
-  return withRecordLock(async () => {
-    const session = await readSession(port)
+  const written = await withRecordLock(() => updateSession(port, async session => {
     const unchecked = added.find(record => record.kind === 'unchecked')
     const previous = unchecked ? session.violations?.findLast(record => record.kind === 'unchecked') : undefined
     const continuing = previous && !(await readDismissals(port)).has(previous.factId) ? previous : undefined
@@ -68,7 +72,8 @@ export async function recordViolations(port: EnginePort, facts: ViolationFact[],
         toolUseIds: [...new Set([...held.toolUseIds, ...record.toolUseIds])],
         agentIds: [...new Set([...(held.agentIds ?? []), ...(record.agentIds ?? [])])], start: Math.min(held.start, record.start), end: Math.max(held.end, record.end) }
     }
-    await writeSession(port, { ...session, violations })
-    return observed.map(record => violations.find(held => held.factId === record.factId)!)
-  })
+    return { ...session, violations }
+  }))
+  if (written) for (const record of added) logEvent(port, written.session, 'violation', { action: 'recorded', factId: record.factId, kind: record.kind })
+  return added.flatMap(record => written?.session.violations?.find(held => held.factId === record.factId) ?? [])
 }

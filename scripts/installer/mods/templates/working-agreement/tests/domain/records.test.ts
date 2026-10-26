@@ -1,5 +1,6 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
 
+import { test } from '../support/kit'
 import { createEmptySession, createEmptyUnit, parseSession, parseUnitRecord, retainRuns } from '../../hooks/domain/records'
 import { conformanceGraph } from '../support/graph-fixture'
 import { noFlow, verifyFile, diagnoseRuns, diagnosed, diagnosisComment } from '../support/builders'
@@ -244,11 +245,39 @@ test('strict run and comment records reject malformed boundary facts and retired
   }
 })
 
-test('run history retains all distinct runs for the newest argv across unordered contributions', () => {
+test('run history keeps every argv, newest first and deduplicated, whatever the contribution order', () => {
   const [red, green] = diagnoseRuns
   const other = { ...red!, argv: ['other'], runId: 'other', at: 1.5 }
-  expect(retainRuns([green!, other, red!, green!])).toEqual([green, red])
-  expect(retainRuns([red!, { ...other, at: 3 }, green!])).toEqual([{ ...other, at: 3 }])
+  expect(retainRuns([green!, other, red!, green!])).toEqual([green, other, red])
+  expect(retainRuns([red!, other, green!])).toEqual(retainRuns([other, green!, red!]))
+  const tied = { ...green!, runId: 'tied', at: green!.at }
+  expect(retainRuns([green!, tied])).toEqual(retainRuns([tied, green!]))
+})
+
+test("run history bounds each argv and the total, keeping each argv's earliest red and the unit's earliest red", () => {
+  const [red] = diagnoseRuns
+  const loop = Array.from({ length: 30 }, (_, index) => ({ ...red!, runId: `loop-${index}`, tree: `t${index}`, at: 10 + index }))
+  const kept = retainRuns([red!, ...loop])
+  expect(kept).toHaveLength(10)
+  expect(kept).toContainEqual(red)
+  expect(kept[0]).toEqual(loop[29])
+  const others = Array.from({ length: 80 }, (_, index) => ({ ...red!, argv: [`./other-${index}`], runId: `other-${index}`, at: 100 + index }))
+  const capped = retainRuns([red!, ...others])
+  expect(capped).toHaveLength(50)
+  expect(capped).toContainEqual(red)
+  expect(capped[0]).toEqual(others[79])
+})
+
+test('a pinned red needs its approval and the run identity fields, and a record without it still parses', () => {
+  const { flow: _flow, issues: _issues, ...session } = createEmptySession('sid')
+  const { outcome: _outcome, ...approvedRed } = diagnoseRuns[0]!
+  const entry = { ...createEmptyUnit(), identity: { branch: 'fix', issues: [1] }, ...diagnosed }
+  expect(parseSession({ ...session, units: [entry] })?.units[0]).toEqual(entry)
+  expect(parseSession({ ...session, units: [{ ...entry, approvedRed }] })?.units[0]?.approvedRed).toEqual(approvedRed)
+  for (const broken of [
+    { approval: undefined, approvedRed }, { approvedRed: { ...approvedRed, outcome: diagnoseRuns[0]!.outcome } },
+    { approvedRed: { ...approvedRed, argv: [] } }, { approvedRed: { ...approvedRed, tree: '' } }, { approvedRed: 'red' },
+  ]) expect(parseSession({ ...session, units: [{ ...entry, ...broken }] })).toBeNull()
 })
 
 test('sessions merge matching command history and prefer this chat for scalar approval', async ($, on) => {
@@ -265,7 +294,23 @@ test('sessions merge matching command history and prefer this chat for scalar ap
     units: [{ ...createEmptyUnit(), identity, ...evidence }],
   }))
   await declareFlow($, 'fix', [1])
-  expect(sessions.get('sid')?.units[0]?.runs).toEqual([...diagnoseRuns].reverse())
+  expect(sessions.get('sid')?.units[0]?.runs).toEqual([diagnoseRuns[1], { ...diagnoseRuns[0]!, argv: ['other'], runId: 'other', at: 1.5 }, diagnoseRuns[0]])
   expect(sessions.get('sid')?.units[0]?.approval).toEqual(diagnosed.approval)
   expect(await readFlowStatus($)).toContain('✓ Diagnose')
+})
+
+test("merged sessions take the approval and its pinned red from one entry, never another entry's pin", async ($, on) => {
+  const { outcome: _outcome, ...approvedRed } = diagnoseRuns[0]!
+  const { files, sessions } = createWorld(on, { branch: 'feature' }, { session: noFlow,
+    unit: { runs: [diagnoseRuns[0]], approval: diagnosisComment.url },
+    comments: { 1: [diagnosisComment] }, issueLabels: { 1: ['ready-for-agent'] },
+  })
+  const base = sessions.get('sid')!
+  const identity = { branch: 'feature', issues: [1] }
+  files.set(`${records}/s/b.json`, JSON.stringify({ ...base, sessionId: 'b', unit: identity,
+    units: [{ ...createEmptyUnit(), identity, runs: [diagnoseRuns[0]], approval: 'other-comment', approvedRed: { ...approvedRed, runId: 'other' } }],
+  }))
+  await declareFlow($, 'fix', [1])
+  expect(sessions.get('sid')?.units[0]?.approval).toEqual(diagnosisComment.url)
+  expect(sessions.get('sid')?.units[0]?.approvedRed).toBeUndefined()
 })

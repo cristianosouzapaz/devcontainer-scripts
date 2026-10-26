@@ -1,15 +1,16 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from '../support/kit'
 import { diagnoseRuns, diagnosisComment, noFlow, verifyFile } from '../support/builders'
 import { endTurn, readCurrentStep } from '../support/helpers'
 import { configBlob, createWorld } from '../support/world'
 import type { Options } from '../support/world'
 
 const newer = { url: 'https://github.com/o/r/issues/1#issuecomment-2', createdAt: new Date(5).toISOString() }
+const unapprovedVerify = { branch: 'feat', ahead: 8, isDirty: true, tree: 'one' }
 const awaitingApproval = (): Options => ({
   session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } },
   unit: { runs: [diagnoseRuns[0]!] }, comments: { 1: [newer, diagnosisComment] }, issueLabels: { 1: ['ready-for-agent'] },
 })
-const unapprovedVerify = { branch: 'feat', ahead: 8, isDirty: true, tree: 'one' }
 
 test('Diagnose waiting for approval suggests approving the newest comment after the red', async ($, on) => {
   const { suggestions } = createWorld(on, { branch: 'fix' }, awaitingApproval())

@@ -1,12 +1,15 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
 
+import { test } from '../support/kit'
 import { handleGuarantees } from '../../hooks/handlers/guarantees'
 import { describeViolation } from '../../hooks/core/guarantees'
 import { parseSession } from '../../hooks/domain/records'
 import { mountPane, endTurn, readFlowStatus } from '../support/helpers'
 import { buildPullRequest } from '../support/builders'
 import { common, createTestPort, createWorld } from '../support/world'
-import type { Checkout, Graph, Options } from '../support/world'
+import type { Checkout, Gate, Graph, Options } from '../support/world'
+
+interface EntryGate extends Gate { entered: number }
 
 const graph = (): Graph => ({ commits: { a: { parents: [], files: {} } }, refs: { main: 'a', feature: 'a', 'origin/main': 'a' } })
 /**
@@ -44,8 +47,10 @@ for (const agentId of [undefined, 'child']) {
     expect(result.context?.[1]).toContain("a commit appeared during your call (it may be the user's): stop and tell the user")
     expect(views.at(-1)?.violations?.[0]?.tone).toBe('error')
     expect(views.at(-1)?.violations?.[0]?.text).toBe('A commit appeared during an agent call (it may be yours)')
-    expect((await readFlowStatus($))?.split('\n').find(line => line.startsWith('Violation'))).toContain('✗ A commit appeared during an agent call (it may be yours) · ')
     expect(parseSession(sessions.get('sid'))).not.toBe(null)
+    // The direct-dispatch port's record never reaches the engine store, so only the dispatched call continues there.
+    if (agentId) return
+    expect((await readFlowStatus($))?.split('\n').find(line => line.startsWith('Violation'))).toContain('✗ A commit appeared during an agent call (it may be yours) · ')
     expect((await $.tool.call({ tool: 'Bash', command: 'later' })).deny).toBeUndefined()
     expect(sessions.get('sid')?.violations).toHaveLength(1)
   })
@@ -196,15 +201,17 @@ test('a legacy commit violation remains readable without worktree attribution', 
 for (const held of [undefined, [], [{ root: '/first', branch: 'first' }]]) {
   test(`repeated commit observations retain checkout attribution (${held === undefined ? 'legacy' : held.length ? 'recorded' : 'empty'})`, async ($, on) => {
     const checkout: Checkout = { branch: 'feature', graph: graph() }
-    const { sessions, views } = createWorld(on, checkout, { afterTool: () => checkout.graph = commit(checkout.graph!) })
+    const { sessions, views, chat, seedChat } = createWorld(on, checkout, { afterTool: () => checkout.graph = commit(checkout.graph!) })
     await $.tool.call({ tool: 'Bash', command: 'first' })
     const session = sessions.get('sid')!
     const record = session.violations!.find(record => record.kind === 'commit')!
-    sessions.set('sid', { ...session, violations: [{ ...record, checkouts: held }] })
+    // A chat resumed from this record, as an earlier version wrote its checkouts.
+    chat.id = 'resumed'
+    seedChat(chat.id, { ...session, sessionId: chat.id, violations: [{ ...record, sessionId: chat.id, checkouts: held }] })
     checkout.graph = graph()
     const result = await $.tool.call({ tool: 'Bash', command: 'second' })
-    const merged = sessions.get('sid')?.violations?.find(record => record.kind === 'commit')
-    expect(sessions.get('sid')?.violations).toHaveLength(1)
+    const merged = sessions.get(chat.id)?.violations?.find(record => record.kind === 'commit')
+    expect(sessions.get(chat.id)?.violations).toHaveLength(1)
     expect(merged?.factId).toBe(record.factId)
     expect(merged?.toolUseIds).toHaveLength(2)
     expect(merged?.checkouts).toEqual(held ?? [{ root: '/repo', branch: 'feature' }])
@@ -376,13 +383,13 @@ test('each session tells the same fact; dismissing the displayed fact clears bot
   const git = graph()
   const checkout: Checkout = { branch: 'feature', graph: git }
   const options: Options = { afterTool: () => checkout.graph = commit(checkout.graph!) }
-  const { sessions, files, chat, clock, views } = createWorld(on, checkout, options)
+  const { sessions, files, chat, clock, views, seedChat } = createWorld(on, checkout, options)
   const initial = sessions.get('sid')!
   const first = await $.tool.call({ tool: 'Bash', command: 'opaque' })
   checkout.graph!.refs.feature = 'a'
   delete checkout.graph!.commits.b
   chat.id = 'second'
-  sessions.set(chat.id, { ...initial, sessionId: chat.id })
+  seedChat(chat.id, { ...initial, sessionId: chat.id })
   const second = await $.tool.call({ tool: 'Bash', command: 'opaque' })
   const factId = sessions.get('sid')!.violations![0]!.factId
   expect(sessions.get('second')?.violations?.[0]?.factId).toBe(factId)
@@ -440,11 +447,11 @@ test('parallel windows merge call and loop attribution without losing records', 
   const git = graph()
   const checkout: Checkout = { branch: 'feature', graph: git }
   const toolUseIds: string[] = []
-  const pending: { release?: () => void } = {}
-  const ready = new Promise<void>(resolve => { pending.release = resolve })
+  const pending: Gate = {}
+  const ready = new Promise<void>(resolve => { pending.open = resolve })
   on('tool.call', { tool: 'Bash' }, async (_$, event) => {
     toolUseIds.push(event.tool_use_id)
-    if (toolUseIds.length === 2) { checkout.graph = commit(checkout.graph!); pending.release?.() }
+    if (toolUseIds.length === 2) { checkout.graph = commit(checkout.graph!); pending.open?.() }
     await ready
     return { result: 'done' }
   })
@@ -463,12 +470,12 @@ test('parallel subagent windows preserve both pinned loop ids', async (_$, on) =
   const git = graph()
   const checkout: Checkout = { branch: 'feature', graph: git }
   const world = createWorld(on, checkout)
-  const pending: { entered: number; release?: () => void } = { entered: 0 }
-  const ready = new Promise<void>(resolve => { pending.release = resolve })
+  const pending: EntryGate = { entered: 0 }
+  const ready = new Promise<void>(resolve => { pending.open = resolve })
   const results = await Promise.all(['one', 'two'].map(toolUseId => handleGuarantees(createTestPort(world),
     { tool: 'Bash', command: 'opaque', tool_use_id: toolUseId, agentId: toolUseId }, async () => {
       pending.entered += 1
-      if (pending.entered === 2) { checkout.graph = commit(checkout.graph!); pending.release?.() }
+      if (pending.entered === 2) { checkout.graph = commit(checkout.graph!); pending.open?.() }
       await ready
       return { result: 'done' }
     })))

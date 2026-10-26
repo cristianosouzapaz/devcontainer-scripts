@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from '../support/kit'
 import { noFlow, diagnosed, diagnosisComment } from '../support/builders'
 import { declareFlow, readFlowStatus, readStepStates } from '../support/helpers'
 import { createWorld } from '../support/world'
@@ -24,7 +25,7 @@ for (const input of [undefined, [], [''], [1], 'check']) {
   })
 }
 
-test('red and green record the same argv on different worktree content; changing argv bounds history', async ($, on) => {
+test('red and green record the same argv on different worktree content; another argv joins the history beside it', async ($, on) => {
   const checkout: Checkout = { branch: 'fix', tree: 'red', isDirty: true }
   const options: Options = { session: { flow: 'fix' }, spawnCode: 7, spawnOutput: 'tail' }
   const { sessions, clock } = createWorld(on, checkout, options)
@@ -43,7 +44,7 @@ test('red and green record the same argv on different worktree content; changing
   expect(sessions.get('sid')?.units[0]?.runs.map(run => run.outcome.kind)).toEqual(['pass', 'pass', 'fail'])
   await clock.advance(1)
   await $.tool.call({ tool: 'mcp__working-agreement__run', argv: ['other'] })
-  expect(sessions.get('sid')?.units[0]?.runs.map(run => run.argv)).toEqual([['other']])
+  expect(sessions.get('sid')?.units[0]?.runs.map(run => run.argv)).toEqual([['other'], argv, argv, argv])
 })
 
 test('run uses the declared branch worktree while the chat checkout is elsewhere', async ($, on) => {
@@ -137,11 +138,11 @@ for (const tool of ['run', 'verify']) {
     const options: Options = { session: noFlow, verifyFile: '{"verify":["./check"]}', issueLabels: { 1: ['ready-for-agent'] }, spawnCode: tool === 'run' ? 7 : 0 }
     options.approvedConfig = options.verifyFile!
     const world = createWorld(on, { branch: 'fix', isDirty: true, tree: 'changed' }, options)
-    const { chat, sessions } = world
+    const { chat, sessions, seedChat } = world
     expect((await declareFlow($, 'fix', [1])).deny).toBeUndefined()
     const previous = sessions.get('sid')!
     chat.id = 'carried'
-    sessions.set(chat.id, { ...previous, sessionId: chat.id, units: [] })
+    seedChat(chat.id, { ...previous, sessionId: chat.id, units: [] })
     const result = await $.tool.call({ tool: `mcp__working-agreement__${tool}`, ...(tool === 'run' ? { argv } : {}) })
     expect(result.result).toContain(tool === 'run' ? 'red recorded' : 'Verify passed')
     expect(sessions.get(chat.id)?.units[0]?.generation).toBe(previous.units[0]?.generation)

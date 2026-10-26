@@ -4,7 +4,7 @@ import type { UnitEntry } from '../domain/records'
 import { bestEffort, logFailure } from './best-effort'
 import type { EnginePort } from './engine-port'
 import { createReadPort } from './read-port'
-import { deleteDeclaration, readCommonDir, readSession, readSessionMirrors, sameIdentity, writeSession, recordsPath } from './record-store'
+import { deleteDeclaration, readCommonDir, readSession, readSessionMirrors, sameIdentity, updateSession, recordsPath } from './record-store'
 import { sessionMemory } from './session-memory'
 import { readGit } from './repository'
 import { readGithubStatus } from './github-sync'
@@ -32,10 +32,12 @@ export async function pruneConcluded(engine: EnginePort): Promise<void> {
     return conclusion.isOk ? { unit, isConcluded: !!conclusion.value } : null
   }))
   if (judgements.some(judgement => judgement === null)) return
-  const isConcluded = (unit: UnitEntry): boolean => judgements.some(judgement => judgement?.unit === unit && judgement.isConcluded)
+  // The session's own entries are re-read fresh, so an entry is matched by its identity and lifetime.
+  const isConcluded = (unit: UnitEntry): boolean => judgements.some(judgement => judgement?.isConcluded
+    && sameIdentity(judgement.unit.identity, unit.identity) && judgement.unit.generation === unit.generation)
   const session = await readSession(port)
   const own = mirrors.find(mirror => mirror.session.sessionId === session.sessionId)?.session.units ?? []
-  if (own.some(isConcluded)) await writeSession(port, { ...session, units: own.filter(unit => !isConcluded(unit)) })
+  if (own.some(isConcluded)) await updateSession(port, current => current.units.some(isConcluded) ? { ...current, units: current.units.filter(unit => !isConcluded(unit)) } : null)
   for (const mirror of mirrors.filter(mirror => mirror.session.sessionId !== session.sessionId)) {
     if (mirror.session.units.every(isConcluded)) logFailure(port, 'session mirror delete', hasExitedZero(await removeFile(port.processes, mirror.path)))
   }
@@ -46,7 +48,8 @@ export async function pruneConcluded(engine: EnginePort): Promise<void> {
 }
 
 /**
- * Removes orphaned records and run artifacts while preserving live owners and displayed runs.
+ * Removes orphaned records, run artifacts and transition logs while preserving live owners and displayed runs;
+ * a unit's log lives as long as its declaration.
  * @param port - The engine calls.
  */
 async function pruneFiles(port: EnginePort): Promise<void> {
@@ -75,5 +78,12 @@ async function pruneFiles(port: EnginePort): Promise<void> {
         logFailure(port, 'orphan file delete', hasExitedZero(await removeFile(port.processes, recordsPath(common, bucket, name))))
       }
     }
+  }
+  // A failed listing must not read as no declarations, which would delete every log.
+  const declared = new Set((await port.files.list(recordsPath(common, 'u'))).map(entry => entry.name))
+  // The log bucket may not exist yet.
+  for (const { name } of await port.files.list(recordsPath(common, 'log')).catch(() => [])) {
+    const hash = name.match(/^([0-9a-f]+)\.jsonl$/)?.[1]
+    if (hash && !declared.has(`${hash}.json`)) logFailure(port, 'orphan log delete', hasExitedZero(await removeFile(port.processes, recordsPath(common, 'log', name))))
   }
 }

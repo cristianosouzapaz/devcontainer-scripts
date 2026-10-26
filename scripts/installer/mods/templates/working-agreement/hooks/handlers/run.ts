@@ -85,11 +85,13 @@ async function run(port: EnginePort, argv: string[], signal: AbortSignal, sid: s
     const unit = await readUnit(port, identity)
     const judgement = judgeDiagnose(unit, identity.issues, current.info)
     const need = describeDiagnoseNeed(judgement.done ? undefined : judgement.need, identity.issues)
-    const isFixGreen = judgement.done && judgement.approvedAt !== undefined && findFixGreen(unit.runs, judgement.approvedAt)?.runId === record.runId
+    const pinned = judgement.done ? unit.approvedRed : undefined
+    const isFixGreen = judgement.done && judgement.approvedAt !== undefined && findFixGreen(unit.runs, judgement.approvedAt, pinned)?.runId === record.runId
     const progress = record.outcome.kind !== 'pass'
-      ? `red recorded on tree ${tree.slice(0, 12)}; ${judgement.done ? 'a green needs the same argv on a different tree' : need}`
+      ? `red recorded on tree ${tree.slice(0, 12)}; ${!judgement.done ? need : pinned ? `the fix green needs the approved red's argv ${JSON.stringify(pinned.argv)} passing on a different tree` : 'a green needs the same argv on a different tree'}`
       : isFixGreen ? 'green after red: the approved fix passes; call the verify tool'
       : !judgement.done ? `this pass does not count: ${need}`
+      : pinned ? `this pass is not the fix green: that is the approved red's argv ${JSON.stringify(pinned.argv)} passing on a different tree`
       : 'this pass pairs with no earlier red of the same argv on a different tree'
     return `Run ${record.outcome.kind}: ${status}.\n${tail}\nthe first error may be earlier — see ${log}\n${progress}`
   })

@@ -4,6 +4,7 @@ import { bestEffort } from '../core/best-effort'
 import { declareFlow } from '../core/declaration'
 import type { EnginePort } from '../core/engine-port'
 import { createFeaturePort } from '../core/feature-port'
+import { logEvent } from '../core/flow-log'
 import { refreshView } from '../core/pane-view'
 import { locatePosition } from '../core/position'
 import { createReadPort } from '../core/read-port'
@@ -46,6 +47,7 @@ export async function handleFlowCommand(port: EnginePort, event: Frozen<Args<'co
     const reason = tail.slice(tail.toLowerCase().startsWith(`${match.id.toLowerCase()} `) ? match.id.length : match.label.length).trim()
     if (!reason) return fail('A skip needs a non-empty reason.')
     await updateUnits(port, session, unit => ({ ...unit, skips: [...(unit.skips ?? []), { step: match.id, reason }] }))
+    logEvent(port, session, 'skip', { step: match.id, reason })
     await refreshView(port, true, true)
     return succeed(`Skipped ${match.label}: ${reason}`)
   }))

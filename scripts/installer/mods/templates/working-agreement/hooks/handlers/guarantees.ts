@@ -5,12 +5,26 @@ import type { EnginePort } from '../core/engine-port'
 import { checksGuarantees, describeViolation, judgeGuarantees, snapshotGuarantees } from '../core/guarantees'
 import { isJudgedTool } from '../core/judged-tools'
 import { readRepositoryRoot } from '../core/repository'
-import { refreshView } from '../core/pane-view'
+import { reread, refreshView } from '../core/pane-view'
 import { forgetCandidates } from '../core/unit-github'
 import { readDismissals, recordViolations } from '../core/violation-store'
 import { markForAgent } from '../domain/messages'
 
 interface ToolCallResult { value?: EventResult<'tool.call'> }
+
+const ownToolPrefix = 'mcp__working-agreement__'
+// `gh` as a command word: at the start, or after a separator, a subshell or a substitution.
+const ghCommand = /(^|[\s;&|(`])gh\s/
+
+/**
+ * Tells whether a call may have changed the unit's issues: a Bash command that runs `gh`, or another server's MCP tool.
+ * @param event - The finished call.
+ * @returns Whether the issues need a fresh read.
+ */
+function mayChangeIssues(event: Frozen<Args<'tool.call'>>): boolean {
+  if (event.tool === 'Bash') return ghCommand.test(event.command)
+  return event.tool.startsWith('mcp__') && !event.tool.startsWith(ownToolPrefix)
+}
 
 /**
  * Wraps the complete tool chain with fail-open observations, including interrupted calls.
@@ -30,6 +44,8 @@ export async function handleGuarantees(port: EnginePort, event: Frozen<Args<'too
   } finally {
     // A Bash or MCP call can open or close a PR without moving a local ref, which would otherwise wait out the cache.
     if (!isJudgedTool(event.tool)) forgetCandidates()
+    // The skill or call that follows repaints from the stored issue info, which only a full read refreshes; the read runs on a timer's dispatch so the call never waits on it.
+    if (mayChangeIssues(event)) port.defer(() => { void bestEffort(port, 'issue reread', () => reread(port, true), undefined) })
     // Observation never changes whether this or a later call can run.
     await bestEffort(port, 'guarantee observation', async () => {
       const after = await snapshotGuarantees(port, event.tool, before)

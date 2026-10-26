@@ -3,7 +3,8 @@ import type { GithubStatus, IssueInfo, Session } from '../domain/records'
 import { probeGithub, readIssue, readIssueComments, readSubIssues } from '../lib/github'
 import type { IssueSnapshot } from '../lib/github'
 import type { EnginePort } from './engine-port'
-import { readSession, writeSession } from './record-store'
+import { updateSession } from './record-store'
+import type { VersionedSession } from './record-store'
 import { sessionMemory, withRecordLock } from './session-memory'
 import { githubTtlMs } from './timing'
 
@@ -66,23 +67,21 @@ async function readIssues(port: EnginePort, session: Session): Promise<Record<st
  * It must not run inside `withRecordLock`: the gh reads stay off the lock, and only the re-read and write take it.
  *
  * @param port - The engine calls.
- * @param session - The session.
+ * @param held - The session the issues are read for, with its version.
  * @param isForced - Whether to read even when the last read is recent.
- * @returns The session as stored.
+ * @returns The session as stored, or the held one when nothing was written.
  */
-export async function syncIssues(port: EnginePort, session: Session, isForced = false): Promise<Session> {
+export async function syncIssues(port: EnginePort, held: VersionedSession, isForced = false): Promise<VersionedSession> {
+  const session = held.session
   const now = await port.now()
-  if ((!isForced && now - sessionMemory.issuesCheckedAt < githubTtlMs) || !session.issues.length) return session
+  if ((!isForced && now - sessionMemory.issuesCheckedAt < githubTtlMs) || !session.issues.length) return held
   sessionMemory.issuesCheckedAt = now
   const github = await readGithubStatus(port)
   const fresh = github === 'connected' ? await readIssues(port, session) : Object.fromEntries(session.issues.map(issue => [issue, {
     error: github === 'unauth' ? 'GitHub not authenticated — run gh auth login' : 'GitHub unreachable',
   }]))
-  return withRecordLock(async () => {
-    const current = await readSession(port)
-    if (JSON.stringify(fresh) === JSON.stringify(current.info)) return current
-    const next = { ...current, info: fresh }
-    await writeSession(port, next)
-    return next
-  })
+  // The info is for the issues read; a unit declared meanwhile has its own.
+  const written = await withRecordLock(() => updateSession(port, current =>
+    JSON.stringify(current.issues) !== JSON.stringify(session.issues) || JSON.stringify(fresh) === JSON.stringify(current.info) ? null : { ...current, info: fresh }))
+  return written ?? held
 }

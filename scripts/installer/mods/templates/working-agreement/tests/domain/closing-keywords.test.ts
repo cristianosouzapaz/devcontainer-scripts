@@ -1,5 +1,6 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
 
+import { test } from '../support/kit'
 import { parseClosingIssues } from '../../hooks/lib/closing-keywords'
 
 const repository = 'Owner/Repo'

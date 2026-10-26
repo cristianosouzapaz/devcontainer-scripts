@@ -27,7 +27,8 @@ interface PromptOrigin { kind: string; name?: string }
 /** The engine and core calls the handoff feature makes, each a closure the entry file builds. */
 export interface HandoffPort {
   readSession: () => Promise<Session>
-  writeSession: (session: Session) => Promise<void>
+  /** Applies a change to the fresh session; the change may run more than once, so it has no side effects. */
+  updateSession: (change: (session: Session) => Session | null) => Promise<Session | null>
   locate: (session: Session) => Promise<Position | null>
   refresh: (isQuiet?: boolean) => Promise<void>
   readRoot: () => Promise<string | null>
@@ -40,6 +41,8 @@ export interface HandoffPort {
   openPane: () => void
   /** Runs a read-modify-write of the records under the store lock; the work must not refresh the pane, whose GitHub sync takes the lock too. */
   withLock: <T>(work: () => Promise<T>) => Promise<T>
+  /** Appends an event to the unit's transition log in the background. */
+  log: (session: Session, event: string, detail: Record<string, unknown>) => void
 }
 
 /** Reserves room for the handoff turn before auto-compaction. */
@@ -86,10 +89,8 @@ export async function startNewSession(port: HandoffPort): Promise<void> {
  */
 async function failHandoff(port: HandoffPort, reason: string): Promise<void> {
   handoff.current = null
-  await port.withLock(async () => {
-    const saved = await port.readSession()
-    await port.writeSession({ ...saved, handoff: { state: 'failed', reason } })
-  })
+  const written = await port.withLock(() => port.updateSession(saved => ({ ...saved, handoff: { state: 'failed', reason } })))
+  if (written) port.log(written, 'handoff', { state: 'failed', reason })
   await port.refresh()
 }
 
@@ -119,7 +120,8 @@ export async function startHandoff(port: HandoffPort): Promise<void> {
     end: reason => void finishHandoff(port, running, reason).catch(error => failHandoff(port, formatError(error))),
   }
   handoff.current = running
-  await port.withLock(async () => port.writeSession({ ...(await port.readSession()), handoff: { state: 'running' } }))
+  const written = await port.withLock(() => port.updateSession(saved => ({ ...saved, handoff: { state: 'running' } })))
+  if (written) port.log(written, 'handoff', { state: 'started' })
   await port.refresh()
   // A hook the turn waits on cannot run a command: leave the caller first.
   port.defer(() => void port.runSlashCommand('handoff', args).catch(error => failHandoff(port, formatError(error))))
@@ -138,17 +140,14 @@ async function finishHandoff(port: HandoffPort, running: RunningHandoff, reason:
   const path = running.documentPath
   if (!path) return failHandoff(port, 'no single handoff document found')
 
-  const previous = await port.withLock(async () => {
-    const saved = await port.readSession()
-    await port.writeSession({ ...saved, handoff: undefined })
-    return saved
-  })
+  const previous = await port.withLock(() => port.updateSession(saved => ({ ...saved, handoff: undefined }))) ?? await port.readSession()
   handoff.current = null
   await port.runSlashCommand('clear')
   try {
     const text = await carryOver(port, previous, path)
     await port.refresh()
     await port.submitPrompt(text)
+    port.log(previous, 'handoff', { state: 'completed', document: path })
   } catch (error) { await failHandoff(port, formatError(error)) }
 }
 
@@ -166,7 +165,8 @@ async function carryOver(port: HandoffPort, previous: Session, path: string): Pr
       ...createEmptySession(await port.readSessionId()), unit: previous.unit, info: previous.info,
       gh: previous.gh,
     }
-    await port.withLock(() => port.writeSession(carried))
+    // The cleared chat starts its own record, which the carried unit replaces whole.
+    await port.withLock(() => port.updateSession(() => carried))
     port.openPane()
   }
   return resume
@@ -182,7 +182,7 @@ async function carryOver(port: HandoffPort, previous: Session, path: string): Pr
 export async function runHandoffCommand(port: HandoffPort, args: string): Promise<string> {
   if (args === 'cancel') {
     handoff.current = null
-    await port.withLock(async () => port.writeSession({ ...(await port.readSession()), handoff: undefined }))
+    await port.withLock(() => port.updateSession(saved => ({ ...saved, handoff: undefined })))
     await port.refresh()
     return 'Handoff reset. Nothing was cleared.'
   }
@@ -222,12 +222,10 @@ export function endHandoffTurn(reason: string): boolean {
  * @param port - The engine and core calls.
  */
 export async function trackSessionLength(port: HandoffPort): Promise<void> {
-  const session = await port.readSession()
-  if (!session.flow) return
+  if (!(await port.readSession()).flow) return
   const isLong = isLongSession(await port.readContext(), handoff.tokenThreshold)
-  if (isLong === session.isLong) return
-  await port.writeSession({ ...session, isLong })
-  await port.refresh(true)
+  const written = await port.updateSession(session => session.flow && isLong !== session.isLong ? { ...session, isLong } : null)
+  if (written) await port.refresh(true)
 }
 
 /**
