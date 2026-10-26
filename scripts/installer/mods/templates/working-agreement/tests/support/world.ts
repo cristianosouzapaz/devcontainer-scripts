@@ -93,6 +93,9 @@ export interface Options {
   protectionError?: ProtectionError
   closingPrs?: Record<number, Record<string, unknown>[]>
   closingHasNextPage?: boolean
+  /** PRs whose body mentions the issue, as the issue's cross-reference timeline lists them. */
+  crossReferences?: Record<number, Record<string, unknown>[]>
+  timelineHasNextPage?: boolean
   unpublished?: string[]
   comments?: Record<number, IssueComment[] | ReadFailure>
   subIssues?: Record<number, SubIssue[]>
@@ -633,12 +636,12 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     if (command.startsWith('gh api graphql -F owner={owner} -F name={repo} ') && command.includes('pullRequests(headRefName:')) {
       const head = normalized.find(arg => arg.startsWith('head='))?.slice(5)
       const base = normalized.find(arg => arg.startsWith('base='))?.slice(5)
-      const sample = githubSamples['pull-requests'][0].body.data.repository.pullRequests
+      const { pullRequests: sample, ...repository } = githubSamples['pull-requests'][0].body.data.repository
       const closingPageInfo = sample.nodes[0]!.closingIssuesReferences.pageInfo
-      const nodes = (options.prs ?? []).filter(pr => (!pr.headRefName || pr.headRefName === head) && (!pr.baseRefName || pr.baseRefName === base))
-        .map(pr => ({ ...pr, url: pr.url ?? `https://github.test/pull/${pr.number}`, closingIssuesReferences: Array.isArray(pr.closingIssuesReferences)
+      const nodes = (options.prs ?? []).filter(pr => (!pr.headRefName || pr.headRefName === head) && (!base || !pr.baseRefName || pr.baseRefName === base))
+        .map(pr => ({ ...pr, url: pr.url ?? `https://github.test/pull/${pr.number}`, baseRefName: pr.baseRefName ?? 'main', body: pr.body ?? '', closingIssuesReferences: Array.isArray(pr.closingIssuesReferences)
           ? { nodes: pr.closingIssuesReferences, pageInfo: closingPageInfo } : pr.closingIssuesReferences }))
-      return buildResult(JSON.stringify({ data: { repository: { pullRequests: { ...sample, nodes,
+      return buildResult(JSON.stringify({ data: { repository: { ...repository, pullRequests: { ...sample, nodes,
         pageInfo: { ...sample.pageInfo, hasNextPage: options.prsHasNextPage ?? sample.pageInfo.hasNextPage } } } } }))
     }
     const issue = command.startsWith('gh api graphql -F owner={owner} -F name={repo} -f query=') ? command.match(/issue\(number:(\d+)\)/) : null
@@ -646,10 +649,12 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       const number = Number(issue[1])
       const sample = githubSamples['closing-pull-requests'][0].body.data.repository
       const references = sample.issue.closedByPullRequestsReferences
+      const timeline = sample.issue.timelineItems
       return buildResult(JSON.stringify({ data: { repository: { ...sample, issue: { closedByPullRequestsReferences: { ...references,
         nodes: options.closingPrs?.[number] ?? [],
         pageInfo: { ...references.pageInfo, hasNextPage: options.closingHasNextPage ?? references.pageInfo.hasNextPage },
-      } } } } }))
+      }, timelineItems: { nodes: (options.crossReferences?.[number] ?? []).map(source => ({ source: { __typename: 'PullRequest', ...source } })),
+        pageInfo: { ...timeline.pageInfo, hasNextPage: options.timelineHasNextPage ?? timeline.pageInfo.hasNextPage } } } } } }))
     }
     if (issue && options.missing?.includes(Number(issue[1]))) return buildResult('', 1)
     if (issue) {

@@ -6,7 +6,7 @@ import type { FlowDefinition, Step } from './flow-definitions'
 import type { Identity, IssueInfo, PullRequest, Session, Unit } from './records'
 
 /** Selects an action independently of the displayed fact's wording. */
-type FactCode = 'verify-config-missing' | 'github-unreachable' | 'ci-unreadable' | 'push-required'
+type FactCode = 'verify-config-missing' | 'github-unreachable' | 'ci-unreadable' | 'push-required' | 'pr-ambiguous' | 'base-mismatch'
 
 /** Holds a step of the declared flow and where it stands. */
 interface StepStateFields {
@@ -160,6 +160,22 @@ export const isCiWait = (position: Position): boolean =>
  */
 export const isUnitFinished = (position: Position | null): boolean =>
   !!position && (position.isConcluded || (!position.current && position.pullRequest?.state === 'OPEN'))
+
+/**
+ * Projects the states for display: a done step after the current step shows as pending, because no later step has been reached
+ * and its fact may describe an earlier slice. Guidance and judgements read the real states, never this projection.
+ *
+ * @param states - The unit's resolved step states.
+ * @returns The states to render, with skipped steps and every step up to the current one unchanged.
+ */
+export function projectDisplayStates(states: StepState[]): StepState[] {
+  const currentIndex = states.findIndex(entry => entry.state === 'current')
+  return states.map((entry, index): StepState => {
+    if (currentIndex < 0 || index <= currentIndex || entry.state !== 'done') return entry
+    const { fact: _fact, factCode: _factCode, ...rest } = entry
+    return { ...rest, state: 'pending' }
+  })
+}
 
 /**
  * Lists the labels of the session's declared issues, as last read from GitHub.

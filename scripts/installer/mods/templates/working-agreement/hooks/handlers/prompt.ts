@@ -5,7 +5,7 @@ import { createReadPort } from '../core/read-port'
 import { syncIssues } from '../core/github-sync'
 import { locatePosition } from '../core/position'
 import { readSession } from '../core/record-store'
-import { composeInstruction } from '../domain/instruction'
+import { composeFlowLine } from '../domain/instruction'
 import { markForAgent } from '../domain/messages'
 import { isUnitFinished, withStates } from '../domain/step-states'
 import { armHandoff } from '../features/handoff'
@@ -15,7 +15,7 @@ const noFlowLine = markForAgent('No flow is declared. Reading and talking need n
 
 /**
  * Adds the flow's instruction or declaration reminder to a prompt.
- * A finished unit's prompt passes unchanged.
+ * A finished unit's prompt, or one whose text already carries the line, passes unchanged.
  *
  * @param engine - The engine calls.
  * @param event - The submitted prompt.
@@ -31,6 +31,8 @@ export async function handlePromptSubmit(engine: EnginePort, event: Frozen<Args<
   const session = saved.flow ? await syncIssues(port, saved) : saved
   const position = located ? withStates(located, session) : null
   if (isUnitFinished(position) && !position?.slice?.isRewritten) return next(event)
-  const line = position ? markForAgent(composeInstruction(position, session)) : noFlowLine
+  const line = position ? composeFlowLine(position, session) : noFlowLine
+  // The mod's start prompt already carries the line.
+  if (event.text.includes(line)) return next(event)
   return next({ ...event, context: [...(event.context ?? []), line] })
 }

@@ -1,7 +1,8 @@
 import type { IssueComment, PrFields, SubIssueInfo } from '../../types'
 import { filterRecords, parseJson, toStringOrEmpty } from './json'
 import { isNonEmptyString, isRecord } from './guards'
-import { isPrFields, isActiveRule, isCheckRun, isClosingPullRequest, isComparison, isCompleteConnection, isPullRequestCandidate, isRequiredCheckRule, isRuleset, isStatus } from './github-rows'
+import { parseClosingIssues } from './closing-keywords'
+import { isPrFields, isActiveRule, isCheckRun, isClosingPullRequest, isComparison, isCompleteConnection, isCrossReference, isPullRequestCandidate, isReferencingPullRequest, isRequiredCheckRule, isRuleset, isStatus } from './github-rows'
 import type { PullRequestRow } from './github-rows'
 import { hasExitedZero, runProcess } from './process'
 import type { ProcessPort } from './process'
@@ -18,8 +19,8 @@ interface GithubUnavailable { status: Exclude<GithubAccess, 'connected'>; error:
 /** An issue as GitHub reports it: its state, title and label names. */
 export interface IssueSnapshot { state: string; title: string; labels: string[] }
 
-/** A same-repository PR whose head and base identify a unit's delivery. */
-export interface PullRequestCandidate { number: number; state: string; url: string; headRefOid: string; closingIssuesReferences: number[] }
+/** A same-repository PR from a unit's head branch, into the base it names, with the issues it closes there. */
+export interface PullRequestCandidate { number: number; state: string; url: string; headRefOid: string; baseRefName: string; closingIssuesReferences: number[] }
 
 /** An immutable comparison of two GitHub commits. */
 export interface Comparison { status: string; aheadBy: number }
@@ -38,6 +39,8 @@ export interface BranchRuleset { id: number; types: string[]; bypass: string | n
 export interface ClosingPullRequest { number: number; state: string; headRefName: string }
 
 interface GraphqlFailures { fallback?: string; unreadable?: string; errors?: string }
+/** The repository a GraphQL read answered for, with GitHub's default branch when it has one. */
+interface RepositoryIdentity { nameWithOwner: string; defaultBranch: string | null }
 
 /** How long the reachability probe may take: it runs on every refresh that has no cached answer. */
 const probeTimeoutMs = 8000
@@ -148,18 +151,19 @@ export async function openIssueInBrowser(processes: ProcessPort, issue: number):
 }
 
 /**
- * Lists all candidate PRs without guessing when the capped response may be incomplete.
+ * Lists all candidate PRs from a head branch, into any base, without guessing when the capped response may be incomplete.
  * @param processes - The process runner.
  * @param branch - The unit's head branch.
- * @param base - The default branch.
  * @returns Same-repository candidates, or an unreadable-list failure.
  */
-export async function listPullRequests(processes: ProcessPort, branch: string, base: string): Promise<Result<PullRequestCandidate[]>> {
-  const query = 'query($owner:String!,$name:String!,$head:String!,$base:String!){repository(owner:$owner,name:$name){pullRequests(headRefName:$head,baseRefName:$base,states:[OPEN,MERGED,CLOSED],first:100){nodes{number state url headRefOid isCrossRepository closingIssuesReferences(first:100){nodes{number} pageInfo{hasNextPage}}} pageInfo{hasNextPage}}}}'
-  const repository = await readGraphql(processes, query, [`head=${branch}`, `base=${base}`], {
+export async function listPullRequests(processes: ProcessPort, branch: string): Promise<Result<PullRequestCandidate[]>> {
+  const query = 'query($owner:String!,$name:String!,$head:String!){repository(owner:$owner,name:$name){nameWithOwner defaultBranchRef{name} pullRequests(headRefName:$head,states:[OPEN,MERGED,CLOSED],first:100){nodes{number state url headRefOid baseRefName body isCrossRepository closingIssuesReferences(first:100){nodes{number} pageInfo{hasNextPage}}} pageInfo{hasNextPage}}}}'
+  const repository = await readGraphql(processes, query, [`head=${branch}`], {
     unreadable: 'PR candidate list incomplete or unreadable', errors: 'unreadable gh output',
   })
   if (!repository.isOk) return repository
+  const identity = readRepositoryIdentity(repository.value)
+  if (!identity) return fail('unreadable gh output')
   const connection = repository.value.pullRequests
   if (!isCompleteConnection(connection) || !Array.isArray(connection.nodes)) return fail('PR candidate list incomplete or unreadable')
   const rows: unknown[] = connection.nodes
@@ -171,10 +175,12 @@ export async function listPullRequests(processes: ProcessPort, branch: string, b
     if (!isPullRequestCandidate(candidate)) return fail('unreadable gh output')
     candidates.push(candidate)
   }
-  return succeed(candidates.filter(row => row.isCrossRepository === false).map(row => ({
-    number: row.number, state: row.state, url: row.url, headRefOid: row.headRefOid,
-    closingIssuesReferences: row.closingIssuesReferences.nodes.map(issue => issue.number),
-  })))
+  return succeed(candidates.filter(row => row.isCrossRepository === false).map(row => {
+    const linked = row.closingIssuesReferences.nodes.map(issue => issue.number)
+    return { number: row.number, state: row.state, url: row.url, headRefOid: row.headRefOid, baseRefName: row.baseRefName,
+      closingIssuesReferences: row.baseRefName === identity.defaultBranch ? linked
+        : [...new Set([...linked, ...parseClosingIssues(row.body, identity.nameWithOwner)])] }
+  }))
 }
 
 /**
@@ -263,24 +269,43 @@ export async function readBranchProtection(processes: ProcessPort, base: string)
 }
 
 /**
- * Reads an issue's closing PRs, including merged PRs and refusing a partial connection.
+ * Reads an issue's closing PRs, including merged PRs and refusing a partial connection or timeline.
+ * GitHub links a closing keyword only for a PR into the default branch, so a PR into another base closes the issue when its body says so.
  * @param processes - The process runner.
  * @param issue - The declared issue number.
  * @returns Open or merged PRs based in this repository, or an unreadable-connection failure.
  */
 export async function readClosingPullRequests(processes: ProcessPort, issue: number): Promise<Result<ClosingPullRequest[]>> {
-  const query = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner issue(number:${issue}){closedByPullRequestsReferences(first:100,includeClosedPrs:true){nodes{number state headRefName isCrossRepository baseRepository{nameWithOwner}} pageInfo{hasNextPage}}}}}`
+  const fields = 'number state headRefName isCrossRepository baseRepository{nameWithOwner}'
+  const query = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner defaultBranchRef{name} issue(number:${issue}){closedByPullRequestsReferences(first:100,includeClosedPrs:true){nodes{${fields}} pageInfo{hasNextPage}} timelineItems(itemTypes:[CROSS_REFERENCED_EVENT],first:100){nodes{... on CrossReferencedEvent{source{__typename ... on PullRequest{${fields} baseRefName body}}}} pageInfo{hasNextPage}}}}}`
   const result = await readGraphql(processes, query)
   if (!result.isOk) return result
-  const repository = result.value.nameWithOwner
-  if (typeof repository !== 'string') return fail('unreadable gh output')
-  const [owner, name] = repository.split('/')
+  const identity = readRepositoryIdentity(result.value)
+  if (!identity) return fail('unreadable gh output')
+  const [owner, name] = identity.nameWithOwner.split('/')
   if (!owner || !name) return fail('unreadable repository')
   const issueData = isRecord(result.value.issue) ? result.value.issue : null
   const connection = issueData?.closedByPullRequestsReferences
-  if (!isCompleteConnection(connection) || !Array.isArray(connection.nodes) || !connection.nodes.every(isClosingPullRequest)) return fail('closing PR list incomplete or unreadable')
-  return succeed(connection.nodes.filter(row => row.isCrossRepository === false && row.baseRepository.nameWithOwner === repository
+  const timeline = issueData?.timelineItems
+  if (!isCompleteConnection(connection) || !Array.isArray(connection.nodes) || !connection.nodes.every(isClosingPullRequest)
+    || !isCompleteConnection(timeline) || !Array.isArray(timeline.nodes) || !timeline.nodes.every(isCrossReference)) return fail('closing PR list incomplete or unreadable')
+  const sources: unknown[] = timeline.nodes.map(event => event.source).filter(source => source.__typename === 'PullRequest')
+  if (!sources.every(isReferencingPullRequest)) return fail('closing PR list incomplete or unreadable')
+  const referenced = sources.filter(row => row.baseRefName !== identity.defaultBranch && parseClosingIssues(row.body, identity.nameWithOwner).includes(issue))
+  const closing = [...connection.nodes, ...referenced].filter((row, index, rows) => rows.findIndex(other => other.number === row.number) === index)
+  return succeed(closing.filter(row => row.isCrossRepository === false && row.baseRepository.nameWithOwner === identity.nameWithOwner
     && ['OPEN', 'MERGED'].includes(row.state)).map(row => ({ number: row.number, state: row.state, headRefName: row.headRefName })))
+}
+
+/**
+ * Reads which repository a GraphQL read answered for.
+ * @param repository - The repository payload.
+ * @returns Its name and default branch, or null when the name is unreadable.
+ */
+function readRepositoryIdentity(repository: Record<string, unknown>): RepositoryIdentity | null {
+  if (typeof repository.nameWithOwner !== 'string') return null
+  const ref = repository.defaultBranchRef
+  return { nameWithOwner: repository.nameWithOwner, defaultBranch: isRecord(ref) && typeof ref.name === 'string' ? ref.name : null }
 }
 
 /**

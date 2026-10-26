@@ -26,8 +26,9 @@ export function describeRequirement(state: StepState, session: Session, position
     ? "propose the minimum .claude/working-agreement.json: verify alone, as an argv taken from the project's docs, scripts or CI; rules only when the full command is slow and the repository has clear boundaries (workspaces, manifests, CI paths: filters); argv only, strict keys (verify, always, full, rules, timeoutMinutes, $schema), sub-packages as [\"sh\",\"-c\",\"cd pkg && …\"]; write it on the unit's branch as a normal change, ship it in its PR, then stop and ask the user to approve it with /flow approve verify" : 'call the verify tool'
   // The agent never commits or pushes: it hands the user the commands, and the step follows what git then reports.
   if (step.observe === 'commit') {
+    const target = pullRequest?.baseRefName && pullRequest.baseRefName !== git?.base ? pullRequest.baseRefName : 'the default branch'
     const sharedBranch = position.slice?.isShared
-      ? "; this branch carries another unit's commits: bring the default branch in with a merge, never a rebase (a rebase leaves the earlier units' PR step not done)" : ''
+      ? `; this branch carries another unit's commits: bring ${target} in with a merge, never a rebase (a rebase leaves the earlier units' PR step not done)` : ''
     if (!step.skill) return `stop and give the user the git add, git commit and git push commands to run (never commit or push yourself)${sharedBranch}`
     return skills.includes(step.skill)
       ? `stop and ask the user to run the commit commands ${step.skill} produced, then push the branch (never commit or push yourself; no need to run it again)${sharedBranch}`
@@ -35,6 +36,13 @@ export function describeRequirement(state: StepState, session: Session, position
   }
   if (step.observe === 'pr.created') {
     if (state.factCode === 'github-unreachable' || state.factCode === 'ci-unreadable') return 'retry; if it keeps failing, stop and tell the user'
+    if (state.factCode === 'pr-ambiguous') return 'stop and ask the user which PR delivers this unit and to close the others'
+    if (state.factCode === 'base-mismatch') {
+      const target = `so the unit's base is taken from ${pullRequest?.baseRefName ?? "the PR's base"}`
+      return position.flow.declaredBy === 'human'
+        ? `stop and ask the user to run /flow ${[session.flow, ...session.issues.map(number => `#${number}`)].join(' ')} again, ${target}`
+        : `call declare_flow again with the same flow and issues, ${target}`
+    }
     const closeOut = '; before the unit counts as finished, record on the issue or PR any session context no issue captured (a dead end explored, an approach ruled out)'
     if (state.factCode === 'push-required') return `stop and ask the user to push the branch${pullRequest ? ` to PR #${pullRequest.number}` : ''}${closeOut}`
     const isOpen = pullRequest?.state === 'OPEN'

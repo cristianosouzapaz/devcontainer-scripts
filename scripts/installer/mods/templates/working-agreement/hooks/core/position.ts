@@ -35,11 +35,11 @@ export async function locatePosition(port: EnginePort, session: Session, isLocal
   if (held) return finish({ ...empty, pullRequest: held })
   const git = await readGit(port)
   const slice = git && session.unit ? await readUnitSlice(port, session.unit, unit, git, session.flow === 'close-out') : null
-  const candidates = git && session.unit ? await readCandidates(port, session.unit.branch, git.base, isLocal, isForced) : null
+  const candidates = git && session.unit ? await readCandidates(port, session.unit.branch, isLocal, isForced) : null
   const conclusion = candidates?.isOk && session.unit ? await readConclusion(port, session.unit, unit, candidates.value) : null
   if (conclusion?.isOk && conclusion.value) return finish({ ...empty, pullRequest: conclusion.value })
   const verify = await readVerifyState(port, slice, unit)
-  const delivery = candidates && git ? await readDelivery(port, slice, session.flow === 'trivial' ? [] : session.issues, git.base,
+  const delivery = candidates && git ? await readDelivery(port, slice, session.flow === 'trivial' ? [] : session.issues, unit,
     conclusion && !conclusion.isOk ? conclusion : candidates, isLocal, isForced) : { checks: 'off' as const, isConcluded: false, prFact: 'GitHub unreachable', prFactCode: 'github-unreachable' as const }
   return finish({ git, slice, verify, ...delivery })
 }

@@ -116,6 +116,8 @@ export interface UnitRecord { v: 1; identity: Identity; flow: string; generation
 export interface PullRequest {
   number: number
   state: string
+  /** The branch the PR merges into, when read from GitHub. */
+  baseRefName?: string
 }
 /** Records an irrevocable user skip of a whole step. */
 interface StepSkip { step: string; reason: string }
@@ -144,6 +146,8 @@ export interface RunRecord {
 /** Holds evidence contributed by a chat to a unit. */
 export interface Unit {
   base?: string
+  /** The branch whose merge-base gave `base`; absent when the base is a declaration tip or was recorded before it existed. */
+  baseBranch?: string
   skips?: StepSkip[]
   skills: string[]
   verifyRuns: VerifyRecord[]

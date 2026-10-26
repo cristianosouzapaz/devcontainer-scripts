@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { createEmptySession, createEmptyUnit, parseSession, parseUnitRecord, retainRuns } from '../../hooks/domain/records'
 import { conformanceGraph } from '../support/graph-fixture'
 import { noFlow, verifyFile, diagnoseRuns, diagnosed, diagnosisComment } from '../support/builders'
-import { declareFlow, endTurn, readCurrentStep, readFlowStatus } from '../support/helpers'
+import { declareFlow, endTurn, readCurrentStep, readFlowStatus, readStepStates } from '../support/helpers'
 import { common, configBlob, createWorld, root } from '../support/world'
 import type { Options } from '../support/world'
 
@@ -123,7 +123,8 @@ test('startup seeds an undefined state only from a valid same-session mirror', a
 
 test('HEAD file changes refresh the declared branch and GitHub, while index changes do nothing', async ($, on) => {
   const checkout = { branch: 'feature', ahead: 0 }
-  const { clock, runs, views } = createWorld(on, checkout, { session: noFlow })
+  const world = createWorld(on, checkout, { session: noFlow })
+  const { clock, runs } = world
   await declareFlow($, 'small-feature')
   const before = runs.length
   checkout.ahead = 1
@@ -132,8 +133,7 @@ test('HEAD file changes refresh the declared branch and GitHub, while index chan
   expect(runs.slice(before).filter(command => command.includes('status --porcelain=v2'))).toHaveLength(0)
   await $.classic.FileChanged({ file_path: `${common}/HEAD`, event: 'change' })
   await clock.settle()
-  const view = views.at(-1)
-  expect(view?.steps.find(step => step.label === 'Code')?.state).toBe('done')
+  expect((await readStepStates(world)).Code).toBe('done')
   expect(runs.slice(before).some(command => command.startsWith('gh '))).toBe(true)
 })
 
@@ -141,7 +141,8 @@ test('overlapping signals coalesce into one queued read and a full signal upgrad
   const gate: Gate = {}
   const options: Options = { session: noFlow }
   const checkout = { branch: 'feature', ahead: 0 }
-  const { clock, runs, views } = createWorld(on, checkout, options)
+  const world = createWorld(on, checkout, options)
+  const { clock, runs } = world
   await declareFlow($, 'small-feature')
   await clock.advance(61000)
   options.statusGate = new Promise<void>(resolve => { gate.release = resolve })
@@ -155,7 +156,7 @@ test('overlapping signals coalesce into one queued read and a full signal upgrad
   expect(runs.slice(before).some(command => command.includes('status --porcelain=v2'))).toBe(true)
   gate.release?.()
   await Promise.all([first, second, third])
-  expect(views.at(-1)?.steps.find(step => step.label === 'Commit')?.state).toBe('done')
+  expect((await readStepStates(world)).Commit).toBe('done')
   expect(runs.slice(before).some(command => command.startsWith('gh '))).toBe(true)
 })
 

@@ -1,6 +1,6 @@
 import type { FlowRow, FlowView } from '../../types'
 import type { GithubStatus, Session } from '../domain/records'
-import { formatStepLabel, isUnitFinished, listDeclaredLabels } from '../domain/step-states'
+import { formatStepLabel, isUnitFinished, listDeclaredLabels, projectDisplayStates } from '../domain/step-states'
 import type { DiagnoseNeed, Position } from '../domain/step-states'
 import { stepSymbol } from './theme'
 
@@ -62,10 +62,13 @@ export function buildView(session: Session, position: Position, github: GithubSt
   }
   notes.push(...handoffNotes(session))
   const isFinished = !position.slice?.isRewritten && isUnitFinished(position)
-  const settled = position.states.filter(entry => entry.state !== 'current' && entry.state !== 'pending').length
+  const states = projectDisplayStates(position.states)
+  // Every step before the current one is settled, and none after it has been reached.
+  const currentIndex = states.findIndex(entry => entry.state === 'current')
+  const settled = currentIndex >= 0 ? currentIndex : states.filter(entry => entry.state !== 'pending').length
   return {
     flow: position.flow.label,
-    progress: `${position.slice?.isRewritten ? '?' : settled}/${position.states.length}`,
+    progress: `${position.slice?.isRewritten ? '?' : settled}/${states.length}`,
     issues: session.issues.map(issueNumber => {
       const info = session.info[issueNumber]
       return { number: issueNumber, title: info && 'title' in info ? info.title : '' }
@@ -73,7 +76,7 @@ export function buildView(session: Session, position: Position, github: GithubSt
     pending: !session.issues.length && position.flow.issue === 'produced' ? 'issue not yet created' : null,
     meta,
     labels: [...new Set(listDeclaredLabels(session))],
-    steps: position.states.map(entry => {
+    steps: states.map(entry => {
       const isMerged = position.isConcluded && entry.step.observe === 'pr.created' && !!position.pullRequest
       const isError = !position.slice?.isRewritten && entry.isError && entry.state === 'current' && (entry.step.observe === 'verify.passed' || entry.step.observe === 'pr.created')
       const diagnoseFact = describeDiagnoseFact(entry.need, entry.fact)

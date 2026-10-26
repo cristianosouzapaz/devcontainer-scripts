@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { buildPullRequest, diagnoseRuns, noFlow, verifyFile } from '../support/builders'
 import { conformanceGraph } from '../support/graph-fixture'
-import { declareFlow, readFlowStatus, runFlowCommand } from '../support/helpers'
+import { declareFlow, readFlowStatus, readStepStates, runFlowCommand } from '../support/helpers'
 import { common, createWorld, root } from '../support/world'
 import type { Checkout, Options } from '../support/world'
 
@@ -367,12 +367,13 @@ test('a frozen unit keeps reading CI on its own slice end', async ($, on) => {
 test('Close out always uses merge-base through tip and never freezes an earlier unit', async ($, on) => {
   const checkout = branch()
   checkout.graph!.refs.feat = 'f1'
-  const { chat, sessions } = createWorld(on, checkout, { session: noFlow, issueLabels: { 1: ['ready-for-agent'] } })
+  const world = createWorld(on, checkout, { session: noFlow, issueLabels: { 1: ['ready-for-agent'] } })
+  const { chat, sessions } = world
   await declareFlow($, 'small-feature', [1])
   chat.id = 'close'
   await declareFlow($, 'close-out', [2])
   expect(sessions.get('close')?.units[0]?.base).toBe('f1')
-  expect(await readFlowStatus($)).toContain('✓ Commit')
+  expect((await readStepStates(world)).Commit).toBe('done')
   checkout.graph!.refs.feat = 'f2'
   chat.id = 'sid'
   expect(await readFlowStatus($)).not.toContain('frozen')

@@ -219,7 +219,7 @@ async function mergeUnits(port: EnginePort, units: UnitEntry[]): Promise<Unit> {
   const evidence = units.reduce<Unit>((merged, unit) => ({
     ...unit, ...merged, skills: mergeSkills(merged.skills, unit.skills), verifyRuns: [...merged.verifyRuns, ...unit.verifyRuns].sort((a, b) => b.at - a.at)
       .filter((run, index, runs) => runs.findIndex(other => other.tree === run.tree && other.base === run.base) === index),
-    base: merged.base ?? unit.base, skips: [...(merged.skips ?? []), ...(unit.skips ?? [])]
+    base: merged.base ?? unit.base, baseBranch: merged.base ? merged.baseBranch : unit.baseBranch, skips: [...(merged.skips ?? []), ...(unit.skips ?? [])]
       .filter((skip, index, skips) => skips.findIndex(other => other.step === skip.step && other.reason === skip.reason) === index),
     approval: merged.approval ?? unit.approval,
   }), createEmptyUnit())
@@ -230,7 +230,8 @@ async function mergeUnits(port: EnginePort, units: UnitEntry[]): Promise<Unit> {
   const tip = await readGitOutput(port.processes, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])
   if (!tip) return merged
   const inherited = await Promise.all(bases.map(async base => await isAncestor(port.processes, base, tip) ? base : null))
-  return { ...merged, base: inherited.find(base => base !== null) ?? merged.base }
+  const base = inherited.find(base => base !== null) ?? merged.base
+  return { ...merged, base, baseBranch: units.find(unit => unit.base === base)?.baseBranch }
 }
 
 /**

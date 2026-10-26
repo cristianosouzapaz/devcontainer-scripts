@@ -8,9 +8,11 @@ interface IssueReferences { nodes: IssueNumber[] }
 /**
  * Holds a validated candidate PR with its state normalized for delivery.
  */
-export interface PullRequestRow { number: number; state: string; url: string; headRefOid: string; isCrossRepository: boolean; closingIssuesReferences: IssueReferences }
+export interface PullRequestRow { number: number; state: string; url: string; headRefOid: string; baseRefName: string; body: string; isCrossRepository: boolean; closingIssuesReferences: IssueReferences }
 interface RepositoryName { nameWithOwner: string }
 interface ClosingPullRequestRow { number: number; state: string; headRefName: string; isCrossRepository: boolean; baseRepository: RepositoryName }
+interface ReferencingPullRequestRow extends ClosingPullRequestRow { baseRefName: string; body: string }
+interface CrossReferenceRow { source: Record<string, unknown> }
 interface ComparisonRow { status: string; ahead_by: number }
 interface CheckRunRow extends Record<string, unknown> { name: string; status: string; conclusion: string | null }
 interface StatusRow extends Record<string, unknown> { context: string; state: unknown }
@@ -34,7 +36,7 @@ export const isCompleteConnection = (value: unknown): value is CompleteConnectio
  */
 export const isPullRequestCandidate = (value: unknown): value is PullRequestRow => isRecord(value) && isSafeInteger(value.number) && value.number > 0
   && typeof value.state === 'string' && ['OPEN', 'MERGED', 'CLOSED'].includes(value.state) && typeof value.url === 'string' && isNonEmptyString(value.headRefOid)
-  && typeof value.isCrossRepository === 'boolean' && isRecord(value.closingIssuesReferences) && Array.isArray(value.closingIssuesReferences.nodes)
+  && typeof value.baseRefName === 'string' && typeof value.body === 'string' && typeof value.isCrossRepository === 'boolean' && isRecord(value.closingIssuesReferences) && Array.isArray(value.closingIssuesReferences.nodes)
   && value.closingIssuesReferences.nodes.every((issue: unknown): issue is IssueNumber => isRecord(issue) && isSafeInteger(issue.number))
 
 /**
@@ -45,6 +47,21 @@ export const isPullRequestCandidate = (value: unknown): value is PullRequestRow 
 export const isClosingPullRequest = (value: unknown): value is ClosingPullRequestRow => isRecord(value) && isSafeInteger(value.number)
   && typeof value.state === 'string' && typeof value.headRefName === 'string' && typeof value.isCrossRepository === 'boolean'
   && isRecord(value.baseRepository) && typeof value.baseRepository.nameWithOwner === 'string'
+
+/**
+ * Identifies a cross-reference timeline event, whose source is an issue or a PR.
+ * @param value - The decoded event.
+ * @returns Whether the event carries a source record.
+ */
+export const isCrossReference = (value: unknown): value is CrossReferenceRow => isRecord(value) && isRecord(value.source)
+
+/**
+ * Identifies a referencing PR with the base and body that decide whether it closes the issue.
+ * @param value - The decoded source of a cross-reference event.
+ * @returns Whether the PR fields are readable.
+ */
+export const isReferencingPullRequest = (value: unknown): value is ReferencingPullRequestRow => isRecord(value)
+  && typeof value.baseRefName === 'string' && typeof value.body === 'string' && isClosingPullRequest(value)
 
 /**
  * Identifies an ancestry comparison with a non-negative commit count.

@@ -23,7 +23,7 @@ export async function pruneConcluded(engine: EnginePort): Promise<void> {
   const mirrors = await readSessionMirrors(port)
   const units = mirrors.flatMap(mirror => mirror.session.units)
   const branches = [...new Set(units.map(unit => unit.identity.branch))]
-  const candidates = await Promise.all(branches.map(async branch => ({ branch, read: await readCandidates(port, branch, git.base, false, true) })))
+  const candidates = await Promise.all(branches.map(async branch => ({ branch, read: await readCandidates(port, branch, false, true) })))
   if (candidates.some(candidate => !candidate.read.isOk)) return
   const judgements = await Promise.all(units.map(async unit => {
     const read = candidates.find(candidate => candidate.branch === unit.identity.branch)?.read

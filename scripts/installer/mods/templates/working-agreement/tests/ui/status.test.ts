@@ -26,6 +26,13 @@ test('status prints every group with the declared unit facts and reads status en
   }
 })
 
+test('status reads the rules and protection of the unit PR\'s base, not of the default branch', async ($, on) => {
+  const world = createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, prs: [buildPullRequest({ baseRefName: 'next' })] })
+  const text = (await runFlowCommand($, 'status')).text ?? ''
+  for (const fact of ['Rulesets  next · no active rules', 'Classic   next · protection off']) expect(text, fact).toContain(fact)
+  expect(world.runs).not.toContain('gh api --include repos/{owner}/{repo}/branches/main')
+})
+
 test('status prints a rulesets 403 as the HTTP status and GitHub message without a plan interpretation', async ($, on) => {
   const message = 'Upgrade to GitHub Pro or make this repository public to enable this feature.\nrequest denied'
   createWorld(on, { branch: 'feat' }, { rulesError: 403, rulesMessage: message })

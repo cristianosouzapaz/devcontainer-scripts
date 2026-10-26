@@ -23,23 +23,44 @@ type Delivery = Pick<Evidence, 'checks' | 'pullRequest' | 'prFact' | 'prFactCode
 export const unitMemoryKey = (identity: Identity, unit: Unit): string => JSON.stringify([identity, unit.generation ?? null, unit.base ?? null])
 
 /**
- * Reads complete candidate lists, refreshing at most once a minute unless forced.
+ * Reads complete candidate lists into every base, refreshing at most once a minute unless forced.
  * @param port - The engine calls.
  * @param branch - The unit branch.
- * @param base - The default branch.
  * @param isLocal - Whether cached facts remain usable regardless of age.
  * @param isForced - Whether to refresh immediately.
  * @returns Candidates or the current read failure.
  */
-export async function readCandidates(port: EnginePort, branch: string, base: string, isLocal = false, isForced = false): Promise<Result<PullRequestCandidate[]>> {
-  const key = JSON.stringify([branch, base])
+export async function readCandidates(port: EnginePort, branch: string, isLocal = false, isForced = false): Promise<Result<PullRequestCandidate[]>> {
+  const key = JSON.stringify([branch])
   const cached = sessionMemory.candidates.get(key)
   const now = await port.now()
   const held = readCached(cached, now, isLocal, isForced)
   if (held) return held
-  const result = await readGithubStatus(port, isForced) === 'connected' ? await listPullRequests(port.processes, branch, base) : fail('GitHub unreachable')
+  const result = await readGithubStatus(port, isForced) === 'connected' ? await listPullRequests(port.processes, branch) : fail('GitHub unreachable')
   sessionMemory.candidates.set(key, { at: now, result })
   return result
+}
+
+/**
+ * Selects the PR whose base the unit is judged against: the open one, else the most recent merged or closed one.
+ * @param candidates - The unit branch's complete candidate list.
+ * @returns The PR, null without one, or a refusal naming every open PR when there are several.
+ */
+export function selectBasePullRequest(candidates: PullRequestCandidate[]): Result<PullRequestCandidate | null> {
+  const open = candidates.filter(pr => pr.state === 'OPEN').sort((a, b) => a.number - b.number)
+  if (open.length > 1) return fail(`open PRs ${open.map(pr => `#${pr.number} into ${pr.baseRefName}`).join(', ')} share this branch — close all but one`)
+  return succeed(open[0] ?? [...candidates].sort((a, b) => b.number - a.number)[0] ?? null)
+}
+
+/**
+ * Names a PR whose base is not the branch the unit's base was computed against; the base never moves on its own.
+ * @param unit - The unit record.
+ * @param pullRequest - The unit's PR.
+ * @returns The mismatch fact, or null when the bases agree or the unit's base came from no branch.
+ */
+export function describeBaseMismatch(unit: Unit, pullRequest: PullRequestCandidate | null | undefined): string | null {
+  return pullRequest && unit.baseBranch && pullRequest.baseRefName !== unit.baseBranch
+    ? `PR #${pullRequest.number} targets ${pullRequest.baseRefName}, but the unit's base was taken from ${unit.baseBranch}` : null
 }
 
 /**
@@ -91,19 +112,21 @@ export async function readConclusion(port: EnginePort, identity: Identity, unit:
 }
 
 /**
- * Judges the unit's PR and CI on the slice end, retaining no GitHub facts on disk.
+ * Judges the unit's PR and CI on the slice end against the PR's own base, retaining no GitHub facts on disk.
  * @param port - The engine calls.
  * @param slice - The unit's slice.
  * @param issues - Every issue the PR must close, or none for Trivial.
- * @param base - The default branch.
+ * @param unit - The unit record, whose base branch the PR's base must match.
  * @param candidates - The candidate list read for the unit.
  * @param isLocal - Whether cached GitHub facts remain usable regardless of age.
  * @param isForced - Whether CI and branch-rule facts must be refreshed.
  * @returns The PR, CI and first failing fact.
  */
-export async function readDelivery(port: EnginePort, slice: UnitSlice | null, issues: number[], base: string, candidates: Result<PullRequestCandidate[]>, isLocal: boolean, isForced = false): Promise<Delivery> {
+export async function readDelivery(port: EnginePort, slice: UnitSlice | null, issues: number[], unit: Unit, candidates: Result<PullRequestCandidate[]>, isLocal: boolean, isForced = false): Promise<Delivery> {
   const unknown: Delivery = { checks: 'off', isConcluded: false }
   if (!candidates.isOk) return { ...unknown, prFact: 'GitHub unreachable', prFactCode: 'github-unreachable' }
+  const chosen = selectBasePullRequest(candidates.value)
+  if (!chosen.isOk) return { ...unknown, prFact: chosen.error, prFactCode: 'pr-ambiguous' }
   const eligible = candidates.value.filter(pr => pr.state === 'OPEN' || (slice && slice.commits > 0 && pr.state === 'MERGED')).sort((a, b) => a.number - b.number)
   const containing: PullRequestCandidate[] = []
   if (slice) {
@@ -117,9 +140,11 @@ export async function readDelivery(port: EnginePort, slice: UnitSlice | null, is
   const open = eligible.find(pr => pr.state === 'OPEN')
   if (!selected) return { ...unknown, pullRequest: open, prFact: open ? "PR does not contain the unit's last commit — push" : 'no PR', prFactCode: open ? 'push-required' : undefined }
   if (selected.state !== 'OPEN') return { ...unknown, pullRequest: selected, prFact: 'no PR' }
+  const mismatch = describeBaseMismatch(unit, selected)
+  if (mismatch) return { ...unknown, pullRequest: selected, prFact: mismatch, prFactCode: 'base-mismatch' }
   const missing = issues.find(issue => !selected.closingIssuesReferences.includes(issue))
   if (missing !== undefined) return { ...unknown, pullRequest: selected, prFact: `PR does not close #${missing}` }
-  const ci = await readCi(port, slice?.end ?? '', base, isLocal, isForced)
+  const ci = await readCi(port, slice?.end ?? '', selected.baseRefName, isLocal, isForced)
   return { ...unknown, pullRequest: selected, ...ci }
 }
 

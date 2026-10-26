@@ -1,8 +1,12 @@
 import { describeCiBlocker } from './ci-blocker'
+import { markForAgent } from './messages'
 import type { Session } from './records'
 import { describeRequirement } from './requirements'
 import { formatStepLabel, isCiWait } from './step-states'
 import type { DiagnoseNeed, Position } from './step-states'
+
+/** A successful declaration: the reply that lists its steps, and the prompt that starts its current step, null when none is current. */
+export interface DeclaredFlow { reply: string; start: string | null }
 
 /**
  * Formats issue numbers as references.
@@ -42,6 +46,32 @@ export function composeInstruction(position: Position, session: Session): string
     ? ` checked out: ${position.git.branch} (not this unit's branch).` : ''
   return composeUnitInstruction(position, session) + checkout
 }
+
+/**
+ * Writes the prompt that starts the current step after a user command moved the unit; it carries the flow line itself,
+ * because the mod's own deferred submission is not certain to pass through its prompt hook.
+ *
+ * @param position - The unit's position after the command.
+ * @param session - The session with the declared issues.
+ * @param lead - What the command did, as the prompt's first sentence.
+ * @returns The prompt, or null when the unit has no current step to start.
+ */
+export function composeStart(position: Position, session: Session, lead: string): string | null {
+  const { pullRequest, current } = position
+  if (position.isConcluded || position.slice?.isRewritten || !current) return null
+  const stop = /[.!?]$/.test(lead) ? '' : '.'
+  const source = session.issues.length ? ' from the issue' : ''
+  return `${lead}${stop} Start the current step (${formatStepLabel(current.step, pullRequest, true)})${source}. ${composeFlowLine(position, session)}`
+}
+
+/**
+ * Writes the flow line a prompt carries for the agent.
+ *
+ * @param position - The unit's position.
+ * @param session - The session.
+ * @returns The instruction, marked as the working agreement's.
+ */
+export const composeFlowLine = (position: Position, session: Session): string => markForAgent(composeInstruction(position, session))
 
 /**
  * Directs the agent to the unit's next unmet requirement and any following human handover.

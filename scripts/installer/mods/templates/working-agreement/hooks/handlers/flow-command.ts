@@ -1,17 +1,23 @@
 import type { Args, Frozen } from 'claude-code'
 
+import { bestEffort } from '../core/best-effort'
 import { declareFlow } from '../core/declaration'
 import type { EnginePort } from '../core/engine-port'
 import { createFeaturePort } from '../core/feature-port'
 import { refreshView } from '../core/pane-view'
+import { locatePosition } from '../core/position'
+import { createReadPort } from '../core/read-port'
 import { findFlow } from '../domain/flow-definitions'
 import { readSession, updateUnits } from '../core/record-store'
 import { approveVerify } from '../core/verify'
 import { withRecordLock } from '../core/session-memory'
+import { composeStart } from '../domain/instruction'
+import type { DeclaredFlow } from '../domain/instruction'
 import { markForAgent } from '../domain/messages'
 import { applyApproval } from '../features/approve'
 import { runFollowUpCommand } from '../features/follow-up'
 import { runHandoffCommand } from '../features/handoff'
+import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
 import { renderStatusText } from '../ui/status-text'
 import { renderFlowStatus } from '../core/status'
@@ -31,28 +37,29 @@ export async function handleFlowCommand(port: EnginePort, event: Frozen<Args<'co
   const [subcommand = '', ...rest] = event.args.trim().split(/\s+/)
   const tail = rest.join(' ')
   if (humanOnly.includes(subcommand) && event.origin.kind !== 'composer') return markForAgent(`/flow ${subcommand} is the user's to run from the prompt.`)
-  if (subcommand === 'skip') return withRecordLock(async () => {
+  if (subcommand === 'skip') return startAfter(port, await withRecordLock(async () => {
     const session = await readSession(port)
     const flow = findFlow(session.flow)
-    if (!flow) return 'No flow declared — declare a flow before skipping a step.'
+    if (!flow) return fail('No flow declared — declare a flow before skipping a step.')
     const match = flow.steps.find(step => [step.id, step.label].some(name => tail.toLowerCase() === name.toLowerCase() || tail.toLowerCase().startsWith(`${name.toLowerCase()} `)))
-    if (!match) return 'Unknown step — use a step id or label from this flow.'
+    if (!match) return fail('Unknown step — use a step id or label from this flow.')
     const reason = tail.slice(tail.toLowerCase().startsWith(`${match.id.toLowerCase()} `) ? match.id.length : match.label.length).trim()
-    if (!reason) return 'A skip needs a non-empty reason.'
+    if (!reason) return fail('A skip needs a non-empty reason.')
     await updateUnits(port, session, unit => ({ ...unit, skips: [...(unit.skips ?? []), { step: match.id, reason }] }))
     await refreshView(port, true, true)
-    return `Skipped ${match.label}: ${reason}`
-  })
+    return succeed(`Skipped ${match.label}: ${reason}`)
+  }))
   if (subcommand === 'handoff') return runHandoffCommand(createFeaturePort(port), tail)
-  if (subcommand === 'trivial') return unwrap(await withRecordLock(() => declareFlow(port, 'trivial', [], 'human')))
-  if (subcommand === 'follow-up') return unwrap(await runFollowUpCommand(createFeaturePort(port), tail))
+  if (subcommand === 'trivial') return startStep(port, await withRecordLock(() => declareFlow(port, 'trivial', [], 'human')))
+  if (subcommand === 'follow-up') return startStep(port, await runFollowUpCommand(createFeaturePort(port), tail))
   if (subcommand === 'approve' && rest[0] === 'verify') {
     if (rest.length > 2) return 'Usage: /flow approve verify [blob id].'
-    const text = await withRecordLock(() => approveVerify(port, rest[1]))
+    const result = await withRecordLock(() => approveVerify(port, rest[1]))
     await refreshView(port, true, true)
-    return text
+    // The preview without an id only shows the config.
+    return rest[1] === undefined ? unwrap(result) : startAfter(port, result)
   }
-  if (subcommand === 'approve') return unwrap(await applyApproval(createFeaturePort(port), tail))
+  if (subcommand === 'approve') return startAfter(port, await applyApproval(createFeaturePort(port), tail))
   const session = await readSession(port)
   if (subcommand === 'status') {
     const facts = await renderFlowStatus(port)
@@ -64,6 +71,51 @@ export async function handleFlowCommand(port: EnginePort, event: Frozen<Args<'co
   await refreshView(port)
   await port.openPane()
   return 'Flow pane opened.'
+}
+
+/**
+ * Answers a user declaration and, once it succeeded, starts an agent turn on its current step.
+ *
+ * @param port - The engine calls.
+ * @param result - The declaration.
+ * @returns The declaration's reply or refusal.
+ */
+function startStep(port: EnginePort, result: Result<DeclaredFlow>): string {
+  if (!result.isOk) return result.error
+  const { reply, start } = result.value
+  if (start) submitStart(port, async () => start)
+  return reply
+}
+
+/**
+ * Answers a user command that moved the unit and, once it succeeded, starts an agent turn on the new current step.
+ *
+ * @param port - The engine calls.
+ * @param result - The command's reply, which leads the prompt, or its refusal.
+ * @returns The reply or refusal.
+ */
+function startAfter(port: EnginePort, result: Result<string>): string {
+  if (result.isOk) submitStart(port, async () => {
+    const session = await readSession(port)
+    const position = await locatePosition(createReadPort(port), session)
+    return position ? composeStart(position, session, result.value) : null
+  })
+  return unwrap(result)
+}
+
+/**
+ * Submits the start prompt once the command has answered.
+ * The prompt waits for the session to go idle, which the command holds, so it is submitted after the reply;
+ * a failure leaves the command's effect standing and is logged to debug only.
+ *
+ * @param port - The engine calls.
+ * @param compose - Writes the prompt, or null when there is no current step to start.
+ */
+function submitStart(port: EnginePort, compose: () => Promise<string | null>): void {
+  port.defer(() => void bestEffort(port, 'start prompt', async () => {
+    const start = await compose()
+    if (start) await port.submitPrompt(start)
+  }, undefined))
 }
 
 // The user reads a refusal as plainly as an answer.

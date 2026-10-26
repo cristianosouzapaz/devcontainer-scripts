@@ -98,7 +98,7 @@ export const recordToolRun = (port: EnginePort, identity: Identity, unit: Unit, 
     const current = await readSession(port)
     if ((await readUnit(port, identity)).generation !== unit.generation) return false
     const own = current.units.find(entry => sameIdentity(entry.identity, identity) && entry.generation === unit.generation)
-      ?? { ...createEmptyUnit(), identity, base: unit.base, generation: unit.generation }
+      ?? { ...createEmptyUnit(), identity, base: unit.base, baseBranch: unit.baseBranch, generation: unit.generation }
     if (signal.aborted) return false
     await writeSession(port, replaceUnitEntry(current, identity, { ...own, ...change(own) }))
     return true

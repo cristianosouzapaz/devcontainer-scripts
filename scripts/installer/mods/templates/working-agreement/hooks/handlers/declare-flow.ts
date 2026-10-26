@@ -19,5 +19,5 @@ export async function handleDeclareFlowCall(port: EnginePort, event: Frozen<Args
   if (args.issues !== undefined && (!Array.isArray(args.issues) || !args.issues.every(issue => typeof issue === 'number'))) return { deny: markForAgent('Issue numbers must be positive integers.') }
   const issues = args.issues ?? []
   const declared = await withRecordLock(() => declareFlow(port, toStringOrEmpty(args.flow), issues, 'agent'))
-  return declared.isOk ? { result: markForAgent(declared.value) } : { deny: markForAgent(declared.error) }
+  return declared.isOk ? { result: markForAgent(declared.value.reply) } : { deny: markForAgent(declared.error) }
 }

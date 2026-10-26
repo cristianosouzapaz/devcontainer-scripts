@@ -1,4 +1,6 @@
 import { readJson } from '../lib/json'
+import { fail, succeed } from '../lib/result'
+import type { Result } from '../lib/result'
 import type { VerifyRecord } from '../../types'
 import type { Unit } from '../domain/records'
 import type { Evidence, UnitSlice } from '../domain/step-states'
@@ -32,23 +34,23 @@ const shortenBlob = (blob: string): string => blob.slice(0, 12)
  * Previews the config and blob id without an id, or approves the current blob when a seven-or-more-hex-character id prefixes it.
  * @param port - Engine calls.
  * @param id - Optional confirmed blob prefix.
- * @returns The preview, approval, or refusal for the user.
+ * @returns The preview or approval for the user, or the refusal.
  */
-export async function approveVerify(port: EnginePort, id?: string): Promise<string> {
+export async function approveVerify(port: EnginePort, id?: string): Promise<Result<string>> {
   const session = await readSession(port)
-  if (!session.unit) return 'No unit declared in this chat.'
+  if (!session.unit) return fail('No unit declared in this chat.')
   const git = await readGit(port)
   const slice = git ? await readUnitSlice(port, session.unit, await readUnit(port, session.unit), git) : null
   const loaded = await readVerifyConfig(port, slice?.tree ?? null)
-  if (loaded.kind !== 'valid') return loaded.fact
+  if (loaded.kind !== 'valid') return fail(loaded.fact)
   const { blob, config } = loaded
   const short = shortenBlob(blob)
-  if (id === undefined) return `Verify config ${short}:\n${JSON.stringify(config, null, 2)}\nRun /flow approve verify ${short} to approve this config.`
-  if (!/^[a-fA-F0-9]{7,}$/.test(id) || !blob.startsWith(id.toLowerCase())) return `Config id does not match. Current config: ${short}. Run /flow approve verify to review it.`
+  if (id === undefined) return succeed(`Verify config ${short}:\n${JSON.stringify(config, null, 2)}\nRun /flow approve verify ${short} to approve this config.`)
+  if (!/^[a-fA-F0-9]{7,}$/.test(id) || !blob.startsWith(id.toLowerCase())) return fail(`Config id does not match. Current config: ${short}. Run /flow approve verify to review it.`)
   const common = await readCommonDir(port)
-  if (!common) return 'Cannot locate the repository metadata.'
+  if (!common) return fail('Cannot locate the repository metadata.')
   await atomicReplace(port, recordsPath(common, 'ok', `${blob}.json`), '{"v":1}')
-  return `Verify config ${short} approved.`
+  return succeed(`Verify config ${short} approved.`)
 }
 
 /**

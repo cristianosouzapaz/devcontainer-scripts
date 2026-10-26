@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { noFlow, diagnosed, diagnosisComment } from '../support/builders'
-import { declareFlow, readFlowStatus } from '../support/helpers'
+import { declareFlow, readFlowStatus, readStepStates } from '../support/helpers'
 import { createWorld } from '../support/world'
 import type { Checkout, Options } from '../support/world'
 
@@ -136,7 +136,8 @@ for (const tool of ['run', 'verify']) {
   test(`${tool} preserves the lifetime when a carried chat contributes its first run`, async ($, on) => {
     const options: Options = { session: noFlow, verifyFile: '{"verify":["./check"]}', issueLabels: { 1: ['ready-for-agent'] }, spawnCode: tool === 'run' ? 7 : 0 }
     options.approvedConfig = options.verifyFile!
-    const { chat, sessions } = createWorld(on, { branch: 'fix', isDirty: true, tree: 'changed' }, options)
+    const world = createWorld(on, { branch: 'fix', isDirty: true, tree: 'changed' }, options)
+    const { chat, sessions } = world
     expect((await declareFlow($, 'fix', [1])).deny).toBeUndefined()
     const previous = sessions.get('sid')!
     chat.id = 'carried'
@@ -145,6 +146,7 @@ for (const tool of ['run', 'verify']) {
     expect(result.result).toContain(tool === 'run' ? 'red recorded' : 'Verify passed')
     expect(sessions.get(chat.id)?.units[0]?.generation).toBe(previous.units[0]?.generation)
     expect(sessions.get(chat.id)?.units[0]?.base).toBe(previous.units[0]?.base)
-    expect(await readFlowStatus($)).toContain(tool === 'run' ? 'no comment after the red' : '✓ Verify')
+    if (tool === 'run') expect(await readFlowStatus($)).toContain('no comment after the red')
+    else expect((await readStepStates(world)).Verify).toBe('done')
   })
 }

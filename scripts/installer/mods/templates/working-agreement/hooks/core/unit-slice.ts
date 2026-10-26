@@ -13,7 +13,7 @@ import { readWorkingTreeKey } from './repository'
  * @param identity - The declared branch and issues.
  * @param unit - The merged unit entry.
  * @param git - The checkout's repository and default branch.
- * @param isCloseOut - Whether the slice always spans the live merge-base through tip.
+ * @param isCloseOut - Whether the slice always spans the live merge-base, with the unit's base branch or else the default branch, through tip.
  * @returns The slice, or null for the default branch or an unreadable branch.
  */
 export async function readUnitSlice(port: EnginePort, identity: Identity, unit: Unit, git: GitState, isCloseOut?: boolean): Promise<UnitSlice | null> {
@@ -22,8 +22,8 @@ export async function readUnitSlice(port: EnginePort, identity: Identity, unit: 
   const read = (args: string[]) => readGitOutput(port.processes, args)
   const tip = await read(['rev-parse', '--verify', '--quiet', `refs/heads/${identity.branch}`])
   if (!tip) return null
-  const defaultRef = await readDefaultRef(port.processes, git.base)
-  const base = (wholeBranch ? undefined : unit.base) ?? await read(['merge-base', defaultRef, tip])
+  const baseRef = await readDefaultRef(port.processes, unit.baseBranch ?? git.base)
+  const base = (wholeBranch ? undefined : unit.base) ?? await read(['merge-base', baseRef, tip])
   const isRewritten = !wholeBranch && !!unit.base && !await isAncestor(port.processes, unit.base, tip)
   const entries = await readBranchUnits(port, identity.branch)
   const later = await Promise.all((wholeBranch ? [] : entries).filter(entry => !sameIdentity(entry.identity, identity) && entry.base && (entry.base !== base || !unit.base))

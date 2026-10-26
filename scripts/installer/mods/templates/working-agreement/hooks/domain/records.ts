@@ -80,11 +80,11 @@ function isRunRecord(value: unknown): value is RunRecord {
  * @returns Whether the unit entry is valid.
  */
 function isUnit(value: unknown): value is UnitEntry {
-  return isRecord(value) && hasOnlyKeys(value, ['identity', 'skills', 'verifyRuns', 'runs', 'approval', 'generation', 'base', 'skips']) && isIdentity(value.identity) && isStringArray(value.skills)
+  return isRecord(value) && hasOnlyKeys(value, ['identity', 'skills', 'verifyRuns', 'runs', 'approval', 'generation', 'base', 'baseBranch', 'skips']) && isIdentity(value.identity) && isStringArray(value.skills)
     && Array.isArray(value.verifyRuns) && value.verifyRuns.every(isVerifyRecord)
     && Array.isArray(value.runs) && value.runs.every(isRunRecord)
-    && ['approval', 'generation', 'base'].every(key => value[key] === undefined || typeof value[key] === 'string')
-    && (value.base === undefined || !!value.base)
+    && ['approval', 'generation', 'base', 'baseBranch'].every(key => value[key] === undefined || typeof value[key] === 'string')
+    && (value.base === undefined || !!value.base) && (value.baseBranch === undefined || (!!value.base && !!value.baseBranch))
     && (value.skips === undefined || (Array.isArray(value.skips) && value.skips.every(skip => isRecord(skip) && hasOnlyKeys(skip, ['step', 'reason'])
       && typeof skip.step === 'string' && !!skip.step.trim() && typeof skip.reason === 'string' && !!skip.reason.trim())))
 }

@@ -8,8 +8,8 @@ export const githubSamples = {
   issue: [{ status: null, body: { data: { repository: { issue: { state: 'OPEN', title: 't', labels: { nodes: [{ name: 'ready-for-agent' }] } } } } } }] satisfies [GithubSample],
   'sub-issues': [{ status: null, body: [{ state: 'open', labels: ['ready-for-agent'] }] }] satisfies [GithubSample],
   'issue-comments': [{ status: null, body: [{ url: 'https://github.com/o/r/issues/1#issuecomment-1', createdAt: '1970-01-01T00:00:00.003Z' }] }] satisfies [GithubSample],
-  'pull-requests': [{ status: null, body: { data: { repository: { pullRequests: {
-    nodes: [{ number: 5, state: 'OPEN', url: 'https://github.test/pull/5', headRefOid: 'c1', isCrossRepository: false,
+  'pull-requests': [{ status: null, body: { data: { repository: { nameWithOwner: 'owner/repo', defaultBranchRef: { name: 'main' }, pullRequests: {
+    nodes: [{ number: 5, state: 'OPEN', url: 'https://github.test/pull/5', headRefOid: 'c1', baseRefName: 'main', body: '', isCrossRepository: false,
       closingIssuesReferences: { nodes: [{ number: 1 }, { number: 2 }], pageInfo: { hasNextPage: false } } }],
     pageInfo: { hasNextPage: false },
   } } } } }] satisfies [GithubSample],
@@ -25,9 +25,13 @@ export const githubSamples = {
   ] satisfies [GithubSample, GithubSample],
   ruleset: [{ status: 200, body: { id: 42, current_user_can_bypass: 'never' } }] satisfies [GithubSample],
   branch: [{ status: 200, body: { protected: false, protection: { enabled: false } } }] satisfies [GithubSample],
-  'closing-pull-requests': [{ status: null, body: { data: { repository: { nameWithOwner: 'owner/repo', issue: {
+  'closing-pull-requests': [{ status: null, body: { data: { repository: { nameWithOwner: 'owner/repo', defaultBranchRef: { name: 'main' }, issue: {
     closedByPullRequestsReferences: {
       nodes: [{ number: 5, state: 'OPEN', headRefName: 'feat-1', isCrossRepository: false, baseRepository: { nameWithOwner: 'owner/repo' } }],
+      pageInfo: { hasNextPage: false },
+    },
+    timelineItems: {
+      nodes: [{ source: { __typename: 'PullRequest', number: 5, state: 'OPEN', headRefName: 'feat-1', baseRefName: 'main', body: 'Closes #1', isCrossRepository: false, baseRepository: { nameWithOwner: 'owner/repo' } } }],
       pageInfo: { hasNextPage: false },
     },
   } } } } }] satisfies [GithubSample],

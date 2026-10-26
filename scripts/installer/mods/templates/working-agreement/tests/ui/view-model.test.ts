@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { flowDefinitions } from '../../hooks/domain/flow-definitions'
+import { composeInstruction } from '../../hooks/domain/instruction'
 import type { Session, Unit } from '../../hooks/domain/records'
 import type { Position, StepState } from '../../hooks/domain/step-states'
 import { stepSymbol } from '../../hooks/ui/theme'
@@ -58,6 +59,33 @@ test('blocked writes are counted in singular and plural', () => {
 test('a step carries the mark of its state', () => {
   const view = buildView(session(), positionOf({}, 1), 'connected')
   expect(view.steps.map(step => step.symbol).slice(0, 3)).toEqual([stepSymbol.done, stepSymbol.current, stepSymbol.pending])
+})
+
+test('a done step after the current step shows as pending, a skipped one stays skipped, and neither is counted', () => {
+  const position = positionOf({ pullRequest: { number: 5, state: 'OPEN' } }, 3)
+  const states = position.states.map((entry): StepState => entry.step.observe === 'pr.created' ? { ...entry, state: 'done', fact: '✓ PR #5' }
+    : entry.step.observe === 'commit' ? { ...entry, state: 'skipped', reason: 'covered' } : entry)
+  const real = structuredClone(states)
+  const view = buildView(session(), { ...position, states }, 'connected')
+  expect(view.progress).toBe(`3/${flow.steps.length}`)
+  expect(view.steps.find(step => step.id === 'commit')).toMatchObject({ symbol: '↷', state: 'skipped', detail: 'covered' })
+  expect(view.steps.at(-1)).toMatchObject({ symbol: '○', label: 'PR #5', state: 'pending', detail: undefined })
+  expect(states).toEqual(real)
+})
+
+test('guidance reads the real states: a done human step after the current one is not handed over', () => {
+  const steps = [flow.steps[2]!, { id: 'review', label: 'Review', skill: 'review', isHuman: true }, flow.steps.at(-1)!]
+  const states: StepState[] = steps.map((step, index) => ({ step, isError: false, isWaitingApproval: false, state: (['current', 'done', 'pending'] as const)[index]! }))
+  const position = positionOf({ flow: { ...flow, steps }, states, current: states[0]! })
+  expect(buildView(session(), position, 'connected').steps[1]).toMatchObject({ symbol: '○', state: 'pending' })
+  expect(composeInstruction(position, session())).not.toContain('/review')
+})
+
+test('every step done renders done, without a current step to project from', () => {
+  const position = positionOf({ pullRequest: { number: 5, state: 'OPEN' } }, flow.steps.length)
+  const view = buildView(session(), { ...position, current: null }, 'connected')
+  expect(view.progress).toBe(`${flow.steps.length}/${flow.steps.length}`)
+  expect(view.steps.every(step => step.symbol === '✓')).toBe(true)
 })
 
 test('the footer offers a fresh session once the unit finished, and not before', () => {

@@ -16,6 +16,7 @@ import { isVerifyApproved } from './verify'
 import { readVerifyConfig, selectVerify } from './verify-config'
 import { readBranchProtection, readBranchRulesets } from '../lib/github'
 import { readWorktrees } from '../lib/git'
+import { describeBaseMismatch, readCandidates, selectBasePullRequest } from './unit-github'
 import { readDismissals } from './violation-store'
 import { fail } from '../lib/result'
 import { keyedLine } from '../ui/status-text'
@@ -72,6 +73,19 @@ function issueState(info: IssueInfo | undefined): string {
 }
 
 /**
+ * Names the branch the session unit's PR merges into.
+ * @param port - The engine calls.
+ * @param defaultBranch - The default branch, which applies without a single selected PR.
+ * @returns The PR's base, or the default branch.
+ */
+async function readUnitBase(port: EnginePort, defaultBranch: string): Promise<string> {
+  const session = await readSession(port)
+  const candidates = session.unit ? await readCandidates(port, session.unit.branch) : null
+  const chosen = candidates?.isOk ? selectBasePullRequest(candidates.value) : null
+  return chosen?.isOk && chosen.value ? chosen.value.baseRefName : defaultBranch
+}
+
+/**
  * Refreshes and renders the facts that are deliberately outside the pane.
  * @param port - The engine calls.
  * @returns Keyed status groups as plain text.
@@ -82,11 +96,14 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
   const control = new AbortController()
   // An abort ends the wait.
   const deadline = port.clock.sleep(30000, control.signal).then(() => true).catch(() => false)
+  const shown = { base: git?.base }
+  // The unit's PR base, once it has a PR, is the branch whose rules apply.
+  const target = git ? readUnitBase(statusPort, git.base).then(base => { shown.base = base; return base }) : null
   const reads = Promise.all([
     bestEffort(port, 'status reread', () => reread(statusPort, true, true), undefined),
     readGithubStatus(statusPort, true),
-    git ? readBranchRulesets(statusPort.processes, git.base) : Promise.resolve(fail('not in a repository')),
-    git ? readBranchProtection(statusPort.processes, git.base) : Promise.resolve(fail('not in a repository')),
+    target ? target.then(base => readBranchRulesets(statusPort.processes, base)) : Promise.resolve(fail('not in a repository')),
+    target ? target.then(base => readBranchProtection(statusPort.processes, base)) : Promise.resolve(fail('not in a repository')),
   ]).then(([, github, rules, classic]) => ({ github, rules, classic }))
   const result = await Promise.race([deadline, reads])
   const timedOut = typeof result === 'boolean'
@@ -97,11 +114,12 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
   if (position && session.unit) {
     const issues = session.issues.map(issue => `#${issue} ${issueState(session.info[String(issue)])}`).join(' · ')
     const slice = position.slice
-    const sliceText = !slice ? 'none' : `${slice.base ? short(slice.base) : 'none'}..${short(slice.end)}${slice.base && slice.isRewritten ? ' · base not in history' : slice.commits === 0 ? ' · empty' : ''}`
+    const candidate = [...sessionMemory.candidates.values()].flatMap(value => value.result.isOk ? value.result.value : []).find(pr => pr.number === position.pullRequest?.number)
+    const mismatch = describeBaseMismatch(position.unit, candidate) ? ` · base from ${position.unit.baseBranch}, PR into ${candidate?.baseRefName}` : ''
+    const sliceText = !slice ? 'none' : `${slice.base ? short(slice.base) : 'none'}..${short(slice.end)}${slice.base && slice.isRewritten ? ' · base not in history' : slice.commits === 0 ? ' · empty' : ''}${mismatch}`
     const rows = [...(issues ? [keyedLine('Issue', issues)] : []), keyedLine('Slice', sliceText)]
     const root = await worktree(statusPort, session.unit.branch)
     if (root) rows.push(keyedLine('Worktree', root))
-    const candidate = [...sessionMemory.candidates.values()].flatMap(value => value.result.isOk ? value.result.value : []).find(pr => pr.number === position.pullRequest?.number)
     if (candidate) rows.push(keyedLine('PR', candidate.url))
     const checks = slice ? sessionMemory.checks.get(slice.end)?.result : undefined
     if (slice && checks?.isOk && checks.value.length) rows.push(keyedLine('CI', `${short(slice.end)} · ${checks.value.map(check => `${check.name}: ${check.state}`).join(' · ')}`))
@@ -115,7 +133,7 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
   }
   const lastOk = `last ok ${time(sessionMemory.githubLastOk)}`
   const github = timedOut ? `${lastOk} · timed out after 30 s` : result.github === 'connected' ? lastOk : `${lastOk} · now failing: ${sessionMemory.githubError || 'exited non-zero'}`
-  const base = git?.base
+  const base = shown.base
   const rules = timedOut ? fail('timed out after 30 s') : result.rules
   const classic = timedOut ? fail('timed out after 30 s') : result.classic
   groups.push([keyedLine('GitHub', github), ...(rules.isOk ? (rules.value.length ? rules.value.map(rule => keyedLine('Rulesets', `${base} · ${rule.types.join(', ')} · you can bypass: ${rule.bypass ?? 'unknown'}`)) : [keyedLine('Rulesets', `${base} · no active rules`)]) : [keyedLine('Rulesets', `not read: ${rules.error}`)]), keyedLine('Classic', classic.isOk ? `${base} · protection ${classic.value ? 'on' : 'off'}` : `not read: ${classic.error}`)])

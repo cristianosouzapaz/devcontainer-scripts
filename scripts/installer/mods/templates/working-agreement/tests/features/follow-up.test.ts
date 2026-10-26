@@ -35,7 +35,29 @@ test('after merge a Follow-up may use a different branch and takes the declarati
   expect(sessions.get('sid')?.units[0]?.base).toBe('c3')
 })
 
-for (const extra of [{ isLoggedOut: true }, { failing: 'gh api graphql' }, { closingHasNextPage: true }]) {
+const intoNext = { ...closing, number: 158, baseRefName: 'next', body: 'Dashboard layout.\n\nCloses #149\nCloses #1' }
+
+for (const state of ['OPEN', 'MERGED']) {
+  test(`Follow-up accepts a ${state.toLowerCase()} PR into a non-default base whose body closes the issue, without a GitHub link`, async ($, on) => {
+    createWorld(on, { branch: 'feature', ahead: 2 }, { session: noFlow, closingPrs: { 1: [] }, crossReferences: { 1: [{ ...intoNext, state }] } })
+    expect((await runFlowCommand($, 'follow-up #1')).text).toContain('Flow declared: Follow-up')
+  })
+}
+
+test('an open PR into a non-default base that closes the issue requires its head branch', async ($, on) => {
+  createWorld(on, { branch: 'elsewhere' }, { session: noFlow, closingPrs: { 1: [] }, crossReferences: { 1: [intoNext] } })
+  expect((await runFlowCommand($, 'follow-up #1')).text).toContain('check out its head branch (feature)')
+})
+
+for (const source of [{ ...intoNext, body: 'Mentions #1 only' }, { ...intoNext, baseRefName: 'main' }, { ...intoNext, state: 'CLOSED' },
+  { ...intoNext, isCrossRepository: true }, { ...intoNext, baseRepository: { nameWithOwner: 'another/repo' } }]) {
+  test(`a cross-referencing PR outside the closing rules is no closing PR: ${JSON.stringify(source)}`, async ($, on) => {
+    createWorld(on, { branch: 'feature' }, { session: noFlow, closingPrs: { 1: [] }, crossReferences: { 1: [source] } })
+    expect((await runFlowCommand($, 'follow-up #1')).text).toContain('declare its own flow')
+  })
+}
+
+for (const extra of [{ isLoggedOut: true }, { failing: 'gh api graphql' }, { closingHasNextPage: true }, { timelineHasNextPage: true }]) {
   test(`an unreadable or partial Follow-up lookup is refused: ${JSON.stringify(extra)}`, async ($, on) => {
     createWorld(on, { branch: 'feature' }, { session: noFlow, closingPrs: { 1: [closing] }, ...extra })
     expect((await runFlowCommand($, 'follow-up #1')).text).toContain('GitHub unreachable — retry')

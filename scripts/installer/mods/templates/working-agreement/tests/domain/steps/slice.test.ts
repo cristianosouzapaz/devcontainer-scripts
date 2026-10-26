@@ -1,9 +1,9 @@
 import { expect, test } from 'claude-code/testing'
-import { noFlow } from '../../support/builders'
 import { conformanceGraph } from '../../support/graph-fixture'
-import { declareFlow, readFlowStatus, readPromptContext, runFlowCommand } from '../../support/helpers'
+import { declareFlow, readFlowStatus, readPromptContext, readStepStates, runFlowCommand } from '../../support/helpers'
+import { buildPullRequest, noFlow } from '../../support/builders'
 import { common, createWorld } from '../../support/world'
-import type { Checkout } from '../../support/world'
+import type { Checkout, Graph, Options } from '../../support/world'
 
 function branch(): Checkout {
   return { branch: 'feat', graph: structuredClone(conformanceGraph) }
@@ -11,13 +11,13 @@ function branch(): Checkout {
 
 test('switching branches preserves done Code and Commit and names the checkout in pane and prompt', async ($, on) => {
   const checkout = branch()
-  createWorld(on, checkout, { session: { flow: 'trivial' } })
-  expect(await readFlowStatus($)).toContain('✓ Commit')
+  const world = createWorld(on, checkout, { session: { flow: 'trivial' } })
+  expect((await readStepStates(world)).Commit).toBe('done')
   checkout.branch = 'other'
   checkout.dirty = { 'src/elsewhere.ts': 'uncommitted' }
   const status = await readFlowStatus($)
   expect(status).toContain('✓ Code')
-  expect(status).toContain('✓ Commit')
+  expect((await readStepStates(world)).Commit).toBe('done')
   expect(status).toContain("other, not this unit's branch")
   expect(await readPromptContext($)).toContain("checked out: other (not this unit's branch)")
 })
@@ -26,7 +26,7 @@ test('only the linked worktree holding the unit branch contributes dirty content
   const checkout = branch()
   checkout.graph!.refs.feat = 'm1'
   checkout.worktrees = { '/repo': { branch: 'other', dirty: { 'foreign': 'x' } }, '/linked': { branch: 'feat' } }
-  createWorld(on, checkout, { session: { flow: 'trivial' } })
+  const world = createWorld(on, checkout, { session: { flow: 'trivial' } })
   checkout.branch = 'other'
   expect(await readFlowStatus($)).toContain('▸ Code · no change from the base')
   checkout.worktrees['/linked']!.dirty = { 'src/new.ts': 'new' }
@@ -34,13 +34,14 @@ test('only the linked worktree holding the unit branch contributes dirty content
   expect(await readFlowStatus($)).toContain('▸ Verify · no verify command configured')
   checkout.worktrees['/repo']!.dirty = { 'foreign': 'another edit' }
   expect(await readFlowStatus($)).toContain('✓ Code')
-  expect(await readFlowStatus($)).not.toContain('✓ Commit')
+  expect((await readStepStates(world)).Commit).not.toBe('done')
 })
 
 test('two units use separate slices and the earlier unit freezes at the later base', async ($, on) => {
   const checkout = branch()
   checkout.graph!.refs.feat = 'f1'
-  const { chat, sessions } = createWorld(on, checkout, { session: noFlow, issueLabels: { 1: ['ready-for-agent'], 2: ['ready-for-agent'], 3: ['ready-for-agent'] } })
+  const world = createWorld(on, checkout, { session: noFlow, issueLabels: { 1: ['ready-for-agent'], 2: ['ready-for-agent'], 3: ['ready-for-agent'] } })
+  const { chat, sessions } = world
   await declareFlow($, 'small-feature', [1])
   chat.id = 'second'
   expect((await declareFlow($, 'small-feature', [2])).deny).toBeUndefined()
@@ -50,13 +51,13 @@ test('two units use separate slices and the earlier unit freezes at the later ba
   expect((await declareFlow($, 'small-feature', [3])).deny).toContain('empty slice')
   chat.id = 'second'
   checkout.graph!.refs.feat = 'f2'
-  expect(await readFlowStatus($)).toContain('✓ Commit')
+  expect((await readStepStates(world)).Commit).toBe('done')
   checkout.dirty = { 'src/a.ts': 'a0' }
   expect(await readFlowStatus($)).toContain('▸ Verify · no verify command configured')
   chat.id = 'sid'
   const first = await readFlowStatus($)
   expect(first).toContain('feat · frozen')
-  expect(first).toContain('✓ Commit')
+  expect((await readStepStates(world)).Commit).toBe('done')
   expect((await declareFlow($, 'small-feature', [1])).deny).toContain('declare on a new branch')
 })
 
@@ -87,12 +88,13 @@ test('an empty latest slice refuses another unit, including one declared from an
 test('re-declaring a rewritten first unit restores its slice from the live merge-base', async ($, on) => {
   const checkout = branch()
   checkout.graph!.refs.feat = 'm2'
-  const { sessions } = createWorld(on, checkout, { session: noFlow, issueLabels: { 1: ['ready-for-agent'] } })
+  const world = createWorld(on, checkout, { session: noFlow, issueLabels: { 1: ['ready-for-agent'] } })
+  const { sessions } = world
   expect((await declareFlow($, 'small-feature', [1])).deny).toBeUndefined()
   expect(sessions.get('sid')?.units[0]?.base).toBe('m2')
   checkout.graph!.commits.c = { parents: ['m2'], files: { 'src/a.ts': 'a1', 'src/m.ts': 'm2' } }
   checkout.graph!.refs.feat = 'c'
-  expect(await readFlowStatus($)).toContain('✓ Commit')
+  expect((await readStepStates(world)).Commit).toBe('done')
   checkout.graph!.commits.rebased = { parents: ['m1'], files: { 'src/a.ts': 'a1' } }
   checkout.graph!.refs.feat = 'rebased'
   expect(await readFlowStatus($)).toContain('feat · rewritten')
@@ -101,13 +103,14 @@ test('re-declaring a rewritten first unit restores its slice from the live merge
   const repaired = await readFlowStatus($)
   expect(repaired).not.toContain('rewritten')
   expect(repaired).toContain('✓ Code')
-  expect(repaired).toContain('✓ Commit')
+  expect((await readStepStates(world)).Commit).toBe('done')
 })
 
 test('re-declaring a rewritten later unit still takes the tip as its base', async ($, on) => {
   const checkout = branch()
   checkout.graph!.refs.feat = 'f1'
-  const { chat, sessions } = createWorld(on, checkout, { session: noFlow, issueLabels: { 1: ['ready-for-agent'], 2: ['ready-for-agent'], 3: ['ready-for-agent'] } })
+  const world = createWorld(on, checkout, { session: noFlow, issueLabels: { 1: ['ready-for-agent'], 2: ['ready-for-agent'], 3: ['ready-for-agent'] } })
+  const { chat, sessions } = world
   await declareFlow($, 'small-feature', [1])
   chat.id = 'second'
   await declareFlow($, 'small-feature', [2])
@@ -122,13 +125,14 @@ test('re-declaring a rewritten later unit still takes the tip as its base', asyn
   expect(sessions.get('second')?.units[0]?.base).toBe('o1')
   expect(await readFlowStatus($)).not.toContain('rewritten')
   expect(await readFlowStatus($)).toContain('▸ Code · no change from the base')
-  expect(await readFlowStatus($)).not.toContain('✓ Commit')
+  expect((await readStepStates(world)).Commit).not.toBe('done')
 })
 
 test('a continuation in a separate chat preserves an inherited base and advances only after a rewrite', async ($, on) => {
   const checkout = branch()
   checkout.graph!.refs.feat = 'f1'
-  const { chat, sessions } = createWorld(on, checkout, { session: noFlow, issueLabels: { 1: ['ready-for-agent'], 2: ['ready-for-agent'], 3: ['ready-for-agent'] } })
+  const world = createWorld(on, checkout, { session: noFlow, issueLabels: { 1: ['ready-for-agent'], 2: ['ready-for-agent'], 3: ['ready-for-agent'] } })
+  const { chat, sessions } = world
   await declareFlow($, 'small-feature', [1])
   chat.id = 'second'
   await declareFlow($, 'small-feature', [2])
@@ -136,7 +140,7 @@ test('a continuation in a separate chat preserves an inherited base and advances
   chat.id = 'third'
   await declareFlow($, 'small-feature', [2])
   expect(sessions.get('third')?.units[0]?.base).toBe('f1')
-  expect(await readFlowStatus($)).toContain('✓ Commit')
+  expect((await readStepStates(world)).Commit).toBe('done')
 })
 
 test('the first unit records its declaration merge-base', async ($, on) => {
@@ -151,12 +155,12 @@ test('the first unit records its declaration merge-base', async ($, on) => {
 
 test('a unit declared on the default branch has no Code or Commit evidence', async ($, on) => {
   const checkout = { ...branch(), branch: 'main', dirty: { 'src/new': 'new' } }
-  createWorld(on, checkout, { session: { flow: 'trivial' } })
+  const world = createWorld(on, checkout, { session: { flow: 'trivial' } })
   const status = await readFlowStatus($)
   expect(status).toContain("▸ Code · check out the unit's branch and re-declare")
   expect(status).toContain('○ Commit\n')
   expect(status).not.toContain('✓ Code')
-  expect(status).not.toContain('✓ Commit')
+  expect((await readStepStates(world)).Commit).not.toBe('done')
 })
 
 test('default-branch declarations neither acquire bases nor freeze or block other units', async ($, on) => {
@@ -199,10 +203,10 @@ test('Code compares trees rather than the number of commits and only the current
   const checkout = branch()
   checkout.graph!.commits.empty = { parents: ['m1'], files: { 'src/a.ts': 'a0' } }
   checkout.graph!.refs.feat = 'empty'
-  createWorld(on, checkout, { session: { flow: 'trivial' } })
+  const world = createWorld(on, checkout, { session: { flow: 'trivial' } })
   const status = await readFlowStatus($)
   expect(status).toContain('▸ Code · no change from the base')
-  expect(status).toContain('✓ Commit')
+  expect((await readStepStates(world)).Commit).toBe('done')
   expect(status).not.toContain('no verify command configured')
   expect(status).not.toContain('uncommitted changes')
 })
@@ -237,7 +241,8 @@ test('skip refuses absent flow, unknown step, empty reason, and every non-compos
 test('base ancestry orders three slices independently of session filename order', async ($, on) => {
   const checkout = branch()
   checkout.graph!.refs.feat = 'f1'
-  const { chat } = createWorld(on, checkout, { session: noFlow, issueLabels: { 1: ['ready-for-agent'], 2: ['ready-for-agent'], 3: ['ready-for-agent'] } })
+  const world = createWorld(on, checkout, { session: noFlow, issueLabels: { 1: ['ready-for-agent'], 2: ['ready-for-agent'], 3: ['ready-for-agent'] } })
+  const { chat } = world
   await declareFlow($, 'small-feature', [1])
   chat.id = 'z-last-filename'
   await declareFlow($, 'small-feature', [2])
@@ -247,10 +252,10 @@ test('base ancestry orders three slices independently of session filename order'
   expect(await readFlowStatus($)).toContain('no change from the base')
   chat.id = 'z-last-filename'
   expect(await readFlowStatus($)).toContain('feat · frozen')
-  expect(await readFlowStatus($)).toContain('✓ Commit')
+  expect((await readStepStates(world)).Commit).toBe('done')
   chat.id = 'sid'
   expect(await readFlowStatus($)).toContain('feat · frozen')
-  expect(await readFlowStatus($)).toContain('✓ Commit')
+  expect((await readStepStates(world)).Commit).toBe('done')
 })
 
 test('a base repaired in another chat replaces the inherited rewritten base for every chat', async ($, on) => {
@@ -266,4 +271,49 @@ test('a base repaired in another chat replaces the inherited rewritten base for 
   chat.id = 'second'
   expect(await readFlowStatus($)).not.toContain('rewritten')
   expect(await readFlowStatus($)).toContain('no change from the base')
+})
+
+/**
+ * Builds a branch cut from an integration branch that is ahead of the default branch.
+ * @returns The graph: main at c0, next at n1, feat at f1 on top of n1.
+ */
+function cutFromNext(): Graph {
+  return {
+    commits: { c0: { parents: [], files: {} }, n1: { parents: ['c0'], files: { 'src/next.ts': 'n' } }, f1: { parents: ['n1'], files: { 'src/next.ts': 'n', 'src/a.ts': 'a' } } },
+    refs: { main: 'c0', 'origin/main': 'c0', next: 'n1', 'origin/next': 'n1', feat: 'f1', 'origin/feat': 'f1' }, upstreams: { feat: 'origin/feat' },
+  }
+}
+
+for (const [label, prs, base] of [['a PR into next', [buildPullRequest({ baseRefName: 'next', headRefOid: 'f1' })], 'n1'], ['no PR', [], 'c0']] as const) {
+  test(`a unit on a branch cut from next with ${label} starts its slice at the merge-base with ${base === 'n1' ? 'next' : 'the default branch'}`, async ($, on) => {
+    const { sessions } = createWorld(on, { branch: 'feat', graph: cutFromNext() }, { session: noFlow, prs: [...prs] })
+    expect((await declareFlow($, 'small-feature', [1])).deny).toBeUndefined()
+    expect(sessions.get('sid')?.units[0]?.base).toBe(base)
+    expect(await readFlowStatus($)).toContain(`Slice     ${base}..f1`)
+  })
+}
+
+test('a PR into another base than the unit base came from is a mismatch until re-declaration recomputes the base from it', async ($, on) => {
+  const options: Options = { session: noFlow, prs: [], issueLabels: { 1: ['ready-for-agent'] } }
+  const { clock, sessions } = createWorld(on, { branch: 'feat', graph: cutFromNext() }, options)
+  await declareFlow($, 'small-feature', [1])
+  await runFlowCommand($, 'skip verify covered separately')
+  options.prs = [buildPullRequest({ baseRefName: 'next', headRefOid: 'f1' })]
+  await clock.advance(61000)
+  const status = await readFlowStatus($)
+  expect(status).toContain("▸ Update PR #5 · PR #5 targets next, but the unit's base was taken from main")
+  expect(status).toContain('Slice     c0..f1 · base from main, PR into next')
+  expect(await readPromptContext($)).toContain("call declare_flow again with the same flow and issues, so the unit's base is taken from next")
+  expect((await declareFlow($, 'small-feature', [1])).deny).toBeUndefined()
+  expect(sessions.get('sid')?.units[0]).toMatchObject({ base: 'n1', baseBranch: 'next' })
+  const redeclared = await readFlowStatus($)
+  expect(redeclared).toContain('Slice     n1..f1')
+  expect(redeclared).toContain('✓ PR #5')
+})
+
+test('a PR base that is not fetched refuses the declaration with the fetch to run', async ($, on) => {
+  const graph = cutFromNext()
+  const { next: _next, 'origin/next': _origin, ...refs } = graph.refs
+  createWorld(on, { branch: 'feat', graph: { ...graph, refs } }, { session: noFlow, prs: [buildPullRequest({ baseRefName: 'next', headRefOid: 'f1' })] })
+  expect((await declareFlow($, 'small-feature', [1])).deny).toContain('next is not fetched — run git fetch origin next')
 })

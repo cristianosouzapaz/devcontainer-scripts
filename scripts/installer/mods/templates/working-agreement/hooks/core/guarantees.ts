@@ -8,7 +8,7 @@ import { isJudgedTool } from './judged-tools'
 import { createReadPort } from './read-port'
 import { readCommonDir, readSession, sameIdentity, temporaryPath, writeSession, recordsPath } from './record-store'
 import { withRecordLock } from './session-memory'
-import { readCandidates } from './unit-github'
+import { readCandidates, selectBasePullRequest } from './unit-github'
 
 interface RefSnapshot { refs: Record<string, string>; worktrees: Worktree[] }
 /** Keeps independent snapshots so a GitHub failure cannot suppress git verdicts. */
@@ -71,10 +71,11 @@ async function readPrBefore(port: EnginePort): Promise<PrSnapshot | null> {
   if (session.prSnapshot && sameIdentity(session.prSnapshot.unit, session.unit)) return session.prSnapshot.fields.state === 'OPEN' ? session.prSnapshot : null
   const git = await readGitState(port.processes)
   if (!git.isOk || !git.value) throw new Error('repository unreadable')
-  const candidates = await readCandidates(port, session.unit.branch, git.value.base)
+  const candidates = await readCandidates(port, session.unit.branch)
   if (!candidates.isOk) throw new Error('PR candidates unreadable')
-  const open = candidates.value.find(pr => pr.state === 'OPEN')
-  return open ? refreshPrSnapshot(port, open.number) : null
+  const chosen = selectBasePullRequest(candidates.value)
+  if (!chosen.isOk) throw new Error(chosen.error)
+  return chosen.value?.state === 'OPEN' ? refreshPrSnapshot(port, chosen.value.number) : null
 }
 
 /**

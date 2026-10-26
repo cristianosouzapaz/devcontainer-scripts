@@ -5,7 +5,7 @@ import type { Position } from '../../../hooks/domain/step-states'
 import { expect, test } from 'claude-code/testing'
 
 import { buildPullRequest, fixed, diagnosisComment, noFlow, pushedCloseOut } from '../../support/builders'
-import { declareFlow, endTurn, readFlowStatus, readPromptContext, startSkill } from '../../support/helpers'
+import { declareFlow, endTurn, readFlowStatus, readPromptContext, readStepStates, startSkill } from '../../support/helpers'
 import { createWorld, linearGraph } from '../../support/world'
 import type { Options } from '../../support/world'
 
@@ -56,13 +56,45 @@ test('PR closure comes from closingIssuesReferences for every declared issue', a
   expect(await readPromptContext($)).toContain('update PR #5 (body must carry Closes #1, Closes #2)')
 })
 
-for (const changes of [{ state: 'CLOSED' }, { isCrossRepository: true }, { baseRefName: 'release' }, { headRefName: 'other' }]) {
+for (const changes of [{ state: 'CLOSED' }, { isCrossRepository: true }, { headRefName: 'other' }]) {
   test(`a noncandidate is no PR: ${JSON.stringify(changes)}`, async ($, on) => {
     createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, prs: [buildPullRequest(changes)] })
     expect(await readFlowStatus($)).toContain('▸ PR · no PR')
     expect(await readPromptContext($)).toContain('create-pr skill to open the PR')
   })
 }
+
+test('an open PR into a non-default base is the unit\'s PR and closes the issues its body names', async ($, on) => {
+  createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, prs: [buildPullRequest({ baseRefName: 'next', closingIssuesReferences: [], body: 'Closes #1\nfixes: owner/repo#2' })] })
+  expect(await readFlowStatus($)).toContain('✓ PR #5')
+})
+
+test('a PR into a non-default base whose body lacks an issue does not close it and is updated, not opened', async ($, on) => {
+  createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, prs: [buildPullRequest({ baseRefName: 'next', closingIssuesReferences: [], body: 'Closes #1\nSee #2' })] })
+  expect(await readFlowStatus($)).toContain('▸ Update PR #5 · PR does not close #2')
+  await startSkill($, 'create-pr')
+  expect(await readPromptContext($)).toContain('update PR #5 (body must carry Closes #1, Closes #2)')
+})
+
+test('on a PR into the default branch the body never widens GitHub\'s closing references', async ($, on) => {
+  createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, prs: [buildPullRequest({ closingIssuesReferences: [{ number: 1 }], body: 'Closes #1\nCloses #2' })] })
+  expect(await readFlowStatus($)).toContain('▸ Update PR #5 · PR does not close #2')
+})
+
+test('CI on a PR into a non-default base waits on that base\'s required checks', async ($, on) => {
+  const world = createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, prs: [buildPullRequest({ baseRefName: 'next', body: 'Closes #1, closes #2' })] })
+  await readPromptContext($)
+  expect(world.runs).toContain('gh api --include repos/{owner}/{repo}/rules/branches/next')
+  expect(world.runs).not.toContain('gh api --include repos/{owner}/{repo}/rules/branches/main')
+})
+
+test('several open PRs from the unit branch are refused by name instead of picking one', async ($, on) => {
+  createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, prs: [buildPullRequest(), buildPullRequest({ number: 7, baseRefName: 'next' })] })
+  const status = await readFlowStatus($)
+  expect(status).toContain('#5')
+  expect(status).toContain('#7')
+  expect(status).not.toContain('✓ PR')
+})
 
 test('a capped candidate list is unchecked instead of selecting a PR', async ($, on) => {
   createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, prsHasNextPage: true })
@@ -77,7 +109,7 @@ test('an incomplete closing-issues connection is unchecked instead of guessing t
 })
 
 test('a complete hundred-candidate connection can select a PR', async ($, on) => {
-  createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, prs: Array.from({ length: 100 }, (_, index) => buildPullRequest({ number: index + 1 })) })
+  createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, prs: Array.from({ length: 100 }, (_, index) => buildPullRequest({ number: index + 1, state: index ? 'CLOSED' : 'OPEN' })) })
   expect(await readFlowStatus($)).toContain('✓ PR #1')
 })
 
@@ -98,9 +130,10 @@ test('an empty slice never selects a merged PR', async ($, on) => {
 })
 
 test('declaring with a PR available keeps its facts out of authoritative records', async ($, on) => {
-  const { sessions, files } = createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, session: noFlow })
+  const world = createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, session: noFlow })
+  const { sessions, files } = world
   expect((await declareFlow($, 'close-out', [1, 2])).deny).toBeUndefined()
-  expect(await readFlowStatus($)).toContain('✓ PR #5')
+  expect((await readStepStates(world)).PR).toBe('done')
   expect(JSON.stringify(sessions.get('sid'))).not.toContain('headRefOid')
   expect([...files.values()].some(text => text.includes('closingIssuesReferences'))).toBe(false)
 })

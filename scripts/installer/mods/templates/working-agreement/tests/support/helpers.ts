@@ -1,5 +1,9 @@
 import type { CommandRunResult, PromptOrigin, ToolCallResult } from 'claude-code'
 import type { Engine, Mounted } from 'claude-code/testing'
+import type { FlowStepState } from '../../types'
+import { locatePosition } from '../../hooks/core/position'
+import { readSession } from '../../hooks/core/record-store'
+import { createTestPort } from './world'
 import type { World } from './world'
 
 interface PaneOptions { columns?: number; rows?: number; requestId?: string; title?: string }
@@ -48,6 +52,17 @@ export const readCurrentStep = async ($: Engine): Promise<string | undefined> =>
  */
 export const readPaneCurrentStep = (views: World['views']): string | undefined =>
   views.at(-1)?.steps.find(step => step.state === 'current')?.label
+
+/**
+ * Reads every step's real state, as guidance and judgements see it, beneath the display projection.
+ * @param world - The test world.
+ * @returns Each step's state, keyed by its label.
+ */
+export async function readStepStates(world: World): Promise<Record<string, FlowStepState>> {
+  const port = createTestPort(world)
+  const position = await locatePosition(port, await readSession(port), true)
+  return Object.fromEntries((position?.states ?? []).map(entry => [entry.step.label, entry.state]))
+}
 
 /**
  * Calls declare_flow as the agent, or as a subagent when an agent id is given.
