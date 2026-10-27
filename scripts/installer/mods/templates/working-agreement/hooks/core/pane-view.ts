@@ -124,15 +124,17 @@ export async function refreshView(engine: EnginePort, isQuiet = false, isSynced 
   const built = position && github ? buildView(session, position, github) : null
   const isTreeChanged = display?.last?.kind === 'Verify' && display.last.status === 'tree changed'
   const notes = handoffNotes(session)
+  // The unrecorded run explains Code only while Code waits on a Verify run; any other Code blocker stays shown.
+  const isRunAwaited = (id: string): boolean => id === 'verify' || (position?.current?.step.id === id && position.current.factCode === 'verify-not-run')
   const view = position && built ? { ...built, violations,
-    ...(isTreeChanged ? { steps: built.steps.map(step => step.id === 'verify' && step.state === 'current' && step.symbol !== '?' ? { ...step, symbol: '▸', detail: 'tree changed during run', isError: false } : step) } : {}),
+    ...(isTreeChanged ? { steps: built.steps.map(step => isRunAwaited(step.id) && step.state === 'current' && step.symbol !== '?' ? { ...step, symbol: '▸', detail: 'tree changed during run', isError: false } : step) } : {}),
     hasRunLog: !!(position.unit.verifyRuns.length || position.unit.runs.length || display?.live || display?.last),
     ...(previous?.selectedRunId ? { selectedRunId: previous.selectedRunId } : {}),
   } : violations.length || notes.length ? { flow: 'No flow declared.', progress: '', issues: [], pending: null, meta: [], labels: [], steps: [], notes, footer: null, violations } : null
   if (generation !== undefined && generation !== refreshQueue.forcedGeneration) return
   if (await isOutdated(port, session.sessionId, observed.version)) return
   sessionMemory.painted = { sessionId: session.sessionId, version: observed.version }
-  if (position && view) logSteps(port, session, view.steps, causes)
+  if (position && view) logSteps(port, session, view.steps, position.slice, causes)
   if (JSON.stringify(previous) !== JSON.stringify(view)) await port.writeView(view)
   await clearStaleRun(port, !!display?.live)
   await reportHerdr(port, session, position, dismissed)

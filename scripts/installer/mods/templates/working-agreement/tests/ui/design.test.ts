@@ -25,7 +25,7 @@ function position(current = 'diagnose', overrides: Partial<Position> = {}): Posi
   const flow = flowDefinitions.flows['fix']!
   const index = flow.steps.findIndex(step => step.id === current)
   const states = flow.steps.map((step, i) => ({ step, isError: false, isWaitingApproval: false, state: i < index ? 'done' as const : i === index ? 'current' as const : 'pending' as const, fact: 'a fact to act on' }))
-  return { flow, unit: createEmptyUnit(), git: null, slice: null, states, current: states[index] ?? null, verify: { fact: 'no pass', isVerified: false }, checks: 'off', isConcluded: false, ...overrides }
+  return { flow, unit: createEmptyUnit(), git: null, slice: null, states, current: states[index] ?? null, verify: { fact: 'no pass', isVerified: false, isReached: false }, checks: 'off', isConcluded: false, ...overrides }
 }
 
 

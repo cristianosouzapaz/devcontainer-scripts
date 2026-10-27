@@ -3,10 +3,11 @@ import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
 import { handleGuarantees } from '../../hooks/handlers/guarantees'
 import { describeViolation } from '../../hooks/core/guarantees'
+import { readContentTree } from '../../hooks/lib/git'
 import { parseSession } from '../../hooks/domain/records'
 import { mountPane, endTurn, readFlowStatus } from '../support/helpers'
 import { buildPullRequest } from '../support/builders'
-import { common, createTestPort, createWorld } from '../support/world'
+import { common, createTestPort, createWorld, root } from '../support/world'
 import type { Checkout, Gate, Graph, Options } from '../support/world'
 
 interface EntryGate extends Gate { entered: number }
@@ -169,9 +170,9 @@ test('default checkout content is judged independently and names another worktre
   expect(views.at(-1)?.violations?.[0]?.text).toBe("The default-branch tree changed at /other, in another worktree, during an agent call (it may be yours or another session's)")
 })
 
-test('a commit on a branch in another worktree is attributed conservatively', async ($, on) => {
+test("a commit on the unit's branch checked out in another worktree is attributed conservatively", async ($, on) => {
   const git = graph()
-  const checkout: Checkout = { branch: 'main', graph: git, worktrees: { '/repo': { branch: 'main' }, '/other': { branch: 'feature' } } }
+  const checkout: Checkout = { branch: 'feature', graph: git, worktrees: { '/repo': { branch: 'main' }, '/other': { branch: 'feature' } } }
   const { sessions, views } = createWorld(on, checkout, { afterTool: () => checkout.graph = commit(checkout.graph!) })
   expect((await $.tool.call({ tool: 'mcp__unknown__write' })).context?.join('')).toContain('on feature, checked out in another worktree')
   expect(views.at(-1)?.violations?.[0]?.text).toContain('on feature, checked out in another worktree')
@@ -578,12 +579,13 @@ test('a failed PR snapshot read logs only to debug and preserves the tool result
   expect(logs.filter(log => log.to === 'transcript')).toEqual([])
 })
 
-test('a subagent commit in its own worktree records and tells that loop', async (_$, on) => {
+test('a subagent commit in the worktree its call created records and tells that loop', async (_$, on) => {
   const checkout: Checkout = { branch: 'feature', graph: { ...graph(), refs: { ...graph().refs, child: 'a' } },
-    worktrees: { '/repo': { branch: 'feature' }, '/child': { branch: 'child' } } }
+    worktrees: { '/repo': { branch: 'feature' } } }
   const world = createWorld(on, checkout)
   const result = await handleGuarantees(createTestPort(world),
     { tool: 'Bash', command: 'git -C /child commit', tool_use_id: 'child-call', agentId: 'child-agent' }, async () => {
+      checkout.worktrees!['/child'] = { branch: 'child' }
       checkout.graph = { ...commit(checkout.graph!), refs: { ...checkout.graph!.refs, child: 'b' } }
       return { result: 'committed' }
     })
@@ -595,3 +597,23 @@ test('a subagent commit in its own worktree records and tells that loop', async 
   expect(violations?.[0]?.toolUseIds).toEqual(['child-call'])
   expect(result.context?.join('')).toContain('on child, checked out in another worktree')
 })
+
+const emptyTrees = { sha1: '4b825dc642cb6eb9a060e54bf8d69288fbee4904', sha256: '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321' }
+for (const { label, format, listed, isFailed } of [
+  { label: 'as failed when the worktree holds files', format: 'sha1', listed: 'H a\0R a\0? b\0', isFailed: true },
+  { label: 'as failed in a SHA-256 repository holding files', format: 'sha256', listed: 'H a\0', isFailed: true },
+  { label: 'as the empty tree when the worktree holds none', format: 'sha1', listed: '', isFailed: false },
+  { label: 'as the empty tree when every tracked file is deleted unstaged', format: 'sha1', listed: 'H a\0R a\0H b\0R b\0', isFailed: false },
+] as const) {
+  test(`a capture that writes the empty tree reads ${label}`, async (_$, on) => {
+    const world = createWorld(on, { branch: 'feature', graph: graph() })
+    const { processes } = createTestPort(world)
+    // An index deleted before write-tree reads as empty, so git writes the empty tree.
+    const answers = new Map([['--show-object-format', `/repo.git/index\n${format}`], ['write-tree', `${emptyTrees[format]}\n`], ['ls-files', listed]])
+    const run: typeof processes.run = async (argv, options) => {
+      const stdout = [...answers].find(([argument]) => argv.includes(argument))?.[1]
+      return stdout === undefined ? processes.run(argv, options) : { exitCode: 0, stdout, stderr: '' }
+    }
+    expect(await readContentTree({ run }, root, `${common}/working-agreement/s/.tmp-sid-1`)).toBe(isFailed ? null : emptyTrees[format])
+  })
+}

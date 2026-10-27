@@ -2,7 +2,7 @@ import { describeCiBlocker } from './ci-blocker'
 import { markForAgent } from './messages'
 import type { Session } from './records'
 import { describeRequirement } from './requirements'
-import { formatStepLabel, isCiWait } from './step-states'
+import { describeUnknownEnd, formatStepLabel, isCiWait } from './step-states'
 import type { DiagnoseNeed, Position } from './step-states'
 
 /** A successful declaration: the reply that lists its steps, and the prompt that starts its current step, null when none is current. */
@@ -58,7 +58,7 @@ export function composeInstruction(position: Position, session: Session): string
  */
 export function composeStart(position: Position, session: Session, lead: string): string | null {
   const { pullRequest, current } = position
-  if (position.isConcluded || position.slice?.isRewritten || !current) return null
+  if (position.isConcluded || position.slice?.isRewritten || position.integration?.state === 'unknown-end' || !current) return null
   const stop = /[.!?]$/.test(lead) ? '' : '.'
   const source = session.issues.length ? ' from the issue' : ''
   return `${lead}${stop} Start the current step (${formatStepLabel(current.step, pullRequest, true)})${source}. ${composeFlowLine(position, session)}`
@@ -84,7 +84,12 @@ function composeUnitInstruction(position: Position, session: Session): string {
   const issue = session.issues.length ? ` ${formatIssueReferences(session.issues, ' ')}` : ''
   if (position.isConcluded) return `${flow.label}${issue} — Unit finished.`
   if (position.slice?.isRewritten) return `${flow.label}${issue} — branch history rewritten since this unit was declared — re-declare.`
-  if (!current) return `${flow.label}${issue} — all steps done.`
+  // why: A deleted branch empties every slice fact, so the step it leaves current would send the agent to work that cannot land.
+  if (position.integration?.state === 'unknown-end') return `${flow.label}${issue} — ${describeUnknownEnd(position.integration.end)}; stop and tell the user.`
+  if (!current && position.integration?.state === 'delivered') return `${flow.label}${issue} — Unit finished.`
+  if (!current) return position.integration?.state === 'integrated'
+    ? `${flow.label}${issue} — integrated into ${position.integration.parent}; delivered by the Close out on ${position.integration.parent}.`
+    : `${flow.label}${issue} — all steps done.`
   if (isCiWait(position)) {
     const { reason, action } = describeCiBlocker(position.checks, `#${pullRequest?.number ?? ''}`)
     return `${flow.label}${issue} — current step: ${formatStepLabel(current.step, pullRequest, true)}. ${current.fact ?? reason}: ${action}; do not report the unit as done before every check passes.`

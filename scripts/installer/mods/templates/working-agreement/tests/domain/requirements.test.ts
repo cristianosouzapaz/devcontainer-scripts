@@ -11,7 +11,7 @@ test('fact codes keep next actions stable when the displayed facts are reworded'
   const session = { ...createEmptySession('sid'), flow: 'close-out', issues: [1], unit: { branch: 'feature', issues: [1] } }
   const unit = createEmptyUnit()
   const evidence: Evidence = {
-    git: null, slice: null, verify: { isVerified: false, fact: 'reworded config fact', factCode: 'verify-config-missing' },
+    git: null, slice: null, verify: { isVerified: false, isReached: true, fact: 'reworded config fact', factCode: 'verify-config-missing' },
     checks: 'off', isConcluded: false, pullRequest: { number: 5, state: 'OPEN' },
   }
   for (const code of ['github-unreachable', 'ci-unreadable', 'push-required'] as const) {

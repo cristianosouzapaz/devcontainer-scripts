@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect } from 'claude-code/testing'
 import { test } from '../../support/kit'
 import type { Engine, MockClock } from 'claude-code/testing'
-import { buildWriteCall, pushedCloseOut } from '../../support/builders'
+import { buildParentGraph, buildWriteCall, pushedCloseOut } from '../../support/builders'
 import { readFlowStatus, readPromptContext, startSkill } from '../../support/helpers'
 import { createWorld } from '../../support/world'
 import type { Checkout, Options } from '../../support/world'
@@ -81,6 +81,18 @@ const rows: ContractRow[] = [
       return {
         establish: async () => { options.statuses = { c1: [{ context: 'test', state: 'success' }] }; await advanceRefresh(clock) },
         lapse: async () => { options.statuses = { c1: [{ context: 'test', state: 'failure' }] }; await advanceRefresh(clock) },
+      }
+    },
+  },
+  {
+    step: 'Integrate', doneWhen: 'the parent branch reaches the slice end', fallsBackWhen: 'the child gets a commit the parent lacks', next: null,
+    start: (_$, on) => {
+      const graph = buildParentGraph()
+      const git: Checkout = { branch: 'a', graph }
+      createWorld(on, git, { unit: { base: 'p1', baseBranch: 'par', skips: [{ step: 'code', reason: 'covered' }, { step: 'verify', reason: 'covered' }] } })
+      return {
+        establish: async () => { git.graph = { ...graph, refs: { ...graph.refs, par: 'ma' } } },
+        lapse: async () => { git.graph = { ...git.graph!, commits: { ...graph.commits, a3: { parents: ['a2'], files: { 'src/a.ts': 'a3' } } }, refs: { ...git.graph!.refs, a: 'a3' } } },
       }
     },
   },

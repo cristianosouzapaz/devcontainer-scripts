@@ -4,11 +4,11 @@ import { reportHerdr } from '../../hooks/core/herdr'
 import { reread, refreshView } from '../../hooks/core/pane-view'
 import { readVerifyState } from '../../hooks/core/verify'
 import { sessionMemory } from '../../hooks/core/session-memory'
-import { flowDefinitions } from '../../hooks/domain/flow-definitions'
+import { flowDefinitions, resolveUnitFlow } from '../../hooks/domain/flow-definitions'
 import { createEmptySession, createEmptyUnit } from '../../hooks/domain/records'
 import { resolveStepStates } from '../../hooks/domain/step-states'
 import type { Evidence, Position } from '../../hooks/domain/step-states'
-import { diagnoseRuns, diagnosisComment, noFlow, verifyFile } from '../support/builders'
+import { buildParentGraph, buildParentPullRequest, diagnoseRuns, diagnosisComment, noFlow, verifyFile } from '../support/builders'
 import { endTurn, readFlowStatus } from '../support/helpers'
 import { common, configBlob, createTestPort, createWorld, root } from '../support/world'
 import type { Gate, World } from '../support/world'
@@ -64,7 +64,7 @@ for (const scenario of ['plain', 'verify-approval', 'verify-fail', 'verify-timeo
     const evidence: Evidence = {
       git: null, slice: { base: 'c0', end: 'c1', tree: 'tree', baseTree: 'base-tree', commits: 1,
         isClean: true, isFrozen: false, isRewritten: scenario === 'rewritten', isShared: false },
-      verify: { fact: 'arbitrary fact', isVerified: scenario === 'ci-fail', isError: scenario === 'verify-fail' || scenario === 'verify-timeout' },
+      verify: { fact: 'arbitrary fact', isVerified: scenario === 'ci-fail', isReached: true, isError: scenario === 'verify-fail' || scenario === 'verify-timeout' },
       checks: scenario === 'ci-fail' ? 'failing' : 'off', isConcluded: scenario === 'concluded',
       pullRequest: { number: 318, state: scenario === 'concluded' ? 'MERGED' : 'OPEN' },
     }
@@ -173,7 +173,7 @@ test('a unit without issues uses its declared branch and all values are capped a
   const session = { ...createEmptySession('sid'), flow: 'trivial', unit: { branch: 'unit-branch', issues: [] } }
   const flow = flowDefinitions.flows['trivial']!
   const unit = createEmptyUnit()
-  const evidence: Evidence = { git: null, slice: null, verify: { fact: '', isVerified: false }, checks: 'off', isConcluded: false }
+  const evidence: Evidence = { git: null, slice: null, verify: { fact: '', isVerified: false, isReached: false }, checks: 'off', isConcluded: false }
   const states = resolveStepStates(flow, session, unit, evidence)
   const position: Position = { ...evidence, flow, unit, states, current: states.find(state => state.state === 'current') ?? null }
   await reportHerdr(port, session, position, new Set())
@@ -226,3 +226,36 @@ test('a failure while recording a herdr error cannot reject refresh or latch the
   expect(world.herdrCalls).toHaveLength(2)
   expect(sessionMemory.herdrError).toBe(null)
 })
+
+for (const [name, tip, expected] of [['before its merge', 'p1', 'Integrate'], ['once integrated', 'ma', '']] as const) {
+  test(`a child's sidebar step ${name} carries no prefix`, async ($, on) => {
+    const graph = buildParentGraph()
+    const world = createWorld(on, { branch: 'a', graph: { ...graph, refs: { ...graph.refs, par: tip } } },
+      { herdrEnv: inside, unit: { base: 'p1', baseBranch: 'par', skips: [{ step: 'code', reason: 'covered' }, { step: 'verify', reason: 'covered' }] } })
+    await readFlowStatus($)
+    await endTurn($)
+    expect(world.herdrCalls.at(-1)?.argv).toContain(`flow_step=${expected}`)
+  })
+}
+
+test("a concluded child's sidebar shows its Integrate step merged", async (_$, on) => {
+  const world = createWorld(on, { branch: 'a' }, { herdrEnv: inside })
+  const flow = resolveUnitFlow(flowDefinitions.flows['close-out']!, true)
+  const session = { ...createEmptySession('sid'), flow: 'close-out', issues: [1], info: {}, unit: { branch: 'a', issues: [1] } }
+  const evidence: Evidence = { git: null, slice: null, verify: { fact: '', isVerified: false, isReached: false }, checks: 'off', isConcluded: true, pullRequest: { number: 9, state: 'MERGED' } }
+  const states = resolveStepStates(flow, session, createEmptyUnit(), evidence)
+  await reportHerdr(createTestPort(world), session, { ...evidence, flow, unit: createEmptyUnit(), states, current: null }, new Set())
+  expect(world.herdrCalls.at(-1)?.argv).toContain('flow_step=✓ Integrate')
+})
+
+for (const [name, head, expected] of [['stranded', 'p2', '✗ Integrate'], ['concluded by its parent\'s PR', 'ma3', '✓ Integrate']] as const) {
+  test(`a ${name} child's sidebar step is ${expected}`, async ($, on) => {
+    const graph = buildParentGraph()
+    const commits = { ...graph.commits, a3: { parents: ['a2'], files: { 'src/a.ts': 'a3' } }, ma3: { parents: ['p2', 'a3'], files: { 'src/a.ts': 'a3' } } }
+    const world = createWorld(on, { branch: 'a', graph: { ...graph, commits, refs: { ...graph.refs, a: 'a3', par: 'ma3' } } }, { herdrEnv: inside,
+      prs: [buildParentPullRequest({ number: 9, headRefOid: head })], unit: { base: 'p1', baseBranch: 'par', skips: [{ step: 'code', reason: 'covered' }, { step: 'verify', reason: 'covered' }] } })
+    await readFlowStatus($)
+    await endTurn($)
+    expect(world.herdrCalls.at(-1)?.argv).toContain(`flow_step=${expected}`)
+  })
+}

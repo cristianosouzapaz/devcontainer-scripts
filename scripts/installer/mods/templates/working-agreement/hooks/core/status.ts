@@ -147,6 +147,7 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
     formatErrorWindow('Log', 'log append', sessionMemory.logError),
     session.handoff?.state === 'failed' ? keyedLine('Handoff', `handoff not completed · ${session.handoff.reason}`) : null].filter((value): value is string => value !== null)
   if (errors.length) groups.push(errors)
+  // why: A missing or unreadable manifest shows the version unknown, the safe direction for a display-only record; bestEffort logs a failure.
   const manifest = await bestEffort(port, 'manifest read', async () => readJson(port.files, `${await port.readPluginRoot()}/.claude-plugin/plugin.json`), undefined)
   groups.push([keyedLine('Mod', isRecord(manifest) && typeof manifest.version === 'string' ? manifest.version : 'unknown')])
   return groups.map(group => group.join('\n')).join('\n\n')

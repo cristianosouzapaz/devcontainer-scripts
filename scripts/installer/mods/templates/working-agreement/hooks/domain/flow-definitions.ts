@@ -1,8 +1,8 @@
 /** Names whether the PR must close every declared issue. */
 type PullRequestRequirement = 'closes' | 'none'
 
-/** Names the observed evidence that completes a step: a passing verify run, the unit's commit, or its confirmed PR. */
-type StepEvidence = 'verify.passed' | 'commit' | 'pr.created'
+/** Names the observed evidence that completes a step: a passing verify run, the unit's commit, its confirmed PR, or its slice reached from its parent branch. */
+type StepEvidence = 'verify.passed' | 'commit' | 'pr.created' | 'integrated'
 
 /**
  * Describes a flow step and the evidence that completes it.
@@ -88,6 +88,9 @@ export const flowDefinitions: AgreementDefinitions = {
   },
 }
 
+/** Replaces PR as a child unit's last step, which the user completes by merging the child into its parent branch. */
+const integrateStep: Step = { id: 'integrate', label: 'Integrate', observe: 'integrated' }
+
 /**
  * Looks up a declared flow without accepting inherited object properties.
  * @param id - The declared flow id, or null with none declared.
@@ -110,6 +113,23 @@ export const hasDiagnoseStep = (flow: FlowDefinition | undefined): boolean => !!
  * @returns True when Map or Tickets is present.
  */
 export const hasIssueTreeStep = (flow: FlowDefinition | undefined): boolean => !!flow?.steps.some(step => step.id === 'map' || step.id === 'tickets')
+
+/**
+ * Gives a unit its steps: a child unit ends with Integrate in place of PR, while the flow definitions stay fixed.
+ * @param flow - The declared flow.
+ * @param isChild - Whether the unit's cached base branch is a parent branch other than the default branch.
+ * @returns The flow as the unit runs it.
+ */
+export function resolveUnitFlow(flow: FlowDefinition, isChild: boolean): FlowDefinition {
+  return isChild ? { ...flow, steps: flow.steps.map(step => step.observe === 'pr.created' ? integrateStep : step) } : flow
+}
+
+/**
+ * Tells whether a step delivers the unit: PR, or Integrate for a child unit.
+ * @param step - The flow step.
+ * @returns True for the unit's last, delivering step.
+ */
+export const isDeliveryStep = (step: Step): boolean => step.observe === 'pr.created' || step.observe === 'integrated'
 
 /**
  * Builds the Verify, Commit and PR steps every repository-writing flow ends with.

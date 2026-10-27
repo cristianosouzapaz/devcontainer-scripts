@@ -1,9 +1,9 @@
 import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
-import { createEmptySession, createEmptyUnit, parseSession, parseUnitRecord, retainRuns } from '../../hooks/domain/records'
+import { createEmptySession, createEmptyUnit, parseObservedEnd, parseSession, parseUnitRecord, retainRuns } from '../../hooks/domain/records'
 import { conformanceGraph } from '../support/graph-fixture'
-import { noFlow, verifyFile, diagnoseRuns, diagnosed, diagnosisComment } from '../support/builders'
+import { buildParentGraph, noFlow, verifyFile, diagnoseRuns, diagnosed, diagnosisComment } from '../support/builders'
 import { declareFlow, endTurn, readCurrentStep, readFlowStatus, readStepStates } from '../support/helpers'
 import { common, configBlob, createWorld, root } from '../support/world'
 import type { Options } from '../support/world'
@@ -48,8 +48,8 @@ test('the exact identity continues across chats, inherits evidence, and a differ
   expect(await readFlowStatus($)).toContain('Small feature')
 })
 
-for (const malformed of ['', '{', '{"v":2}', '{"v":1,"identity":{"branch":"feature","issues":[]},"flow":7}']) {
-  test(`a malformed shared declaration is absent: ${JSON.stringify(malformed)}`, async ($, on) => {
+for (const malformed of ['{"v":2}', '{"v":1,"identity":{"branch":"feature","issues":[]},"flow":7}']) {
+  test(`a shared declaration that is JSON but no valid record is absent: ${JSON.stringify(malformed)}`, async ($, on) => {
     const { files } = createWorld(on, { branch: 'feature' }, { session: noFlow })
     await declareFlow($, 'small-feature')
     files.set(recordPaths(files, 'u')[0]!, malformed)
@@ -78,6 +78,14 @@ test('strict parsers reject a malformed field anywhere without filling defaults'
   for (const flow of ['follow-up-open', 'follow-up-merged']) expect(parseUnitRecord({ v: 1, identity: { branch: 'feat', issues: [1] }, flow })).toBeNull()
 })
 
+test('an observed end record parses only with exactly its keys', () => {
+  const record = { v: 1, identity: { branch: 'a', issues: [2] }, generation: 'sid:1:1', end: 'a2' }
+  expect(parseObservedEnd(record)).toEqual(record)
+  for (const broken of [{ v: 2 }, { at: 1 }, { generation: undefined }, { end: '' }, { identity: { branch: 'a', issues: [2, 2] } }]) {
+    expect(parseObservedEnd({ ...record, ...broken })).toBeNull()
+  }
+})
+
 test('strict unit entries validate bases and whole-step skips without changing the record version', () => {
   const { flow: _flow, issues: _issues, ...session } = createEmptySession('sid')
   const entry = { identity: { branch: 'feat', issues: [1] }, skills: [], verifyRuns: [], runs: [], base: 'f1', skips: [{ step: 'code', reason: 'reviewed' }] }
@@ -87,6 +95,13 @@ test('strict unit entries validate bases and whole-step skips without changing t
     { skips: [{ step: 'code', reason: 'reviewed', extra: true }] }]) {
     expect(parseSession({ ...session, units: [{ ...entry, ...broken }] })).toBeNull()
   }
+})
+
+test('a skip on a step id of the other delivery step parses, so a unit that becomes or stops being a child needs no migration', () => {
+  const { flow: _flow, issues: _issues, ...session } = createEmptySession('sid')
+  const entry = { identity: { branch: 'a', issues: [1] }, skills: [], verifyRuns: [], runs: [], base: 'p1', baseBranch: 'main',
+    skips: [{ step: 'integrate', reason: 'was a child' }, { step: 'pr', reason: 'not a child yet' }] }
+  expect(parseSession({ ...session, units: [entry] })?.units[0]).toEqual(entry)
 })
 
 test('detached HEAD refuses a declaration', async ($, on) => {
@@ -195,15 +210,13 @@ test('declaring outside a repository refuses the declaration', async ($, on) => 
   expect((await declareFlow($, 'small-feature')).deny).toContain('check out a branch first')
 })
 
-for (const text of ['', '{', '{"v":2}']) {
-  test(`startup treats an invalid session mirror as absent: ${JSON.stringify(text)}`, async ($, on) => {
-    const { files, sessions } = createWorld(on, { branch: 'feature' }, { session: noFlow, isStateAbsent: true })
-    files.set(`${records}/s/sid.json`, text)
-    await $.session.start({ cwd: root, surface: null, isInteractive: false })
-    expect(sessions.get('sid')?.unit).toBeNull()
-    expect(files.get(`${records}/s/sid.json`)).toBe(text)
-  })
-}
+test('startup treats a session mirror that is JSON but no valid record as absent', async ($, on) => {
+  const { files, sessions } = createWorld(on, { branch: 'feature' }, { session: noFlow, isStateAbsent: true })
+  files.set(`${records}/s/sid.json`, '{"v":2}')
+  await $.session.start({ cwd: root, surface: null, isInteractive: false })
+  expect(sessions.get('sid')?.unit).toBeNull()
+  expect(files.get(`${records}/s/sid.json`)).toBe('{"v":2}')
+})
 
 test('declaration retries a missed state compare and one failed rename without temporary leftovers', async ($, on) => {
   const { files, sessions } = createWorld(on, { branch: 'feature' }, { session: noFlow, casMisses: 1, renameFailures: 1 })
@@ -313,4 +326,41 @@ test("merged sessions take the approval and its pinned red from one entry, never
   await declareFlow($, 'fix', [1])
   expect(sessions.get('sid')?.units[0]?.approval).toEqual(diagnosisComment.url)
   expect(sessions.get('sid')?.units[0]?.approvedRed).toBeUndefined()
+})
+
+test('a unit recorded on the default branch before parent branches existed stays on it, even after re-declaring', async ($, on) => {
+  const { sessions } = createWorld(on, { branch: 'b', graph: buildParentGraph() }, { unit: { base: 'c0', baseBranch: 'main' } })
+  expect(await readFlowStatus($)).toContain('Slice     c0..b1\n')
+  expect((await declareFlow($, 'small-feature', [1])).result).toContain('base from main.')
+  expect(sessions.get('sid')?.units[0]).toMatchObject({ base: 'c0', baseBranch: 'main' })
+  expect(await readFlowStatus($)).toContain('Slice     c0..b1\n')
+})
+
+test('a unit recorded with no base branch keeps its fixed base when its parent branch is merged in', async ($, on) => {
+  const graph = buildParentGraph()
+  createWorld(on, { branch: 'b', graph }, { unit: { base: 'p1' } })
+  expect(await readFlowStatus($)).toContain('Slice     p1..b1\n')
+  graph.refs = { ...graph.refs, par: 'p2', b: 'b2' }
+  expect(await readFlowStatus($)).toContain('Slice     p1..b2\n')
+})
+
+test('re-declaring a unit whose recorded base left its history recomputes the base from its recorded base branch, not the reflog', async ($, on) => {
+  const { sessions } = createWorld(on, { branch: 'b', graph: buildParentGraph() }, { unit: { base: 'a1', baseBranch: 'main' } })
+  expect((await declareFlow($, 'small-feature', [1])).result).toContain('base from main.')
+  expect(sessions.get('sid')?.units[0]).toMatchObject({ base: 'c0', baseBranch: 'main' })
+})
+
+test('a unit recorded on the default branch with a base off its first-parent chain keeps that base as the floor of its slice', async ($, on) => {
+  const graph = buildParentGraph()
+  graph.commits.mm = { parents: ['c0', 'p2'], files: { 'src/par.ts': 'p2', 'src/a.ts': 'a2' } }
+  graph.refs = { ...graph.refs, main: 'mm', 'origin/main': 'mm' }
+  createWorld(on, { branch: 'b', graph }, { unit: { base: 'p1', baseBranch: 'main' } })
+  expect(await readFlowStatus($)).toContain('Slice     p1..b1\n')
+})
+
+test('re-declaring a unit recorded with a base and no base branch keeps both and says the base was kept', async ($, on) => {
+  const { sessions } = createWorld(on, { branch: 'b', graph: buildParentGraph() }, { unit: { base: 'p1' } })
+  expect((await declareFlow($, 'small-feature', [1])).result).toContain('Flow declared: Small feature for #1, base kept from the record.')
+  expect(sessions.get('sid')?.units[0]?.base).toBe('p1')
+  expect(sessions.get('sid')?.units[0]?.baseBranch).toBeUndefined()
 })

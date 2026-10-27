@@ -105,5 +105,5 @@ test('a successful /flow approve verify <id> starts the current step after its r
   expect(prompts).toEqual([])
   await clock.settle()
   expect(prompts).toHaveLength(1)
-  expect(prompts[0]).toStartWith(`Verify config ${id} approved. Start the current step (Verify). [working-agreement] `)
+  expect(prompts[0]).toStartWith(`Verify config ${id} approved. Start the current step (Code). [working-agreement] `)
 })

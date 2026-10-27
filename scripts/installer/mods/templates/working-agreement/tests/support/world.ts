@@ -10,6 +10,7 @@ import { githubSamples } from './github-samples'
 
 type CheckRun = (typeof githubSamples)['check-runs'][number]['body'][number]
 type Status = (typeof githubSamples)['statuses'][number]['body'][number]
+type WorkflowRun = (typeof githubSamples)['workflow-runs'][number]['body'][number]
 type IssueComment = (typeof githubSamples)['issue-comments'][number]['body'][number]
 type SubIssue = (typeof githubSamples)['sub-issues'][number]['body'][number]
 
@@ -26,10 +27,13 @@ interface Commit { parents: string[]; files: Record<string, string>; committerDa
  * Seeded commit ids are immutable and ordered by creation time; the real-git harness assigns dates in that order.
  * Later commits default to the world's clock unless their committer date is specified.
  * Two commits with the same files have the same tree. Optional trees and blobs give object ids readable fixture aliases.
+ * `created` names the start point each listed branch's reflog records as `branch: Created from <start>`; every other
+ * branch's reflog holds one entry with no message, as `git update-ref` writes it.
  */
 export interface Graph {
   commits: Record<string, Commit>; refs: Record<string, string>
   trees?: Record<string, Record<string, string>>; blobs?: Record<string, string>; upstreams?: Record<string, string>
+  created?: Record<string, string>
 }
 
 interface Worktree {
@@ -75,6 +79,10 @@ export interface Options {
   removeExitCode?: number
   appendExitCode?: number
   listFailurePrefix?: string
+  /** Makes reading a present file under this prefix reject, as an I/O error does. */
+  readFailurePrefix?: string
+  /** Whether listing a directory no file lives under fails, as the engine's listing of a missing directory does. */
+  isMissingListFailed?: boolean
   isLoggedOut?: boolean
   isOutsideRepo?: boolean
   renameFailures?: number
@@ -87,6 +95,7 @@ export interface Options {
   issueLabels?: Record<number, string[]>
   checkRuns?: Record<string, CheckRun[]>
   statuses?: Record<string, Status[]>
+  workflowRuns?: Record<string, WorkflowRun[]>
   rules?: Record<string, unknown>[]
   rulesError?: number
   rulesMessage?: string
@@ -138,6 +147,8 @@ export interface World {
   suggestions: string[]
   clock: MockClock
   files: Map<string, string>
+  /** A file's modification time in epoch ms, where it differs from now. */
+  modified: Map<string, number>
   runs: string[]
   chat: Chat
   /** Each chat's session record as its last landed write, or its seed, left it; only the mod writes it. */
@@ -191,13 +202,23 @@ const gitAnswers: GitEntry[] = [
       const name = ref.startsWith('refs/') ? ref : ref.startsWith('origin/') ? `refs/remotes/${ref}` : `refs/heads/${ref}`
       return `${name} ${sha}`
     }).sort().join('\n')) },
+  { name: 'first-parent', pattern: /^rev-list --first-parent --parents (\S+) --not (\S+)$/, answer: (c, m) => {
+    const [from, stop] = [c.resolve(m[1] ?? ''), c.resolve(m[2] ?? '')]
+    return from && stop ? ok(walkFirstParents(c.graph, from, new Set(listAncestors(c.graph, stop))).join('\n')) : fatal
+  } },
+  { name: 'reflog', pattern: /^log --walk-reflogs --format=%gs refs\/heads\/(\S+) --$/, answer: (c, m) =>
+    isLocalBranch(c.graph, m[1] ?? '') ? ok(c.graph.created?.[m[1] ?? ''] ? `branch: Created from ${c.graph.created[m[1] ?? '']}` : '') : fatal },
+  { name: 'show-ref', pattern: /^show-ref --verify --quiet refs\/heads\/(\S+)$/, answer: (c, m) =>
+    isLocalBranch(c.graph, m[1] ?? '') ? ok('') : { exitCode: 1, stdout: '' } },
   { name: 'list', pattern: /^rev-list (--count )?(?:--min-age=(-?\d+) )?(.+) --not (.+)$/, answer: (c, m) =>
     revisionDifference(c, m[3] ?? '', m[4] ?? '', m[1] !== undefined, m[2] === undefined ? undefined : Number(m[2])) },
   { name: 'count', pattern: /^rev-list --count (\S+)\.\.(\S+)$/, answer: (c, m) => revisionDifference(c, m[2] ?? '', m[1] ?? '', true) },
   { name: 'merge', pattern: /^merge-base (?!-)(\S+) (\S+)$/, answer: (c, m) => {
     const [from, to] = [c.resolve(m[1] ?? ''), c.resolve(m[2] ?? '')]
     const ancestors = new Set(to ? listAncestors(c.graph, to) : [])
-    const base = from ? listAncestors(c.graph, from).find(id => ancestors.has(id)) : undefined
+    const common = from ? listAncestors(c.graph, from).filter(id => ancestors.has(id)) : []
+    // A best common ancestor is no ancestor of another common ancestor.
+    const base = common.find(id => !common.some(other => other !== id && listAncestors(c.graph, other).includes(id)))
     return base ? ok(base) : { exitCode: from && to ? 1 : 128, stdout: '' }
   } },
   { name: 'ancestor', pattern: /^merge-base --is-ancestor (\S+) (\S+)$/, answer: (c, m) => {
@@ -218,8 +239,8 @@ const gitAnswers: GitEntry[] = [
     return from && to ? ok(diffFiles(from, to).filter(path => !patterns.length || patterns.some(pattern => matchesGlob(path, pattern)))
       .map(path => `${path}\0`).join('')) : fatal
   } },
-  { name: 'index', pattern: /^rev-parse --path-format=absolute --git-path index$/, answer: c => ok(c.localRoot === root
-    ? `${c.owner[1].common}/index` : `${c.owner[1].common}/worktrees/${c.localRoot.split('/').at(-1)}/index`) },
+  { name: 'index', pattern: /^rev-parse --path-format=absolute --git-path index --show-object-format$/, answer: c => ok(`${c.localRoot === root
+    ? `${c.owner[1].common}/index` : `${c.owner[1].common}/worktrees/${c.localRoot.split('/').at(-1)}/index`}\nsha1`) },
   { name: 'status', pattern: /^status --porcelain=v2 -z --untracked-files=all$/, answer: c => {
     const before = c.filesAt('HEAD') ?? {}
     const staged = c.checkout.staged ?? (c.checkout.isDirty && !diffFiles(before, c.working).length ? { 'src/a.ts': 'staged' } : {})
@@ -235,6 +256,8 @@ const gitAnswers: GitEntry[] = [
   { name: 'add', pattern: /^add -A$/, answer: () => ok('') },
   { name: 'write', pattern: /^write-tree$/, answer: c =>
     ok(c.treeName(Object.fromEntries(Object.entries(c.working).filter(([path]) => !isIgnored(c, path))), c.checkout.tree)) },
+  { name: 'remotes', pattern: /^remote$/, answer: c => ok([...new Set(Object.keys(c.graph.refs)
+    .flatMap(ref => ref.startsWith('origin/') ? ['origin'] : ref.startsWith('refs/remotes/') ? [ref.split('/')[2] ?? ''] : []))].sort().join('\n')) },
   { name: 'worktrees', pattern: /^worktree list --porcelain$/, answer: c => ok(Object.entries(c.worktrees)
     .sort(([a], [b]) => a === root ? -1 : b === root ? 1 : a.localeCompare(b))
     .map(([path, wt]) => `worktree ${path}\nHEAD ${wt.head ?? c.graph.refs[wt.branch]}\n`
@@ -322,6 +345,14 @@ async function hashBlob(text: string): Promise<string> {
 }
 
 /**
+ * Names a unit's record files the way the mod does, so a test can seed or find its declaration and transition log.
+ * @param branch - The unit's branch.
+ * @param issues - The unit's sorted issues.
+ * @returns The hash shared by the unit's declaration and log.
+ */
+export const hashIdentity = (branch: string, issues: number[]): Promise<string> => hashBlob(JSON.stringify({ branch, issues }))
+
+/**
  * Resolves a revision of a graph to a commit id: a branch, `refs/heads/<branch>`, `origin/HEAD` (the default branch), `HEAD` or a commit id.
  *
  * @param graph - The graph.
@@ -359,6 +390,26 @@ function listAncestors(graph: Graph, id: string): string[] {
   const result = [...seen]
   ancestorCache.set(commit, result)
   return result
+}
+
+/**
+ * Tells whether a graph holds a local branch by that exact name; `origin/` refs are remote-tracking ones.
+ * @param graph - The graph.
+ * @param name - The branch name.
+ * @returns Whether `refs/heads/<name>` exists.
+ */
+const isLocalBranch = (graph: Graph, name: string): boolean => !name.startsWith('origin/') && name !== 'HEAD' && graph.refs[name] !== undefined
+
+/**
+ * Lists a first-parent chain until it meets a reached commit, each commit with all its parents, as `git rev-list --first-parent --parents` prints it.
+ * @param graph - The graph.
+ * @param id - The chain's newest commit.
+ * @param reached - The commits the walk stops at.
+ * @returns The lines, newest first.
+ */
+function walkFirstParents(graph: Graph, id: string | undefined, reached: Set<string>): string[] {
+  const commit = id === undefined ? undefined : graph.commits[id]
+  return !id || !commit || reached.has(id) ? [] : [[id, ...commit.parents].join(' '), ...walkFirstParents(graph, commit.parents[0], reached)]
 }
 
 /**
@@ -426,6 +477,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   const prompts: string[] = []
   const suggestions: string[] = []
   const files = new Map<string, string>()
+  const modified = new Map<string, number>()
   /**
    * Seeds approval without exposing the approval record to scenarios.
    * @param text - The approved config content.
@@ -560,8 +612,12 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     }
     if (e.argv[0] === 'rm') {
       if (options.removeExitCode) return buildResult('', options.removeExitCode, 'delete failed')
-      files.delete(e.argv[3] ?? '')
+      for (const path of e.argv.slice(3)) files.delete(path)
       return buildResult('')
+    }
+    if (e.argv[0] === 'rmdir') {
+      const directory = e.argv[2] ?? ''
+      return [...files.keys()].some(path => path.startsWith(`${directory}/`)) ? buildResult('', 1, 'Directory not empty') : buildResult('')
     }
     if (e.argv[0] === 'mv') {
       if (failures.renames > 0) { failures.renames -= 1; return buildResult('', 1, 'rename failed') }
@@ -664,6 +720,9 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     const statuses = command.match(/^gh api --paginate repos\/\{owner\}\/\{repo\}\/commits\/(\S+)\/status --jq /)
     if (statuses) return buildResult((options.statuses?.[statuses[1] ?? ''] ?? [])
       .map(row => JSON.stringify(row)).join('\n'))
+    const workflowRuns = command.match(/^gh api --paginate repos\/\{owner\}\/\{repo\}\/actions\/runs\?head_sha=(\S+) --jq /)
+    if (workflowRuns) return buildResult((options.workflowRuns?.[workflowRuns[1] ?? ''] ?? [])
+      .map(row => JSON.stringify(row)).join('\n'))
     if (command.startsWith('gh api --include repos/{owner}/{repo}/rules/branches/')) {
       const answer = () => options.rulesError
         ? rest(options.rulesError, { message: options.rulesMessage ?? githubSamples['branch-rules'][1].body.message })
@@ -718,7 +777,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       if (gate && !issueGates.has(gate)) { issueGates.add(gate); await gate }
       const held = initial.info[String(number)]
       const info = held && !('error' in held) ? held : undefined
-      const sample = githubSamples.issue[0].body.data.repository.issue
+      const sample = (githubSamples.issue.find(each => each.body.data.repository.issue.state === options.issues?.[number]) ?? githubSamples.issue[0]).body.data.repository.issue
       const labels = (options.issueLabels?.[number] ?? info?.labels ?? []).map(name => ({ name }))
       return buildResult(JSON.stringify({ data: { repository: { issue: { ...sample,
         state: options.issues?.[number] ?? sample.state, title: info?.title ?? sample.title, labels: { ...sample.labels, nodes: labels },
@@ -754,16 +813,22 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
         if (!isDirectory && !files.has(realPath)) throw new Error(`no such file: ${path}`)
         return { kind: isDirectory ? 'dir' as const : 'file' as const, realPath, size: 0, mtimeMs: 0, isLink: !!link }
       },
+      exists: async path => files.has(path),
       read: async path => {
         const text = files.get(path)
         if (text === undefined) throw new Error(`no such file: ${path}`)
+        if (options.readFailurePrefix && path.startsWith(options.readFailurePrefix)) throw new Error(`EIO: i/o error, read '${path}'`)
         return text
       },
       write: async (path, text) => { files.set(path, text) },
       list: async directory => {
         if (options.listFailurePrefix && directory.startsWith(options.listFailurePrefix)) throw new Error('listing failed')
-        return [...files.keys()].filter(path => path.startsWith(`${directory}/`) && !path.slice(directory.length + 1).includes('/'))
-          .map(path => ({ name: path.slice(directory.length + 1), kind: 'file' as const, isLink: false, size: files.get(path)?.length ?? 0, mtimeMs: clock.now() }))
+        if (options.isMissingListFailed && ![...files.keys()].some(path => path.startsWith(`${directory}/`))) throw new Error(`no such directory: ${directory}`)
+        const names = [...new Set([...files.keys()].filter(path => path.startsWith(`${directory}/`)).map(path => path.slice(directory.length + 1).split('/')[0]!))]
+        return names.map(name => files.has(`${directory}/${name}`)
+          ? { name, kind: 'file' as const, isLink: false, size: files.get(`${directory}/${name}`)?.length ?? 0,
+            mtimeMs: modified.get(`${directory}/${name}`) ?? clock.now() }
+          : { name, kind: 'dir' as const, isLink: false, size: 0, mtimeMs: clock.now() })
       },
     },
     readHerdrEnv: async () => ({ environment: options.herdrEnv?.HERDR_ENV, paneId: options.herdrEnv?.HERDR_PANE_ID }),
@@ -772,6 +837,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   } satisfies World['boundaries']
   on('fs.stat', async (_$, e) => ({ value: await boundaries.files.stat(e.path) }))
   on('fs.read', async (_$, e) => ({ value: await boundaries.files.read(e.path.endsWith('/.claude-plugin/plugin.json') ? '/plugin/.claude-plugin/plugin.json' : e.path) }))
+  on('fs.exists', async (_$, e) => ({ value: await boundaries.files.exists(e.path) }))
   on('fs.write', async (_$, e) => ({ value: await boundaries.files.write(e.path, e.text) }))
   on('fs.list', async (_$, e) => ({ value: await boundaries.files.list(e.path) }))
   on('classic.SessionStart', () => ({ watchPaths: options.watchPaths }))
@@ -797,7 +863,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   on('turn.complete', () => ({ text: '' }))
   on('classic.UserPromptSubmit', () => ({}))
   return { ready, answeredEntries, herdrActivity, approveConfig, boundaries, directSessionState, herdrCalls, registeredCommands, registeredTools,
-    commands, prompts, suggestions, clock, files, runs, chat, sessions, seedChat, legacy, views, liveRuns, paneViews, opened, logs }
+    commands, prompts, suggestions, clock, files, modified, runs, chat, sessions, seedChat, legacy, views, liveRuns, paneViews, opened, logs }
 }
 
 /**

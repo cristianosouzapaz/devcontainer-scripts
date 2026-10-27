@@ -7,7 +7,8 @@ import { findEarliestRed } from './records'
 import type { Identity, IssueInfo, PullRequest, Session, Unit } from './records'
 
 /** Selects an action independently of the displayed fact's wording. */
-type FactCode = 'verify-config-missing' | 'github-unreachable' | 'ci-unreadable' | 'push-required' | 'pr-ambiguous' | 'base-mismatch'
+type FactCode = 'verify-config-missing' | 'verify-not-run' | 'github-unreachable' | 'ci-unreadable' | 'push-required' | 'pr-ambiguous' | 'base-mismatch'
+  | 'child-end-unknown' | 'child-unmerged'
 
 /** Holds a step of the declared flow and where it stands. */
 interface StepStateFields {
@@ -34,6 +35,8 @@ interface VerifyState {
   isError?: boolean
   isWaitingApproval?: boolean
   isVerified: boolean
+  /** Whether the change has reached Verify, which ends Code: a run of any outcome exists on the current tree and base, or the config keeps Verify from running. */
+  isReached: boolean
 }
 
 /** Holds whether a GitHub-judged step is done and the first fact that prevents it. */
@@ -79,6 +82,82 @@ export interface UnitSlice {
 
 interface CodeSlice extends UnitSlice { tree: string }
 
+/** Holds whether Integrate is done and the fact it shows either way. */
+interface IntegrateJudgement { done: boolean; fact: string }
+
+/** Holds the parent branch every Integrate fact is judged against: the unit's cached base branch. */
+interface IntegrationParent { parent: string }
+
+/** Holds an integrated child: its slice has a commit and its end is reachable from the parent's local tip or fetched origin copy. */
+interface Integrated extends IntegrationParent {
+  state: 'integrated'
+  /** An open PR from the parent into the default branch whose head contains the slice end. */
+  parentPullRequest?: number
+}
+
+/** Holds a child not integrated yet, as its judgement finds it. */
+interface Pending extends IntegrationParent {
+  state: 'pending'
+  /** An open PR from the child into the parent, which only enriches the fact. */
+  childPullRequest?: number
+}
+
+/** Holds a child not integrated yet, with the merge that integrates it. */
+interface NotIntegrated extends Pending {
+  /** The user's merge of the child into its parent, resolved from where the parent is checked out. */
+  command: string
+}
+
+/** Holds a child whose local branch is gone with no single observed slice end, so it is never integrated, stranded or concluded. */
+interface EndUnknown extends IntegrationParent { state: 'unknown-end'; branch: string; end: UnknownEndKind }
+
+/** Holds a child whose local branch is gone at an observed slice end the parent does not reach: no merge can name the branch until it is restored. */
+interface DeletedUnmerged extends IntegrationParent {
+  state: 'deleted-unmerged'
+  branch: string
+  end: string
+  /** The user's `git branch` command that restores the branch at its observed end. */
+  command: string
+}
+
+/** Holds an integrated child whose parent was delivered to the default branch without its slice end, while no open parent PR carries it. */
+interface Stranded extends IntegrationParent {
+  state: 'stranded'
+  /** The latest merged parent PR, cut after the child, whose head lacks the slice end. */
+  pullRequest: number
+}
+
+/** Holds an integrated child that a merged parent PR into the default branch carries, while its own conclusion could not be read. */
+interface Delivered extends IntegrationParent {
+  state: 'delivered'
+  /** The merged parent PR whose head contains the slice end. */
+  pullRequest: number
+}
+
+/** Holds the facts that judge a child unit's Integrate step, read afresh at each judgement. */
+export type Integration = Integrated | NotIntegrated | EndUnknown | DeletedUnmerged | Stranded | Delivered
+
+/** Holds a child unit's integration as judged, before any merge guidance is written for it. */
+export type ChildIntegration = Integrated | Pending | EndUnknown | DeletedUnmerged | Stranded | Delivered
+
+/** Holds where a child unit stands with its parent branch: its Integrate state, or concluded. */
+export type ChildState = Exclude<ChildIntegration['state'], 'delivered'> | 'concluded'
+
+/** Holds why a child's slice end is unknown: no session observed it, or the observations diverge. */
+export type UnknownEndKind = 'never-observed' | 'ambiguous'
+
+/** Holds a child unit of the unit's branch whose slice end is known, and where it stands. */
+interface KnownEndChild { identity: Identity; state: Exclude<ChildState, 'unknown-end' | 'deleted-unmerged'> }
+
+/** Holds a child unit of the unit's branch whose slice end is unknown, with its issues still open. */
+interface UnknownEndChild { identity: Identity; state: 'unknown-end'; end: UnknownEndKind; openIssues: number[] }
+
+/** Holds a child unit of the unit's branch deleted at an observed end the branch does not reach, with its issues still open. */
+interface DeletedUnmergedChild { identity: Identity; state: 'deleted-unmerged'; command: string; openIssues: number[] }
+
+/** Holds a child unit of the unit's branch and where it stands. */
+export type ChildUnit = KnownEndChild | UnknownEndChild | DeletedUnmergedChild
+
 /** Holds what the step states are judged on, beyond the unit's record: observed evidence, read afresh at each judgement. */
 export interface Evidence {
   /** The checkout, or null outside a repository. */
@@ -92,6 +171,13 @@ export interface Evidence {
   pullRequest?: PullRequest
   prFact?: string
   prFactCode?: FactCode
+  /** The Integrate facts, present only for a child unit. */
+  integration?: Integration
+  /**
+   * The child units of the unit's branch, absent when they could not be read or the unit is a child itself; a unit
+   * other than a Close out reads them only up to the first integrated one.
+   */
+  children?: ChildUnit[]
   isConcluded: boolean
 }
 
@@ -102,6 +188,9 @@ export interface Position extends Evidence {
   states: StepState[]
   current: StepState | null
 }
+
+/** Holds a PR step fact and the code that selects its action. */
+export type DeliveryFact = Pick<Evidence, 'prFact' | 'prFactCode'>
 
 /**
  * Tells whether the checkout is on its default branch.
@@ -118,6 +207,41 @@ export const isOnBase = (git: GitState | null): boolean => !!git && git.branch =
  * @returns True when the unit's branch is the default branch.
  */
 export const isUnitOnBase = (identity: Identity | null | undefined, git: GitState | null): boolean => !!git && identity?.branch === git.base
+
+/**
+ * Tells whether a unit is a child unit: its cached base branch is a parent branch other than the default branch, and it
+ * is no Close out, whose own PR delivers its branch whatever that PR's base.
+ * @param unit - The unit's record.
+ * @param defaultBranch - The default branch, unknown outside a repository.
+ * @param isCloseOut - Whether the unit is declared as a Close out.
+ * @returns True for a child unit.
+ */
+export const isChildUnit = (unit: Pick<Unit, 'baseBranch'>, defaultBranch: string | undefined, isCloseOut: boolean): boolean =>
+  !isCloseOut && !!defaultBranch && !!unit.baseBranch && unit.baseBranch !== defaultBranch
+
+/**
+ * Names why a child's own Integrate cannot be judged: no retry changes a never-observed end, while an ambiguous one is
+ * decided once the parent branch reaches one of the observed ends.
+ * @param end - Why the slice end is unknown.
+ * @returns The fact.
+ */
+export const describeUnknownEnd = (end: UnknownEndKind): string => end === 'ambiguous' ? 'end ambiguous' : 'branch deleted before its end was observed'
+
+/**
+ * Judges a child unit's Integrate step: done once the unit is integrated into its parent branch, by SHA ancestry, and not stranded.
+ * @param integration - The Integrate facts, absent when they could not be read.
+ * @returns Completion and the step's fact: where the integrated slice is delivered from, or why it is not integrated.
+ */
+function judgeIntegrate(integration: Integration | undefined): IntegrateJudgement {
+  if (!integration) return { done: false, fact: 'integration unreadable' }
+  const { parent } = integration
+  if (integration.state === 'integrated') return { done: true, fact: integration.parentPullRequest ? `in PR #${integration.parentPullRequest}` : `awaiting ${parent}'s PR` }
+  if (integration.state === 'delivered') return { done: true, fact: `merged #${integration.pullRequest}` }
+  if (integration.state === 'unknown-end') return { done: false, fact: describeUnknownEnd(integration.end) }
+  if (integration.state === 'deleted-unmerged') return { done: false, fact: `branch ${integration.branch} deleted unmerged at ${integration.end} — restore it with ${integration.command}` }
+  if (integration.state === 'stranded') return { done: false, fact: `parent PR #${integration.pullRequest} merged without this unit's commits — deliver it with another PR` }
+  return { done: false, fact: integration.childPullRequest ? `PR #${integration.childPullRequest} into ${parent} open — merge it` : `not merged into ${parent}` }
+}
 
 /**
  * Recomputes a position after its session facts change.
@@ -154,13 +278,20 @@ export const isCiWait = (position: Position): boolean =>
   position.current?.step.observe === 'pr.created' && position.checks !== 'off' && position.checks !== 'passing'
 
 /**
- * Tells whether the unit concluded or every step is done with an open PR.
+ * Tells whether the unit concluded, or has no current step and either an open PR or, for a child unit, an integrated slice that is not stranded.
  *
  * @param position - The unit's position, or null with no flow declared.
  * @returns True once the unit is finished.
  */
 export const isUnitFinished = (position: Position | null): boolean =>
-  !!position && (position.isConcluded || (!position.current && position.pullRequest?.state === 'OPEN'))
+  !!position && (position.isConcluded || (!position.current && (position.pullRequest?.state === 'OPEN' || isIntegrateDone(position.integration))))
+
+/**
+ * Tells whether a child's Integrate facts show it integrated: awaiting or in its parent's PR, or carried by a merged one.
+ * @param integration - The Integrate facts, absent for a unit that is no child or when they could not be read.
+ * @returns True for an integrated child that is not stranded.
+ */
+const isIntegrateDone = (integration: Integration | undefined): boolean => integration?.state === 'integrated' || integration?.state === 'delivered'
 
 /**
  * Projects the states for display: a done step after the current step shows as pending, because no later step has been reached
@@ -262,25 +393,33 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
   const diagnose: DiagnoseJudgement = evidence.isConcluded ? { done: true } : judgeDiagnose(unit, session.issues, session.info)
   const isFixJudged = isCodeJudgedByFix(flow, unit)
   const hasFixGreen = diagnose.done && diagnose.approvedAt !== undefined && !!findFixGreen(unit.runs, diagnose.approvedAt, unit.approvedRed)
+  const isCodeWritten = isCodeChanged && (!isFixJudged || hasFixGreen)
   const declared = session.issues.map(number => session.info[number])
   const issueJudgements: Map<Step, IssueJudgement> = new Map(steps.filter(isIssueStep).map(step => [step, judgeIssueStep(step.id, declared)]))
+  const integrate = judgeIntegrate(evidence.integration)
+  // why: Integrate facts with no slice come from a deleted child branch: an observed end stands for the work before
+  // Integrate, while an unknown end proves none of it, so those steps are set aside rather than done.
+  const isBranchGone = !slice && !!evidence.integration
+  const isEndUnknown = isBranchGone && evidence.integration?.state === 'unknown-end'
 
   const isDone = (step: Step): boolean => {
     if (evidence.isConcluded) return true
+    if (isBranchGone && !isEndUnknown && step.observe !== 'integrated') return true
     if (step.isInWorktree) return diagnose.done
     if (isIssueStep(step)) return issueJudgements.get(step)?.done ?? false
-    if (step.isUnlocking) return isCodeChanged && (!isFixJudged || hasFixGreen)
+    if (step.isUnlocking) return isCodeWritten && verify.isReached
     if (step.observe === 'verify.passed') return isCodeChanged && verify.isVerified
     if (step.observe === 'commit') return isCommitDone
     // Only a qualifying open PR can complete delivery before conclusion.
     if (step.observe === 'pr.created') {
       return evidence.pullRequest?.state === 'OPEN' && isCiGreen
     }
+    if (step.observe === 'integrated') return integrate.done
     return false
   }
   const settled = steps.map((step): FlowStepState | null => {
     if (isDone(step)) return 'done'
-    if (unit.skips?.some(skip => skip.step === step.id) || step.isOptional) return 'skipped'
+    if (unit.skips?.some(skip => skip.step === step.id) || step.isOptional || (isEndUnknown && step.observe !== 'integrated')) return 'skipped'
     return null
   })
   const currentIndex = settled.indexOf(null)
@@ -289,20 +428,22 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
     const shared = {
       step,
       isError: !!(isIssueStep(step) ? issueJudgements.get(step)?.isError : step.isInWorktree ? diagnose.isError
-        : step.observe === 'verify.passed' ? verify.isError : step.observe === 'pr.created' && checks === 'failing'),
+        : step.observe === 'verify.passed' ? verify.isError : step.observe === 'pr.created' ? checks === 'failing' : step.observe === 'integrated' && evidence.integration?.state === 'stranded'),
       isWaitingApproval: step.observe === 'verify.passed' ? verify.isWaitingApproval === true : !!step.isInWorktree && diagnose.isWaitingApproval === true,
       ...(state === 'current' && isIssueStep(step) ? { fact: issueJudgements.get(step)?.fact } : {}),
-      ...(step.isUnlocking || step.observe === 'commit' ? { fact: isOnDefault ? "check out the unit's branch and re-declare"
+      ...((step.isUnlocking || step.observe === 'commit') && !isBranchGone ? { fact: isOnDefault ? "check out the unit's branch and re-declare"
         : !slice ? 'slice unavailable — re-declare'
-        : step.isUnlocking ? (isCodeChanged ? 'no green after the approval' : 'no change from the base') : slice.commits === 0 ? 'no commit in the slice' : 'uncommitted changes' } : {}),
+        : step.isUnlocking ? (!isCodeChanged ? 'no change from the base' : !isCodeWritten ? 'no green after the approval' : 'verify not run on this tree') : slice.commits === 0 ? 'no commit in the slice' : 'uncommitted changes' } : {}),
+      ...(step.isUnlocking && !isOnDefault && isCodeWritten && !verify.isReached ? { factCode: 'verify-not-run' as const } : {}),
       ...(step.observe === 'verify.passed' ? { fact: verify.fact, factCode: verify.factCode } : {}),
       ...(state === 'current' && step.observe === 'verify.passed' && verify.command ? { command: verify.command } : {}),
       ...(step.observe === 'pr.created' ? { fact: evidence.isConcluded ? `merged #${evidence.pullRequest?.number}` : evidence.prFact ?? 'no PR', factCode: evidence.prFactCode } : {}),
+      ...(step.observe === 'integrated' ? { fact: evidence.isConcluded ? `merged #${evidence.pullRequest?.number}` : integrate.fact } : {}),
       ...(step.isInWorktree ? { fact: diagnose.fact, ...(!diagnose.done ? { need: diagnose.need } : {}) } : {}),
       ...(state === 'current' && step.isInWorktree && !diagnose.done && diagnose.command ? { command: diagnose.command } : {}),
     }
     if (state === 'skipped') {
-      const reason = unit.skips?.find(skip => skip.step === step.id)?.reason
+      const reason = unit.skips?.find(skip => skip.step === step.id)?.reason ?? (isEndUnknown && step.observe !== 'integrated' ? 'branch deleted' : undefined)
         ?? (step.isOptional && isIssueStep(step) && issueJudgements.get(step)?.isError ? issueJudgements.get(step)?.fact : 'optional')
       return { ...shared, state, reason }
     }

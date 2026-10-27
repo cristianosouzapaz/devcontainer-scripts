@@ -33,6 +33,14 @@ export const fail = (error: string): Failure => ({ isOk: false, error })
 export const unwrapOr = <T, F>(result: Result<T>, fallback: F): T | F => (result.isOk ? result.value : fallback)
 
 /**
+ * Settles a pending call as a result.
+ *
+ * @param work - The pending call.
+ * @returns Its value as a success, or its rejection's message as a failure.
+ */
+export const settle = <T>(work: Promise<T>): Promise<Result<T>> => work.then(succeed, (error: unknown) => fail(formatError(error)))
+
+/**
  * Words a thrown value as an error message.
  *
  * @param error - What was thrown.

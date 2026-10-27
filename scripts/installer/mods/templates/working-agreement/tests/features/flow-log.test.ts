@@ -3,6 +3,7 @@ import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
 import { noFlow, verifyFile } from '../support/builders'
 import { declareFlow, endTurn, readFlowStatus, runFlowCommand, startSkill } from '../support/helpers'
+import { childUnit, parallelCheckout, withCommit } from '../support/parallel-worktrees'
 import { common, configBlob, createWorld } from '../support/world'
 import type { Checkout, Gate, Graph, Options } from '../support/world'
 
@@ -154,6 +155,19 @@ test('an approved verify config, a started handoff and a recorded violation are 
   expect(lines).toContainEqual(expect.objectContaining({ event: 'handoff', state: 'started' }))
 })
 
+test("a commit out of the session's territory logs no violation line, while one in it does", async ($, on) => {
+  const checkout = parallelCheckout()
+  const options: Options = { ...childUnit, afterTool: () => checkout.graph = withCommit(checkout.graph!, 's1', ['p0'], 'sibling') }
+  const { files, clock } = createWorld(on, checkout, options)
+  await $.tool.call({ tool: 'Bash', command: 'sibling commit' })
+  await clock.settle()
+  expect(readLog(files).filter(line => line.event === 'violation')).toEqual([])
+  options.afterTool = () => checkout.graph = withCommit(checkout.graph!, 'c2', ['c1'], 'child')
+  await $.tool.call({ tool: 'Bash', command: 'own commit' })
+  await clock.settle()
+  expect(readLog(files).filter(line => line.event === 'violation')).toEqual([expect.objectContaining({ action: 'recorded', kind: 'commit' })])
+})
+
 test('a deny whose record write loses every compare-and-set logs no line', async ($, on) => {
   const { files, clock } = createWorld(on, { branch: 'feature' }, { casMisses: 5 })
   const lost = await $.tool.call({ tool: 'Write', file_path: 'src/a.ts', content: '' })
@@ -182,6 +196,54 @@ test('an older observation overtaken by a newer painted one logs no step', async
   await clock.settle()
   const verify = readLog(files).filter(line => line.event === 'step' && line.step === 'verify')
   expect(verify).toEqual([expect.objectContaining({ from: 'pending', to: 'skipped' })])
+})
+
+test('a Verify done → current logs the fact it shows and the slice it was judged on', async ($, on) => {
+  const { files, clock } = createWorld(on, { branch: 'feat', ahead: 8, isDirty: true, tree: 'one' }, { verifyFile })
+  await runFlowCommand($, `approve verify ${configBlob(verifyFile).slice(0, 12)}`)
+  await $.tool.call({ tool: 'mcp__working-agreement__verify' })
+  await clock.settle()
+  for (const path of [...files.keys()].filter(file => file.startsWith(`${common}/working-agreement/ok/`))) files.delete(path)
+  await endTurn($)
+  await clock.settle()
+  const [done, current] = readLog(files).filter(line => line.event === 'step' && line.step === 'verify')
+  expect(done).toMatchObject({ from: 'pending', to: 'done', base: 'c0', tree: expect.any(String) })
+  expect(done?.fact).toBeUndefined()
+  expect(current).toMatchObject({ from: 'done', to: 'current', fact: 'config not approved', base: 'c0', tree: done?.tree, cause: ['turn end'] })
+})
+
+test('steps judged on an unreadable slice log no base and no tree', async ($, on) => {
+  const { files, clock } = createWorld(on, { branch: 'feat' }, { session: noFlow, issueLabels: { 1: ['needs-triage'] }, failing: 'git rev-parse --verify --quiet refs/heads/feat' })
+  await declareFlow($, 'small-feature', [1])
+  await clock.settle()
+  const snapshot = readLog(files).find(line => line.event === 'snapshot')
+  expect(snapshot).toMatchObject({ steps: { grill: 'current' } })
+  expect(snapshot).not.toHaveProperty('base')
+  expect(snapshot).not.toHaveProperty('tree')
+})
+
+test('a step that shows no fact, such as a skipped one, logs no fact', async ($, on) => {
+  const { files, clock } = createWorld(on, { branch: 'feat' }, { session: noFlow, issueLabels: { 1: ['needs-triage'] } })
+  await declareFlow($, 'small-feature', [1])
+  await runFlowCommand($, 'skip verify covered separately')
+  await clock.settle()
+  const skipped = readLog(files).find(line => line.event === 'step' && line.step === 'verify')
+  expect(skipped).toMatchObject({ from: 'pending', to: 'skipped', base: 'c0' })
+  expect(skipped).not.toHaveProperty('fact')
+})
+
+test('a log holding lines from before the fact and slice fields keeps them unchanged and appends after them', async ($, on) => {
+  const { files, clock } = createWorld(on, { branch: 'feat' }, { session: noFlow, issueLabels: { 1: ['needs-triage'] } })
+  await declareFlow($, 'small-feature', [1])
+  await clock.settle()
+  const [path] = [...files.keys()].filter(file => file.startsWith(logs))
+  const old = { at: 0, session: 'old', branch: 'feat', issues: [1], event: 'step', step: 'verify', from: 'done', to: 'current', cause: ['turn end'] }
+  files.set(path!, `${JSON.stringify(old)}\n${files.get(path!)}`)
+  await runFlowCommand($, 'skip verify covered separately')
+  await clock.settle()
+  const lines = readLog(files)
+  expect(lines[0]).toEqual(old)
+  expect(lines.at(-1)).toMatchObject({ event: 'step', step: 'verify', to: 'skipped' })
 })
 
 test('a line past the write cap keeps its event and drops its detail', async ($, on) => {

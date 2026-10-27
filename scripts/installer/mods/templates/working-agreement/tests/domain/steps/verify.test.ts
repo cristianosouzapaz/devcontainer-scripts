@@ -122,8 +122,8 @@ test('passes are bound to tree, base, config and recomputed command set; records
   await $.tool.call({ tool: 'mcp__working-agreement__verify' })
   expect(world.sessions.get('sid')?.units[0]?.verifyRuns).toHaveLength(1)
   checkout.tree = 'two'
-  expect(await readCurrentStep($)).toBe('Verify')
-  expect(await readFlowStatus($)).toContain('not run on this tree')
+  expect(await readCurrentStep($)).toBe('Code')
+  expect(await readFlowStatus($)).toContain('▸ Code · verify not run on this tree')
   checkout.tree = 'one'
   options.verifyFile = JSON.stringify({ verify: ['different'] })
   expect(await readFlowStatus($)).toContain('config not approved')
@@ -132,7 +132,8 @@ test('passes are bound to tree, base, config and recomputed command set; records
 for (const [scenario, run, unit, step] of [
   ['the recomputed command set on its base', {}, {}, 'Commit'],
   ['another command set', { commands: [['partial']] }, {}, 'Verify'],
-  ['another unit base', {}, { base: 'c1' }, 'Verify'],
+  ['another config', { configBlob: 'other' }, {}, 'Verify'],
+  ['another unit base', {}, { base: 'c1' }, 'Code'],
 ] as const) {
   test(`a recorded pass counts only for ${scenario}`, async ($, on) => {
     const pass = { tree: 'one', base: 'c0', configBlob: configBlob(verifyFile), commands: [['./test/run.sh']], outcome: { kind: 'pass' }, runId: 'r', at: 1, ...run }
@@ -152,7 +153,7 @@ test('a Verify on a new tree replaces the previous tree record in the session', 
   expect(world.sessions.get('sid')?.units[0]?.verifyRuns.map(run => run.tree)).toEqual(['two'])
   expect(await readCurrentStep($)).toBe('Commit')
   checkout.tree = 'one'
-  expect(await readCurrentStep($)).toBe('Verify')
+  expect(await readCurrentStep($)).toBe('Code')
 })
 
 for (const [code, signal, fact] of [[7, null, 'failed, exit 7'], [null, 'SIGTERM', 'failed, signal SIGTERM']] as const) {

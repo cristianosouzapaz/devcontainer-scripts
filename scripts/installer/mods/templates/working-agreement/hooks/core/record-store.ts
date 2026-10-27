@@ -1,15 +1,20 @@
-import { readJson } from '../lib/json'
+import { parseJson, readJson, readText } from '../lib/json'
+import { settle, succeed, unwrapOr } from '../lib/result'
+import type { Result } from '../lib/result'
 import { createQueue } from '../lib/queue'
 import { removeFile } from '../lib/files'
-import { executeProcess } from '../lib/process'
-import { createEmptySession, createEmptyUnit, mergeSkills, parseSession, parseUnitRecord, retainRuns } from '../domain/records'
-import type { Identity, Session, SessionRecord, Unit, UnitEntry, UnitRecord } from '../domain/records'
+import { executeProcess, runProcess } from '../lib/process'
+import { createEmptySession, createEmptyUnit, mergeSkills, parseObservedEnd, parseSession, parseUnitRecord, retainRuns } from '../domain/records'
+import type { Identity, ObservedEndRecord, Session, SessionRecord, Unit, UnitEntry, UnitRecord } from '../domain/records'
 import { isAncestor, readGitOutput, runGit, hashObject } from '../lib/git'
 import type { EnginePort } from './engine-port'
 import { sessionMemory, holdError } from './session-memory'
 import type { RunDisplay } from './session-memory'
 
 interface SessionMirror { path: string; session: SessionRecord }
+
+/** Holds where a unit's records live: the common directory and the hash its files are named by. */
+interface IdentityHash { common: string; hash: string }
 
 /** A session with the version of the authoritative value it was read from. */
 export interface VersionedSession { session: Session; version: number }
@@ -113,8 +118,9 @@ export async function atomicReplace(port: EnginePort, path: string, text: string
 }
 
 /**
- * Seeds authoritative state from this chat's mirror only at startup.
+ * Seeds authoritative state from this chat's mirror while it is unseeded.
  * @param port - The engine calls.
+ * @throws When the mirror cannot be read: an empty seed would overwrite the record it holds.
  */
 export async function initializeSession(port: EnginePort): Promise<void> {
   const held = await port.readSessionState()
@@ -134,6 +140,17 @@ export async function initializeSession(port: EnginePort): Promise<void> {
  * @returns The unit's file in that bucket.
  */
 async function unitPath(port: EnginePort, identity: Identity, bucket = 'u', extension = 'json'): Promise<string> {
+  const { common, hash } = await readIdentityHash(port, identity)
+  return recordsPath(common, bucket, `${hash}.${extension}`)
+}
+
+/**
+ * Hashes the canonical identity using the repository's object format, once per session, common dir and identity.
+ * @param port - The engine calls.
+ * @param identity - The branch and sorted issue set.
+ * @returns The common directory and the identity's hash.
+ */
+async function readIdentityHash(port: EnginePort, identity: Identity): Promise<IdentityHash> {
   const common = await readCommonDir(port)
   if (!common) throw new Error('check out a branch first')
   const text = canonical(identity)
@@ -141,12 +158,74 @@ async function unitPath(port: EnginePort, identity: Identity, bucket = 'u', exte
   const memo = identityHashes.get(port.readCwd) ?? new Map<string, string>()
   identityHashes.set(port.readCwd, memo)
   const cached = memo.get(key)
-  if (cached !== undefined) return recordsPath(common, bucket, `${cached}.${extension}`)
+  if (cached !== undefined) return { common, hash: cached }
   const run = await hashObject(port.processes, text)
   if (run.exitCode !== 0 || !run.stdout.trim()) throw new Error(run.stderr || 'cannot hash unit identity')
   const hash = run.stdout.trim()
   memo.set(key, hash)
-  return recordsPath(common, bucket, `${hash}.${extension}`)
+  return { common, hash }
+}
+
+/**
+ * Names the directory of a unit's observed slice ends, which shares its declaration's hash and holds one file per writing session.
+ * @param port - The engine calls.
+ * @param identity - The unit identity.
+ * @returns The directory path.
+ */
+async function observedEndDirectory(port: EnginePort, identity: Identity): Promise<string> {
+  const { common, hash } = await readIdentityHash(port, identity)
+  return recordsPath(common, 'end', hash)
+}
+
+/**
+ * Reads every session's observed slice end of a unit; a JSON file that is no valid observation counts as absent.
+ * @param port - The engine calls.
+ * @param identity - The unit identity.
+ * @returns The records, or the failure of a listing or file read that must not read as no observation.
+ */
+export async function readObservedEnds(port: EnginePort, identity: Identity): Promise<Result<ObservedEndRecord[]>> {
+  const directory = await observedEndDirectory(port, identity)
+  const names = await settle(listRecordNames(port, directory))
+  if (!names.isOk) return names
+  const records = await settle(Promise.all(names.value.filter(name => name.endsWith('.json'))
+    .map(async name => parseObservedEnd(await readJson(port.files, `${directory}/${name}`)))))
+  if (!records.isOk) return records
+  return succeed(records.value.filter((record): record is ObservedEndRecord => record !== null && sameIdentity(record.identity, identity)))
+}
+
+/**
+ * Replaces this session's own observed slice end of a unit; no other session writes that file.
+ * @param port - The engine calls.
+ * @param record - The observation.
+ */
+export async function writeObservedEnd(port: EnginePort, record: ObservedEndRecord): Promise<void> {
+  await atomicReplace(port, await observedEndPath(port, record.identity), JSON.stringify(record))
+}
+
+/**
+ * Names this session's observed slice end file of a unit.
+ * @param port - The engine calls.
+ * @param identity - The unit identity.
+ * @returns The file path.
+ */
+export async function observedEndPath(port: EnginePort, identity: Identity): Promise<string> {
+  return `${await observedEndDirectory(port, identity)}/${await port.readSessionId()}.json`
+}
+
+/**
+ * Removes a unit's observed slice ends and then their directory, leaving a temporary file of a write in flight, and the directory holding it, in place.
+ * @param port - The engine calls.
+ * @param directory - The unit's observed end directory.
+ * @throws When the directory cannot be listed or a record cannot be removed.
+ */
+export async function deleteObservedEnds(port: EnginePort, directory: string): Promise<void> {
+  const records = (await listRecordNames(port, directory)).filter(name => name.endsWith('.json'))
+  if (records.length) {
+    const removed = await removeFile(port.processes, ...records.map(name => `${directory}/${name}`))
+    if (!removed.isOk) throw removed.cause
+  }
+  // why: rmdir refuses a directory that still holds a temporary file, which may belong to a live session with no session file yet.
+  await runProcess(port.processes, ['rmdir', '--', directory])
 }
 
 /**
@@ -183,7 +262,10 @@ export async function readSession(port: EnginePort): Promise<Session> {
  * @returns The session with its current flow and issue set, and the version it was read at.
  */
 export async function readVersionedSession(port: EnginePort): Promise<VersionedSession> {
-  const held = await port.readSessionState()
+  // why: A seed that failed at startup is retried by every read until it lands, never replaced by an empty record.
+  const first = await port.readSessionState()
+  if (first.value === undefined) await initializeSession(port)
+  const held = first.value === undefined ? await port.readSessionState() : first
   const saved = held.value ?? stripSession(createEmptySession(await port.readSessionId()))
   const declaration = saved.unit ? parseUnitRecord(await readJson(port.files, await unitPath(port, saved.unit))) : null
   const flow = declaration && saved.unit && sameIdentity(declaration.identity, saved.unit) ? declaration.flow : null
@@ -281,10 +363,12 @@ async function mergeUnits(port: EnginePort, units: UnitEntry[]): Promise<Unit> {
 }
 
 /**
- * Reads every valid mirror plus this chat's authoritative record for a pruning snapshot.
+ * Reads every valid mirror plus this chat's authoritative record for a pruning snapshot; another session's mirror that is
+ * not JSON, or no valid record, is skipped.
  * @param port - The engine calls.
  * @param strict - Whether a failed listing aborts a file-pruning snapshot.
  * @returns Whole session records with their owned paths.
+ * @throws When another session's mirror cannot be read: skipping it would drop the units it holds.
  */
 export async function readSessionMirrors(port: EnginePort, strict = false): Promise<SessionMirror[]> {
   const session = await readSession(port)
@@ -293,7 +377,11 @@ export async function readSessionMirrors(port: EnginePort, strict = false): Prom
   // The directory may not exist yet when the read is non-strict.
   const entries = await port.files.list(directory).catch(error => { if (strict) throw error; return [] })
   const others = await Promise.all(entries.map(entry => entry.name).filter(name => name.endsWith('.json') && name !== `${session.sessionId}.json`)
-    .sort().map(async name => ({ path: recordsPath(common, 's', name), session: parseSession(await readJson(port.files, recordsPath(common, 's', name))) })))
+    .sort().map(async name => {
+      const path = recordsPath(common, 's', name)
+      const text = await readText(port.files, path)
+      return { path, session: parseSession(text === undefined ? undefined : unwrapOr(parseJson(text), undefined)) }
+    }))
   return [{ path: recordsPath(common, 's', `${session.sessionId}.json`), session }, ...others.flatMap(other => other.session ? [{ path: other.path, session: other.session }] : [])]
 }
 
@@ -305,6 +393,61 @@ export async function readSessionMirrors(port: EnginePort, strict = false): Prom
  */
 export async function readDeclaration(port: EnginePort, identity: Identity): Promise<UnitRecord | null> {
   return parseUnitRecord(await readJson(port.files, await unitPath(port, identity)))
+}
+
+/**
+ * Reads every declaration on disk, including those no session entry names any more.
+ * @param port - The engine calls.
+ * @returns Every declaration, or none when no declaration was ever written.
+ * @throws When the declarations cannot be listed, or a listed one cannot be read or parsed: a pruning sweep must not
+ * judge a unit without its declaration.
+ */
+export async function readDeclarations(port: EnginePort): Promise<UnitRecord[]> {
+  const common = await readCommonDir(port)
+  const names = await listRecordNames(port, recordsPath(common, 'u'))
+  return Promise.all(names.filter(name => /^[0-9a-f]+\.json$/.test(name)).map(async name => {
+    const record = parseUnitRecord(await readJson(port.files, recordsPath(common, 'u', name)).catch(() => null))
+    if (!record) throw new Error(`unreadable declaration ${name}`)
+    return record
+  }))
+}
+
+/**
+ * Lists a record bucket, reading a bucket no record was ever written to as empty.
+ * @param port - The engine calls.
+ * @param directory - The bucket.
+ * @returns The names in the bucket.
+ * @throws When an existing bucket cannot be listed: a failed listing must not read as no records.
+ */
+async function listRecordNames(port: EnginePort, directory: string): Promise<string[]> {
+  const entries = await port.files.list(directory).catch(async (error: unknown) => {
+    // The bucket is created by its first record.
+    if (await port.files.stat(directory).then(() => true, () => false)) throw error
+    return []
+  })
+  return entries.map(entry => entry.name)
+}
+
+/**
+ * Reads the unit entries of every chat that belong to active declarations, refusing to read any record as absent.
+ * @param port - The engine calls.
+ * @returns The active entries.
+ * @throws When a bucket cannot be listed, or a listed mirror or declaration cannot be read or parsed.
+ */
+async function readEntriesStrictly(port: EnginePort): Promise<UnitEntry[]> {
+  const session = await readSession(port)
+  const common = await readCommonDir(port)
+  const names = (await listRecordNames(port, recordsPath(common, 's'))).filter(name => name.endsWith('.json') && name !== `${session.sessionId}.json`)
+  const others = await Promise.all(names.map(async name => {
+    const mirror = parseSession(await readJson(port.files, recordsPath(common, 's', name)).catch(() => null))
+    if (!mirror) throw new Error(`unreadable session mirror ${name}`)
+    return mirror
+  }))
+  const declarations = await readDeclarations(port)
+  return [session, ...others].flatMap(record => record.units).filter(entry => {
+    const declaration = declarations.find(record => sameIdentity(record.identity, entry.identity))
+    return declaration ? declaration.generation === entry.generation : entry.generation === undefined
+  })
 }
 
 /**
@@ -348,7 +491,47 @@ export async function deleteDeclaration(port: EnginePort, identity: Identity): P
  * @returns The identities with their merged evidence.
  */
 export async function readBranchUnits(port: EnginePort, branch: string): Promise<UnitEntry[]> {
-  const entries = (await readEntries(port)).filter(entry => entry.identity.branch === branch)
+  return mergeEntries(port, (await readEntries(port)).filter(entry => entry.identity.branch === branch))
+}
+
+/**
+ * Reads each distinct unit on a branch across all chats, failing instead of dropping a record it cannot read.
+ * @param port - The engine calls.
+ * @param branch - The units' branch.
+ * @returns The identities with their merged evidence, or the failure of a record read: a record read as absent would drop a unit.
+ */
+export async function readBranchUnitsStrictly(port: EnginePort, branch: string): Promise<Result<UnitEntry[]>> {
+  const read: Result<UnitEntry[]> = await settle(readEntriesStrictly(port))
+  return read.isOk ? succeed(await mergeEntries(port, read.value.filter(entry => entry.identity.branch === branch))) : read
+}
+
+/**
+ * Reads each distinct unit across all chats whose merged evidence caches the given branch as its base branch, except
+ * a Close out, which is never a child unit.
+ * @param port - The engine calls.
+ * @param baseBranch - The branch the units were cut from.
+ * @returns The identities with their merged evidence, or the failure of a record read: a record read as absent would drop a unit.
+ */
+export async function readBaseBranchUnits(port: EnginePort, baseBranch: string): Promise<Result<UnitEntry[]>> {
+  const read: Result<UnitEntry[]> = await settle(readEntriesStrictly(port))
+  if (!read.isOk) return read
+  const entries = read.value
+  // why: A unit's base branch is decided across all its entries, so an entry naming another base can still be the one that counts.
+  const named = entries.filter(entry => entry.baseBranch === baseBranch)
+  const units = await mergeEntries(port, entries.filter(entry => named.some(other => sameIdentity(entry.identity, other.identity))))
+  const declarations = await settle(readDeclarations(port))
+  if (!declarations.isOk) return declarations
+  const isCloseOut = (unit: UnitEntry): boolean => declarations.value.some(record => sameIdentity(record.identity, unit.identity) && record.flow === 'close-out')
+  return succeed(units.filter(unit => unit.baseBranch === baseBranch && !isCloseOut(unit)))
+}
+
+/**
+ * Merges entries into one unit per distinct identity.
+ * @param port - The engine calls.
+ * @param entries - The active entries.
+ * @returns The identities with their merged evidence, in first-seen order.
+ */
+async function mergeEntries(port: EnginePort, entries: UnitEntry[]): Promise<UnitEntry[]> {
   return Promise.all(entries.filter((entry, index) => entries.findIndex(other => sameIdentity(entry.identity, other.identity)) === index)
     .map(async entry => ({ ...await mergeUnits(port, entries.filter(other => sameIdentity(entry.identity, other.identity))), identity: entry.identity })))
 }

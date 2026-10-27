@@ -2,7 +2,7 @@ import type { IssueComment, PrFields, SubIssueInfo } from '../../types'
 import { filterRecords, parseJson, toStringOrEmpty } from './json'
 import { isNonEmptyString, isRecord } from './guards'
 import { parseClosingIssues } from './closing-keywords'
-import { isPrFields, isActiveRule, isCheckRun, isClosingPullRequest, isComparison, isCompleteConnection, isCrossReference, isPullRequestCandidate, isReferencingPullRequest, isRequiredCheckRule, isRuleset, isStatus } from './github-rows'
+import { isPrFields, isActiveRule, isCheckRun, isClosingPullRequest, isComparison, isCompleteConnection, isCrossReference, isPullRequestCandidate, isReferencingPullRequest, isRequiredCheckRule, isRuleset, isStatus, isWorkflowRun } from './github-rows'
 import type { PullRequestRow } from './github-rows'
 import { hasExitedZero, runProcess } from './process'
 import type { ProcessPort } from './process'
@@ -198,10 +198,11 @@ export async function compareCommits(processes: ProcessPort, from: string, to: s
 }
 
 /**
- * Reads the latest check runs and every commit status, without the misleading combined state for zero statuses.
+ * Reads the latest check runs and every commit status, without the misleading combined state for zero statuses; with
+ * neither, reads the GitHub Actions workflow runs instead and reports each one not yet completed as pending.
  * @param processes - The process runner.
  * @param sha - The slice end SHA.
- * @returns Named check states, or a failure when either endpoint is unreadable.
+ * @returns Named check states, or a failure when any endpoint read is unreadable.
  */
 export async function readCommitChecks(processes: ProcessPort, sha: string): Promise<Result<CommitCheck[]>> {
   const checks = await readRows(processes, ['gh', 'api', '--paginate', `repos/{owner}/{repo}/commits/${sha}/check-runs`, '--jq', '.check_runs[] | {name, status, conclusion}'])
@@ -210,6 +211,14 @@ export async function readCommitChecks(processes: ProcessPort, sha: string): Pro
   if (!statuses.isOk) return statuses
   if (!checks.value.every(isCheckRun)) return fail('unreadable gh output')
   if (!statuses.value.every(isStatus)) return fail('unreadable gh output')
+  // why: GitHub Actions creates a workflow run on the push or PR event, before its first check run, so zero checks
+  // with a run not yet completed is CI starting, not a repository without CI.
+  if (!checks.value.length && !statuses.value.length) {
+    const runs = await readRows(processes, ['gh', 'api', '--paginate', `repos/{owner}/{repo}/actions/runs?head_sha=${sha}`, '--jq', '.workflow_runs[] | {name, path, status}'])
+    if (!runs.isOk) return runs
+    if (!runs.value.every(isWorkflowRun)) return fail('unreadable gh output')
+    return succeed(runs.value.filter(row => row.status !== 'completed').map((row): CommitCheck => ({ name: row.name ?? row.path, state: 'pending' })))
+  }
   return succeed([
     ...checks.value.map((row): CommitCheck => ({ name: row.name, state: row.status !== 'completed' ? 'pending'
       : row.conclusion !== null && ['success', 'neutral', 'skipped'].includes(row.conclusion) ? 'passing' : 'failing' })),

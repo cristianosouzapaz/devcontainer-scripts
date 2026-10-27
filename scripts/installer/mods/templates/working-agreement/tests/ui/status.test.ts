@@ -1,12 +1,21 @@
 import type { PromptOrigin } from 'claude-code'
 import { expect } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import { test } from '../support/kit'
 import { buildPullRequest, noFlow, pushedCloseOut, verifyFile } from '../support/builders'
 import { runFlowCommand } from '../support/helpers'
+import { childUnit, parallelCheckout, withCommit } from '../support/parallel-worktrees'
 import { common, configBlob, createWorld, root } from '../support/world'
 import type { Gate, Options } from '../support/world'
 
 const timestamp = /\d{4}-\d{2}-\d{2} \d{2}:\d{2} [+-]\d{2}:\d{2}/
+
+/**
+ * Reads the status rows that report a violation.
+ * @param $ - The engine.
+ * @returns The Violation rows.
+ */
+const readViolationRows = async ($: Engine): Promise<string[]> => ((await runFlowCommand($, 'status')).text ?? '').split('\n').filter(row => row.startsWith('Violation'))
 
 test('status prints every group with the declared unit facts and reads status endpoints once', async ($, on) => {
   const world = createWorld(on, { branch: 'feat', ahead: 1 }, { approvedConfig: verifyFile,
@@ -266,3 +275,28 @@ for (const finished of [true, false]) {
     expect(text).not.toContain(finished ? 'Continue in new session:' : 'Start new session:')
   })
 }
+
+test("an out-of-territory commit adds no pane note or status row", async ($, on) => {
+  const checkout = parallelCheckout()
+  const { views } = createWorld(on, checkout, { ...childUnit, afterTool: () => checkout.graph = withCommit(checkout.graph!, 's1', ['p0'], 'sibling') })
+  await $.tool.call({ tool: 'Bash', command: 'sibling commit' })
+  expect(views.at(-1)?.violations ?? []).toEqual([])
+  expect(await readViolationRows($)).toEqual([])
+})
+
+test('a commit only an unreadable slice could place shows the unchecked note with its count and an unchecked status row', async ($, on) => {
+  const checkout = parallelCheckout()
+  checkout.graph!.commits.m0x = { parents: [], files: {} }
+  // The rewritten base leaves the slice unreadable, and only the slice could place a merge into the held parent.
+  const { views } = createWorld(on, checkout, { unit: { base: 'm0x', baseBranch: 'parent' }, afterTool: () => checkout.graph = withCommit(checkout.graph!, 'pm', ['p0', 'c1'], 'parent') })
+  for (const command of ['first merge', 'second merge']) {
+    expect((await $.tool.call({ tool: 'Bash', command })).context ?? []).toEqual([])
+    checkout.graph!.refs.parent = 'p0'
+  }
+  expect(views.at(-1)?.violations?.map(({ tone, text }) => ({ tone, text: text.replace(/latest .*/, 'latest') }))).toEqual([
+    { tone: 'warn', text: 'unchecked: guarantee snapshots unavailable for 2 calls, latest' },
+  ])
+  const rows = await readViolationRows($)
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatch(/ · unchecked$/)
+})

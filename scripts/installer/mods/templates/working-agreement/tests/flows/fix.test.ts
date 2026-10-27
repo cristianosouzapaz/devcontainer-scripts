@@ -30,7 +30,7 @@ test('a Fix unit runs from Triage to a merged PR', async ($, on) => {
   const graph = linearGraph({ feat: 0 }, verifyFile, 1)
   graph.commits.c1!.files['test/a.test.ts'] = 'green'
   const git: Checkout = { branch: 'feat', graph }
-  const options: Options = { session: noFlow, verifyFile, issueLabels: { 1: ['needs-triage'] } }
+  const options: Options = { session: noFlow, verifyFile, approvedConfig: verifyFile, issueLabels: { 1: ['needs-triage'] } }
   const { clock, views } = createWorld(on, git, options)
   expect((await declareFlow($, 'fix', [1])).result).toContain('current step: Triage')
   await startSkill($, 'triage')
@@ -50,6 +50,7 @@ test('a Fix unit runs from Triage to a merged PR', async ($, on) => {
   git.dirty = { 'test/a.test.ts': 'green', 'src/a.ts': 'tree' }
   options.spawnCode = 0
   expect((await $.tool.call({ tool: 'mcp__working-agreement__run', argv: ['./check'] })).result).toContain('green after red: the approved fix passes; call the verify tool')
-  expect(readPaneCurrentStep(views)).toBe('Verify')
+  expect(readPaneCurrentStep(views)).toBe('Code')
+  expect(await readFlowStatus($)).toContain('▸ Code · verify not run on this tree')
   await completeDelivery($, { git, options, clock, views })
 })

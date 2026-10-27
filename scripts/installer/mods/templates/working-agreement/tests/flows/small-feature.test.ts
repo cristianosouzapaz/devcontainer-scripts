@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
-import { buildPullRequest, noFlow, verifyFile } from '../support/builders'
+import { buildParentGraph, buildPullRequest, noFlow, verifyFile } from '../support/builders'
 import { declareFlow, readCurrentStep, readFlowStatus, runFlowCommand, startSkill } from '../support/helpers'
 import { completeDelivery } from '../support/delivery'
 import { configBlob, createWorld, linearGraph } from '../support/world'
@@ -19,7 +19,7 @@ test('a Small feature keeps Grill current until GitHub marks its issue ready', a
   expect(await readCurrentStep($)).toBe('Grill')
 })
 
-test('new work after a green PR shows the PR step pending until Verify, Commit and PR are reached again', async ($, on) => {
+test('new work after a green PR shows the PR step pending until Code, Verify, Commit and PR are reached again', async ($, on) => {
   const graph = linearGraph({ feat: 0 }, verifyFile, 1)
   const git: Checkout = { branch: 'feat', graph, isDirty: true, changed: ['src/a.ts'], tree: 'tree' }
   const options: Options = { session: noFlow, verifyFile, issueLabels: { 1: ['ready-for-agent'] } }
@@ -32,9 +32,9 @@ test('new work after a green PR shows the PR step pending until Verify, Commit a
   await clock.advance(61000)
   expect(await readCurrentStep($)).toBeUndefined()
   Object.assign(git, { isDirty: true, changed: ['src/b.ts'], tree: 'tree2' })
-  expect(await readCurrentStep($)).toBe('Verify')
+  expect(await readCurrentStep($)).toBe('Code')
   const status = await readFlowStatus($)
-  expect(status).toContain('Small feature  4/7')
+  expect(status).toContain('Small feature  3/7')
   expect(status).toContain('○ PR #5')
   expect(status).not.toContain('✓ PR #5')
   const reply = (await declareFlow($, 'small-feature', [1])).result
@@ -45,7 +45,7 @@ test('new work after a green PR shows the PR step pending until Verify, Commit a
 test('a Small feature unit runs from Grill to a merged PR', async ($, on) => {
   const graph = linearGraph({ feat: 0 }, verifyFile, 1)
   const git: Checkout = { branch: 'feat', graph }
-  const options: Options = { session: noFlow, verifyFile, issueLabels: { 1: ['needs-triage'] } }
+  const options: Options = { session: noFlow, verifyFile, approvedConfig: verifyFile, issueLabels: { 1: ['needs-triage'] } }
   const { clock, views } = createWorld(on, git, options)
   expect((await declareFlow($, 'small-feature', [1])).result).toContain('current step: Grill')
   await startSkill($, 'grilling')
@@ -60,6 +60,30 @@ test('a Small feature unit runs from Grill to a merged PR', async ($, on) => {
   git.isDirty = true
   git.changed = ['src/a.ts']
   git.tree = 'tree'
-  expect(await readCurrentStep($)).toBe('Verify')
+  expect(await readCurrentStep($)).toBe('Code')
+  expect(await readFlowStatus($)).toContain('▸ Code · verify not run on this tree')
   await completeDelivery($, { git, options, clock, views })
+})
+
+test('a child Small feature cut from a parent branch runs from Grill to integrated, with Integrate in place of PR', async ($, on) => {
+  const graph = buildParentGraph()
+  const git: Checkout = { branch: 'a', graph, worktrees: { '/repo': { branch: 'a' }, '/par': { branch: 'par' } } }
+  const options: Options = { session: noFlow, issueLabels: { 1: ['needs-triage'] } }
+  const { clock } = createWorld(on, git, options)
+  const reply = (await declareFlow($, 'small-feature', [1])).result
+  expect(reply).toContain('base from par (branch reflog)')
+  expect(reply).toContain('○ Integrate (the user\'s step: stop and ask them to run git -C /par merge --no-ff a to merge this unit into par (never merge yourself))')
+  expect(reply).not.toContain('○ PR')
+  await startSkill($, 'grilling')
+  await startSkill($, 'to-spec')
+  options.issueLabels = { 1: ['ready-for-agent'] }
+  await clock.advance(61000)
+  await runFlowCommand($, 'skip verify covered by the parent\'s Close out')
+  expect(await readCurrentStep($)).toBe('Integrate')
+  expect(await readFlowStatus($)).toContain('▸ Integrate · not merged into par')
+  git.graph = { ...graph, refs: { ...graph.refs, par: 'ma' } }
+  expect(await readCurrentStep($)).toBeUndefined()
+  const integrated = await readFlowStatus($)
+  expect(integrated).toContain("✓ Integrate · awaiting par's PR")
+  expect(integrated).toContain('Start new session: /clear')
 })

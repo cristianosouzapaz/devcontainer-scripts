@@ -15,6 +15,12 @@ export interface Worktree { root: string; head: string; branch: string }
 /** The refs tried, in order, for the default branch. */
 const baseCandidates = ['origin/HEAD', 'origin/main', 'origin/master', 'main', 'master']
 
+/** The tree git writes from an empty index, by repository object format. */
+const emptyTrees = new Map([
+  ['sha1', '4b825dc642cb6eb9a060e54bf8d69288fbee4904'],
+  ['sha256', '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321'],
+])
+
 /**
  * Prevents read-only git probes from taking optional repository locks.
  * @param args - The git subcommand and arguments.
@@ -91,14 +97,30 @@ export async function isAncestor(processes: ProcessPort, base: string, tip: stri
 }
 
 /**
+ * Finds commits newly reachable beyond a previous reachability boundary.
+ * @param processes - The process runner.
+ * @param tips - The tips whose reachable commits are inspected.
+ * @param excluded - The tips whose reachable commits are excluded.
+ * @param minAge - The latest included committer date, in epoch seconds; omitted for all dates.
+ * @returns The sorted new commit SHAs, rejecting unreadable reachability.
+ */
+export async function listNewCommits(processes: ProcessPort, tips: string[], excluded: string[], minAge?: number): Promise<string[]> {
+  if (!tips.length) return []
+  const output = await readGitOutput(processes, ['rev-list', ...(minAge === undefined ? [] : [`--min-age=${minAge}`]), ...new Set(tips), '--not', ...new Set(excluded)])
+  if (output === null) throw new Error('commit reachability unreadable')
+  return output.split('\n').filter(Boolean).sort()
+}
+
+/**
  * Stages tracked and untracked content in a temporary index, copying the existing index when present and excluding ignored files.
  * @param processes - The process runner.
  * @param root - The worktree holding the branch.
  * @param temporary - The unique temporary index path under the common metadata directory.
- * @returns The content tree, or null if any command fails.
+ * @returns The content tree, or null if any command fails or the temporary index vanished during the capture.
  */
 export async function readContentTree(processes: ProcessPort, root: string, temporary: string): Promise<string | null> {
-  const index = await readGitOutput(processes, ['-C', root, 'rev-parse', '--path-format=absolute', '--git-path', 'index'])
+  const paths = await readGitOutput(processes, ['-C', root, 'rev-parse', '--path-format=absolute', '--git-path', 'index', '--show-object-format'])
+  const [index, format] = paths?.split('\n') ?? []
   if (!index) return null
   try {
     const directory = temporary.slice(0, temporary.lastIndexOf('/'))
@@ -109,7 +131,14 @@ export async function readContentTree(processes: ProcessPort, root: string, temp
     const added = hasExitedZero(await runProcess(processes, [...command, 'add', '-A']))
     if (!added.isOk) return null
     const tree = hasExitedZero(await runProcess(processes, [...command, 'write-tree']))
-    return tree.isOk ? tree.value.stdout.trim() : null
+    const content = tree.isOk ? tree.value.stdout.trim() : null
+    if (content !== emptyTrees.get(format ?? '')) return content
+    // why: git reads an index deleted under it as empty and recreates it, so the empty tree of a worktree holding files is the only trace of that deletion.
+    const listed = await readGitOutput(processes, ['-C', root, 'ls-files', '-z', '-t', '--cached', '--deleted', '--others', '--exclude-standard'])
+    if (listed === null) return null
+    // --deleted lists each tracked file missing from the worktree a second time, so files are present only when entries outnumber twice the deletions.
+    const entries = listed.split('\0').filter(Boolean)
+    return entries.length > 2 * entries.filter(entry => entry.startsWith('R ')).length ? null : content
   } finally {
     await removeFile(processes, temporary, `${temporary}.lock`)
   }
@@ -142,6 +171,27 @@ export async function readWorktrees(processes: ProcessPort): Promise<Worktree[] 
 }
 
 /**
+ * Reads the names of every local branch, so a missing branch is told apart from a failed read.
+ * @param processes - The engine's process runner.
+ * @returns The local branch names, or null when git cannot list the refs.
+ */
+export async function readLocalBranches(processes: ProcessPort): Promise<Set<string> | null> {
+  const tips = await readLocalBranchTips(processes)
+  return tips && new Set(tips.keys())
+}
+
+/**
+ * Reads every local branch with its tip, as the refs stand now.
+ * @param processes - The engine's process runner.
+ * @returns The tip of each local branch by name, or null when git cannot list the refs.
+ */
+export async function readLocalBranchTips(processes: ProcessPort): Promise<Map<string, string> | null> {
+  const text = await readGitOutput(processes, ['for-each-ref', '--format=%(refname) %(objectname)'])
+  return text === null ? null : new Map(text.split('\n').flatMap(line => line.startsWith('refs/heads/')
+    ? [[line.slice('refs/heads/'.length, line.lastIndexOf(' ')), line.slice(line.lastIndexOf(' ') + 1)] as const] : []))
+}
+
+/**
  * Selects the remote default ref when it resolves, otherwise its local ref.
  * @param processes - The engine's process runner.
  * @param base - The default branch name.
@@ -149,6 +199,53 @@ export async function readWorktrees(processes: ProcessPort): Promise<Worktree[] 
  */
 export async function readDefaultRef(processes: ProcessPort, base: string): Promise<string> {
   return await readGitOutput(processes, ['rev-parse', '--verify', '--quiet', `origin/${base}`]) ? `origin/${base}` : `refs/heads/${base}`
+}
+
+/**
+ * Reads the branch a branch was cut from, as the oldest entry of its reflog names it.
+ * @param processes - The engine's process runner.
+ * @param branch - The branch whose reflog is read.
+ * @param defaultBranch - The default branch, which is never a parent branch.
+ * @returns The parent branch, or null when the reflog is absent or expired, or names HEAD, a revision, the branch itself,
+ *   the default branch or no existing local branch.
+ */
+export async function readParentBranch(processes: ProcessPort, branch: string, defaultBranch: string): Promise<string | null> {
+  const reflog = await readGitOutput(processes, ['log', '--walk-reflogs', '--format=%gs', `refs/heads/${branch}`, '--'])
+  const name = reflog?.split('\n').at(-1)?.match(/^branch: Created from (.+)$/)?.[1]
+  if (!name || name === branch || name === defaultBranch) return null
+  // why: show-ref names only an exact ref, so a revision start point such as par~1 never passes for a branch.
+  return await readGitOutput(processes, ['show-ref', '--verify', '--quiet', `refs/heads/${name}`]) === null ? null : name
+}
+
+/**
+ * Reads a tip's fork point on a branch: the newest commit of the branch's first-parent chain that the tip reaches.
+ * The local branch and its origin copy are both read and the newer fork point wins, so a stale copy of either never
+ * pulls the base back; when the two have diverged, the local one wins.
+ * @param processes - The engine's process runner.
+ * @param branch - The base branch's name.
+ * @param tip - The commit whose history is searched.
+ * @returns The fork point, or null when neither copy of the branch exists or shares history with the tip.
+ */
+export async function readForkPoint(processes: ProcessPort, branch: string, tip: string): Promise<string | null> {
+  const [local, remote] = await Promise.all([`refs/heads/${branch}`, `refs/remotes/origin/${branch}`].map(ref => readFirstParentFork(processes, ref, tip)))
+  if (!local || !remote) return local ?? remote ?? null
+  return local !== remote && await isAncestor(processes, local, remote) ? remote : local
+}
+
+/**
+ * Walks a ref's first-parent chain down to the first commit the tip reaches.
+ * @param processes - The engine's process runner.
+ * @param ref - The full ref name.
+ * @param tip - The commit whose history ends the walk.
+ * @returns The first reached commit, or null when the ref does not exist or its chain never meets the tip's history.
+ */
+async function readFirstParentFork(processes: ProcessPort, ref: string, tip: string): Promise<string | null> {
+  const head = await readGitOutput(processes, ['rev-parse', '--verify', '--quiet', ref])
+  if (!head) return null
+  // why: The walk lists the chain commits the tip does not reach, newest first; the last one's first parent is the fork point.
+  const walk = await readGitOutput(processes, ['rev-list', '--first-parent', '--parents', head, '--not', tip])
+  if (walk === null) return null
+  return walk ? walk.split('\n').at(-1)?.split(' ')[1] ?? null : head
 }
 
 /**

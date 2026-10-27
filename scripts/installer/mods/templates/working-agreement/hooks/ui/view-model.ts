@@ -1,5 +1,6 @@
 import type { FlowRow, FlowView } from '../../types'
 import type { GithubStatus, Session } from '../domain/records'
+import { isDeliveryStep } from '../domain/flow-definitions'
 import { formatStepLabel, isUnitFinished, listDeclaredLabels, projectDisplayStates } from '../domain/step-states'
 import type { DiagnoseNeed, Position } from '../domain/step-states'
 import { stepSymbol } from './theme'
@@ -48,6 +49,7 @@ export function buildView(session: Session, position: Position, github: GithubSt
   const notes: FlowRow[] = []
   if (session.unit || position.git) {
     const suffix = position.slice?.isRewritten ? { text: 'rewritten', tone: 'error' as const }
+      : position.integration?.state === 'unknown-end' || position.integration?.state === 'deleted-unmerged' ? { text: 'deleted', tone: 'warn' as const }
       : position.slice?.isFrozen ? { text: 'frozen', tone: 'inactive' as const } : undefined
     meta.push({ key: 'Branch', value: session.unit?.branch ?? position.git?.branch ?? '', tone: 'text', ...(suffix ? { suffix } : {}) })
   }
@@ -60,6 +62,8 @@ export function buildView(session: Session, position: Position, github: GithubSt
   if (edits) {
     notes.push({ key: 'Blocked', value: pluralize(edits, 'edit'), tone: 'error' })
   }
+  const merge = position.current?.step.observe === 'integrated' && position.integration?.state === 'pending' ? position.integration.command : undefined
+  if (merge) notes.push({ key: 'Merge', value: merge, tone: 'text' })
   notes.push(...handoffNotes(session))
   const isFinished = !position.slice?.isRewritten && isUnitFinished(position)
   const states = projectDisplayStates(position.states)
@@ -77,8 +81,8 @@ export function buildView(session: Session, position: Position, github: GithubSt
     meta,
     labels: [...new Set(listDeclaredLabels(session))],
     steps: states.map(entry => {
-      const isMerged = position.isConcluded && entry.step.observe === 'pr.created' && !!position.pullRequest
-      const isError = !position.slice?.isRewritten && entry.isError && entry.state === 'current' && (entry.step.observe === 'verify.passed' || entry.step.observe === 'pr.created')
+      const isMerged = position.isConcluded && isDeliveryStep(entry.step) && !!position.pullRequest
+      const isError = !position.slice?.isRewritten && entry.isError && entry.state === 'current' && (entry.step.observe === 'verify.passed' || isDeliveryStep(entry.step))
       const diagnoseFact = describeDiagnoseFact(entry.need, entry.fact)
       return {
         id: entry.step.id,
@@ -87,9 +91,12 @@ export function buildView(session: Session, position: Position, github: GithubSt
         state: entry.state,
         isError,
         isMerged,
-        detail: position.slice?.isRewritten ? undefined : isMerged ? 'merged'
+        // The PR step's label already names its PR; Integrate's fact names the parent's.
+        detail: position.slice?.isRewritten ? undefined : isMerged ? (entry.step.observe === 'integrated' ? entry.fact : 'merged')
           : entry.state === 'skipped' ? entry.reason || 'optional'
-          : entry.state === 'current' ? diagnoseFact : undefined,
+          : entry.state === 'current' ? diagnoseFact
+          // An integrated child's Integrate names where its delivery stands, because the unit is finished and shows no current step.
+          : entry.state === 'done' && entry.step.observe === 'integrated' ? entry.fact : undefined,
       }
     }),
     notes,

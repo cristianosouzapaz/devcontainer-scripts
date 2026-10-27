@@ -21,7 +21,8 @@ export async function readDismissals(port: EnginePort): Promise<Set<string>> {
   // The bucket directory may not exist yet.
   const entries = common ? await port.files.list(directory).catch(() => []) : []
   const facts = await Promise.all(entries.filter(entry => entry.name.endsWith('.json')).map(async entry => {
-    const value: unknown = await readJson(port.files, recordsPath(common, 'd', entry.name))
+    // why: A dismissal that cannot be read shows its violation open, the safe direction: it never hides a violation.
+    const value: unknown = await readJson(port.files, recordsPath(common, 'd', entry.name)).catch(() => undefined)
     return isRecord(value) && value.v === 1 && typeof value.factId === 'string' && entry.name === `${value.factId}.json` ? value.factId : null
   }))
   return new Set(facts.filter((fact): fact is string => fact !== null))

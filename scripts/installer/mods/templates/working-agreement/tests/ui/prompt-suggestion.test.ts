@@ -60,7 +60,7 @@ test('the same command is offered again after the step stopped waiting on it', a
 test('a step that waits on no command suggests nothing', async ($, on) => {
   const { suggestions } = createWorld(on, { branch: 'feat', ahead: 8, isDirty: true, tree: 'one' }, { verifyFile, approvedConfig: verifyFile })
   await endTurn($)
-  expect(await readCurrentStep($)).toBe('Verify')
+  expect(await readCurrentStep($)).toBe('Code')
   expect(suggestions).toEqual([])
 })
 

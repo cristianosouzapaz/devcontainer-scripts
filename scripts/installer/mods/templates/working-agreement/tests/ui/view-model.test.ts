@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
-import { flowDefinitions } from '../../hooks/domain/flow-definitions'
+import { flowDefinitions, resolveUnitFlow } from '../../hooks/domain/flow-definitions'
 import { composeInstruction } from '../../hooks/domain/instruction'
 import type { Session, Unit } from '../../hooks/domain/records'
 import type { Position, StepState } from '../../hooks/domain/step-states'
@@ -17,8 +17,23 @@ const session = (overrides: Partial<Session> = {}): Session => ({
 })
 const positionOf = (overrides: Partial<Position> = {}, currentIndex = 0): Position => {
   const states: StepState[] = flow.steps.map((step, index) => ({ step, isError: false, isWaitingApproval: false, state: index < currentIndex ? 'done' : index === currentIndex ? 'current' : 'pending' }))
-  return { flow, unit, git: null, states, current: states[currentIndex] ?? null, slice: null, verify: { fact: 'no verify command configured', isVerified: false }, checks: 'off', isConcluded: false, ...overrides }
+  return { flow, unit, git: null, states, current: states[currentIndex] ?? null, slice: null, verify: { fact: 'no verify command configured', isVerified: false, isReached: true }, checks: 'off', isConcluded: false, ...overrides }
 }
+
+const childFlow = resolveUnitFlow(flow, true)
+const integration = { parent: 'par', state: 'pending' as const, command: 'git -C /par merge --no-ff a' }
+/**
+ * Places a child unit at Integrate, current or done.
+ * @param isIntegrated - Whether the child is integrated, which leaves no current step.
+ * @returns The position.
+ */
+const childAt = (isIntegrated: boolean): Position => {
+  const states: StepState[] = childFlow.steps.map((step, index) => ({ step, isError: false, isWaitingApproval: false,
+    state: index < childFlow.steps.length - 1 || isIntegrated ? 'done' : 'current', fact: step.id === 'integrate' ? isIntegrated ? 'in PR #9' : 'not merged into par' : undefined }))
+  return positionOf({ flow: childFlow, states, current: isIntegrated ? null : states.at(-1)!,
+    integration: isIntegrated ? { parent: 'par', state: 'integrated' as const, parentPullRequest: 9 } : integration })
+}
+
 
 test('the progress counts the steps settled out of all of them', () => {
   expect(buildView(session(), positionOf({}, 2), 'connected').progress).toBe(`2/${flow.steps.length}`)
@@ -121,4 +136,27 @@ test('long sessions and failed handoffs offer continuation before the unit finis
 test('rewritten units never offer a fresh session for finished steps', () => {
   const done = positionOf({ slice: { base: 'a', end: 'b', tree: 'b', baseTree: 'a', commits: 1, isClean: true, isFrozen: false, isRewritten: true, isShared: false } }, flow.steps.length)
   expect(buildView(session(), done, 'connected').footer).toBeNull()
+})
+
+test('a child before its merge shows Integrate current with its fact and the merge command as a note', () => {
+  const view = buildView(session(), childAt(false), 'connected')
+  expect(view.steps.at(-1)).toMatchObject({ label: 'Integrate', symbol: '▸', detail: 'not merged into par' })
+  expect(view.notes).toContainEqual({ key: 'Merge', value: 'git -C /par merge --no-ff a', tone: 'text' })
+  expect(view.footer).toBeNull()
+})
+
+test('an integrated child is finished: Integrate done with where it is delivered from, no merge note, and its flow line', () => {
+  const position = childAt(true)
+  const view = buildView(session({ issues: [1] }), position, 'connected')
+  expect(view.steps.every(step => step.symbol === '✓')).toBe(true)
+  expect(view.steps.at(-1)).toMatchObject({ label: 'Integrate', state: 'done', detail: 'in PR #9' })
+  expect(view.notes.some(note => note.key === 'Merge')).toBe(false)
+  expect(view.footer).toEqual({ action: 'start', isRunning: false })
+  expect(composeInstruction(position, session({ issues: [1] }))).toBe('Fix #1 — integrated into par; delivered by the Close out on par.')
+})
+
+test('a child with every step done but not integrated is not finished', () => {
+  const position = { ...childAt(true), integration }
+  expect(buildView(session(), position, 'connected').footer).toBeNull()
+  expect(composeInstruction(position, session())).toBe('Fix — all steps done.')
 })

@@ -1,6 +1,8 @@
 import type { Identity, PullRequest, Unit } from '../domain/records'
-import type { Evidence, UnitSlice } from '../domain/step-states'
-import { compareCommits, listPullRequests, readCommitChecks, readRequiredChecks } from '../lib/github'
+import { isChildUnit } from '../domain/step-states'
+import type { DeliveryFact, Evidence, UnitSlice } from '../domain/step-states'
+import { compareCommits, listPullRequests, readCommitChecks, readIssue, readRequiredChecks } from '../lib/github'
+import type { GitState } from '../lib/git'
 import type { CommitCheck, Comparison, PullRequestCandidate, RequiredChecks } from '../lib/github'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
@@ -8,6 +10,9 @@ import type { EnginePort } from './engine-port'
 import { readGithubStatus } from './github-sync'
 import { sessionMemory } from './session-memory'
 import { githubTtlMs } from './timing'
+import { knownEnd, readChildEnd } from './child-end'
+import { readDeclaration } from './record-store'
+import { readUnitSlice } from './unit-slice'
 
 interface Cached<T> { at: number; result: Result<T> }
 
@@ -38,6 +43,24 @@ export async function readCandidates(port: EnginePort, branch: string, isLocal =
   if (held) return held
   const result = await readGithubStatus(port, isForced) === 'connected' ? await listPullRequests(port.processes, branch) : fail('GitHub unreachable')
   sessionMemory.candidates.set(key, { at: now, result })
+  return result
+}
+
+/**
+ * Reads an issue's state, refreshing at most once a minute unless forced.
+ * @param port - The engine calls.
+ * @param issue - The issue number.
+ * @param isLocal - Whether cached facts remain usable regardless of age.
+ * @param isForced - Whether to refresh immediately.
+ * @returns The state as GitHub reports it, or the current read failure.
+ */
+export async function readIssueState(port: EnginePort, issue: number, isLocal = false, isForced = false): Promise<Result<string>> {
+  const now = await port.now()
+  const held = readCached(sessionMemory.issueStates.get(issue), now, isLocal, isForced)
+  if (held) return held
+  const read = await readGithubStatus(port, isForced) === 'connected' ? await readIssue(port.processes, issue) : fail('GitHub unreachable')
+  const result = read.isOk ? succeed(read.value.state) : read
+  sessionMemory.issueStates.set(issue, { at: now, result })
   return result
 }
 
@@ -88,27 +111,81 @@ async function compare(port: EnginePort, from: string, to: string): Promise<Resu
 }
 
 /**
- * Finds a merged delivery of any part of this unit, even after its local branch is deleted.
+ * Tells whether a comparison's tip contains its base: the tip is the base or ahead of it.
+ * @param comparison - The comparison of a commit with a PR's head.
+ * @returns True when the head contains the commit.
+ */
+export const isContaining = (comparison: Comparison): boolean => ['identical', 'ahead'].includes(comparison.status)
+
+/**
+ * Tells whether a comparison's tip strictly descends from its base.
+ * @param comparison - The comparison of a commit with a PR's head.
+ * @returns True when the head is ahead of the commit by at least one commit.
+ */
+export const isDescending = (comparison: Comparison): boolean => comparison.status === 'ahead' && comparison.aheadBy > 0
+
+/**
+ * Keeps the PRs whose head a SHA comparison on GitHub accepts.
+ * @param port - The engine calls.
+ * @param sha - The commit each head is compared with.
+ * @param prs - The PRs to examine, in the order kept.
+ * @param isKept - Whether a comparison accepts the head.
+ * @param isFirstOnly - Whether to stop at the first accepted PR, so no later comparison can fail the read.
+ * @returns The accepted PRs, or a comparison failure.
+ */
+export async function filterByComparison(port: EnginePort, sha: string, prs: PullRequestCandidate[], isKept: (comparison: Comparison) => boolean,
+  isFirstOnly = false): Promise<Result<PullRequestCandidate[]>> {
+  const kept: PullRequestCandidate[] = []
+  for (const pr of prs) {
+    const result = await compare(port, sha, pr.headRefOid)
+    if (!result.isOk) return result
+    if (result.value && isKept(result.value)) kept.push(pr)
+    if (isFirstOnly && kept.length) break
+  }
+  return succeed(kept)
+}
+
+/**
+ * Joins a unit's own candidates with its parent branch's, as a child unit's conclusion examines them.
+ * @param own - The unit branch's candidates.
+ * @param parent - The parent branch's candidates, or null for a unit that is no child.
+ * @returns Every candidate, or the first read failure.
+ */
+export function examineCandidates(own: Result<PullRequestCandidate[]>, parent: Result<PullRequestCandidate[]> | null): Result<PullRequestCandidate[]> {
+  if (!own.isOk || !parent) return own
+  return parent.isOk ? succeed([...own.value, ...parent.value]) : parent
+}
+
+/**
+ * Finds a merged delivery of this unit, even after its local branch is deleted: for a child unit, a merged PR into the
+ * default branch whose head contains its slice end; for any other unit, a merged PR whose head holds any part of it.
  * @param port - The engine calls.
  * @param identity - The unit identity.
  * @param unit - The unit record.
- * @param candidates - The complete candidate list.
+ * @param candidates - The complete candidate list, with a child unit's parent branch's candidates beside its own.
+ * @param defaultBranch - The default branch, which a child unit's delivering PR targets.
+ * @param isChild - Whether the unit is a child unit.
+ * @param end - The unit's slice end, null when its slice is unreadable or holds no commit; only a child unit is judged on it.
  * @returns The merged PR or null, or a comparison failure.
  */
-export async function readConclusion(port: EnginePort, identity: Identity, unit: Unit, candidates: PullRequestCandidate[]): Promise<Result<PullRequest | null>> {
+export async function readConclusion(port: EnginePort, identity: Identity, unit: Unit, candidates: PullRequestCandidate[], defaultBranch: string,
+  isChild: boolean, end: string | null = null): Promise<Result<PullRequest | null>> {
+  const childEnd = isChild ? end : null
   const key = unitMemoryKey(identity, unit)
   const held = sessionMemory.concluded.get(key)
-  if (held) return succeed(held)
+  // why: A child's conclusion holds for the slice end it was found on: a new commit reopens it, while an end that can no
+  // longer be read, as after the branch's deletion, leaves it standing.
+  if (held && (childEnd === null || held.end === null || held.end === childEnd)) return succeed(held.pullRequest)
   if (!unit.base) return succeed(null)
-  for (const candidate of candidates.filter(pr => pr.state === 'MERGED').sort((a, b) => a.number - b.number)) {
-    const result = await compare(port, unit.base, candidate.headRefOid)
-    if (!result.isOk) return result
-    if (result.value && result.value.status === 'ahead' && result.value.aheadBy > 0) {
-      sessionMemory.concluded.set(key, candidate)
-      return succeed(candidate)
-    }
-  }
-  return succeed(null)
+  const merged = candidates.filter(pr => pr.state === 'MERGED').sort((a, b) => a.number - b.number)
+  // why: A child's own PR into its parent integrates it, as the parent's ancestry shows once fetched; it never delivers it.
+  // Its head, not the merge commit, is compared, so a squash or rebase merge of the parent's PR still concludes it.
+  const found = !isChild ? await filterByComparison(port, unit.base, merged, isDescending, true)
+    : childEnd ? await filterByComparison(port, childEnd, merged.filter(pr => pr.baseRefName === defaultBranch), isContaining, true) : succeed([])
+  if (!found.isOk) return found
+  const conclusion = found.value[0]
+  if (conclusion) sessionMemory.concluded.set(key, { pullRequest: conclusion, end: childEnd })
+  return succeed(conclusion ?? null)
 }
 
 /**
@@ -116,26 +193,22 @@ export async function readConclusion(port: EnginePort, identity: Identity, unit:
  * @param port - The engine calls.
  * @param slice - The unit's slice.
  * @param issues - Every issue the PR must close, or none for Trivial.
+ * @param describeMissing - Words the fact, and its code, of a required issue the PR does not close.
  * @param unit - The unit record, whose base branch the PR's base must match.
  * @param candidates - The candidate list read for the unit.
  * @param isLocal - Whether cached GitHub facts remain usable regardless of age.
  * @param isForced - Whether CI and branch-rule facts must be refreshed.
  * @returns The PR, CI and first failing fact.
  */
-export async function readDelivery(port: EnginePort, slice: UnitSlice | null, issues: number[], unit: Unit, candidates: Result<PullRequestCandidate[]>, isLocal: boolean, isForced = false): Promise<Delivery> {
+export async function readDelivery(port: EnginePort, slice: UnitSlice | null, issues: number[], describeMissing: (issue: number) => DeliveryFact, unit: Unit, candidates: Result<PullRequestCandidate[]>, isLocal: boolean, isForced = false): Promise<Delivery> {
   const unknown: Delivery = { checks: 'off', isConcluded: false }
   if (!candidates.isOk) return { ...unknown, prFact: 'GitHub unreachable', prFactCode: 'github-unreachable' }
   const chosen = selectBasePullRequest(candidates.value)
   if (!chosen.isOk) return { ...unknown, prFact: chosen.error, prFactCode: 'pr-ambiguous' }
   const eligible = candidates.value.filter(pr => pr.state === 'OPEN' || (slice && slice.commits > 0 && pr.state === 'MERGED')).sort((a, b) => a.number - b.number)
-  const containing: PullRequestCandidate[] = []
-  if (slice) {
-    for (const pr of eligible) {
-      const result = await compare(port, slice.end, pr.headRefOid)
-      if (!result.isOk) return { ...unknown, prFact: 'GitHub unreachable', prFactCode: 'github-unreachable' }
-      if (result.value && ['identical', 'ahead'].includes(result.value.status)) containing.push(pr)
-    }
-  }
+  const found = slice ? await filterByComparison(port, slice.end, eligible, isContaining) : succeed([])
+  if (!found.isOk) return { ...unknown, prFact: 'GitHub unreachable', prFactCode: 'github-unreachable' }
+  const containing = found.value
   const selected = containing.find(pr => pr.state === 'MERGED') ?? containing.find(pr => pr.state === 'OPEN')
   const open = eligible.find(pr => pr.state === 'OPEN')
   if (!selected) return { ...unknown, pullRequest: open, prFact: open ? "PR does not contain the unit's last commit — push" : 'no PR', prFactCode: open ? 'push-required' : undefined }
@@ -143,7 +216,7 @@ export async function readDelivery(port: EnginePort, slice: UnitSlice | null, is
   const mismatch = describeBaseMismatch(unit, selected)
   if (mismatch) return { ...unknown, pullRequest: selected, prFact: mismatch, prFactCode: 'base-mismatch' }
   const missing = issues.find(issue => !selected.closingIssuesReferences.includes(issue))
-  if (missing !== undefined) return { ...unknown, pullRequest: selected, prFact: `PR does not close #${missing}` }
+  if (missing !== undefined) return { ...unknown, pullRequest: selected, ...describeMissing(missing) }
   const ci = await readCi(port, slice?.end ?? '', selected.baseRefName, isLocal, isForced)
   return { ...unknown, pullRequest: selected, ...ci }
 }
@@ -195,4 +268,26 @@ function judgeCi(reported: Result<CommitCheck[]> | undefined, required: Result<R
  */
 function readCached<T>(cached: Cached<T> | undefined, now: number, isLocal = false, isForced = false): Result<T> | undefined {
   return cached && (isLocal || (!isForced && now - cached.at < githubTtlMs)) ? cached.result : undefined
+}
+
+/**
+ * Reads a unit's conclusion as a judgement does, so a declaration decides from git and GitHub alone: a child unit is
+ * also judged on its parent branch's PRs and its slice end.
+ * @param port - The engine calls.
+ * @param identity - The unit identity.
+ * @param unit - The unit record.
+ * @param candidates - The unit branch's complete candidate list.
+ * @param git - The checkout's repository and default branch.
+ * @param isCloseOut - Whether the unit's slice spans its whole branch, read from its declaration when omitted.
+ * @returns The merged PR or null, or a read or comparison failure.
+ */
+export async function readDeclaredConclusion(port: EnginePort, identity: Identity, unit: Unit, candidates: PullRequestCandidate[], git: GitState,
+  isCloseOut?: boolean): Promise<Result<PullRequest | null>> {
+  const wholeBranch = isCloseOut ?? (await readDeclaration(port, identity))?.flow === 'close-out'
+  const isChild = isChildUnit(unit, git.base, wholeBranch)
+  const parent = isChild && unit.baseBranch ? await readCandidates(port, unit.baseBranch, false, true) : null
+  const examined = examineCandidates(succeed(candidates), parent)
+  if (!examined.isOk) return examined
+  const end = isChild ? await readChildEnd(port, identity, unit, await readUnitSlice(port, identity, unit, git, wholeBranch)) : undefined
+  return readConclusion(port, identity, unit, examined.value, git.base, isChild, knownEnd(end))
 }

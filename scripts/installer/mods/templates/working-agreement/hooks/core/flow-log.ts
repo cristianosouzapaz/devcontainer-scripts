@@ -1,5 +1,6 @@
 import type { FlowStep } from '../../types'
 import type { Identity, Session } from '../domain/records'
+import type { UnitSlice } from '../domain/step-states'
 import { removeFile } from '../lib/files'
 import { hasExitedZero, runProcess } from '../lib/process'
 import { createQueue } from '../lib/queue'
@@ -51,20 +52,27 @@ export function logEvent(port: EnginePort, session: Session, event: string, deta
 
 /**
  * Logs the painted steps whose state changed since the last painted view of the same chat and unit lifetime,
- * or every step as a snapshot when there is no such view.
+ * or every step as a snapshot when there is no such view, with the fact a current or done step shows and the slice base and tree
+ * the steps were judged on.
  * @param port - The engine calls.
  * @param session - The painted session.
  * @param painted - The painted steps.
+ * @param slice - The slice the steps were judged on, null when unreadable.
  * @param causes - The signals the refresh answered.
  */
-export function logSteps(port: EnginePort, session: Session, painted: FlowStep[], causes: string[]): void {
+export function logSteps(port: EnginePort, session: Session, painted: FlowStep[], slice: UnitSlice | null, causes: string[]): void {
   const states = Object.fromEntries(painted.map(step => [step.id, step.state]))
   const key = JSON.stringify([session.sessionId, session.unit, readGeneration(session)])
   const previous = steps.baseline
   steps.baseline = { key, states }
-  if (previous?.key !== key) return logEvent(port, session, 'snapshot', { steps: states, cause: causes })
-  for (const [step, state] of Object.entries(states)) {
-    if (previous.states[step] !== state) logEvent(port, session, 'step', { step, from: previous.states[step] ?? null, to: state, cause: causes })
+  // A null would read as a judged empty value, so a slice part the judgement lacked is left out.
+  const judged = { ...(slice?.base ? { base: slice.base } : {}), ...(slice?.tree ? { tree: slice.tree } : {}) }
+  if (previous?.key !== key) return logEvent(port, session, 'snapshot', { steps: states, ...judged, cause: causes })
+  for (const step of painted) {
+    const from = previous.states[step.id]
+    // A skipped step's detail is its reason, which the skip line already holds.
+    const fact = step.detail && (step.state === 'current' || step.state === 'done') ? { fact: step.detail } : {}
+    if (from !== step.state) logEvent(port, session, 'step', { step: step.id, from: from ?? null, to: step.state, ...fact, ...judged, cause: causes })
   }
 }
 

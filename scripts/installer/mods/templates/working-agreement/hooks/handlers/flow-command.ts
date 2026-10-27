@@ -6,9 +6,8 @@ import type { EnginePort } from '../core/engine-port'
 import { createFeaturePort } from '../core/feature-port'
 import { logEvent } from '../core/flow-log'
 import { refreshView } from '../core/pane-view'
-import { locatePosition } from '../core/position'
+import { locatePosition, readUnitFlow } from '../core/position'
 import { createReadPort } from '../core/read-port'
-import { findFlow } from '../domain/flow-definitions'
 import { readSession, updateUnits } from '../core/record-store'
 import { approveVerify } from '../core/verify'
 import { withRecordLock } from '../core/session-memory'
@@ -40,7 +39,8 @@ export async function handleFlowCommand(port: EnginePort, event: Frozen<Args<'co
   if (humanOnly.includes(subcommand) && event.origin.kind !== 'composer') return markForAgent(`/flow ${subcommand} is the user's to run from the prompt.`)
   if (subcommand === 'skip') return startAfter(port, await withRecordLock(async () => {
     const session = await readSession(port)
-    const flow = findFlow(session.flow)
+    // A skip names a step the unit runs: Integrate for a child unit, PR for any other.
+    const flow = (await readUnitFlow(createReadPort(port), session))?.flow
     if (!flow) return fail('No flow declared — declare a flow before skipping a step.')
     const match = flow.steps.find(step => [step.id, step.label].some(name => tail.toLowerCase() === name.toLowerCase() || tail.toLowerCase().startsWith(`${name.toLowerCase()} `)))
     if (!match) return fail('Unknown step — use a step id or label from this flow.')

@@ -9,6 +9,7 @@ import { withRunView } from '../../hooks/core/run-view'
 import { sessionMemory } from '../../hooks/core/session-memory'
 import { handlePaneClose, handlePaneRender } from '../../hooks/handlers/pane-render'
 import type { PaneElements } from '../../hooks/ui/pane-sections'
+import { diagnosed, diagnosisComment } from '../support/builders'
 import { mountPane, readFlowStatus, readPromptContext } from '../support/helpers'
 import { common, configBlob, createTestPort, createWorld } from '../support/world'
 import type { World, Gate, Options } from '../support/world'
@@ -374,7 +375,7 @@ test('an unrecorded tree-changing Verify remains in Run log until the next run',
   await $.tool.call({ tool: 'mcp__working-agreement__verify' })
   expect(sessions.get('sid')?.units[0]?.verifyRuns).toEqual([])
   const pane = await mountPane($)
-  expect(textOf(await pane.drawn())).toContain('▸ Verify · tree changed during run')
+  expect(textOf(await pane.drawn())).toContain('▸ Code · tree changed during run')
   await expectText(pane, 'tree changed during run', { color: 'text', wrap: 'wrap' })
   await pane.press({ key: 'l' })
   expect(textOf(await pane.drawn())).toContain('Verify · not recorded')
@@ -393,6 +394,35 @@ test('an unrecorded tree-changing Verify remains in Run log until the next run',
   await pane.press({ key: 'flow' })
   expect(textOf(await pane.drawn())).toContain('✓ Verify')
   await expectTheme(pane)
+  await pane.unmount()
+})
+
+test('an unrecorded tree-changing Verify on a tree another run covers shows on the current Verify', async ($, on) => {
+  const checkout = { branch: 'feat', ahead: 8, isDirty: true, tree: 'before' }
+  const covering = { tree: 'after', base: 'c0', configBlob: configBlob(config), commands: [['./lint'], ['./check']],
+    outcome: { kind: 'fail', code: 1, signal: null }, runId: 'covering', at: 1 }
+  createWorld(on, checkout, { verifyFile: config, approvedConfig: config, unit: { verifyRuns: [covering] }, afterSpawn: () => { checkout.tree = 'after' } })
+  await $.tool.call({ tool: 'mcp__working-agreement__verify' })
+  const pane = await mountPane($)
+  const drawn = textOf(await pane.drawn())
+  expect(drawn).toContain('✓ Code')
+  expect(drawn).toContain('▸ Verify · tree changed during run')
+  await pane.unmount()
+})
+
+test('an unrecorded tree-changing Verify leaves any other Code blocker shown, as in the status', async ($, on) => {
+  const checkout = { branch: 'feat', isDirty: true, tree: 'before' }
+  createWorld(on, checkout, {
+    session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'], comments: [diagnosisComment] } } },
+    unit: diagnosed, comments: { 1: [diagnosisComment] }, issueLabels: { 1: ['ready-for-agent'] },
+    verifyFile: config, approvedConfig: config, afterSpawn: () => { checkout.tree = 'after' },
+  })
+  await $.tool.call({ tool: 'mcp__working-agreement__verify' })
+  const pane = await mountPane($)
+  const drawn = textOf(await pane.drawn())
+  expect(drawn).toContain('▸ Code · no green after the approval')
+  expect(drawn).not.toContain('tree changed during run')
+  expect(await readFlowStatus($)).toContain('▸ Code · no green after the approval')
   await pane.unmount()
 })
 

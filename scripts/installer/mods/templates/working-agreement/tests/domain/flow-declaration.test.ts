@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
-import { diagnosisComment, noFlow } from '../support/builders'
+import { buildParentGraph, buildPullRequest, diagnosisComment, noFlow } from '../support/builders'
 import { declareFlow, readCurrentStep, readFlowStatus, readPromptContext, runFlowCommand, startSkill } from '../support/helpers'
 import { createWorld, root } from '../support/world'
 import type { Checkout, Options } from '../support/world'
@@ -136,4 +136,46 @@ test('a Fix declared without its issue on the default branch ends with every fac
   git.branch = 'fix'
   expect((await declareFlow($, 'fix', [1])).result).toContain('current step: Code')
   expect(await readFlowStatus($)).toContain('reproduced elsewhere')
+})
+
+test('a branch cut from another local branch takes it from the reflog as its base branch and says so', async ($, on) => {
+  const { sessions } = createWorld(on, { branch: 'b', graph: buildParentGraph() }, { session: noFlow })
+  expect((await declareFlow($, 'small-feature', [1])).result).toContain('Flow declared: Small feature for #1, base from par (branch reflog).')
+  expect(sessions.get('sid')?.units[0]).toMatchObject({ base: 'p1', baseBranch: 'par' })
+})
+
+for (const [label, created] of [['HEAD', 'HEAD'], ['a commit', 'p1'], ['a revision', 'par~1'], ['the branch itself', 'b'], ['the default branch', 'main'],
+  ['a missing branch', 'gone'], ['a remote-tracking branch', 'origin/par'], ['nothing, as with no reflog', undefined]] as const) {
+  test(`a reflog that names ${label} as the start point falls back to the default branch and says so`, async ($, on) => {
+    const graph = buildParentGraph()
+    graph.created = created ? { b: created } : {}
+    const { sessions } = createWorld(on, { branch: 'b', graph }, { session: noFlow })
+    expect((await declareFlow($, 'small-feature', [1])).result).toContain('Flow declared: Small feature for #1, base from main.')
+    expect(sessions.get('sid')?.units[0]).toMatchObject({ base: 'c0', baseBranch: 'main' })
+  })
+}
+
+test("the unit's PR base wins over the reflog's parent branch", async ($, on) => {
+  const { sessions } = createWorld(on, { branch: 'b', graph: buildParentGraph() }, { session: noFlow, prs: [buildPullRequest({ headRefName: 'b', headRefOid: 'b1' })] })
+  expect((await declareFlow($, 'small-feature', [1])).result).toContain('base from main (PR #5).')
+  expect(sessions.get('sid')?.units[0]).toMatchObject({ base: 'c0', baseBranch: 'main' })
+})
+
+test('a later unit on a shared branch is based at the declaration tip, records no base branch and says so', async ($, on) => {
+  const { chat, sessions } = createWorld(on, { branch: 'b', graph: buildParentGraph() }, { session: noFlow, issueLabels: { 1: ['ready-for-agent'], 2: ['ready-for-agent'] } })
+  await declareFlow($, 'small-feature', [1])
+  chat.id = 'second'
+  expect((await declareFlow($, 'small-feature', [2])).result).toContain('Flow declared: Small feature for #2, base at the declaration tip.')
+  expect(sessions.get('second')?.units[0]?.base).toBe('b1')
+  expect(sessions.get('second')?.units[0]?.baseBranch).toBeUndefined()
+})
+
+test('a Follow-up child records its parent as base branch and the fork point as base, never the declaration tip', async ($, on) => {
+  const graph = buildParentGraph()
+  const closing = { number: 10, state: 'OPEN', headRefName: 'par', isCrossRepository: false, baseRepository: { nameWithOwner: 'owner/repo' } }
+  const { sessions } = createWorld(on, { branch: 'b', graph: { ...graph, refs: { ...graph.refs, par: 'p2', b: 'b2' } } }, { session: noFlow, closingPrs: { 1: [closing] } })
+  const reply = (await runFlowCommand($, 'follow-up #1')).text
+  expect(reply).toContain('Flow declared: Follow-up for #1, base from par (branch reflog).')
+  expect(reply).not.toContain('not counted for this unit')
+  expect(sessions.get('sid')?.units[0]).toMatchObject({ base: 'p2', baseBranch: 'par' })
 })

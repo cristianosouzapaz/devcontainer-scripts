@@ -1,6 +1,7 @@
 import { createQueue } from '../lib/queue'
 import { executeProcess } from '../lib/process'
 import type { Session } from '../domain/records'
+import { isDeliveryStep } from '../domain/flow-definitions'
 import { formatStepLabel } from '../domain/step-states'
 import type { Position } from '../domain/step-states'
 import { formatError } from '../lib/result'
@@ -25,7 +26,7 @@ export function reportHerdr(port: EnginePort, session: Session, position: Positi
   const unit = position ? `${position.flow.label}${session.issues.length
     ? ` #${session.issues[0]}${session.issues.length > 1 ? ` +${session.issues.length - 1}` : ''}`
     : ` · ${session.unit?.branch ?? position.git?.branch ?? ''}`}` : ''
-  const current = position?.isConcluded ? position.states.find(state => state.step.observe === 'pr.created') : position?.current
+  const current = position?.isConcluded ? position.states.find(state => isDeliveryStep(state.step)) : position?.current
   const prefix = position?.slice?.isRewritten ? '? ' : position?.isConcluded ? '✓ ' : current?.isError ? '✗ ' : current?.isWaitingApproval ? '● ' : ''
   const step = current && position ? `${prefix}${formatStepLabel(current.step, position.pullRequest, current.state === 'current')}` : ''
   const violations = (session.violations ?? []).filter(record => record.kind !== 'unchecked' && !dismissed.has(record.factId)).sort((a, b) => b.end - a.end)

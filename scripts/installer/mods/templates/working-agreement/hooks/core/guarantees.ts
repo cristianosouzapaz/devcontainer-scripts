@@ -1,16 +1,17 @@
 import type { PrSnapshot, Violation, ViolationFact } from '../../types'
-import { readContentTree, readGitOutput, readGitState, readWorktrees } from '../lib/git'
+import { listNewCommits, readContentTree, readGitOutput, readGitState, readWorktrees } from '../lib/git'
 import { readPrFields } from '../lib/github'
-import type { Worktree } from '../lib/git'
 import { bestEffort } from './best-effort'
 import type { EnginePort } from './engine-port'
 import { isJudgedTool } from './judged-tools'
 import { createReadPort } from './read-port'
 import { readCommonDir, readSession, sameIdentity, temporaryPath, updateSession, recordsPath } from './record-store'
+import { readRepositoryRoot } from './repository'
 import { withRecordLock } from './session-memory'
+import { drawTerritory } from './territory'
+import type { RefSnapshot } from './territory'
 import { readCandidates, selectBasePullRequest } from './unit-github'
 
-interface RefSnapshot { refs: Record<string, string>; worktrees: Worktree[] }
 /** Keeps independent snapshots so a GitHub failure cannot suppress git verdicts. */
 export interface GuaranteeSnapshot {
   windowStartSeconds: number
@@ -76,18 +77,17 @@ async function readPrBefore(port: EnginePort): Promise<PrSnapshot | null> {
 }
 
 /**
- * Captures refs and worktrees together for post-operation guarantee checks.
+ * Captures refs, worktrees and the session's checkout root together for post-operation guarantee checks.
  * @param port - The engine calls.
- * @returns The ref snapshot, or null when either source is unreadable.
+ * @returns The ref snapshot, or null when the refs, the worktrees or the root are unreadable.
  */
 async function readRefs(port: EnginePort): Promise<RefSnapshot | null> {
   const refs = await readGitOutput(port.processes, ['for-each-ref', '--format=%(refname) %(objectname)'])
   const worktrees = await readWorktrees(port.processes)
-  if (refs === null || worktrees === null) return null
-  return {
-    refs: Object.fromEntries(refs.split('\n').filter(Boolean).map(line => line.split(' '))),
-    worktrees,
-  }
+  // Without its root the session's own worktree would read as another's, silently dropping its commits.
+  const root = await readRepositoryRoot(port)
+  if (refs === null || worktrees === null || root === null) return null
+  return { refs: Object.fromEntries(refs.split('\n').filter(Boolean).map(line => line.split(' '))), worktrees, root }
 }
 
 /**
@@ -149,27 +149,13 @@ function remoteTips(snapshot: RefSnapshot): string[] {
 }
 
 /**
- * Finds commits newly reachable beyond a previous reachability boundary.
- * @param port - The engine calls.
- * @param tips - The tips whose reachable commits are inspected.
- * @param excluded - The tips whose reachable commits are excluded.
- * @param minAge - The latest included committer date, in epoch seconds; omitted for all dates.
- * @returns The sorted new commit SHAs, rejecting unreadable reachability.
- */
-async function newCommits(port: EnginePort, tips: string[], excluded: string[], minAge?: number): Promise<string[]> {
-  if (!tips.length) return []
-  const output = await readGitOutput(port.processes, ['rev-list', ...(minAge === undefined ? [] : [`--min-age=${minAge}`]), ...new Set(tips), '--not', ...new Set(excluded)])
-  if (output === null) throw new Error('commit reachability unreadable')
-  return output.split('\n').filter(Boolean).sort()
-}
-
-/**
- * Judges complete check pairs, excluding fetched history dated before the window; unreadable checks produce one unchecked fact for the call.
+ * Judges complete check pairs, excluding fetched history dated before the window and every commit or push outside the session's territory;
+ * unreadable checks produce one unchecked fact for the call.
  * @param engine - The engine calls.
  * @param before - The opening snapshots.
  * @param after - The closing snapshots.
  * @param toolUseId - The call's identity for an unchecked fact.
- * @returns Facts seen by this window, without consulting other sessions.
+ * @returns Facts this window judges, without consulting other sessions.
  */
 export async function judgeGuarantees(engine: EnginePort, before: GuaranteeSnapshot, after: GuaranteeSnapshot, toolUseId: string): Promise<ViolationFact[]> {
   const port = createReadPort(engine)
@@ -179,19 +165,26 @@ export async function judgeGuarantees(engine: EnginePort, before: GuaranteeSnaps
   const afterRefs = after.refs
   if (beforeRefs && afterRefs) {
     const checked = await bestEffort(port, 'commit reachability read', async () => {
+      const territory = drawTerritory(port, beforeRefs, afterRefs)
       const beforeTips = [...Object.values(beforeRefs.refs), ...beforeRefs.worktrees.map(wt => wt.head)].filter(Boolean)
-      const candidates = await newCommits(port, localTips(afterRefs), beforeTips)
+      const candidates = await listNewCommits(port.processes, localTips(afterRefs), beforeTips)
       // Git's min-age is inclusive; commits from the window's first second still count.
-      const fetched = candidates.length ? await newCommits(port, remoteTips(afterRefs), beforeTips, before.windowStartSeconds - 1) : []
-      const shas = candidates.filter(sha => !fetched.includes(sha))
+      const fetched = candidates.length ? await listNewCommits(port.processes, remoteTips(afterRefs), beforeTips, before.windowStartSeconds - 1) : []
+      const unfetched = candidates.filter(sha => !fetched.includes(sha))
+      const verdict = unfetched.length ? await territory.judgeCommits(unfetched, beforeTips) : { shas: [], isUnplaced: false }
+      const shas = verdict.shas
       if (shas.length) facts.push({ kind: 'commit', fact: { shas }, checkouts: afterRefs.worktrees
         .filter(wt => shas.includes(wt.head)).map(wt => ({ root: wt.root, branch: wt.branch ? wt.branch.replace('refs/heads/', '') : null })) })
-      const local = await newCommits(port, localTips(beforeRefs), remoteTips(beforeRefs))
+      const local = await listNewCommits(port.processes, localTips(beforeRefs), remoteTips(beforeRefs))
+      const pushes = { isUnplaced: false }
       for (const [ref, sha] of Object.entries(afterRefs.refs).filter(([ref]) => ref.startsWith('refs/remotes/'))) {
-        const added = await newCommits(port, [sha], remoteTips(beforeRefs))
-        if (added.some(sha => local.includes(sha))) facts.push({ kind: 'push', fact: { ref, before: beforeRefs.refs[ref] ?? null, after: sha } })
+        const added = await listNewCommits(port.processes, [sha], remoteTips(beforeRefs))
+        if (!added.some(sha => local.includes(sha))) continue
+        const judged = await territory.judgesPush(ref)
+        if (judged === null) pushes.isUnplaced = true
+        if (judged) facts.push({ kind: 'push', fact: { ref, before: beforeRefs.refs[ref] ?? null, after: sha } })
       }
-      return true
+      return !verdict.isUnplaced && !pushes.isUnplaced
     }, false)
     if (!checked) unchecked.value = true
   }

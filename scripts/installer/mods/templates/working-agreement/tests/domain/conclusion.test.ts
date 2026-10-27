@@ -1,6 +1,7 @@
 import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
+import { temporaryExpiryMs } from '../../hooks/core/timing'
 import { buildPullRequest, diagnoseRuns, noFlow, verifyFile } from '../support/builders'
 import { conformanceGraph } from '../support/graph-fixture'
 import { declareFlow, readFlowStatus, readStepStates, runFlowCommand } from '../support/helpers'
@@ -8,6 +9,7 @@ import { common, createWorld, root } from '../support/world'
 import type { Checkout, Options } from '../support/world'
 
 const directory = `${common}/working-agreement`
+const expiredAgeMs = temporaryExpiryMs + 1
 
 function branch(): Checkout {
   return { branch: 'feat', graph: structuredClone(conformanceGraph) }
@@ -90,6 +92,12 @@ test('conclusion needs no local unit branch and picks the lowest merged PR numbe
   createWorld(on, checkout, mergedOptions({ prs: [buildPullRequest({ number: 12, state: 'MERGED', headRefOid: 'f2' }), buildPullRequest({ number: 7, state: 'MERGED', headRefOid: 'f1' })] }))
   checkout.branch = 'main'
   expect(await readFlowStatus($)).toContain('PR #7 · merged')
+})
+
+test('a comparison that fails after the first merged match leaves the conclusion standing', async ($, on) => {
+  const prs = [buildPullRequest({ state: 'MERGED', headRefOid: 'f1', headRefName: 'feat' }), buildPullRequest({ number: 6, state: 'MERGED', headRefOid: 'o1', headRefName: 'feat' })]
+  createWorld(on, branch(), mergedOptions({ prs, failing: 'gh api repos/{owner}/{repo}/compare/m1...o1' }))
+  expect(await readFlowStatus($)).toContain('✓ PR #5 · merged')
 })
 
 test('a partial merge followed by more commits starts a fresh unit on re-declaration', async ($, on) => {
@@ -218,9 +226,9 @@ test('a tick can discover conclusion but never prunes records or files', async (
 })
 
 for (const trigger of ['startup', 'declaration']) {
-  test(`${trigger} deletes only unreferenced own or dead run files and dead temp files`, async ($, on) => {
+  test(`${trigger} deletes only unreferenced own or dead run files and expired temp files`, async ($, on) => {
     const world = createWorld(on, branch(), { unit: { base: 'm1' } })
-    const { files, sessions } = world
+    const { clock, files, modified, sessions } = world
     const previous = sessions.get('sid')!
     files.set(`${directory}/s/live-with-hyphens.json`, JSON.stringify({ ...previous, sessionId: 'live-with-hyphens', units: [
       { ...previous.units[0]!, runs: [{ ...diagnoseRuns[0]!, runId: '1-1-sid' }, { ...diagnoseRuns[1]!, runId: '1-2-dead' }] },
@@ -240,6 +248,7 @@ for (const trigger of ['startup', 'declaration']) {
     for (const bucket of ['s', 'u', 'd', 'ok', 'runs']) {
       const dead = `${directory}/${bucket}/.tmp-dead-with-hyphens-1`
       files.set(dead, 'temporary')
+      modified.set(dead, clock.now() - expiredAgeMs)
       deleted.push(dead)
       for (const owner of ['sid', 'live-with-hyphens', 'unparseable']) {
         const path = `${directory}/${bucket}/.tmp-${owner}-999999`
@@ -258,6 +267,18 @@ for (const trigger of ['startup', 'declaration']) {
     for (const path of kept) expect(files.has(path)).toBe(true)
   })
 }
+
+test("a prune by another session keeps a flowless session's fresh temporary files and removes expired ones, whoever owns them", async ($, on) => {
+  const world = createWorld(on, branch(), { unit: { base: 'm1' } })
+  const { clock, files, modified } = world
+  const fresh = [`${directory}/s/.tmp-flowless-1`, `${directory}/s/.tmp-flowless-1.lock`]
+  const expired = [`${directory}/s/.tmp-flowless-2`, `${directory}/s/.tmp-flowless-2.lock`, `${directory}/s/.tmp-sid-999999`]
+  for (const path of [...fresh, ...expired]) files.set(path, 'index')
+  for (const path of expired) modified.set(path, clock.now() - expiredAgeMs)
+  await $.session.start({ cwd: root, surface: null, isInteractive: false })
+  for (const path of fresh) expect(files.has(path)).toBe(true)
+  for (const path of expired) expect(files.has(path)).toBe(false)
+})
 
 for (const trigger of ['startup', 'declaration']) {
   for (const mirror of ['missing', 'stale']) {

@@ -16,6 +16,7 @@ interface CrossReferenceRow { source: Record<string, unknown> }
 interface ComparisonRow { status: string; ahead_by: number }
 interface CheckRunRow extends Record<string, unknown> { name: string; status: string; conclusion: string | null }
 interface StatusRow extends Record<string, unknown> { context: string; state: unknown }
+interface WorkflowRunRow extends Record<string, unknown> { name: string | null; path: string; status: string }
 interface RequiredContext { context: string }
 interface RequiredParameters { required_status_checks: RequiredContext[] }
 interface RequiredCheckRule extends Record<string, unknown> { parameters: RequiredParameters }
@@ -78,6 +79,14 @@ export const isComparison = (value: unknown): value is ComparisonRow => isRecord
  */
 export const isCheckRun = (value: unknown): value is CheckRunRow => isRecord(value) && typeof value.name === 'string' && typeof value.status === 'string'
   && (value.conclusion === null || typeof value.conclusion === 'string')
+
+/**
+ * Identifies a workflow run with a readable status; GitHub allows its name to be null, never its workflow path.
+ * @param value - The decoded row.
+ * @returns Whether the run fields are readable.
+ */
+export const isWorkflowRun = (value: unknown): value is WorkflowRunRow => isRecord(value) && (value.name === null || typeof value.name === 'string')
+  && typeof value.path === 'string' && typeof value.status === 'string'
 
 /**
  * Identifies a named commit status whose state has a recognized string representation.

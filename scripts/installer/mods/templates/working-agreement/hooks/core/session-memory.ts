@@ -25,6 +25,9 @@ export interface RunDisplay {
   last: RunView | null
 }
 
+/** A merged PR that concluded a unit's lifetime, with the child slice end it was found on, null for any other unit. */
+interface Conclusion { pullRequest: PullRequest; end: string | null }
+
 /** The session version the Flow pane's view was built from, for the chat it belongs to. */
 interface PaintedVersion { sessionId: string; version: number }
 
@@ -40,8 +43,10 @@ interface SessionMemory {
   candidates: Map<string, Cached<PullRequestCandidate[]>>
   checks: Map<string, Cached<CommitCheck[]>>
   rules: Map<string, Cached<RequiredChecks>>
+  /** The state of each issue of a child whose slice end is unknown, by number. */
+  issueStates: Map<number, Cached<string>>
   comparisons: Map<string, Comparison>
-  concluded: Map<string, PullRequest>
+  concluded: Map<string, Conclusion>
   runViews: Map<string, RunDisplay>
   /** An observation of an older session never repaints over a view built from a newer one. */
   painted: PaintedVersion | null
@@ -61,6 +66,7 @@ export const sessionMemory: SessionMemory = {
   candidates: new Map(),
   checks: new Map(),
   rules: new Map(),
+  issueStates: new Map(),
   comparisons: new Map(),
   concluded: new Map(),
   runViews: new Map(),

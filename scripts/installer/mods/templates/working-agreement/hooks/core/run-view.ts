@@ -149,7 +149,7 @@ export async function readRunLog(port: EnginePort): Promise<RunView[]> {
     if (runs.some(run => run.kind === kind)) continue
     const result = record.outcome.kind === 'pass' ? 'exit 0' : record.outcome.kind === 'timeout' ? 'timed out' : formatExit(record.outcome.code, record.outcome.signal)
     const fallback: RunView = { runId: record.runId, kind, status: runStatus(record.outcome), result, selection: '', tree: record.tree, cwd: '', log: '', commands: [], duration: 0, at: record.at }
-    // A missing or misplaced sidecar leaves the record summary visible.
+    // A missing, unreadable or misplaced sidecar leaves the record summary visible: the sidecar only adds display detail.
     try {
       if (!common || /[/\\]/.test(record.runId)) throw new Error('invalid sidecar location')
       const parsed: unknown = await readJson(port.files, recordsPath(common, 'runs', `${record.runId}.json`))

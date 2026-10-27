@@ -34,15 +34,37 @@ export function parseJson(text: string): Result<unknown> {
 }
 
 /**
- * Reads external JSON, retaining absence and malformed content as an undefined value.
+ * Reads a file's text, telling a missing file from a failed read.
  * @param files - The engine's file reader.
  * @param path - The file to read.
- * @returns The decoded value, or undefined when reading or parsing fails.
+ * @returns The text, or undefined when the file is confirmed missing.
+ * @throws When the read rejects and the file is not confirmed missing: a failed read is never absence.
+ */
+export async function readText(files: FilePort, path: string): Promise<string | undefined> {
+  return files.read(path).catch(async (error: unknown) => {
+    // why: The engine's read rejection carries no documented missing-file code, so only exists can confirm absence.
+    if (await files.exists(path)) throw error
+    return undefined
+  })
+}
+
+/**
+ * Reads external JSON strictly: a file that is not JSON is a failed read, never absence.
+ *
+ * Callers keep their meaning for absence and treat a throw under their own failure policy: this session's own records
+ * (its seed mirror, declarations, Verify approvals) fail the read; the observed slice ends become a failed result; best-effort
+ * and display-only reads (the stored end before its write, run sidecars, the manifest, dismissals) fall back to their
+ * safe direction. Only readSessionMirrors, the non-strict scan of other sessions' mirrors, reads their text with readText
+ * and skips one that is not JSON; the strict readers (readEntriesStrictly, readDeclarations) throw on it.
+ * @param files - The engine's file reader.
+ * @param path - The file to read.
+ * @returns The decoded value, or undefined when the file is confirmed missing.
+ * @throws When the read fails, or the text is not JSON.
  */
 export async function readJson(files: FilePort, path: string): Promise<unknown> {
-  // Absence is part of the readJson contract.
-  try {
-    const parsed = parseJson(await files.read(path))
-    return parsed.isOk ? parsed.value : undefined
-  } catch { return undefined }
+  const text = await readText(files, path)
+  if (text === undefined) return undefined
+  const parsed = parseJson(text)
+  if (!parsed.isOk) throw new Error(`${path}: ${parsed.error}`)
+  return parsed.value
 }

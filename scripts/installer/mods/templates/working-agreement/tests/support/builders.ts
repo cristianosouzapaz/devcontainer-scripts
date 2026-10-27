@@ -1,7 +1,7 @@
 import type { RunRecord, Unit } from '../../types'
 import { githubSamples } from './github-samples'
 import { root } from './world'
-import type { Options } from './world'
+import type { Graph, Options } from './world'
 
 /** A Write call's input. */
 interface WriteCall { tool: 'Write'; file_path: string; content: string }
@@ -55,4 +55,39 @@ export function buildPullRequest(changes: Record<string, unknown> = {}): Record<
   const sample = githubSamples['pull-requests'][0].body.data.repository.pullRequests.nodes[0]!
   const { closingIssuesReferences, ...pullRequest } = sample
   return { ...pullRequest, closingIssuesReferences: closingIssuesReferences.nodes, ...changes }
+}
+
+/**
+ * Builds a PR of parent branch `par` into the default branch, as the candidate-list command returns it.
+ * @param changes - Fields that replace the merged PR from `par` into `main`.
+ * @returns A candidate response sample.
+ */
+export const buildParentPullRequest = (changes: Record<string, unknown> = {}): Record<string, unknown> =>
+  buildPullRequest({ state: 'MERGED', headRefName: 'par', baseRefName: 'main', ...changes })
+
+/**
+ * Builds the reference workflow's history: `par` cut from the default branch, children `a` and `b` cut from `par` with
+ * `git switch -c <child> par`, then, as commits for a test to move refs onto, `a` merged into `par` with `--no-ff` (`ma`),
+ * `par` advanced (`p2`), `par` merged into `b` (`mb`) and committed on (`b2`), and `b` merged into `par` with `--no-ff` (`mpar`).
+ * @returns A fresh graph with every ref at the cut: `par` at `p1`, `a` at `a2`, `b` at `b1`.
+ */
+export function buildParentGraph(): Graph {
+  const par = { 'src/par.ts': 'p1' }
+  const advanced = { 'src/par.ts': 'p2', 'src/a.ts': 'a2' }
+  return {
+    commits: {
+      c0: { parents: [], files: {} },
+      p1: { parents: ['c0'], files: par },
+      a1: { parents: ['p1'], files: { ...par, 'src/a.ts': 'a1' } },
+      a2: { parents: ['a1'], files: { ...par, 'src/a.ts': 'a2' } },
+      b1: { parents: ['p1'], files: { ...par, 'src/b.ts': 'b1' } },
+      ma: { parents: ['p1', 'a2'], files: { ...par, 'src/a.ts': 'a2' } },
+      p2: { parents: ['ma'], files: advanced },
+      mb: { parents: ['b1', 'p2'], files: { ...advanced, 'src/b.ts': 'b1' } },
+      b2: { parents: ['mb'], files: { ...advanced, 'src/b.ts': 'b2' } },
+      mpar: { parents: ['p2', 'b2'], files: { ...advanced, 'src/b.ts': 'b2' } },
+    },
+    refs: { main: 'c0', 'origin/main': 'c0', par: 'p1', a: 'a2', b: 'b1' },
+    created: { a: 'par', b: 'par' },
+  }
 }

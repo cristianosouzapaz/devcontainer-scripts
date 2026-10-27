@@ -7,7 +7,7 @@ import { reread } from '../core/pane-view'
 import { initializeSession, mirrorSession, readCommonDir, readSession } from '../core/record-store'
 import { withRecordLock } from '../core/session-memory'
 import { tickMs } from '../core/timing'
-import { pruneConcluded } from '../core/pruning'
+import { pruneRecords } from '../core/pruning'
 import { recoverHandoff, trackSessionLength } from '../features/handoff'
 
 /**
@@ -20,21 +20,23 @@ import { recoverHandoff, trackSessionLength } from '../features/handoff'
  */
 export async function handleSessionStart(port: EnginePort, event: Frozen<Args<'session.start'>>, next: Next<'session.start'>): Promise<EventResult<'session.start'>> {
   await port.clearLegacyStore()
-  await initializeSession(port)
-  await withRecordLock(() => trackSessionLength(createFeaturePort(port)))
-  await recoverHandoff(createFeaturePort(port))
-  await withRecordLock(() => pruneConcluded(port))
-  await port.registerSurface()
-  const session = await readSession(port)
-  if (session.flow || session.violations?.length) {
-    await reread(port, true)
-    void port.openPane()
-  }
+  // why: Registered before the seed, so a startup whose mirror read failed still retries it on every tick.
   port.repeat(tickMs, async () => {
     // atomicReplace holds the error in sessionMemory.recordError.
     try { await mirrorSession(port) } catch {}
     await reread({ ...port, cause: 'tick' }, true)
   })
+  // why: A seed whose mirror read failed must not stop the chain before the surface registers; every later read retries it.
+  await bestEffort(port, 'session seed', () => initializeSession(port), undefined)
+  await bestEffort(port, 'session length', () => withRecordLock(() => trackSessionLength(createFeaturePort(port))), undefined)
+  await bestEffort(port, 'handoff recovery', () => recoverHandoff(createFeaturePort(port)), undefined)
+  await bestEffort(port, 'startup pruning', () => withRecordLock(() => pruneRecords(port)), undefined)
+  await port.registerSurface()
+  const session = await bestEffort(port, 'session read', () => readSession(port), null)
+  if (session && (session.flow || session.violations?.length)) {
+    await reread(port, true)
+    void port.openPane()
+  }
   return next(event)
 }
 

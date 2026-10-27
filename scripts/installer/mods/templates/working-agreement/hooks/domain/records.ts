@@ -1,9 +1,9 @@
-import type { ApprovedRed, GithubStatus, IssueInfo, Identity, SessionRecord, Unit, UnitEntry, UnitRecord, VerifyRecord, RunRecord, Violation } from '../../types'
+import type { ApprovedRed, GithubStatus, IssueInfo, Identity, ObservedEndRecord, SessionRecord, Unit, UnitEntry, UnitRecord, VerifyRecord, RunRecord, Violation } from '../../types'
 import { hasOnlyKeys, isStringArray, isFiniteNumber, isNonEmptyString, isSafeInteger, isRecord } from '../lib/guards'
 import { isPrFields } from '../lib/github-rows'
 import { flowDefinitions } from './flow-definitions'
 
-export type { GithubStatus, Identity, IssueInfo, PullRequest, SessionRecord, Unit, UnitEntry, UnitRecord } from '../../types'
+export type { GithubStatus, Identity, IssueInfo, ObservedEndRecord, PullRequest, SessionRecord, Unit, UnitEntry, UnitRecord } from '../../types'
 
 /** Adds the current unit's derived flow and issues for the existing flow logic. */
 export interface Session extends SessionRecord { flow: string | null; issues: number[] }
@@ -190,6 +190,16 @@ export function parseSession(value: unknown): SessionRecord | null {
  */
 export function parseUnitRecord(value: unknown): UnitRecord | null {
   return isUnitRecord(value) ? value : null
+}
+
+/**
+ * Validates an observed slice end record with exactly its keys.
+ * @param value - The decoded JSON.
+ * @returns The valid record, or null.
+ */
+export function parseObservedEnd(value: unknown): ObservedEndRecord | null {
+  return isRecord(value) && hasOnlyKeys(value, ['v', 'identity', 'generation', 'end']) && value.v === 1 && isIdentity(value.identity)
+    && isNonEmptyString(value.generation) && isNonEmptyString(value.end) ? { v: 1, identity: value.identity, generation: value.generation, end: value.end } : null
 }
 
 /**

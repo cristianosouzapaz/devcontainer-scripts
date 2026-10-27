@@ -127,6 +127,8 @@ export interface SessionRecord {
 }
 /** Holds the declaration shared by chats with the same identity. */
 export interface UnitRecord { v: 1; identity: Identity; flow: string; generation?: string }
+/** Holds the slice end of one lifetime of a child unit that one session last observed while its branch was readable. */
+export interface ObservedEndRecord { v: 1; identity: Identity; generation: string; end: string }
 /** Holds the pull request of a unit's branch as GitHub reports it. */
 export interface PullRequest {
   number: number
