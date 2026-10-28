@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG NODE_IMAGE="node:lts-slim"
+ARG NODE_IMAGE="node:24.22.1-bookworm-slim"
 FROM ${NODE_IMAGE}
 
 # python3 provides the stdlib the herdr Claude Code hook needs (the base image
@@ -17,7 +17,11 @@ ENV CLAUDE_CONFIG_DIR=/root/.claude \
     CODEX_HOME=/root/.codex \
     PI_CODING_AGENT_DIR=/root/.pi/agent
 
-ARG SCRIPTS_REF="main"
+# SCRIPTS_REF defaults to the release tag this Dockerfile ships in: release-please bumps it in
+# each release PR, and a published tag never moves, so one Dockerfile builds one script tree.
+# x-release-please-start-version
+ARG SCRIPTS_REF="v4.1.0"
+# x-release-please-end
 ARG SCRIPTS_REPO="cristianosouzapaz/devcontainer-scripts"
 ENV SCRIPTS_REF=${SCRIPTS_REF} \
     SCRIPTS_REPO=${SCRIPTS_REPO}
@@ -35,9 +39,9 @@ RUN bash /tmp/dc-init/scripts/image-bootstrap.sh /tmp/dc-init
 
 # Install herdr, verified against its published checksum, with the scripts tree's
 # installer, which the Bash test runner also runs. Its path is an interface between this
-# Dockerfile and the scripts tree. HERDR_VERSION is empty by default (latest release);
-# set it to pin a release and bust this layer.
-ARG HERDR_VERSION=""
+# Dockerfile and the scripts tree. HERDR_VERSION is the one herdr pin: the test runners read
+# the release they install from this default too.
+ARG HERDR_VERSION="v0.9.5"
 RUN bash /opt/devcontainer/herdr-install.sh /usr/local/lib/herdr/herdr
 
 # Pre-create the workspace folder and its schema marker in the image so a freshly

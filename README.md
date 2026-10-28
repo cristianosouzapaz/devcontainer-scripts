@@ -26,11 +26,11 @@ Download the launcher — the only file you keep locally, no clone needed — an
 execution-policy bypass applies to that one process only and changes no machine setting:
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/cristianosouzapaz/devcontainer-scripts/main/launcher.ps1 -OutFile launcher.ps1 -UseBasicParsing
+Invoke-WebRequest https://raw.githubusercontent.com/cristianosouzapaz/devcontainer-scripts/stable/launcher.ps1 -OutFile launcher.ps1 -UseBasicParsing
 powershell -ExecutionPolicy Bypass -File .\launcher.ps1
 ```
 
-Each run downloads the latest `project-init.ps1` and all template files from this repository into a temp folder and executes them automatically, so the saved launcher never needs refreshing.
+Each run downloads the latest released `project-init.ps1` and all template files from this repository's `stable` release channel into a temp folder and executes them automatically, so the saved launcher never needs refreshing. A launcher saved before it followed `stable` still downloads from `main`; download it again to follow releases.
 
 The script prompts for project type, optional features, secrets file location, an optional Docker context name, destination path, project name, repository URL(s) and any extra workspace folders.
 
@@ -90,7 +90,7 @@ in `scripts/sync-agent-assets.sh`).
 
 | Variable            | Description                                                                                                                                                                                                                                                  | Default          |
 | :------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------------- |
-| `AGENT_ASSETS_REF`  | Git ref the *Sync Global Agent Assets* task fetches machine-wide skills and commands from. Falls back to `SCRIPTS_REF`, then `main`.                                                                                                                          | `main`           |
+| `AGENT_ASSETS_REF`  | Git ref the *Sync Global Agent Assets* task fetches machine-wide skills, commands and the installer from. Not set by `project-init.ps1`: unset, the task follows the `stable` release channel, falling back to `SCRIPTS_REF`. Set `main` to follow unreleased code. | -                |
 | `AUTO_UPDATE`       | Automatically fetch and pull updates from remote repository (true/false)                                                                                                                                                                                     | `true`           |
 | `CLEAN_CREDENTIALS` | Remove git credentials after setup (true/false)                                                                                                                                                                                                              | `false`          |
 | `DEBUG_MODE`        | Enable debug-level logging output and UTC timestamps on the top-level step lines (true/false)                                                                                                                                                                | `false`          |
@@ -106,10 +106,14 @@ in `scripts/sync-agent-assets.sh`).
 | `REPO_SOURCE`       | Clone URL for single-repo mode (`https://host/owner/repo.git`). Set automatically by `project-init.ps1`.                                                                                                                                                     | -                |
 | `REPO_SOURCE_N`     | Numbered clone URLs for multi-repo mode: `REPO_SOURCE_1`, `REPO_SOURCE_2`, … Repos may span multiple git hosts — each host resolves its own token via `GIT_CLONE_TOKEN_<HOST>` (falling back to `GIT_CLONE_TOKEN`). Set automatically by `project-init.ps1`. | -                |
 | `REQUIRE_DEPENDENCY_INSTALL` | Fail container setup if the project's dependencies can't be installed (true/false). When `false`, a failed install is only a warning.                                                                                                                       | `false`          |
-| `SCRIPTS_REF`       | Git ref the image was built from. Set as a Dockerfile build arg and persisted as an env var; used as the fallback ref for the *Sync Global Agent Assets* task when `AGENT_ASSETS_REF` is unset.                                                              | `main`           |
+| `SCRIPTS_REF`       | Git ref the image fetches the setup scripts from. Set as a Dockerfile build arg and persisted as an env var; defaults to the release tag (`vX.Y.Z`) the Dockerfile ships in, and is the *Sync Global Agent Assets* task's fallback when the `stable` channel does not resolve. | release tag      |
 | `SSH_SIGNING`       | Enable SSH commit signing via the forwarded host SSH agent (true/false). Set by `project-init.ps1` based on feature selection.                                                                                                                        | `true`           |
 | `STRUCTURED_LOGS`   | Output logs in JSON format (true/false)                                                                                                                                                                                                                      | `false`          |
 | `VALIDATE_TOKEN`    | Verify git token connectivity on startup (true/false)                                                                                                                                                                                                        | `true`           |
+
+### Following Unreleased `main`
+
+A project builds and syncs released code by default. To follow `main` instead, set both refs in its `devcontainer.json`: `"SCRIPTS_REF": "main"` under `build.args` (or `args:` in `docker-compose.yml`) for the image, and `"AGENT_ASSETS_REF": "main"` under `remoteEnv` for the *Sync Global Agent Assets* task. A project generated before the `stable` channel existed carries `"AGENT_ASSETS_REF": "main"` in `remoteEnv`; remove that line to follow releases.
 
 ## Package Manager Detection
 
@@ -227,7 +231,7 @@ commands rather than credentials. It is populated by the `Framework: Sync Global
 Assets` task and shared by every project built from this template.
 
 - **First use**: run the task once inside any container.
-- **Update**: re-run the task; it re-fetches from `AGENT_ASSETS_REF` (default `main`).
+- **Update**: re-run the task; it re-fetches from the latest release (the `stable` channel), or from `AGENT_ASSETS_REF` when set.
 - **Reset**: run `devcontainer-data reset agents` (follow it with a re-sync to repopulate).
 - **Working-agreement mod**: the task also installs the Claude Code mod that enforces the
   working agreement. It is on by default in every session; turn it off with

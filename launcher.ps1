@@ -1,5 +1,5 @@
 $tmp     = "$env:TEMP\devcontainer-init"
-$branch  = "main"
+$branch  = "stable"
 $base    = "https://raw.githubusercontent.com/cristianosouzapaz/devcontainer-scripts/$branch"
 $noCache = @{ 'Cache-Control' = 'no-cache'; 'Pragma' = 'no-cache' }
 

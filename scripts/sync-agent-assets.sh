@@ -21,10 +21,10 @@ source "${_SCRIPT_DIR}/setup/lib/loader.sh"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
-# resolve_assets_ref: prints the requested global-assets ref: AGENT_ASSETS_REF, then SCRIPTS_REF, then main
+# resolve_assets_ref: prints the requested global-assets ref: AGENT_ASSETS_REF, else the stable release channel
 # Notes: this is deliberately not persisted: refs are mutable input, while the resolved SHA is state.
 resolve_assets_ref() {
-	printf '%s\n' "${AGENT_ASSETS_REF:-${SCRIPTS_REF:-main}}"
+	printf '%s\n' "${AGENT_ASSETS_REF:-stable}"
 }
 
 # resolve_assets_repo: prints the explicitly requested installer repository, defaulting to the public release source
@@ -328,7 +328,14 @@ sync_agent_assets_locked() {
 
 	assets_ref="$(resolve_assets_ref)"
 	scripts_repo="$(resolve_assets_repo)" || log_fatal "Invalid SCRIPTS_REPO: ${SCRIPTS_REPO:-}"
-	source_sha="$(resolve_assets_sha "$assets_ref")" || log_fatal "Could not resolve immutable source SHA for ${scripts_repo}@${assets_ref}"
+	# why: a fork without the stable channel still syncs a released ref, the one its image was built from
+	if ! source_sha="$(resolve_assets_sha "$assets_ref")"; then
+		[[ -z "${AGENT_ASSETS_REF:-}" && -n "${SCRIPTS_REF:-}" ]] \
+			|| log_fatal "Could not resolve immutable source SHA for ${scripts_repo}@${assets_ref}"
+		log_warning "Could not resolve ${scripts_repo}@${assets_ref}; falling back to the image's SCRIPTS_REF (${SCRIPTS_REF})"
+		assets_ref="${SCRIPTS_REF}"
+		source_sha="$(resolve_assets_sha "$assets_ref")" || log_fatal "Could not resolve immutable source SHA for ${scripts_repo}@${assets_ref}"
+	fi
 	log_info "Syncing global agent assets · ${scripts_repo}@${source_sha}"
 
 	mkdir -p "${HOME}/.agents/skills" "${HOME}/.claude/skills"

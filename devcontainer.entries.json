@@ -4,7 +4,7 @@
         "key": "common-utils",
         "mandatory": true,
         "feature": {
-            "url": "ghcr.io/devcontainers/features/common-utils:2",
+            "url": "ghcr.io/devcontainers/features/common-utils:2.7.1",
             "options": {
                 "installZsh": false,
                 "username": "root",
@@ -19,12 +19,12 @@
         "key": "docker",
         "mandatory": true,
         "feature": {
-            "url": "ghcr.io/devcontainers/features/docker-outside-of-docker:1",
+            "url": "ghcr.io/devcontainers/features/docker-outside-of-docker:1.10.1",
             "options": {
-                "composeVersion": "latest",
+                "dockerDashComposeVersion": "5.6.1",
                 "enableNonRootDocker": false,
-                "installDockerCompose": true,
-                "version": "latest"
+                "mobyBuildxVersion": "0.38.1",
+                "version": "29.9.2"
             }
         },
         "mount": "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
@@ -34,8 +34,10 @@
         "key": "git",
         "mandatory": true,
         "feature": {
-            "url": "ghcr.io/devcontainers/features/git:1",
-            "options": {}
+            "url": "ghcr.io/devcontainers/features/git:1.3.8",
+            "options": {
+                "version": "os-provided"
+            }
         }
     },
     {
@@ -43,8 +45,10 @@
         "key": "github-cli",
         "mandatory": true,
         "feature": {
-            "url": "ghcr.io/devcontainers/features/github-cli:1",
-            "options": {}
+            "url": "ghcr.io/devcontainers/features/github-cli:1.1.3",
+            "options": {
+                "version": "2.103.3"
+            }
         }
     },
     {
@@ -53,8 +57,10 @@
         "default": false,
         "mandatory": false,
         "feature": {
-            "url": "ghcr.io/jckimble/devcontainer-features/ngrok:3",
-            "options": {}
+            "url": "ghcr.io/jckimble/devcontainer-features/ngrok:3.1.2",
+            "options": {
+                "version": "stable"
+            }
         }
     },
     {
@@ -62,7 +68,7 @@
         "key": "node",
         "mandatory": true,
         "feature": {
-            "url": "ghcr.io/devcontainers/features/node:2",
+            "url": "ghcr.io/devcontainers/features/node:2.1.1",
             "options": {
                 "version": "24.22.1",
                 "pnpmVersion": "12.16.1"
@@ -75,7 +81,7 @@
         "default": false,
         "mandatory": false,
         "feature": {
-            "url": "ghcr.io/robbert229/devcontainer-features/postgresql-client:1",
+            "url": "ghcr.io/robbert229/devcontainer-features/postgresql-client:1.0.0",
             "options": {
                 "version": "18"
             }
@@ -93,7 +99,7 @@
         "key": "uv",
         "mandatory": true,
         "feature": {
-            "url": "ghcr.io/va-h/devcontainers-features/uv:1",
+            "url": "ghcr.io/va-h/devcontainers-features/uv:1.1.4",
             "options": {
                 "version": "0.13.6"
             }

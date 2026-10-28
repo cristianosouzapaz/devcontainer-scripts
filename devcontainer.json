@@ -19,7 +19,6 @@
     "name": "project-name",
     "postCreateCommand": "/opt/devcontainer/devcontainer-setup.sh",
     "remoteEnv": {
-        "AGENT_ASSETS_REF": "main",
         "AUTO_UPDATE": "true",
         "CLEAN_CREDENTIALS": "false",
         "DEBUG_MODE": "false",
