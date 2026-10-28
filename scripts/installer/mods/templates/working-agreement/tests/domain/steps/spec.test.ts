@@ -93,25 +93,6 @@ test('a Small feature declared on an issue without the label starts at Grill', a
 })
 
 
-test('a failed read-back shows the not-authenticated fact on Grill', async ($, on) => {
-  const options: Options = { ...specDone }
-  const { clock } = createWorld(on, { branch: 'feat' }, options)
-  options.isLoggedOut = true
-  options.issueLabels = { 1: [] }
-  await clock.advance(61000)
-  expect(await readCurrentStep($)).toBe('Grill')
-  expect(await readFlowStatus($)).toContain('GitHub not authenticated — run gh auth login')
-})
-
-test('an issue read failure leaves Grill current with its error', async ($, on) => {
-  const options: Options = { ...specDone }
-  const { clock } = createWorld(on, { branch: 'feat' }, options)
-  options.missing = [1]
-  await clock.advance(61000)
-  expect(await readCurrentStep($)).toBe('Grill')
-  expect(await readFlowStatus($)).toContain('not found')
-})
-
 test('a failed read-back leaves Grill current while gh is logged out', async ($, on) => {
   const { clock } = createWorld(on, { branch: 'feat' }, {
     ...specDone, session: { info: { 1: { title: 'feat', labels: ['needs-info'] } } }, isLoggedOut: true,

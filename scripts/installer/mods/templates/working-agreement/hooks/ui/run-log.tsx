@@ -1,14 +1,14 @@
 import type { RenderChildren, RenderElement, ThemeKey } from 'claude-code'
-import type { RunCommandView, RunView } from '../../types'
+import type { RunCommandStatus, RunCommandView, RunView } from '../../types'
 import type { PaneElements } from './pane-sections'
 import { drawRule } from './pane-layout'
+import { commandSymbol, selectionCursor } from './symbols'
 import { keyWidth, panePadding } from './theme'
 
 type TextWrap = 'wrap' | 'truncate-middle' | 'truncate-end'
 interface OutcomeLabel { text: string; color: ThemeKey }
 
-const commandSymbols: Record<RunCommandView['status'], string> = { waiting: '○', running: '▸', passed: '✓', failed: '✗', timeout: '✗', cancelled: '○' }
-const commandColors: Record<RunCommandView['status'], ThemeKey> = { waiting: 'inactive', running: 'suggestion', passed: 'success', failed: 'error', timeout: 'error', cancelled: 'inactive' }
+const commandColors: Record<RunCommandStatus, ThemeKey> = { waiting: 'inactive', running: 'suggestion', passed: 'success', failed: 'error', timeout: 'error', cancelled: 'inactive' }
 
 /**
  * Names the run kind consistently in section headers.
@@ -42,7 +42,7 @@ function runHeader({ Box, Text }: PaneElements, kind: RunView['kind'], detail: R
  * @param status - The command's display status.
  * @returns Whether the command is waiting or cancelled.
  */
-function isInactiveCommand(status: RunCommandView['status']): boolean {
+function isInactiveCommand(status: RunCommandStatus): boolean {
   return status === 'waiting' || status === 'cancelled'
 }
 
@@ -96,7 +96,7 @@ export function drawLiveRun(elements: PaneElements, run: RunView): RenderElement
     {run.commands.length === 1 ? <Text color="text" wrap="truncate-end">{run.commands[0]!.argv.join(' ')}</Text>
       : run.commands.map(command => <Box gap={1}>
         <Box flexGrow={1} minWidth={0}>
-          <Box width={2} flexShrink={0}><Text color={commandColors[command.status]}>{commandSymbols[command.status]} </Text></Box>
+          <Box width={2} flexShrink={0}><Text color={commandColors[command.status]}>{commandSymbol[command.status]} </Text></Box>
           <Text color={isInactiveCommand(command.status) ? 'inactive' : 'text'} wrap="truncate-end">{command.argv.join(' ')}</Text>
         </Box>
         {command.status !== 'waiting' && <Box flexShrink={0}><Text color={command.status === 'running' ? 'text' : command.status === 'failed' || command.status === 'timeout' ? 'error' : 'inactive'}>
@@ -164,7 +164,7 @@ function commandBlock(elements: PaneElements, command: RunCommandView, run: RunV
   return <Box flexDirection="column" marginTop={1}>
     <Text color="subtle">{drawRule(columns)}</Text>
     <Box>
-      <Box width={2} flexShrink={0}><Text color={commandColors[command.status]}>{commandSymbols[command.status]} </Text></Box>
+      <Box width={2} flexShrink={0}><Text color={commandColors[command.status]}>{commandSymbol[command.status]} </Text></Box>
       <Text weight={!inactive ? 'semibold' : undefined} color={inactive ? 'inactive' : 'text'} wrap="wrap">{command.argv.join(' ')}</Text>
     </Box>
     <Box paddingLeft={2}><Text color={outcomeColor}>{outcome}</Text></Box>
@@ -196,7 +196,7 @@ export function renderRunLog(elements: PaneElements, runs: RunView[], selectedRu
     {runs.length > 1 && <Box flexDirection="column">
       {runs.map((run, index) => <Box gap={1}>
         <Box flexGrow={1} minWidth={0}>
-          <Box width={2} flexShrink={0}><Text color="suggestion">{run === selected ? '▸ ' : '  '}</Text></Box>
+          <Box width={2} flexShrink={0}><Text color="suggestion">{run === selected ? `${selectionCursor} ` : '  '}</Text></Box>
           <Button key={String(index + 1)} hotkey={String(index + 1)} plain onPress={() => select(run.runId)}>
             <Text color="text" weight={run === selected ? 'semibold' : undefined}>{listName(run)}</Text><Text color="inactive" wrap="truncate-end"> · {listResult(run)}</Text>
           </Button>

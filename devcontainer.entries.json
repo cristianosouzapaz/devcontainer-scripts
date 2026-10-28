@@ -82,7 +82,7 @@
         }
     },
     {
-        "label": "SSH Commit Signing (1Password)",
+        "label": "SSH Commit Signing (SSH agent)",
         "key": "ssh-signing",
         "default": true,
         "mandatory": false,

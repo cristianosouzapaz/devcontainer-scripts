@@ -4,8 +4,9 @@ import type { Identity, RecordedRunStatus, RunCommandView, RunView, VerifyRecord
 import { bestEffort } from './best-effort'
 import type { EnginePort } from './engine-port'
 import { refreshView } from './pane-view'
-import { atomicReplace, readCommonDir, readSession, readUnit, sameIdentity, recordsPath, selectRunDisplay } from './record-store'
-import { sessionMemory } from './session-memory'
+import { atomicReplace, readCommonDir, readSession, readUnit, recordsPath } from './record-store'
+import { sameIdentity } from '../domain/records'
+import { readRunDisplay, sessionMemory } from './session-memory'
 import { readJson } from '../lib/json'
 import { isFiniteNumber, isRecord, isStringArray } from '../lib/guards'
 
@@ -69,7 +70,7 @@ export async function withRunView(port: EnginePort, sid: string, identity: Ident
   }
   const polling = { task: Promise.resolve() }
   try {
-    await bestEffort(port, 'run view refresh', () => refreshView(port, true, true), undefined)
+    await bestEffort(port, 'run view refresh', () => refreshView(port, { isQuiet: true, isSynced: true }), undefined)
     await bestEffort(port, 'live run start', () => port.writeLiveRun(initial), undefined)
     polling.task = bestEffort(port, 'run view paint', paint, undefined)
     return await work()
@@ -82,7 +83,7 @@ export async function withRunView(port: EnginePort, sid: string, identity: Ident
     }
     const memory = sessionMemory.runViews.get(sid)
     if (memory) sessionMemory.runViews.set(sid, { ...memory, live: null })
-    await bestEffort(port, 'final run view refresh', () => refreshView(port, true, true), undefined)
+    await bestEffort(port, 'final run view refresh', () => refreshView(port, { isQuiet: true, isSynced: true }), undefined)
     await bestEffort(port, 'live run clear', () => port.writeLiveRun(null), undefined)
   }
 }
@@ -139,7 +140,7 @@ export async function readRunLog(port: EnginePort): Promise<RunView[]> {
   if (!session.unit) return []
   const unit = await readUnit(port, session.unit)
   const common = await readCommonDir(port)
-  const display = selectRunDisplay(await port.readSessionId(), session.unit, unit.generation)
+  const display = await readRunDisplay(port, session.unit, unit.generation)
   const records = [
     ...unit.verifyRuns.map(record => ({ record, kind: 'Verify' as const })),
     ...unit.runs.map(record => ({ record, kind: record.outcome.kind === 'pass' ? 'green' as const : 'red' as const })),

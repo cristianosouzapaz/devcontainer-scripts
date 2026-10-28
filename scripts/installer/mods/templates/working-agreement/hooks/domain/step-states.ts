@@ -1,7 +1,7 @@
 import type { ApprovedRed, FlowStepState, IssueComment, IssueRead, RunRecord } from '../../types'
 import type { GitState } from '../lib/git'
 import type { CiState } from './ci-blocker'
-import { hasDiagnoseStep } from './flow-definitions'
+import { hasDiagnoseStep, isDeliveryStep } from './flow-definitions'
 import type { FlowDefinition, Step } from './flow-definitions'
 import { findEarliestRed } from './records'
 import type { Identity, IssueInfo, PullRequest, Session, Unit } from './records'
@@ -192,6 +192,18 @@ export interface Position extends Evidence {
 /** Holds a PR step fact and the code that selects its action. */
 export type DeliveryFact = Pick<Evidence, 'prFact' | 'prFactCode'>
 
+/** The legend entry a step is drawn with. */
+export type StepMarkKind = FlowStepState | 'failed' | 'rewritten' | 'waitingApproval'
+
+/** How a step reads on every surface: its legend entry, and the marks that decide its color and fact. */
+export interface StepMark {
+  mark: StepMarkKind
+  isMerged: boolean
+  isFailed: boolean
+  isRunUnrecorded: boolean
+  isRewritten: boolean
+}
+
 /**
  * Tells whether the checkout is on its default branch.
  *
@@ -285,6 +297,37 @@ export const isCiWait = (position: Position): boolean =>
  */
 export const isUnitFinished = (position: Position | null): boolean =>
   !!position && (position.isConcluded || (!position.current && (position.pullRequest?.state === 'OPEN' || isIntegrateDone(position.integration))))
+
+/**
+ * Tells whether a step's error is a failure: only a Verify run or a delivery fails, while any other step's error is
+ * an unreadable fact it still waits on.
+ * @param entry - The step's resolved state.
+ * @returns Whether the current step failed.
+ */
+const isStepFailed = (entry: StepState): boolean =>
+  entry.isError && entry.state === 'current' && (entry.step.observe === 'verify.passed' || isDeliveryStep(entry.step))
+
+/**
+ * Marks a step for every surface that draws one. Rewritten history wins over everything, then a merged delivery,
+ * then a failure, then a wait on the user's approval, then the step's state; a Verify run that changed the tree
+ * is no failure of the current tree, so it leaves the step in progress.
+ * @param entry - The step's displayed state.
+ * @param position - The unit's position.
+ * @param isTreeChanged - Whether the last Verify run changed the tree and so left no record.
+ * @returns The step's legend entry and marks.
+ */
+export function markStep(entry: StepState, position: Position, isTreeChanged: boolean): StepMark {
+  const isRewritten = !!position.slice?.isRewritten
+  const isCurrent = entry.state === 'current'
+  // The unrecorded run explains Code only while Code waits on a Verify run; any other Code blocker, an approval included, stays shown.
+  const isRunUnrecorded = isTreeChanged && !isRewritten && isCurrent && !entry.isWaitingApproval && (entry.step.id === 'verify' || entry.factCode === 'verify-not-run')
+  const isMerged = !isRewritten && position.isConcluded && isDeliveryStep(entry.step) && !!position.pullRequest
+  const isFailed = !isRewritten && !isRunUnrecorded && isStepFailed(entry)
+  return {
+    mark: isRewritten ? 'rewritten' : isMerged ? 'done' : isFailed ? 'failed' : isCurrent && entry.isWaitingApproval ? 'waitingApproval' : entry.state,
+    isMerged, isFailed, isRunUnrecorded, isRewritten,
+  }
+}
 
 /**
  * Tells whether a child's Integrate facts show it integrated: awaiting or in its parent's PR, or carried by a merged one.
@@ -433,7 +476,7 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
       ...(state === 'current' && isIssueStep(step) ? { fact: issueJudgements.get(step)?.fact } : {}),
       ...((step.isUnlocking || step.observe === 'commit') && !isBranchGone ? { fact: isOnDefault ? "check out the unit's branch and re-declare"
         : !slice ? 'slice unavailable — re-declare'
-        : step.isUnlocking ? (!isCodeChanged ? 'no change from the base' : !isCodeWritten ? 'no green after the approval' : 'verify not run on this tree') : slice.commits === 0 ? 'no commit in the slice' : 'uncommitted changes' } : {}),
+        : step.isUnlocking ? (!isCodeChanged ? 'no change from the base' : !isCodeWritten ? 'no green after the approval' : describeMissingVerify(unit, slice)) : slice.commits === 0 ? 'no commit in the slice' : 'uncommitted changes' } : {}),
       ...(step.isUnlocking && !isOnDefault && isCodeWritten && !verify.isReached ? { factCode: 'verify-not-run' as const } : {}),
       ...(step.observe === 'verify.passed' ? { fact: verify.fact, factCode: verify.factCode } : {}),
       ...(state === 'current' && step.observe === 'verify.passed' && verify.command ? { command: verify.command } : {}),
@@ -509,3 +552,15 @@ export function judgeDiagnose(unit: Pick<Unit, 'runs' | 'approval' | 'approvedRe
  * @returns Whether the slice has a code change and a usable tree.
  */
 export const hasCodeChange = (slice: UnitSlice | null): slice is CodeSlice => !!slice && !slice.isRewritten && !!slice.tree && (slice.base === null || (!!slice.baseTree && slice.tree !== slice.baseTree))
+
+/**
+ * Names why a written change still lacks a Verify run on its tree and base, from the unit's newest Verify record.
+ * @param unit - The unit, whose Verify records are newest first.
+ * @param slice - The current unit slice.
+ * @returns The Code fact naming what is missing; shown only while no record matches the slice's tree and base.
+ */
+function describeMissingVerify(unit: Pick<Unit, 'verifyRuns'>, slice: UnitSlice): string {
+  const latest = unit.verifyRuns[0]
+  if (!latest) return 'no Verify run yet'
+  return `${latest.tree === slice.tree ? 'base moved' : 'tree changed'} since the last Verify — run Verify`
+}

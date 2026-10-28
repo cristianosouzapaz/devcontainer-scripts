@@ -9,7 +9,8 @@ import { fail, succeed, unwrapOr } from '../lib/result'
 import type { Result } from '../lib/result'
 import type { EnginePort } from './engine-port'
 import { composeCutCommand, readBranchChildren } from './integration'
-import { readBranchUnitsStrictly, sameIdentity } from './record-store'
+import { readBranchUnitsStrictly } from './record-store'
+import { sameIdentity } from '../domain/records'
 import { readCandidates, readDeclaredConclusion } from './unit-github'
 
 /** Holds what a Follow-up's entry is judged on when it is declared. */

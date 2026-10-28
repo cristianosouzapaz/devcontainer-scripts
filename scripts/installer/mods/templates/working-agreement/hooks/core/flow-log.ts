@@ -7,7 +7,8 @@ import { createQueue } from '../lib/queue'
 import { formatError } from '../lib/result'
 import { bestEffort } from './best-effort'
 import type { EnginePort } from './engine-port'
-import { sameIdentity, unitLogPath } from './record-store'
+import { unitLogPath } from './record-store'
+import { sameIdentity } from '../domain/records'
 import { holdError, sessionMemory } from './session-memory'
 
 /** The step states this module last logged, for one chat's unit lifetime. */

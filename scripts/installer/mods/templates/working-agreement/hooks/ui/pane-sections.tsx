@@ -1,8 +1,8 @@
 import type { ElementTable, RenderElement } from 'claude-code'
 
-import type { FlowFooter, FlowIssue, FlowRow, FlowStep, RunView } from '../../types'
+import type { FlowFooter, FlowIssue, FlowRow, FlowStep } from '../../types'
 import { drawRule } from './pane-layout'
-import { issueGap, keyWidth, labelColor, panePadding, pillGap, pillRowGap, stepSymbol, symbolColor, toneColor } from './theme'
+import { issueGap, keyWidth, labelColor, panePadding, pillGap, pillRowGap, symbolColor, toneColor } from './theme'
 
 /** The elements the Flow pane draws with, which `$.ui.resolve(e)` hands out. */
 export type PaneElements = Pick<ElementTable, 'Box' | 'Text' | 'Button'>
@@ -34,7 +34,6 @@ interface KeyedRowsProps {
 /** The steps of the flow. */
 interface StepListProps {
   steps: FlowStep[]
-  run?: RunView
 }
 
 /** The footer, the body's width and what pressing the button does. */
@@ -181,20 +180,6 @@ export function drawMetaRows(elements: PaneElements, props: KeyedRowsProps): Ren
 }
 
 /**
- * Converts domain evidence into the step shown during a live run.
- * @param step - The evidence-backed flow step.
- * @param runningId - The step the live run belongs to, when one runs.
- * @returns The step with temporary live-run presentation applied.
- */
-function toDrawnStep(step: FlowStep, runningId?: string): FlowStep {
-  if (!runningId) return step
-  if (step.id === runningId) return { ...step, symbol: stepSymbol.current, state: 'current', detail: undefined, isError: false, isMerged: false }
-  return step.state === 'current'
-    ? { ...step, symbol: step.symbol === '?' ? '?' : stepSymbol.pending, state: 'pending', detail: undefined, isError: false, isMerged: false }
-    : step
-}
-
-/**
  * Draws the flow's steps with their state marks and facts.
  *
  * @param elements - The element table.
@@ -202,26 +187,22 @@ function toDrawnStep(step: FlowStep, runningId?: string): FlowStep {
  * @returns The step list.
  */
 export function drawStepList({ Box, Text }: PaneElements, props: StepListProps): RenderElement {
-  // A red or green run belongs to whichever step is current; only Verify runs as a step of its own.
-  const runningId = props.run && (props.run.kind === 'Verify' ? 'verify' : props.steps.find(step => step.state === 'current')?.id)
   return (
     <Box flexDirection="column">
-      {props.steps.map(step => {
-        const drawn = toDrawnStep(step, runningId)
-        return <Box flexDirection="column">
+      {props.steps.map(step => (
+        <Box flexDirection="column">
           <Box>
-            <Box width={2} flexShrink={0}><Text color={drawn.isError ? 'error' : drawn.isMerged ? 'merged' : drawn.symbol === '?' ? 'inactive' : symbolColor[drawn.state]}>{drawn.isError ? '✗' : drawn.symbol} </Text></Box>
-            <Box flexShrink={0}><Text color={drawn.symbol === '?' ? 'inactive' : labelColor[drawn.state]}>{drawn.label}</Text></Box>
+            <Box width={2} flexShrink={0}><Text color={step.isError ? 'error' : step.isMerged ? 'merged' : step.isRewritten ? 'inactive' : symbolColor[step.state]}>{step.symbol} </Text></Box>
+            <Box flexShrink={0}><Text color={step.isRewritten ? 'inactive' : labelColor[step.state]}>{step.label}</Text></Box>
             {/* Fragments render as column Boxes, which would stack the fact below its label. */}
-            {drawn.detail && [
+            {step.detail && [
               <Box flexShrink={0}><Text color="inactive"> · </Text></Box>,
-              props.run && drawn.state === 'current' ? <Box flexShrink={0}><Text color="text">{drawn.detail}</Text></Box>
-                : drawn.isMerged ? <Box flexShrink={0}><Text color="merged">{drawn.detail}</Text></Box>
-                : <Text color={drawn.isError ? 'error' : drawn.state === 'skipped' ? 'inactive' : 'text'} wrap={drawn.state === 'current' ? 'wrap' : 'truncate-end'}>{drawn.detail}</Text>,
+              step.isMerged ? <Box flexShrink={0}><Text color="merged">{step.detail}</Text></Box>
+                : <Text color={step.isError ? 'error' : step.state === 'skipped' ? 'inactive' : 'text'} wrap={step.state === 'current' ? 'wrap' : 'truncate-end'}>{step.detail}</Text>,
             ]}
           </Box>
         </Box>
-      })}
+      ))}
     </Box>
   )
 }

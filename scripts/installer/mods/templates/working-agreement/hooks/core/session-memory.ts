@@ -4,6 +4,8 @@ import type { Result } from '../lib/result'
 import type { PullRequest } from '../domain/records'
 import type { GithubStatus } from '../domain/records'
 import type { Identity, RunView } from '../../types'
+import { sameIdentity } from '../domain/records'
+import type { EnginePort } from './engine-port'
 
 /**
  * Describes repeated failures from the first observation through the latest attempt.
@@ -12,6 +14,9 @@ export interface ErrorWindow { error: string; firstSeen: number; lastSeen: numbe
 
 /** The last GitHub reachability probe and when it ran. */
 interface GithubCache { at: number; status: GithubStatus }
+
+/** A reachability probe, in flight or settled, and when it started: a forced read within a second reuses it. */
+interface GithubProbeRun { at: number; status: Promise<GithubStatus> }
 
 /** A refreshable GitHub response, including read failures. */
 interface Cached<T> { at: number; result: Result<T> }
@@ -37,9 +42,19 @@ interface SessionMemory {
   recordError: ErrorWindow | null
   logError: ErrorWindow | null
   githubCache: GithubCache | null
+  githubProbe: GithubProbeRun | null
   githubLastOk: number | null
   githubError: string | null
+  /** When the issues were last read, successfully or not: it throttles unforced syncs. */
   issuesCheckedAt: number
+  /** Numbers each issue read as it starts: an older attempt never overwrites what a newer one stored. */
+  issuesAttempt: number
+  /** The attempt whose outcome the session record and the failure below hold. */
+  issuesAppliedAttempt: number
+  /** When every declared issue was last read in full, null before any such read since the module loaded. */
+  issuesReadAt: number | null
+  /** Why the latest issue sync failed; the facts it could not refresh stay as the last good read left them. */
+  issuesError: string | null
   candidates: Map<string, Cached<PullRequestCandidate[]>>
   checks: Map<string, Cached<CommitCheck[]>>
   rules: Map<string, Cached<RequiredChecks>>
@@ -60,9 +75,14 @@ export const sessionMemory: SessionMemory = {
   recordError: null,
   logError: null,
   githubCache: null,
+  githubProbe: null,
   githubLastOk: null,
   githubError: null,
   issuesCheckedAt: 0,
+  issuesAttempt: 0,
+  issuesAppliedAttempt: 0,
+  issuesReadAt: null,
+  issuesError: null,
   candidates: new Map(),
   checks: new Map(),
   rules: new Map(),
@@ -91,4 +111,34 @@ export const withRecordLock: <T>(work: () => Promise<T>) => Promise<T> = createQ
  */
 export function holdError(previous: ErrorWindow | null, error: string, now: number): ErrorWindow {
   return { error, firstSeen: previous?.firstSeen ?? now, lastSeen: now, failures: (previous?.failures ?? 0) + 1 }
+}
+
+/**
+ * Reads this chat's run display only for the declared unit and generation.
+ * @param port - The engine calls.
+ * @param identity - The declared unit, if any.
+ * @param generation - The unit's declared lifetime.
+ * @returns The matching display, or null when it belongs to another unit or lifetime.
+ */
+export async function readRunDisplay(port: EnginePort, identity: Identity | null | undefined, generation: string | undefined): Promise<RunDisplay | null> {
+  const memory = sessionMemory.runViews.get(await port.readSessionId())
+  return memory && identity && sameIdentity(memory.identity, identity) && memory.generation === generation ? memory : null
+}
+
+/**
+ * Tells whether a run display's last run is a Verify run that changed the tree and so left no record.
+ * @param display - The chat's run display for the unit, if any.
+ * @returns Whether the last Verify run changed the tree.
+ */
+export const isTreeChangedRun = (display: RunDisplay | null): boolean => display?.last?.kind === 'Verify' && display.last.status === 'tree changed'
+
+/**
+ * Tells whether this chat's last Verify run of the unit changed the tree and so left no record.
+ * @param port - The engine calls.
+ * @param identity - The declared unit, if any.
+ * @param generation - The unit's declared lifetime.
+ * @returns Whether the last Verify run changed the tree.
+ */
+export async function readIsTreeChanged(port: EnginePort, identity: Identity | null | undefined, generation: string | undefined): Promise<boolean> {
+  return isTreeChangedRun(await readRunDisplay(port, identity, generation))
 }

@@ -15,6 +15,8 @@ export interface IssueRead {
 }
 /** Holds the error when GitHub could not read an issue. */
 export interface ReadFailure { error: string }
+/** Holds why the latest GitHub read failed, and when the issue facts still shown were read, null when unknown. */
+export interface GithubFailure { reason: string; readAt: number | null }
 /** Holds either the facts GitHub read for an issue or its read error. */
 export type IssueInfo = IssueRead | ReadFailure
 /** Counts the writes the session's checks refused, by kind. */
@@ -191,7 +193,7 @@ export interface RowSuffix { text: string; tone: FlowTone }
 /** A labelled line of the Flow pane, such as the branch or a blocked-write count. */
 export interface FlowRow { key: string; value: string; tone: FlowTone; suffix?: RowSuffix }
 /** One step of the declared flow with its inline status and symbol styling. */
-export interface FlowStep { id: string; symbol: string; label: string; state: FlowStepState; detail?: string; isError: boolean; isMerged: boolean }
+export interface FlowStep { id: string; symbol: string; label: string; state: FlowStepState; detail?: string; isError: boolean; isMerged: boolean; isRewritten: boolean }
 /** An issue the session's unit of work resolves. */
 export interface FlowIssue { number: number; title: string }
 /** Names whether the footer starts a fresh session or continues in a new one. */

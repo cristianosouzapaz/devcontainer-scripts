@@ -1,11 +1,13 @@
 import type { PrSnapshot, Violation, ViolationFact } from '../../types'
 import { listNewCommits, readContentTree, readGitOutput, readGitState, readWorktrees } from '../lib/git'
 import { readPrFields } from '../lib/github'
+import { symbol } from '../ui/symbols'
 import { bestEffort } from './best-effort'
 import type { EnginePort } from './engine-port'
 import { isJudgedTool } from './judged-tools'
 import { createReadPort } from './read-port'
-import { readCommonDir, readSession, sameIdentity, temporaryPath, updateSession, recordsPath } from './record-store'
+import { readCommonDir, readSession, temporaryPath, updateSession, recordsPath } from './record-store'
+import { sameIdentity } from '../domain/records'
 import { readRepositoryRoot } from './repository'
 import { withRecordLock } from './session-memory'
 import { drawTerritory } from './territory'
@@ -220,4 +222,14 @@ export function describeViolation(fact: Violation, reader: ViolationReader, root
   return reader === 'agent'
     ? `${subject} during your call (it may be the user's${other}): stop and tell the user`
     : `${subject.charAt(0).toUpperCase()}${subject.slice(1)} during an agent call (it may be yours${other})`
+}
+
+/**
+ * Labels the fact for the user's pane note and status row: an observed violation carries the failed mark, an unchecked call none.
+ * @param fact - The observed fact.
+ * @param root - The root of this session's checkout.
+ * @returns The user's note, marked.
+ */
+export function labelViolation(fact: Violation, root?: string): string {
+  return `${fact.kind === 'unchecked' ? '' : `${symbol.failed} `}${describeViolation(fact, 'user', root)}`
 }

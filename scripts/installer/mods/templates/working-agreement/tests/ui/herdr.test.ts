@@ -9,14 +9,12 @@ import { createEmptySession, createEmptyUnit } from '../../hooks/domain/records'
 import { resolveStepStates } from '../../hooks/domain/step-states'
 import type { Evidence, Position } from '../../hooks/domain/step-states'
 import { buildParentGraph, buildParentPullRequest, diagnoseRuns, diagnosisComment, noFlow, verifyFile } from '../support/builders'
-import { endTurn, readFlowStatus } from '../support/helpers'
+import { endTurn, inside, readFlowStatus } from '../support/helpers'
 import { common, configBlob, createTestPort, createWorld, root } from '../support/world'
 import type { Gate, World } from '../support/world'
 
 /** An assertion the world runs just before its next herdr call, once a test sets it. */
 interface HerdrCheck { run?: () => void }
-
-const inside = { HERDR_ENV: '1', HERDR_PANE_ID: 'pane id' }
 
 /**
  * Lists every shared declaration; deleting them leaves the chat's unit with no flow.
@@ -45,7 +43,7 @@ test('every reread reports all three tokens, even an unchanged view; no flow cle
   const current = world.views.at(-1)?.steps.find(step => step.state === 'current')
   expect(current).toBeDefined()
   expect(calls.at(-1)).toEqual({ argv: ['herdr', 'pane', 'report-metadata', 'pane id', '--source', 'working-agreement', '--ttl-ms', '150000',
-    '--token', 'flow_unit=Small feature #1', '--token', `flow_step=${current!.label}`, '--token', 'flow_alert='], timeoutMs: 5000 })
+    '--token', 'flow_unit=Small feature #1', '--token', `flow_step=▸ ${current!.label}`, '--token', 'flow_alert='], timeoutMs: 5000 })
   for (const path of listDeclarations(world)) world.files.delete(path)
   await endTurn($)
   expect(calls.at(-1)?.argv).toContain('flow_unit=')
@@ -80,10 +78,10 @@ for (const scenario of ['plain', 'verify-approval', 'verify-fail', 'verify-timeo
     const declared = scenario === 'approval' ? { ...session, issues: [307], info: { 307: { title: 'bug', labels: ['ready-for-agent'], comments: [diagnosisComment] } } } : session
     const states = resolveStepStates(flow, declared, unit, evidence)
     const position: Position = { ...evidence, flow, unit, states, current: states.find(state => state.state === 'current') ?? null }
-    await reportHerdr(port, declared, position, new Set())
+    await reportHerdr(port, declared, position, new Set(), false)
     const expected = scenario === 'concluded' ? '✓ PR #318' : scenario === 'rewritten' ? '? Verify'
-      : scenario === 'approval' ? '● Diagnose' : scenario === 'verify-approval' ? '● Verify' : scenario === 'issue-error' ? '✗ Map'
-      : scenario === 'ci-fail' ? '✗ Update PR #318' : scenario.startsWith('verify-') ? '✗ Verify' : 'Verify'
+      : scenario === 'approval' ? '● Diagnose' : scenario === 'verify-approval' ? '● Verify' : scenario === 'issue-error' ? '▸ Map'
+      : scenario === 'ci-fail' ? '✗ Update PR #318' : scenario.startsWith('verify-') ? '✗ Verify' : '▸ Verify'
     expect(world.runs.at(-1)).toContain(`--token flow_step=${expected} --token`)
     expect(world.runs.at(-1)).toContain(`flow_unit=${flow.label} #307${scenario === 'approval' ? '' : ' +1'}`)
     expect(world.runs.at(-1)).not.toContain('arbitrary fact')
@@ -100,9 +98,9 @@ test('alerts ignore unchecked and dismissed records, choose newest, count others
     { ...attribution, kind: 'push' as const, fact: { ref: 'feat', before: 'a', after: 'b' }, factId: 'push', end: 3 },
     { ...attribution, kind: 'unchecked' as const, fact: { toolUseId: 'call' }, factId: 'unchecked', end: 4 },
   ] }
-  await reportHerdr(port, session, null, new Set(['push']))
+  await reportHerdr(port, session, null, new Set(['push']), false)
   expect(world.runs.at(-1)).toContain('flow_unit= --token flow_step= --token flow_alert=✗ default-tree by agent +1')
-  await reportHerdr(port, session, null, new Set(['push', 'tree', 'commit']))
+  await reportHerdr(port, session, null, new Set(['push', 'tree', 'commit']), false)
   expect(world.runs.at(-1)?.endsWith('--token flow_alert=')).toBe(true)
 })
 
@@ -158,7 +156,7 @@ test('reports from direct refresh and queued reread never overlap', async (_$, o
   } })
   const state = world.herdrActivity
   const port = createTestPort(world)
-  const first = refreshView(port, true)
+  const first = refreshView(port, { isQuiet: true })
   await started
   const second = reread(port, false)
   gate.open?.()
@@ -176,11 +174,11 @@ test('a unit without issues uses its declared branch and all values are capped a
   const evidence: Evidence = { git: null, slice: null, verify: { fact: '', isVerified: false, isReached: false }, checks: 'off', isConcluded: false }
   const states = resolveStepStates(flow, session, unit, evidence)
   const position: Position = { ...evidence, flow, unit, states, current: states.find(state => state.state === 'current') ?? null }
-  await reportHerdr(port, session, position, new Set())
+  await reportHerdr(port, session, position, new Set(), false)
   expect(world.runs.at(-1)).toContain('flow_unit=Trivial change · unit-branch')
   const long = 'x'.repeat(100)
-  await reportHerdr(port, session, { ...position, flow: { ...flow, label: long }, current: { ...states[0]!, step: { ...states[0]!.step, label: long } } }, new Set())
-  expect(world.runs.at(-1)).toContain(`flow_unit=${'x'.repeat(80)} --token flow_step=${'x'.repeat(80)} --token`)
+  await reportHerdr(port, session, { ...position, flow: { ...flow, label: long }, current: { ...states[0]!, step: { ...states[0]!.step, label: long } } }, new Set(), false)
+  expect(world.runs.at(-1)).toContain(`flow_unit=${'x'.repeat(80)} --token flow_step=▸ ${'x'.repeat(78)} --token`)
 })
 
 test('watched refs and the 60 second tick each report a fresh snapshot', async ($, on) => {
@@ -200,12 +198,12 @@ test('clearing a flow updates the pane before reporting, including an unchanged 
   const check: HerdrCheck = {}
   const world = createWorld(on, { branch: 'feat' }, { herdrEnv: inside, beforeHerdr: () => check.run?.() })
   const port = createTestPort(world)
-  await refreshView(port, true)
+  await refreshView(port, { isQuiet: true })
   for (const path of listDeclarations(world)) world.files.delete(path)
   check.run = () => { expect(world.views.at(-1)).toBe(null) }
   const initial = world.herdrCalls.length
-  await refreshView(port, true)
-  await refreshView(port, true)
+  await refreshView(port, { isQuiet: true })
+  await refreshView(port, { isQuiet: true })
   expect(world.herdrCalls.length).toBe(initial + 2)
 })
 
@@ -218,7 +216,7 @@ test('a failure while recording a herdr error cannot reject refresh or latch the
     clock.failures += 1
     throw new Error('clock unavailable')
   } }
-  await refreshView(port, true)
+  await refreshView(port, { isQuiet: true })
   expect(clock.failures > 0).toBe(true)
   expect(world.herdrCalls).toHaveLength(1)
   options.herdrResult = { exitCode: 0, stderr: '' }
@@ -227,8 +225,8 @@ test('a failure while recording a herdr error cannot reject refresh or latch the
   expect(sessionMemory.herdrError).toBe(null)
 })
 
-for (const [name, tip, expected] of [['before its merge', 'p1', 'Integrate'], ['once integrated', 'ma', '']] as const) {
-  test(`a child's sidebar step ${name} carries no prefix`, async ($, on) => {
+for (const [name, tip, expected] of [['before its merge', 'p1', '▸ Integrate'], ['once integrated', 'ma', '✓ Integrate']] as const) {
+  test(`a child's sidebar step ${name} reads ${expected}, as on the pane`, async ($, on) => {
     const graph = buildParentGraph()
     const world = createWorld(on, { branch: 'a', graph: { ...graph, refs: { ...graph.refs, par: tip } } },
       { herdrEnv: inside, unit: { base: 'p1', baseBranch: 'par', skips: [{ step: 'code', reason: 'covered' }, { step: 'verify', reason: 'covered' }] } })
@@ -244,7 +242,7 @@ test("a concluded child's sidebar shows its Integrate step merged", async (_$, o
   const session = { ...createEmptySession('sid'), flow: 'close-out', issues: [1], info: {}, unit: { branch: 'a', issues: [1] } }
   const evidence: Evidence = { git: null, slice: null, verify: { fact: '', isVerified: false, isReached: false }, checks: 'off', isConcluded: true, pullRequest: { number: 9, state: 'MERGED' } }
   const states = resolveStepStates(flow, session, createEmptyUnit(), evidence)
-  await reportHerdr(createTestPort(world), session, { ...evidence, flow, unit: createEmptyUnit(), states, current: null }, new Set())
+  await reportHerdr(createTestPort(world), session, { ...evidence, flow, unit: createEmptyUnit(), states, current: null }, new Set(), false)
   expect(world.herdrCalls.at(-1)?.argv).toContain('flow_step=✓ Integrate')
 })
 

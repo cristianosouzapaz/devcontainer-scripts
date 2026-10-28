@@ -65,7 +65,7 @@ async function drawPane(port: EnginePort, elements: PaneElements, props: PanePro
     },
     dismissViolations: async () => {
       await dismissViolations(port, (view?.violations ?? []).map(note => note.factId))
-      await refreshView(port, true)
+      await refreshView(port, { isQuiet: true })
     },
     startNewSession: () => { if (!view?.footer?.isRunning) void startNewSession(createFeaturePort(port)) },
     startHandoff: () => { if (!view?.footer?.isRunning) void startHandoff(createFeaturePort(port)) },

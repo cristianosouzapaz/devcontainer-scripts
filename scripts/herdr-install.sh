@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Installs the herdr release binary for this machine, verified against the sha256 digest GitHub
-# publishes for the asset. The image build and the CI Bash job both run it, so they install
+# publishes for the asset. The image build and the Bash test runner both run it, so they install
 # herdr the same way. Safe to re-run: it replaces the binary with the verified release.
 # Usage: herdr-install.sh [target]   (default /usr/local/lib/herdr/herdr)
 # HERDR_VERSION pins a release tag; empty takes the latest release.

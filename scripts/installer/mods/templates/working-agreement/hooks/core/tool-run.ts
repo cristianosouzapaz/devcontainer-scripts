@@ -2,11 +2,11 @@ import { executeProcess } from '../lib/process'
 import type { Identity, Unit, UnitEntry } from '../../types'
 import type { CommandRun, RunRequest } from './run-command'
 import type { EnginePort } from './engine-port'
-import { readCommonDir, readUnit, sameIdentity, updateSession, replaceUnitEntry, recordsPath } from './record-store'
+import { readCommonDir, readUnit, updateSession, replaceUnitEntry, recordsPath } from './record-store'
 import { closeCommandLog, runCommand } from './run-command'
 import { formatExit, updateRunCommand } from './run-view'
 import { withRecordLock } from './session-memory'
-import { createEmptyUnit } from '../domain/records'
+import { createEmptyUnit, sameIdentity } from '../domain/records'
 import { readWorktrees } from '../lib/git'
 
 interface RunLog { runId: string; log: string }

@@ -5,7 +5,8 @@ import { isAncestor, readForkPoint, readGitOutput, readDefaultRef, readWorktrees
 import type { GitState } from '../lib/git'
 import { recordObservedEnd } from './child-end'
 import type { EnginePort } from './engine-port'
-import { readBranchUnits, readDeclaration, sameIdentity } from './record-store'
+import { readBranchUnits, readDeclaration } from './record-store'
+import { sameIdentity } from '../domain/records'
 import { readWorkingTreeKey } from './repository'
 
 /**

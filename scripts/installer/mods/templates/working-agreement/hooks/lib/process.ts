@@ -25,6 +25,32 @@ export interface ProcessPort { run: (commandLine: string[], options: ProcessOpti
 /** How long a process runs when the caller sets no timeout. */
 const defaultTimeoutMs = 15000
 
+// why: The engine's timer and the clock read here are not the same reading, so a rejection the deadline caused can
+// read a few milliseconds early; a non-timeout failure this close to the deadline is too rare to be worth telling apart.
+const timeoutToleranceMs = 50
+
+/** A run the engine stopped because it outlived the timeout it was given. */
+class ProcessTimeoutError extends Error {}
+
+/**
+ * Runs a command through the engine, telling a timeout from any other rejection by the deadline the run set: the
+ * engine's rejection carries no structured reason, and its wording is not a contract.
+ * @param run - The engine's process runner.
+ * @param now - The engine clock.
+ * @param commandLine - The program and its arguments.
+ * @param options - The timeout, working directory and standard input.
+ * @returns The process output; a rejection at or past the deadline is a ProcessTimeoutError.
+ */
+export async function runWithDeadline(run: ProcessPort['run'], now: () => Promise<number>, commandLine: string[], options: ProcessOptions): Promise<ProcessOutput> {
+  const started = await now()
+  try {
+    return await run(commandLine, options)
+  } catch (error) {
+    if (await now() - started >= options.timeoutMs - timeoutToleranceMs) throw new ProcessTimeoutError(`${commandLine[0]} timed out after ${options.timeoutMs / 1000} s`, { cause: error })
+    throw error
+  }
+}
+
 /**
  * Executes a process while preserving rejected runs and every exit code.
  * @param processes - The engine's process runner.
@@ -49,7 +75,7 @@ export async function runProcess(processes: ProcessPort, commandLine: string[], 
   try {
     return succeed(await executeProcess(processes, commandLine, { timeoutMs, ...options }))
   } catch (error) {
-    return { ...fail(`${commandLine[0]} could not run: ${formatError(error)}`), cause: error }
+    return { ...fail(error instanceof ProcessTimeoutError ? error.message : `${commandLine[0]} could not run: ${formatError(error)}`), cause: error }
   }
 }
 

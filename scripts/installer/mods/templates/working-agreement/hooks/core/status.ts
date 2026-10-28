@@ -4,9 +4,9 @@ import { readJson } from '../lib/json'
 import { isRecord } from '../lib/guards'
 import { bestEffort } from './best-effort'
 import type { ErrorWindow } from './session-memory'
-import { describeViolation } from './guarantees'
+import { labelViolation } from './guarantees'
 import type { EnginePort } from './engine-port'
-import { readGithubStatus } from './github-sync'
+import { readGithubFailure, readGithubStatus } from './github-sync'
 import { reread } from './pane-view'
 import { locatePosition } from './position'
 import { readGit, readRepositoryRoot } from './repository'
@@ -20,6 +20,7 @@ import { describeBaseMismatch, readCandidates, selectBasePullRequest } from './u
 import { readDismissals } from './violation-store'
 import { fail } from '../lib/result'
 import { keyedLine } from '../ui/status-text'
+import { formatLocalTime } from '../lib/time'
 
 /**
  * Keeps object identifiers compact in diagnostic status rows.
@@ -32,14 +33,7 @@ const short = (value: string): string => value.slice(0, 7)
  * @param at - The observation time in milliseconds, or null if never observed.
  * @returns The local timestamp with timezone offset, or never.
  */
-const time = (at: number | null): string => {
-  if (at === null) return 'never'
-  const date = new Date(at)
-  const offset = -date.getTimezoneOffset()
-  const sign = offset < 0 ? '-' : '+'
-  const pad = (value: number): string => String(Math.abs(value)).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())} ${sign}${pad(Math.trunc(offset / 60))}:${pad(offset % 60)}`
-}
+const time = (at: number | null): string => at === null ? 'never' : formatLocalTime(at, true)
 
 /**
  * Keeps repeated failures and their observation window visible in status output.
@@ -133,7 +127,10 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
     } else groups.push([keyedLine('Config', `.claude/working-agreement.json · ${config.kind === 'missing' ? 'not found in the unit tree' : `invalid: ${config.fact}`}`), keyedLine('Selection', 'none: verify refuses until a config exists')])
   }
   const lastOk = `last ok ${time(sessionMemory.githubLastOk)}`
-  const github = timedOut ? `${lastOk} · timed out after 30 s` : result.github === 'connected' ? lastOk : `${lastOk} · now failing: ${sessionMemory.githubError || 'exited non-zero'}`
+  const failure = timedOut ? null : readGithubFailure(result.github)
+  // The pane's phrase, with the dates a diagnostic row needs.
+  const github = timedOut ? `${lastOk} · timed out after 30 s` : !failure ? lastOk
+    : `${lastOk} · read failed (${failure.reason})${failure.readAt === null ? '' : ` · facts from ${time(failure.readAt)}`}`
   const base = shown.base
   const rules = timedOut ? fail('timed out after 30 s') : result.rules
   const classic = timedOut ? fail('timed out after 30 s') : result.classic
@@ -141,7 +138,7 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
   const root = await readRepositoryRoot(statusPort)
   const dismissed = await readDismissals(port)
   const violations = [...(session.violations ?? [])].sort((left, right) => Number(dismissed.has(left.factId) || left.kind === 'unchecked') - Number(dismissed.has(right.factId) || right.kind === 'unchecked') || right.end - left.end)
-  if (violations.length) groups.push(violations.map(record => keyedLine('Violation', `✗ ${describeViolation(record, 'user', root ?? undefined)} · ${time(record.end)} · ${[...record.toolUseIds, ...(record.agentIds ?? [])].join(', ')} · ${dismissed.has(record.factId) ? 'dismissed' : record.kind === 'unchecked' ? 'unchecked' : 'open'}`)))
+  if (violations.length) groups.push(violations.map(record => keyedLine('Violation', `${labelViolation(record, root ?? undefined)} · ${time(record.end)} · ${[...record.toolUseIds, ...(record.agentIds ?? [])].join(', ')} · ${dismissed.has(record.factId) ? 'dismissed' : record.kind === 'unchecked' ? 'unchecked' : 'open'}`)))
   const errors = [formatErrorWindow('herdr', 'report-metadata', sessionMemory.herdrError),
     formatErrorWindow('Records', 'record write', sessionMemory.recordError),
     formatErrorWindow('Log', 'log append', sessionMemory.logError),

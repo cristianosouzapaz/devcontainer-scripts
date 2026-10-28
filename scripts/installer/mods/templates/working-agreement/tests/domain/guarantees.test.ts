@@ -47,7 +47,7 @@ for (const agentId of [undefined, 'child']) {
     expect(result.context?.[0]).toBe('existing context')
     expect(result.context?.[1]).toContain("a commit appeared during your call (it may be the user's): stop and tell the user")
     expect(views.at(-1)?.violations?.[0]?.tone).toBe('error')
-    expect(views.at(-1)?.violations?.[0]?.text).toBe('A commit appeared during an agent call (it may be yours)')
+    expect(views.at(-1)?.violations?.[0]?.text).toBe('✗ A commit appeared during an agent call (it may be yours)')
     expect(parseSession(sessions.get('sid'))).not.toBe(null)
     // The direct-dispatch port's record never reaches the engine store, so only the dispatched call continues there.
     if (agentId) return
@@ -157,7 +157,7 @@ test('a moved tracking ref records a push of previously local history', async ($
     { kind: 'push', fact: { ref: 'refs/remotes/origin/feature', before: null, after: 'b' } },
   ])
   expect(result.context?.join('')).toContain("a push appeared on refs/remotes/origin/feature during your call (it may be the user's): stop and tell the user")
-  expect(views.at(-1)?.violations?.[0]?.text).toBe('A push appeared on refs/remotes/origin/feature during an agent call (it may be yours)')
+  expect(views.at(-1)?.violations?.[0]?.text).toBe('✗ A push appeared on refs/remotes/origin/feature during an agent call (it may be yours)')
 })
 
 test('default checkout content is judged independently and names another worktree', async ($, on) => {
@@ -167,7 +167,7 @@ test('default checkout content is judged independently and names another worktre
   const result = await $.tool.call({ tool: 'mcp__unknown__write' })
   expect(sessions.get('sid')?.violations?.[0]?.fact).toEqual({ root: '/other', before: 'tree:file=before', after: 'tree:file=after' })
   expect(result.context?.join('')).toContain("in another worktree, during your call (it may be the user's or another session's)")
-  expect(views.at(-1)?.violations?.[0]?.text).toBe("The default-branch tree changed at /other, in another worktree, during an agent call (it may be yours or another session's)")
+  expect(views.at(-1)?.violations?.[0]?.text).toBe("✗ The default-branch tree changed at /other, in another worktree, during an agent call (it may be yours or another session's)")
 })
 
 test("a commit on the unit's branch checked out in another worktree is attributed conservatively", async ($, on) => {
@@ -182,7 +182,7 @@ test("a commit on the unit's branch checked out in another worktree is attribute
   // The diagnostic retains the observed checkout even after that branch is no longer checked out.
   checkout.worktrees!['/other']!.branch = 'main'
   expect((await readFlowStatus($))?.split('\n').find(line => line.startsWith('Violation'))).toContain('on feature, checked out in another worktree')
-  expect(views.at(-1)?.violations?.[0]?.text).toBe("A commit appeared on feature, checked out in another worktree, during an agent call (it may be yours or another session's)")
+  expect(views.at(-1)?.violations?.[0]?.text).toBe("✗ A commit appeared on feature, checked out in another worktree, during an agent call (it may be yours or another session's)")
   expect(describeViolation(record, 'agent', '/other')).not.toContain('another worktree')
   expect(describeViolation(record, 'agent', '/other')).not.toContain("another session's")
 })
@@ -544,7 +544,7 @@ test('the previous turn-end PR read supplies the next window baseline, and the p
   expect(record?.kind).toBe('pr')
   const number = buildPullRequest()['number']
   expect(result.context?.join('')).toContain(`PR #${number} changed its protected fields during your call (it may be the user's): stop and tell the user`)
-  expect(views.at(-1)?.violations?.[0]?.text).toBe(`PR #${number} changed its protected fields during an agent call (it may be yours)`)
+  expect(views.at(-1)?.violations?.[0]?.text).toBe(`✗ PR #${number} changed its protected fields during an agent call (it may be yours)`)
   expect((await readFlowStatus($))?.split('\n').find(line => line.startsWith('Violation'))).toContain(`✗ PR #${number} changed its protected fields during an agent call (it may be yours) · `)
   if (record?.kind === 'pr') {
     expect(record.fact.before.reviews.totalCount).toBe(1)

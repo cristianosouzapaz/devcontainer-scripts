@@ -66,13 +66,13 @@ test('the pane shows the current Commit fact after a new edit and turn end', asy
 test('the pane reports stale GitHub facts while a declared issue is unverified', async ($, on) => {
   createWorld(on, { branch: 'feat', ahead: 1 }, { failing: 'gh', session: { flow: 'small-feature', issues: [1], info: {} } })
   await readFlowStatus($)
-  expect(await countPaneText($, /unreachable · not refreshed/)).toBe(1)
+  expect(await countPaneText($, /^read failed \(gh could not run: /)).toBe(1)
 })
 
-test('the pane says labels and PR state are not refreshed while GitHub is unreachable and every declared issue is verified', async ($, on) => {
+test('the pane reports one failed GitHub read while GitHub is unreachable and every declared issue is verified', async ($, on) => {
   createWorld(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, failing: 'gh' })
   await readFlowStatus($)
-  expect(await countPaneText($, /unreachable · not refreshed/)).toBe(1)
+  expect(await countPaneText($, /^read failed \(gh could not run: /)).toBe(1)
 })
 
 for (const [count, labels] of [[1, oneRow], [2, twoRows], [3, threeRows]] as const) {

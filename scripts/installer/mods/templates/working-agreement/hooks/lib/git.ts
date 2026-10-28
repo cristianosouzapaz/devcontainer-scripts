@@ -122,10 +122,14 @@ export async function readContentTree(processes: ProcessPort, root: string, temp
   const paths = await readGitOutput(processes, ['-C', root, 'rev-parse', '--path-format=absolute', '--git-path', 'index', '--show-object-format'])
   const [index, format] = paths?.split('\n') ?? []
   if (!index) return null
+  const stamp = `${temporary}.stamp`
+  const live = `${temporary}.live`
   try {
     const directory = temporary.slice(0, temporary.lastIndexOf('/'))
     if (!hasExitedZero(await runProcess(processes, ['mkdir', '-p', '--', directory])).isOk) return null
-    const copied = hasExitedZero(await runProcess(processes, ['sh', '-c', 'if [ -e "$1" ]; then cp -- "$1" "$2"; fi', 'copy-index', index, temporary]))
+    // why: git rechecks by content an entry written in the index's own mtime second, so a copy with a later mtime would trust stale stat data; stamping before copying means an index swapped in between can only leave the copy older, rechecking more.
+    // The copy and stamp may thus be days old, so the fresh live marker, touched first, keeps another chat's sweep off the running capture.
+    const copied = hasExitedZero(await runProcess(processes, ['sh', '-c', 'touch -- "$4" && if [ -e "$1" ]; then touch -r "$1" "$3" && cp -- "$1" "$2" && touch -r "$3" "$2"; fi', 'copy-index', index, temporary, stamp, live]))
     if (!copied.isOk) return null
     const command = ['env', `GIT_INDEX_FILE=${temporary}`, ...gitArgv(['-c', 'core.splitIndex=false', '-C', root])]
     const added = hasExitedZero(await runProcess(processes, [...command, 'add', '-A']))
@@ -140,7 +144,7 @@ export async function readContentTree(processes: ProcessPort, root: string, temp
     const entries = listed.split('\0').filter(Boolean)
     return entries.length > 2 * entries.filter(entry => entry.startsWith('R ')).length ? null : content
   } finally {
-    await removeFile(processes, temporary, `${temporary}.lock`)
+    await removeFile(processes, temporary, `${temporary}.lock`, stamp, live)
   }
 }
 

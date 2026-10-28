@@ -18,6 +18,8 @@ from an index, configures that rather than reading findings it can never act on.
 import argparse
 import fnmatch
 import json
+import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -45,6 +47,7 @@ EXPLICIT_ANCHOR = re.compile(r"<a\s+[^>]*(?:id|name)=[\"']([^\"']+)[\"']|\{#([\w
 PATH_CANDIDATE = re.compile(r"^[\w.@+-]+(?:/[\w.@+-]+)+/?$")
 CONJUNCTION = re.compile(r"\band\b|&", re.IGNORECASE)
 EXTERNAL = ("http://", "https://", "mailto:")
+NO_WORK_TREE = re.compile(rb"not a git repository \(or any (of the )?parent|must be run in a work tree")
 
 
 class Findings:
@@ -203,23 +206,74 @@ def check_links(page, text, findings):
             findings.error(str(page), f"anchor does not resolve: {target}#{fragment}")
 
 
-def check_paths(page, lines, patterns, findings):
+def git(*args):
+    """Run git and return the completed process, or None when git is not installed.
+
+    Output stays bytes, decoded per name with the filesystem encoding, so a file name the
+    locale cannot decode never aborts the run. The C locale keeps git's messages matchable.
+    """
+    try:
+        return subprocess.run(["git", *args], capture_output=True, env={**os.environ, "LC_ALL": "C"})
+    except FileNotFoundError:
+        return None
+
+
+def work_tree():
+    """Return the work tree's root and the paths it holds, or None when there is no work tree.
+
+    Tracked and untracked-but-not-ignored entries present on disk count: a clean checkout plus
+    the uncommitted change. Ignored files and the git directory are local to one machine, so a
+    verdict that counted them would differ between a workstation and CI. Only git's own word
+    that there is no work tree falls back to the disk; any other failure — an unsafe directory,
+    a broken GIT_DIR — aborts, since a silent fallback would judge one machine's files again.
+    An empty listing means the run sits in an ignored corner of an enclosing repository, which
+    holds no evidence either.
+    """
+    probe = git("rev-parse", "--show-toplevel")
+    if probe is None or NO_WORK_TREE.search(probe.stderr):
+        return None
+    listed = git("ls-files", "-z", "--cached", "--others", "--exclude-standard") if probe.returncode == 0 else probe
+    if listed.returncode != 0:
+        raise SystemExit(f"ERROR: git cannot list the work tree: {os.fsdecode(listed.stderr).strip()}")
+    present = set()
+    for entry in filter(None, listed.stdout.split(b"\0")):
+        path = Path(os.fsdecode(entry))
+        if path.exists():
+            present.add(path.as_posix())
+            present.update(parent.as_posix() for parent in path.parents)
+    if not present:
+        return None
+    return Path(os.fsdecode(probe.stdout).strip()), present
+
+
+def below_opaque_entry(path):
+    """Return whether a path lies below a symlink or a submodule, whose contents git never lists."""
+    return any(parent.is_symlink() or (parent / ".git").exists() for parent in path.parents if parent.parts)
+
+
+def check_paths(page, lines, patterns, repository, findings):
     """Resolve the repository paths a page names in inline code.
 
-    Only a candidate whose first segment is an existing directory is resolved, so an external
-    reference that merely looks like a path — an image tag, an owner/name pair — is never
-    mistaken for a stale one. A path below a directory that no longer exists at all is
-    therefore out of reach here, and stays with the reader.
+    Only a candidate whose first segment is an entry of the repository is resolved, so an
+    external reference that merely looks like a path — an image tag, an owner/name pair, git
+    metadata — is never mistaken for a stale one. A path below a directory that no longer exists
+    at all is therefore out of reach here, and stays with the reader, as does one below a
+    symlink or a submodule. Without git the disk is the only evidence left.
     """
     for number, line in prose_lines(lines):
         for span in INLINE_CODE.findall(line):
             candidate = span.strip()
             if not PATH_CANDIDATE.match(candidate):
                 continue
-            resolved = Path(candidate.rstrip("/"))
-            if is_ignored(resolved, patterns) or not Path(resolved.parts[0]).is_dir():
+            resolved = Path(posixpath.normpath(candidate.rstrip("/")))
+            if not resolved.parts:
                 continue
-            if not resolved.exists():
+            if repository is None:
+                judged, exists = Path(resolved.parts[0]).is_dir(), resolved.exists()
+            else:
+                judged = resolved.parts[0] in repository and not below_opaque_entry(resolved)
+                exists = resolved.as_posix() in repository
+            if judged and not exists and not is_ignored(resolved, patterns):
                 findings.error(f"{page}:{number}", f"path does not exist in the repository: {candidate}")
 
 
@@ -261,19 +315,22 @@ def check_length(page, lines, config, findings):
         findings.warn(str(page), f"{len(lines)} lines, over the {config['maxLines']}-line guideline")
 
 
-def committed_line_count(page):
-    """Return the page's line count at HEAD, or None when it is new or git is unavailable."""
+def committed_line_count(page, root):
+    """Return the page's line count at HEAD, or None when it is new or there is no work tree."""
+    if root is None:
+        return None
     try:
-        root = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
-        relative = page.resolve().relative_to(Path(root))
-        blob = subprocess.run(["git", "show", f"HEAD:{relative.as_posix()}"], capture_output=True, text=True, check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+        relative = page.resolve().relative_to(root)
+    except ValueError:
+        return None
+    blob = git("show", f"HEAD:{relative.as_posix()}")
+    if blob is None or blob.returncode != 0:
         return None
     return len(blob.stdout.splitlines())
 
 
-def check_growth(page, lines, findings):
-    before = committed_line_count(page)
+def check_growth(page, lines, root, findings):
+    before = committed_line_count(page, root)
     if before is not None and len(lines) > before:
         findings.warn(str(page), f"grew from {before} to {len(lines)} lines — state the reason, or generalize the existing wording instead")
 
@@ -301,7 +358,7 @@ def check_reachability(index, patterns, findings):
             findings.error(str(page), "not reachable from the index — an unlinked page does not exist")
 
 
-def check_page(page, config, findings, docs_page=True):
+def check_page(page, config, tree, findings, docs_page=True, growth=True):
     """Run every applicable check on one page.
 
     A page outside the documentation tree — the README — is held to the claims it makes about
@@ -314,14 +371,16 @@ def check_page(page, config, findings, docs_page=True):
         return
     lines = text.splitlines()
     check_links(page, text, findings)
-    check_paths(page, lines, config["ignore"], findings)
+    root, repository = tree or (None, None)
+    check_paths(page, lines, config["ignore"], repository, findings)
     if not docs_page:
         return
     check_frontmatter(page, lines, config["frontmatter"], findings)
     check_literals(page, lines, findings)
     check_title(page, lines, findings)
     check_length(page, lines, config, findings)
-    check_growth(page, lines, findings)
+    if growth:
+        check_growth(page, lines, root, findings)
 
 
 def main():
@@ -332,6 +391,7 @@ def main():
     parser.add_argument("--config", help=f"configuration file (default: {CONFIG_FILE} when present)")
     parser.add_argument("--strict", action="store_true", help="exit nonzero on warnings too")
     parser.add_argument("--max-lines", type=int, help="override the length guideline")
+    parser.add_argument("--no-growth", action="store_true", help="skip the growth check, which compares each page with HEAD")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -353,10 +413,11 @@ def main():
     else:
         parser.error("give one or more pages, or --all")
 
+    tree = work_tree()
     for page in pages:
-        check_page(page, config, findings)
+        check_page(page, config, tree, findings, growth=not args.no_growth)
     if args.all and readme.is_file():
-        check_page(readme, config, findings, docs_page=False)
+        check_page(readme, config, tree, findings, docs_page=False)
 
     print(f"{findings.errors} error(s), {findings.warnings} warning(s).")
     return 1 if findings.errors or (args.strict and findings.warnings) else 0

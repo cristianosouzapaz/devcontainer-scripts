@@ -34,7 +34,7 @@ ADD --keep-git-dir=true https://github.com/${SCRIPTS_REPO}.git#${SCRIPTS_REF} /t
 RUN bash /tmp/dc-init/scripts/image-bootstrap.sh /tmp/dc-init
 
 # Install herdr, verified against its published checksum, with the scripts tree's
-# installer, which the CI Bash job also runs. Its path is an interface between this
+# installer, which the Bash test runner also runs. Its path is an interface between this
 # Dockerfile and the scripts tree. HERDR_VERSION is empty by default (latest release);
 # set it to pin a release and bust this layer.
 ARG HERDR_VERSION=""

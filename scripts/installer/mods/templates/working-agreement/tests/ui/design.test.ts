@@ -11,11 +11,11 @@ import type { Position } from '../../hooks/domain/step-states'
 import { buildView } from '../../hooks/ui/view-model'
 import { renderStatusText } from '../../hooks/ui/status-text'
 import { pushedCloseOut, diagnoseRuns, diagnosisComment } from '../support/builders'
-import { mountPane, readFlowStatus, readPromptContext } from '../support/helpers'
+import { checkTheme, mountPane, readFlowStatus, readPromptContext, textOf } from '../support/helpers'
+import type { DrawnNode } from '../support/helpers'
 import { createWorld } from '../support/world'
 
 interface DiagnoseComments { comments: IssueComment[] | ReadFailure }
-interface Node { props?: Record<string, unknown>; children?: unknown[] }
 interface Displayed { value: FlowView }
 
 const themeKeys: ThemeKey[] = ['text', 'inverseText', 'inactive', 'subtle', 'suggestion', 'remember', 'success', 'error', 'warning', 'merged', 'claude', 'permission', 'planMode', 'autoAccept', 'promptBorder', 'bashBorder', 'ide', 'diffAdded', 'diffRemoved', 'diffAddedDimmed', 'diffRemovedDimmed', 'diffAddedWord', 'diffRemovedWord']
@@ -28,24 +28,6 @@ function position(current = 'diagnose', overrides: Partial<Position> = {}): Posi
   return { flow, unit: createEmptyUnit(), git: null, slice: null, states, current: states[index] ?? null, verify: { fact: 'no pass', isVerified: false, isReached: false }, checks: 'off', isConcluded: false, ...overrides }
 }
 
-
-
-function textOf(node: unknown): string {
-  if (typeof node === 'string') return node
-  if (typeof node !== 'object' || node === null) return ''
-  const tree = node as Node
-  return (tree.children ?? []).map(textOf).join('') || String(tree.props?.['label'] ?? '')
-}
-
-function checkTheme(node: unknown): void {
-  if (typeof node !== 'object' || node === null) return
-  const { props, children } = node as Node
-  for (const key of ['color', 'backgroundColor']) {
-    if (props?.[key] !== undefined) expect(themeKeys).toContain(props[key])
-  }
-  for (const child of children ?? []) checkTheme(child)
-}
-
 async function expectText(ui: Mounted<'terminal', 'Pane'>, text: string, props: Record<string, unknown>): Promise<void> {
   const nodes = await ui.findAll({ type: 'Text' })
   expect(nodes.find(node => node.text === text && Object.entries(props).every(([key, value]) => node.props[key] === value))).toBeDefined()
@@ -56,15 +38,15 @@ for (const columns of [30, 60]) {
     createWorld(on, { branch: 'feat' })
     const slice = { base: 'a', end: 'b', tree: 'tree', baseTree: 'base', commits: 1, isClean: true, isFrozen: true, isRewritten: false, isShared: false }
     const session: Session = { ...declared, blocked: { edits: 2 }, handoff: { state: 'failed', reason: 'unavailable' } }
-    const base = buildView(session, withStates(position('diagnose', { slice }), session), 'unreachable')
+    const base = buildView(session, withStates(position('diagnose', { slice }), session), { reason: 'unreachable', readAt: null }, false)
     const displayed: Displayed = { value: { ...base, hasRunLog: true, footer: { action: 'continue', isRunning: false },
       notes: [...base.notes, { key: 'Checkout', value: "other, not this unit's branch", tone: 'warn' }],
-      violations: [{ factId: 'v', text: 'a commit appeared', tone: 'error' }, { factId: 'u', text: 'could not check', tone: 'warn' }],
-      steps: [...base.steps, { isError: false, isMerged: false, id: 'tickets', symbol: '↷', label: 'Tickets', state: 'skipped', detail: 'optional for this unit' }] } }
+      violations: [{ factId: 'v', text: '✗ a commit appeared', tone: 'error' }, { factId: 'u', text: 'could not check', tone: 'warn' }],
+      steps: [...base.steps, { isError: false, isMerged: false, isRewritten: false, id: 'tickets', symbol: '↷', label: 'Tickets', state: 'skipped', detail: 'optional for this unit' }] } }
     on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: displayed.value, version: 0 } }))
     const ui = await mountPane($, { columns: 60 })
     await ui.redraw({ title: 'Flow', isFocused: true, bodyColumns: columns, placement: 'dock', scroll: { offset: 0, bodyRows: 50 }, view: {} })
-    checkTheme(await ui.drawn())
+    checkTheme(await ui.drawn(), themeKeys)
     expect((await ui.find({ type: 'Box' }))?.props['backgroundColor']).toBeUndefined()
     await expectText(ui, '✓ ', { color: 'success' })
     await expectText(ui, '▸ ', { color: 'suggestion' })
@@ -74,29 +56,30 @@ for (const columns of [30, 60]) {
     await expectText(ui, 'optional for this unit', { color: 'inactive', wrap: 'truncate-end' })
     await expectText(ui, 'feature/a-long-branch-name', { color: 'text', wrap: 'truncate-middle' })
     await expectText(ui, 'frozen', { color: 'inactive' })
-    await expectText(ui, 'unreachable · not refreshed', { color: 'warning', wrap: 'wrap' })
+    await expectText(ui, 'read failed (unreachable)', { color: 'warning', wrap: 'wrap' })
     await expectText(ui, columns === 30 ? ' ready-for-age… ' : ' ready-for-agent ', { color: 'text', backgroundColor: 'subtle', wrap: 'truncate-end' })
     for (const [key, color] of [['Checkout', 'warning'], ['Violation', 'error'], ['Unchecked', 'warning'], ['Blocked', 'error'], ['Handoff', 'error']]) await expectText(ui, key!, { color, weight: 'semibold' })
-    await expectText(ui, 'a commit appeared', { color: 'text', wrap: 'wrap' })
+    await expectText(ui, '✗ a commit appeared', { color: 'text', wrap: 'wrap' })
+    await expectText(ui, 'could not check', { color: 'text', wrap: 'wrap' })
     const boxes = await ui.findAll({ type: 'Box' })
     for (const text of ['✓ ', 'Diagnose', ' · ', 'Branch', base.progress, ' · frozen']) {
       expect(boxes.find(box => box.props['flexShrink'] === 0 && textOf(box) === text)).toBeDefined()
     }
-    const pillRows = boxes.filter(box => box.props['gap'] === 2 && box.children.some(child => (child as Node).props?.['backgroundColor'] === 'subtle'))
+    const pillRows = boxes.filter(box => box.props['gap'] === 2 && box.children.some(child => (child as DrawnNode).props?.['backgroundColor'] === 'subtle'))
     expect(pillRows).toHaveLength(columns === 30 ? 3 : 2)
     expect(renderStatusText(displayed.value)).toContain('↷ Tickets · optional for this unit')
     expect(boxes.find(box => textOf(box).includes('dismiss') && box.props['marginTop'] === 1 && box.props['paddingLeft'] === 10)).toBeDefined()
     expect(boxes.find(box => textOf(box).includes('Run log') && box.props['alignItems'] === 'flex-end')?.props['flexDirection']).toBe(columns < 44 ? 'column' : 'row')
     expect(textOf(await ui.drawn())).not.toContain('History')
     expect(textOf(await ui.drawn())).not.toContain('run /')
-    displayed.value = buildView(declared, withStates(position('diagnose', { slice: { ...slice, isRewritten: true } }), declared), 'unauth')
+    displayed.value = buildView(declared, withStates(position('diagnose', { slice: { ...slice, isRewritten: true } }), declared), { reason: 'not authenticated — run gh auth login', readAt: null }, false)
     await ui.redraw()
     await expectText(ui, 'rewritten', { color: 'error' })
     await expectText(ui, '? ', { color: 'inactive' })
     expect(textOf(await ui.drawn())).not.toContain('History')
     expect(renderStatusText(displayed.value)).not.toContain('History')
-    await expectText(ui, 'not authenticated — run gh auth login', { color: 'warning', wrap: 'wrap' })
-    checkTheme(await ui.drawn())
+    await expectText(ui, 'read failed (not authenticated — run gh auth login)', { color: 'warning', wrap: 'wrap' })
+    checkTheme(await ui.drawn(), themeKeys)
     await ui.unmount()
   })
 }
@@ -104,7 +87,7 @@ for (const columns of [30, 60]) {
 test('merged PR and failing CI draw their own symbols, facts and theme keys', async ($, on) => {
   createWorld(on, { branch: 'feat' })
   const concluded = position('pr', { isConcluded: true, pullRequest: { number: 318, state: 'MERGED' } })
-  const displayed = { value: buildView(declared, concluded, 'connected') }
+  const displayed = { value: buildView(declared, concluded, null, false) }
   on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: displayed.value, version: 0 } }))
   const ui = await mountPane($, { columns: 60 })
   expect(textOf(await ui.drawn())).toContain('✓ PR #318 · merged')
@@ -113,15 +96,15 @@ test('merged PR and failing CI draw their own symbols, facts and theme keys', as
   await expectText(ui, 'PR #318', { color: 'text' })
   await expectText(ui, 'merged', { color: 'merged' })
   expect((await ui.findAll({ type: 'Box' })).find(box => textOf(box) === 'merged')?.props['flexShrink']).toBe(0)
-  checkTheme(await ui.drawn())
+  checkTheme(await ui.drawn(), themeKeys)
   const failing = position('pr')
-  displayed.value = buildView(declared, { ...failing, states: failing.states.map(entry => ({ ...entry, isError: true, fact: 'CI failing: mods' })) }, 'connected')
+  displayed.value = buildView(declared, { ...failing, states: failing.states.map(entry => ({ ...entry, isError: true, fact: 'CI failing: mods' })) }, null, false)
   await ui.redraw()
   await expectText(ui, '✗ ', { color: 'error' })
   await expectText(ui, 'CI failing: mods', { color: 'error', wrap: 'wrap' })
   expect(textOf(await ui.drawn())).not.toContain('waiting for CI')
   expect(renderStatusText(displayed.value)).toContain('✗ PR · CI failing: mods')
-  checkTheme(await ui.drawn())
+  checkTheme(await ui.drawn(), themeKeys)
   await ui.unmount()
 })
 
@@ -137,11 +120,11 @@ for (const [name, unit, info, fact] of [
     createWorld(on, { branch: 'feat' })
     const session: Session = { ...declared, issues: name === 'issue' ? [] : [1], info: { 1: { title: 'bug', labels: [], ...info } } }
     const located = position('diagnose', { unit: { ...createEmptyUnit(), skips: [{ step: 'triage', reason: 'the fixture starts at Diagnose' }], ...unit } })
-    const view = buildView(session, withStates(located, session), 'connected')
+    const view = buildView(session, withStates(located, session), null, false)
     on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: view, version: 0 } }))
     const ui = await mountPane($, { columns: 60 })
     await expectText(ui, fact, { color: 'text', wrap: 'wrap' })
-    expect(renderStatusText(view)).toContain(`▸ Diagnose · ${fact}`)
+    expect(renderStatusText(view)).toContain(`${name === 'approval' ? '●' : '▸'} Diagnose · ${fact}`)
     await ui.unmount()
   })
 }
@@ -170,7 +153,7 @@ for (const current of ['triage', 'diagnose']) {
   test(`${current} keeps its current symbol even with an error judgement`, async ($, on) => {
     createWorld(on, { branch: 'feat' })
     const state = position(current)
-    const view = buildView(declared, { ...state, states: state.states.map(entry => ({ ...entry, isError: true })) }, 'connected')
+    const view = buildView(declared, { ...state, states: state.states.map(entry => ({ ...entry, isError: true })) }, null, false)
     on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: view, version: 0 } }))
     const ui = await mountPane($, { columns: 60 })
     await expectText(ui, '▸ ', { color: 'suggestion' })
@@ -194,7 +177,7 @@ for (const action of ['start', 'continue'] as const) {
     expect(button?.props['hotkey']).toBe(key)
     expect(button?.props['dimColor']).toBe(false)
     expect((await ui.findAll({ type: 'Box' })).some(box => box.props['flexShrink'] === 0 && textOf(box) === label)).toBe(true)
-    checkTheme(await ui.drawn())
+    checkTheme(await ui.drawn(), themeKeys)
     await ui.press({ key })
     await clock.settle()
     expect(commands).toEqual(action === 'start' ? ['clear'] : ['handoff'])

@@ -123,7 +123,7 @@ test('passes are bound to tree, base, config and recomputed command set; records
   expect(world.sessions.get('sid')?.units[0]?.verifyRuns).toHaveLength(1)
   checkout.tree = 'two'
   expect(await readCurrentStep($)).toBe('Code')
-  expect(await readFlowStatus($)).toContain('▸ Code · verify not run on this tree')
+  expect(await readFlowStatus($)).toContain('▸ Code · tree changed since the last Verify — run Verify')
   checkout.tree = 'one'
   options.verifyFile = JSON.stringify({ verify: ['different'] })
   expect(await readFlowStatus($)).toContain('config not approved')

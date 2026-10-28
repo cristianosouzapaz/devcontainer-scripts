@@ -14,6 +14,7 @@ import { handleToolCall } from './handlers/tool-call'
 import { handleRun } from './handlers/run'
 import { handleVerify } from './handlers/verify'
 import { handleTurnComplete } from './handlers/turn'
+import { runWithDeadline } from './lib/process'
 
 const paneId = 'working-agreement'
 const declareTool = 'mcp__working-agreement__declare_flow'
@@ -32,7 +33,7 @@ const paneView = atom({ plugin: 'working-agreement', key: 'paneView' } as const,
 function createEnginePort($: EngineInterface, cause: string): EnginePort {
   return {
     cause,
-    processes: { spawn: request => $.process.spawn(request), run: (argv, options) => $.process.run(argv, options) },
+    processes: { spawn: request => $.process.spawn(request), run: (argv, options) => runWithDeadline((line, init) => $.process.run(line, init), () => $.clock.now(), argv, options) },
     files: { stat: path => $.fs.stat(path, { resolve: true }), exists: path => $.fs.exists(path), read: path => $.fs.read(path), write: (path, text) => $.fs.write(path, text), list: path => $.fs.list(path) },
     clock: { sleep: (delayMs, signal) => $.clock.sleep(delayMs, { signal }) },
     clearLegacyStore: async () => { for (const key of await $.store.keys()) await $.store.delete(key) },

@@ -4,14 +4,13 @@ import type { Result } from '../lib/result'
 import { createQueue } from '../lib/queue'
 import { removeFile } from '../lib/files'
 import { executeProcess, runProcess } from '../lib/process'
-import { createEmptySession, createEmptyUnit, mergeSkills, parseObservedEnd, parseSession, parseUnitRecord, retainRuns } from '../domain/records'
+import { canonicalIdentity, createEmptySession, sameIdentity, createEmptyUnit, mergeSkills, parseObservedEnd, parseSession, parseUnitRecord, retainRuns } from '../domain/records'
 import type { Identity, ObservedEndRecord, Session, SessionRecord, Unit, UnitEntry, UnitRecord } from '../domain/records'
 import { isAncestor, readGitOutput, runGit, hashObject } from '../lib/git'
 import type { EnginePort } from './engine-port'
 import { sessionMemory, holdError } from './session-memory'
-import type { RunDisplay } from './session-memory'
 
-interface SessionMirror { path: string; session: SessionRecord }
+interface SessionMirror { path: string; session: SessionRecord; mtimeMs: number | null }
 
 /** Holds where a unit's records live: the common directory and the hash its files are named by. */
 interface IdentityHash { common: string; hash: string }
@@ -47,35 +46,6 @@ export async function readCommonDir(port: EnginePort): Promise<string | null> {
   const common = run.exitCode === 0 && run.stdout.trim() ? run.stdout.trim() : null
   if (common !== null) memo.set(key, common)
   return common
-}
-
-/**
- * Compares canonical unit identities.
- * @param left - One identity.
- * @param right - The other identity.
- * @returns Whether both name the same branch and exact issue set.
- */
-export const sameIdentity = (left: Identity, right: Identity): boolean => canonical(left) === canonical(right)
-
-/**
- * Selects this chat's run display only for the declared unit and generation.
- * @param sid - The chat session id.
- * @param identity - The declared unit, if any.
- * @param generation - The unit's declared lifetime.
- * @returns The matching display, or null when it belongs to another unit or lifetime.
- */
-export function selectRunDisplay(sid: string, identity: Identity | null | undefined, generation: string | undefined): RunDisplay | null {
-  const memory = sessionMemory.runViews.get(sid)
-  return memory && identity && sameIdentity(memory.identity, identity) && memory.generation === generation ? memory : null
-}
-
-/**
- * Gives equivalent unit identities the same serialized representation.
- * @param identity - The branch and issues identifying the unit.
- * @returns The stable identity text.
- */
-function canonical(identity: Identity): string {
-  return JSON.stringify({ branch: identity.branch, issues: identity.issues })
 }
 
 /**
@@ -153,7 +123,7 @@ async function unitPath(port: EnginePort, identity: Identity, bucket = 'u', exte
 async function readIdentityHash(port: EnginePort, identity: Identity): Promise<IdentityHash> {
   const common = await readCommonDir(port)
   if (!common) throw new Error('check out a branch first')
-  const text = canonical(identity)
+  const text = canonicalIdentity(identity)
   const key = JSON.stringify([await port.readSessionId(), common, text])
   const memo = identityHashes.get(port.readCwd) ?? new Map<string, string>()
   identityHashes.set(port.readCwd, memo)
@@ -367,7 +337,7 @@ async function mergeUnits(port: EnginePort, units: UnitEntry[]): Promise<Unit> {
  * not JSON, or no valid record, is skipped.
  * @param port - The engine calls.
  * @param strict - Whether a failed listing aborts a file-pruning snapshot.
- * @returns Whole session records with their owned paths.
+ * @returns Whole session records with their owned paths and listed modification times; this chat's record has none.
  * @throws When another session's mirror cannot be read: skipping it would drop the units it holds.
  */
 export async function readSessionMirrors(port: EnginePort, strict = false): Promise<SessionMirror[]> {
@@ -376,13 +346,14 @@ export async function readSessionMirrors(port: EnginePort, strict = false): Prom
   const directory = recordsPath(common, 's')
   // The directory may not exist yet when the read is non-strict.
   const entries = await port.files.list(directory).catch(error => { if (strict) throw error; return [] })
-  const others = await Promise.all(entries.map(entry => entry.name).filter(name => name.endsWith('.json') && name !== `${session.sessionId}.json`)
-    .sort().map(async name => {
+  const others = await Promise.all(entries.filter(({ name }) => name.endsWith('.json') && name !== `${session.sessionId}.json`)
+    .sort((a, b) => a.name.localeCompare(b.name)).map(async ({ name, mtimeMs }) => {
       const path = recordsPath(common, 's', name)
       const text = await readText(port.files, path)
-      return { path, session: parseSession(text === undefined ? undefined : unwrapOr(parseJson(text), undefined)) }
+      return { path, mtimeMs, session: parseSession(text === undefined ? undefined : unwrapOr(parseJson(text), undefined)) }
     }))
-  return [{ path: recordsPath(common, 's', `${session.sessionId}.json`), session }, ...others.flatMap(other => other.session ? [{ path: other.path, session: other.session }] : [])]
+  return [{ path: recordsPath(common, 's', `${session.sessionId}.json`), session, mtimeMs: null },
+    ...others.flatMap(other => other.session ? [{ path: other.path, session: other.session, mtimeMs: other.mtimeMs }] : [])]
 }
 
 /**

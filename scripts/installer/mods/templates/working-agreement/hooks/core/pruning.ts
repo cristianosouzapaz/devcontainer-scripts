@@ -11,7 +11,8 @@ import { isChildUnit, isUnitOnBase } from '../domain/step-states'
 import { bestEffort, logFailure } from './best-effort'
 import type { EnginePort } from './engine-port'
 import { createReadPort } from './read-port'
-import { deleteDeclaration, deleteObservedEnds, readCommonDir, readDeclarations, readSession, readSessionMirrors, sameIdentity, updateSession, recordsPath } from './record-store'
+import { deleteDeclaration, deleteObservedEnds, readCommonDir, readDeclarations, readSession, readSessionMirrors, updateSession, recordsPath } from './record-store'
+import { sameIdentity } from '../domain/records'
 import { sessionMemory } from './session-memory'
 import { readGit } from './repository'
 import { readGithubStatus } from './github-sync'
@@ -34,7 +35,7 @@ const pruningRules: PruningRule[] = [judgeConcluded, judgeRetired]
 
 /**
  * Prunes the records the pruning rules remove, then orphan files, only after every read of the sweep succeeds.
- * Other chats' records are only ever deleted whole; a mixed record remains untouched.
+ * Other chats' records are only ever deleted whole, and when they hold no unit only once expired; a mixed record remains untouched.
  * @param engine - The engine calls.
  * @returns Once the removed records and orphan files are pruned.
  */
@@ -53,8 +54,12 @@ export async function pruneRecords(engine: EnginePort): Promise<void> {
   const session = await readSession(port)
   const own = mirrors.find(mirror => mirror.session.sessionId === session.sessionId)?.session.units ?? []
   if (own.some(isRemoved)) await updateSession(port, current => current.units.some(isRemoved) ? { ...current, units: current.units.filter(unit => !isRemoved(unit)) } : null)
+  const expiry = await port.now() - temporaryExpiryMs
   for (const mirror of mirrors.filter(mirror => mirror.session.sessionId !== session.sessionId)) {
-    if (mirror.session.units.every(isRemoved)) logFailure(port, 'session mirror delete', hasExitedZero(await removeFile(port.processes, mirror.path)))
+    // why: A mirror with no unit holds nothing a rule judged delivered, so it may still be a live flowless chat's until it
+    // outlives the expiry of a crashed session's temporary files.
+    const isGone = mirror.session.units.length > 0 ? mirror.session.units.every(isRemoved) : mirror.mtimeMs !== null && mirror.mtimeMs < expiry
+    if (isGone) logFailure(port, 'session mirror delete', hasExitedZero(await removeFile(port.processes, mirror.path)))
   }
   for (const identity of listIdentities([...entries, ...declarations])) {
     const isDeclarationRemoved = removals.some(removal => removal?.isDeclarationRemoved(identity))
@@ -151,15 +156,17 @@ async function pruneFiles(port: EnginePort): Promise<void> {
   for (const bucket of ['s', 'u', 'd', 'ok', 'runs']) {
     // The bucket directory may not exist yet.
     const entries = await port.files.list(recordsPath(common, bucket)).catch(() => [])
+    // why: a content capture's copy and stamp carry the index's own mtime, so only its fresh .live marker shows the capture is running.
+    const capturing = new Set(entries.flatMap(({ name, mtimeMs }) => name.endsWith('.live') && mtimeMs >= expiry ? [name.slice(0, -'.live'.length)] : []))
     for (const { name, mtimeMs } of entries) {
-      const temporary = name.match(/^\.tmp-([^/\\]+)-\d+(?:\.lock)?$/)
+      const temporary = name.match(/^(\.tmp-([^/\\]+)-\d+)(?:\.lock|\.stamp|\.live)?$/)
       const sidecar = bucket === 'runs' ? name.match(/^(\d+-\d+-([^/\\]+))\.json$/) : null
       const log = bucket === 'runs' ? name.match(/^([^/\\]+)-(\d+-\d+-\1)\.log(?:\.output|\.tmp|\.fifo-(?:in|tail|count))?$/) : null
-      const owner = temporary?.[1] ?? sidecar?.[2] ?? log?.[1]
+      const owner = temporary?.[2] ?? sidecar?.[2] ?? log?.[1]
       const runId = sidecar?.[1] ?? log?.[2]
       if (!owner) continue
       const dead = !live.has(`${owner}.json`)
-      if (temporary ? mtimeMs < expiry : runId && !named.has(runId) && (dead || owner === sid && !held.has(runId))) {
+      if (temporary ? mtimeMs < expiry && !capturing.has(temporary[1]!) : runId && !named.has(runId) && (dead || owner === sid && !held.has(runId))) {
         logFailure(port, 'orphan file delete', hasExitedZero(await removeFile(port.processes, recordsPath(common, bucket, name))))
       }
     }

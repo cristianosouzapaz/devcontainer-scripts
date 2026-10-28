@@ -55,7 +55,7 @@ export async function handleGuarantees(port: EnginePort, event: Frozen<Args<'too
         const dismissed = await readDismissals(port)
         const root = await readRepositoryRoot(port)
         context.push(...records.filter(record => record.kind !== 'unchecked' && !dismissed.has(record.factId)).map(record => markForAgent(describeViolation(record, 'agent', root ?? undefined))))
-        await refreshView(port, true)
+        await refreshView(port, { isQuiet: true })
       }
     }, undefined)
   }

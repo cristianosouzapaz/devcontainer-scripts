@@ -23,7 +23,7 @@ export async function handleSkillPrompt(port: EnginePort, event: Frozen<Args<'sk
       return
     }
     await updateUnits(port, session, unit => ({ ...unit, skills: mergeSkills(unit.skills, [name]) }))
-    await refreshView(port, true)
+    await refreshView(port, { isQuiet: true })
   })
   return next(event)
 }

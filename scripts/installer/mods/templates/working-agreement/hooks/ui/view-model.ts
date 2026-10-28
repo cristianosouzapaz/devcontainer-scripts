@@ -1,9 +1,9 @@
-import type { FlowRow, FlowView } from '../../types'
-import type { GithubStatus, Session } from '../domain/records'
-import { isDeliveryStep } from '../domain/flow-definitions'
-import { formatStepLabel, isUnitFinished, listDeclaredLabels, projectDisplayStates } from '../domain/step-states'
+import type { FlowRow, FlowView, GithubFailure } from '../../types'
+import type { Session } from '../domain/records'
+import { formatLocalTime } from '../lib/time'
+import { formatStepLabel, isUnitFinished, listDeclaredLabels, markStep, projectDisplayStates } from '../domain/step-states'
 import type { DiagnoseNeed, Position } from '../domain/step-states'
-import { stepSymbol } from './theme'
+import { symbol } from './symbols'
 
 /**
  * Uses the pane's short wording for the resolved Diagnose requirement.
@@ -37,14 +37,24 @@ export function handoffNotes(session: Session): FlowRow[] {
 }
 
 /**
+ * Words a GitHub failure for the pane's GitHub row, in the phrase `/flow status` uses.
+ * @param failure - The failure.
+ * @returns The row's text: the reason, and the time of the kept issue facts when known.
+ */
+function formatGithubFailure(failure: GithubFailure): string {
+  return `read failed (${failure.reason})${failure.readAt === null ? '' : ` · facts from ${formatLocalTime(failure.readAt, false)}`}`
+}
+
+/**
  * Builds what the Flow pane shows for the session's unit.
  *
  * @param session - The session.
  * @param position - The unit's position.
- * @param github - Whether GitHub is reachable.
+ * @param githubFailure - Why the latest GitHub read failed, null while GitHub answers.
+ * @param isTreeChanged - Whether the last Verify run changed the tree and so left no record.
  * @returns The pane's view.
  */
-export function buildView(session: Session, position: Position, github: GithubStatus): FlowView {
+export function buildView(session: Session, position: Position, githubFailure: GithubFailure | null, isTreeChanged: boolean): FlowView {
   const meta: FlowRow[] = []
   const notes: FlowRow[] = []
   if (session.unit || position.git) {
@@ -56,8 +66,7 @@ export function buildView(session: Session, position: Position, github: GithubSt
   if (session.unit && position.git && session.unit.branch !== position.git.branch) {
     notes.push({ key: 'Checkout', value: `${position.git.branch}, not this unit's branch`, tone: 'warn' })
   }
-  if (github === 'unauth') meta.push({ key: 'GitHub', value: 'not authenticated — run gh auth login', tone: 'warn' })
-  if (github === 'unreachable') meta.push({ key: 'GitHub', value: 'unreachable · not refreshed', tone: 'warn' })
+  if (githubFailure) meta.push({ key: 'GitHub', value: formatGithubFailure(githubFailure), tone: 'warn' })
   const { edits } = session.blocked
   if (edits) {
     notes.push({ key: 'Blocked', value: pluralize(edits, 'edit'), tone: 'error' })
@@ -72,7 +81,7 @@ export function buildView(session: Session, position: Position, github: GithubSt
   const settled = currentIndex >= 0 ? currentIndex : states.filter(entry => entry.state !== 'pending').length
   return {
     flow: position.flow.label,
-    progress: `${position.slice?.isRewritten ? '?' : settled}/${states.length}`,
+    progress: `${position.slice?.isRewritten ? symbol.rewritten : settled}/${states.length}`,
     issues: session.issues.map(issueNumber => {
       const info = session.info[issueNumber]
       return { number: issueNumber, title: info && 'title' in info ? info.title : '' }
@@ -81,18 +90,18 @@ export function buildView(session: Session, position: Position, github: GithubSt
     meta,
     labels: [...new Set(listDeclaredLabels(session))],
     steps: states.map(entry => {
-      const isMerged = position.isConcluded && isDeliveryStep(entry.step) && !!position.pullRequest
-      const isError = !position.slice?.isRewritten && entry.isError && entry.state === 'current' && (entry.step.observe === 'verify.passed' || isDeliveryStep(entry.step))
+      const { mark, isMerged, isFailed, isRunUnrecorded, isRewritten } = markStep(entry, position, isTreeChanged)
       const diagnoseFact = describeDiagnoseFact(entry.need, entry.fact)
       return {
         id: entry.step.id,
-        symbol: isMerged ? '✓' : position.slice?.isRewritten ? '?' : isError ? '✗' : stepSymbol[entry.state],
+        symbol: symbol[mark],
         label: formatStepLabel(entry.step, position.pullRequest, entry.state === 'current'),
         state: entry.state,
-        isError,
+        isError: isFailed,
         isMerged,
+        isRewritten,
         // The PR step's label already names its PR; Integrate's fact names the parent's.
-        detail: position.slice?.isRewritten ? undefined : isMerged ? (entry.step.observe === 'integrated' ? entry.fact : 'merged')
+        detail: isRewritten ? undefined : isRunUnrecorded ? 'tree changed during run' : isMerged ? (entry.step.observe === 'integrated' ? entry.fact : 'merged')
           : entry.state === 'skipped' ? entry.reason || 'optional'
           : entry.state === 'current' ? diagnoseFact
           // An integrated child's Integrate names where its delivery stands, because the unit is finished and shows no current step.

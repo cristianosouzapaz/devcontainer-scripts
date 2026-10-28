@@ -48,7 +48,7 @@ export async function handleFlowCommand(port: EnginePort, event: Frozen<Args<'co
     if (!reason) return fail('A skip needs a non-empty reason.')
     await updateUnits(port, session, unit => ({ ...unit, skips: [...(unit.skips ?? []), { step: match.id, reason }] }))
     logEvent(port, session, 'skip', { step: match.id, reason })
-    await refreshView(port, true, true)
+    await refreshView(port, { isQuiet: true, isSynced: true })
     return succeed(`Skipped ${match.label}: ${reason}`)
   }))
   if (subcommand === 'handoff') return runHandoffCommand(createFeaturePort(port), tail)
@@ -57,7 +57,7 @@ export async function handleFlowCommand(port: EnginePort, event: Frozen<Args<'co
   if (subcommand === 'approve' && rest[0] === 'verify') {
     if (rest.length > 2) return 'Usage: /flow approve verify [blob id].'
     const result = await withRecordLock(() => approveVerify(port, rest[1]))
-    await refreshView(port, true, true)
+    await refreshView(port, { isQuiet: true, isSynced: true })
     // The preview without an id only shows the config.
     return rest[1] === undefined ? unwrap(result) : startAfter(port, result)
   }

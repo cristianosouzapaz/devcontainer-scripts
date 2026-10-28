@@ -160,7 +160,7 @@ test('a dead chat holding both concluded and live units cannot donate old eviden
 })
 
 for (const trigger of ['startup', 'declaration']) {
-  test(`${trigger} prunes concluded own entries and whole concluded chat mirrors`, async ($, on) => {
+  test(`${trigger} prunes concluded own entries and whole concluded chat mirrors and keeps unit-less ones`, async ($, on) => {
     const checkout = branch()
     const world = createWorld(on, checkout, mergedOptions({ unit: { base: 'm1', runs: [{ ...diagnoseRuns[0]!, runId: '1-1-sid' }] } }))
     const { files, sessions } = world
@@ -173,7 +173,7 @@ for (const trigger of ['startup', 'declaration']) {
     if (trigger === 'startup') await $.session.start({ cwd: root, surface: null, isInteractive: false })
     else await declareFlow($, 'large-feature', [3])
     expect(files.has(`${directory}/s/other.json`)).toBe(false)
-    expect(files.has(`${directory}/s/empty.json`)).toBe(false)
+    expect(files.has(`${directory}/s/empty.json`)).toBe(true)
     expect(sessions.get('sid')?.units.some(unit => unit.identity.issues.includes(1))).toBe(false)
     expect([...files.entries()].some(([path, text]) => path.startsWith(`${directory}/u/`) && text.includes('"issues":[1]'))).toBe(false)
     for (const path of paths) expect(files.has(path)).toBe(false)
@@ -271,13 +271,25 @@ for (const trigger of ['startup', 'declaration']) {
 test("a prune by another session keeps a flowless session's fresh temporary files and removes expired ones, whoever owns them", async ($, on) => {
   const world = createWorld(on, branch(), { unit: { base: 'm1' } })
   const { clock, files, modified } = world
-  const fresh = [`${directory}/s/.tmp-flowless-1`, `${directory}/s/.tmp-flowless-1.lock`]
-  const expired = [`${directory}/s/.tmp-flowless-2`, `${directory}/s/.tmp-flowless-2.lock`, `${directory}/s/.tmp-sid-999999`]
+  const fresh = [`${directory}/s/.tmp-flowless-1`, `${directory}/s/.tmp-flowless-1.lock`, `${directory}/s/.tmp-flowless-1.stamp`]
+  const expired = [`${directory}/s/.tmp-flowless-2`, `${directory}/s/.tmp-flowless-2.lock`, `${directory}/s/.tmp-flowless-2.stamp`, `${directory}/s/.tmp-sid-999999`]
   for (const path of [...fresh, ...expired]) files.set(path, 'index')
   for (const path of expired) modified.set(path, clock.now() - expiredAgeMs)
   await $.session.start({ cwd: root, surface: null, isInteractive: false })
   for (const path of fresh) expect(files.has(path)).toBe(true)
   for (const path of expired) expect(files.has(path)).toBe(false)
+})
+
+test('a prune keeps a running capture whose copy and stamp carry a day-old index mtime, and removes one whose marker expired', async ($, on) => {
+  const world = createWorld(on, branch(), { unit: { base: 'm1' } })
+  const { clock, files, modified } = world
+  const running = [`${directory}/s/.tmp-other-1`, `${directory}/s/.tmp-other-1.stamp`]
+  const abandoned = [`${directory}/s/.tmp-other-2`, `${directory}/s/.tmp-other-2.stamp`, `${directory}/s/.tmp-other-2.live`]
+  for (const path of [...running, `${directory}/s/.tmp-other-1.live`, ...abandoned]) files.set(path, 'index')
+  for (const path of [...running, ...abandoned]) modified.set(path, clock.now() - expiredAgeMs)
+  await $.session.start({ cwd: root, surface: null, isInteractive: false })
+  for (const path of [...running, `${directory}/s/.tmp-other-1.live`]) expect(files.has(path)).toBe(true)
+  for (const path of abandoned) expect(files.has(path)).toBe(false)
 })
 
 for (const trigger of ['startup', 'declaration']) {

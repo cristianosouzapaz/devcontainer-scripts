@@ -14,9 +14,6 @@ export const labelColor: Record<FlowStepState, ThemeKey> = {
   done: 'text', current: 'text', pending: 'inactive', skipped: 'inactive',
 }
 
-/** The mark the pane draws beside a step in each state. */
-export const stepSymbol: Record<FlowStepState, string> = { done: '✓', current: '▸', pending: '○', skipped: '↷' }
-
 /** The width of a row's key column, in characters. */
 export const keyWidth = 10
 

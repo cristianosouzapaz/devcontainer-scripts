@@ -141,7 +141,7 @@ test('status shows record write failure times count and full path and clears on 
   expect((await runFlowCommand($, 'status')).text).not.toContain('Records   ')
 })
 
-test('status keeps the last successful GitHub read time and prints the full error while GitHub fails', async ($, on) => {
+test('status keeps the last successful GitHub read time and prints the error while GitHub fails', async ($, on) => {
   const options: Options = {}
   const world = createWorld(on, { branch: 'feat' }, options)
   const row = (text: string | undefined) => (text ?? '').split('\n').find(line => line.startsWith('GitHub')) ?? ''
@@ -150,7 +150,7 @@ test('status keeps the last successful GitHub read time and prints the full erro
   expect(connected).toBe(`GitHub    last ok ${lastOk}`)
   options.failing = 'gh api user'
   await world.clock.advance(120000)
-  expect(row((await runFlowCommand($, 'status')).text).startsWith(`GitHub    last ok ${lastOk} · now failing: gh could not run: `)).toBe(true)
+  expect(row((await runFlowCommand($, 'status')).text).startsWith(`GitHub    last ok ${lastOk} · read failed (gh could not run: `)).toBe(true)
 })
 
 test('status times include the local UTC offset', async ($, on) => {

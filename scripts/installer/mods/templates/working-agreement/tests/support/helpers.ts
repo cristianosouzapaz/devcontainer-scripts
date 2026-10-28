@@ -1,4 +1,5 @@
 import type { CommandRunResult, PromptOrigin, ToolCallResult } from 'claude-code'
+import { expect } from 'claude-code/testing'
 import type { Engine, Mounted } from 'claude-code/testing'
 import type { FlowStepState } from '../../types'
 import { locatePosition } from '../../hooks/core/position'
@@ -7,6 +8,12 @@ import { createTestPort } from './world'
 import type { World } from './world'
 
 interface PaneOptions { columns?: number; rows?: number; requestId?: string; title?: string }
+
+/** Holds a node of a drawn tree as the engine returns it. */
+export interface DrawnNode { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+
+/** The environment of a session inside herdr, where every re-read reports the sidebar tokens. */
+export const inside = { HERDR_ENV: '1', HERDR_PANE_ID: 'pane id' }
 
 /**
  * Runs `/flow` with these arguments, typed at the prompt unless another origin is given.
@@ -109,4 +116,30 @@ export function mountPane($: Engine, options: PaneOptions = {}): Promise<Mounted
     props: { title, isFocused: true, bodyColumns: columns, placement: 'dock', scroll: { offset: 0, bodyRows: rows }, view: {} },
     viewport: { columns, rows },
   })
+}
+
+/**
+ * Joins a drawn tree's text, depth first; a node without text reads as its label, as a button draws.
+ * @param node - The drawn node.
+ * @returns Its text.
+ */
+export function textOf(node: unknown): string {
+  if (typeof node === 'string') return node
+  if (typeof node !== 'object' || node === null) return ''
+  const tree = node as DrawnNode
+  return (tree.children ?? []).map(textOf).join('') || String(tree.props?.['label'] ?? '')
+}
+
+/**
+ * Asserts that every color a drawn tree uses is one of the allowed theme keys, depth first.
+ * @param node - The drawn node.
+ * @param keys - The theme keys the surface may use.
+ */
+export function checkTheme(node: unknown, keys: readonly string[]): void {
+  if (typeof node !== 'object' || node === null) return
+  const { props, children } = node as DrawnNode
+  for (const key of ['color', 'backgroundColor']) {
+    if (props?.[key] !== undefined) expect(keys).toContain(props[key])
+  }
+  for (const child of children ?? []) checkTheme(child, keys)
 }

@@ -54,7 +54,7 @@ async function handleGatedCall(port: EnginePort, event: Frozen<Args<'tool.call'>
     void bestEffort(port, 'blocked edit record', () => withRecordLock(async () => {
       const written = await updateSession(port, session => ({ ...session, blocked: { ...session.blocked, edits: session.blocked.edits + 1 } }))
       if (written) logEvent(port, written.session, 'deny', { tool: event.tool, reason: verdict.reason })
-      await refreshView(port, true)
+      await refreshView(port, { isQuiet: true })
     }), undefined)
     return { deny: verdict.reason }
   }

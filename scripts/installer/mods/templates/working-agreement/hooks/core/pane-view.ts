@@ -4,16 +4,31 @@ import { bestEffort } from './best-effort'
 import { logSteps } from './flow-log'
 import type { EnginePort } from './engine-port'
 import { createReadPort } from './read-port'
-import { describeViolation, refreshPrSnapshot } from './guarantees'
+import { labelViolation, refreshPrSnapshot } from './guarantees'
 import { readDismissals } from './violation-store'
-import { readGithubStatus, syncIssues } from './github-sync'
+import { clearIssuesFailure, readGithubFailure, readGithubStatus, syncIssues } from './github-sync'
 import { locatePosition } from './position'
-import { selectRunDisplay, readVersionedSession } from './record-store'
+import { readVersionedSession } from './record-store'
 import { readGit, readRepositoryRoot } from './repository'
 import { reportHerdr } from './herdr'
-import { sessionMemory } from './session-memory'
+import { isTreeChangedRun, readRunDisplay, sessionMemory } from './session-memory'
 
 interface RefreshRequest { port: EnginePort; full: boolean; forceGithub: boolean; generation: number; causes: string[] }
+/** How one observation runs; every flag defaults to false. */
+interface RefreshOptions {
+  /** Fresh cached GitHub facts are preferred. */
+  isQuiet?: boolean
+  /** The caller has just synced the PRs and issues: both syncs, which take the lock that `declare` holds, are skipped. */
+  isSynced?: boolean
+  /** A signal bypasses the issue cache age. */
+  isForced?: boolean
+  /** The unit judgement bypasses cached GitHub facts. */
+  forceGithub?: boolean
+  /** The forced-read generation that may publish this observation. */
+  generation?: number
+  /** The signals this observation answers, for the transition log; the port's own cause when omitted. */
+  causes?: string[]
+}
 interface RefreshQueue { running: Promise<void> | null; queued: RefreshRequest | null; forcedGeneration: number }
 const refreshQueue: RefreshQueue = { running: null, queued: null, forcedGeneration: 0 }
 
@@ -40,7 +55,7 @@ export function reread(port: EnginePort, full: boolean, forceGithub = false): Pr
       while (refreshQueue.queued) {
         const request = refreshQueue.queued
         refreshQueue.queued = null
-        try { await refreshView(request.port, !request.full, false, true, request.forceGithub, request.generation, request.causes) } catch (error) { errors.push(error) }
+        try { await refreshView(request.port, { isQuiet: !request.full, isForced: true, forceGithub: request.forceGithub, generation: request.generation, causes: request.causes }) } catch (error) { errors.push(error) }
       }
       if (errors.length) throw errors[0]
     } finally { refreshQueue.running = null }
@@ -93,41 +108,36 @@ async function clearStaleRun(port: EnginePort, isLive: boolean): Promise<void> {
  * Rebuilds the Flow pane's view from the stored session, writing it only when it changed.
  *
  * @param engine - The engine calls.
- * @param isQuiet - Whether fresh cached GitHub facts are preferred.
- * @param isSynced - Whether the caller has just synced the PRs and issues: it skips both syncs, which take the lock that `declare` holds.
- * @param isForced - Whether a signal bypasses the issue cache age.
- * @param forceGithub - Whether the unit judgement bypasses cached GitHub facts.
- * @param generation - The forced-read generation that may publish this observation.
- * @param causes - The signals this observation answers, for the transition log.
+ * @param options - How the observation runs.
  * @returns Once the pane and herdr reflect the observation.
  */
-export async function refreshView(engine: EnginePort, isQuiet = false, isSynced = false, isForced = false, forceGithub = false, generation?: number, causes = [engine.cause]): Promise<void> {
+export async function refreshView(engine: EnginePort, options: RefreshOptions = {}): Promise<void> {
+  const { isQuiet = false, isSynced = false, isForced = false, forceGithub = false, generation, causes = [engine.cause] } = options
   const port = createReadPort(engine)
   const held = await readVersionedSession(port)
   const saved = held.session
   if (!saved.flow) await readGit(port)
   const located = await locatePosition(port, saved, isQuiet || isSynced, forceGithub)
   const sync = !!saved.flow && !isQuiet && !isSynced && !located?.isConcluded
-  const observed = sync ? await syncIssues(port, held, isForced) : held
+  if (!saved.flow || located?.isConcluded) clearIssuesFailure()
+  // A tick alone never probes again within the minute, so an outage costs one probe a minute between explicit signals.
+  const observed = sync ? await syncIssues(port, held, { isForced, isProbeForced: isForced && causes.some(cause => cause !== 'tick') }) : held
   const session = observed.session
   const position = located ? withStates(located, session) : null
   if (!isQuiet && !isSynced) await bestEffort(port, 'PR snapshot refresh', () => refreshPrSnapshot(port, located?.pullRequest?.state === 'OPEN' ? located.pullRequest.number : undefined), undefined)
   const dismissed = await readDismissals(port)
   const root = await readRepositoryRoot(port)
   const violations = (session.violations ?? []).filter(record => !dismissed.has(record.factId)).map(record => ({
-    factId: record.factId, text: describeViolation(record, 'user', root ?? undefined), tone: record.kind === 'unchecked' ? 'warn' as const : 'error' as const,
+    factId: record.factId, text: labelViolation(record, root ?? undefined), tone: record.kind === 'unchecked' ? 'warn' as const : 'error' as const,
   }))
   // With no position the pane shows only notes and violations, so neither GitHub nor the run display is read.
   const github = !position ? null : !sync ? sessionMemory.githubCache?.status ?? session.gh : await readGithubStatus(port)
-  const display = position ? selectRunDisplay(await port.readSessionId(), session.unit, position.unit.generation) : null
+  const display = position ? await readRunDisplay(port, session.unit, position.unit.generation) : null
   const previous = await port.readView()
-  const built = position && github ? buildView(session, position, github) : null
-  const isTreeChanged = display?.last?.kind === 'Verify' && display.last.status === 'tree changed'
+  const isTreeChanged = isTreeChangedRun(display)
+  const built = position && github ? buildView(session, position, readGithubFailure(github), isTreeChanged) : null
   const notes = handoffNotes(session)
-  // The unrecorded run explains Code only while Code waits on a Verify run; any other Code blocker stays shown.
-  const isRunAwaited = (id: string): boolean => id === 'verify' || (position?.current?.step.id === id && position.current.factCode === 'verify-not-run')
   const view = position && built ? { ...built, violations,
-    ...(isTreeChanged ? { steps: built.steps.map(step => isRunAwaited(step.id) && step.state === 'current' && step.symbol !== '?' ? { ...step, symbol: '▸', detail: 'tree changed during run', isError: false } : step) } : {}),
     hasRunLog: !!(position.unit.verifyRuns.length || position.unit.runs.length || display?.live || display?.last),
     ...(previous?.selectedRunId ? { selectedRunId: previous.selectedRunId } : {}),
   } : violations.length || notes.length ? { flow: 'No flow declared.', progress: '', issues: [], pending: null, meta: [], labels: [], steps: [], notes, footer: null, violations } : null
@@ -137,6 +147,6 @@ export async function refreshView(engine: EnginePort, isQuiet = false, isSynced 
   if (position && view) logSteps(port, session, view.steps, position.slice, causes)
   if (JSON.stringify(previous) !== JSON.stringify(view)) await port.writeView(view)
   await clearStaleRun(port, !!display?.live)
-  await reportHerdr(port, session, position, dismissed)
+  await reportHerdr(port, session, position, dismissed, isTreeChanged)
   await suggestCommand(port, position?.current?.command)
 }

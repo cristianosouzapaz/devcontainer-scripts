@@ -37,7 +37,20 @@ test('Tickets is done only with a ready-for-agent sub-issue, and falls back when
   expect(await readCurrentStep($)).toBe('Code')
 })
 
-test('an errored optional Tickets read is skipped with the error as its reason', async ($, on) => {
+test('an optional Tickets read that errors before any good read is skipped with the error as its reason', async ($, on) => {
+  const options = buildSpecDoneOptions()
+  const { clock } = createWorld(on, { branch: 'feat' }, options)
+  await startSkill($, 'to-tickets')
+  options.failing = 'gh api repos/'
+  await clock.advance(61000)
+  const status = await readFlowStatus($)
+  expect(status).toContain('✓ Grill')
+  expect(status).toContain('✓ Spec')
+  expect(status).toContain('↷ Tickets · gh could not run:')
+  expect(await readCurrentStep($)).toBe('Code')
+})
+
+test('a Tickets read that errors after a good read keeps the last good sub-issues', async ($, on) => {
   const options = buildSpecDoneOptions()
   const { clock } = createWorld(on, { branch: 'feat' }, options)
   await startSkill($, 'to-tickets')
@@ -46,9 +59,7 @@ test('an errored optional Tickets read is skipped with the error as its reason',
   expect(await readFlowStatus($)).toContain('✓ Tickets')
   options.failing = 'gh api repos/'
   await clock.advance(61000)
-  expect(await readFlowStatus($)).toContain('✓ Grill')
-  expect(await readFlowStatus($)).toContain('✓ Spec')
-  expect(await readFlowStatus($)).toContain('↷ Tickets · gh could not run:')
+  expect(await readFlowStatus($)).toContain('✓ Tickets')
   expect(await readCurrentStep($)).toBe('Code')
 })
 

@@ -2,6 +2,7 @@ import { expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 import type { Identity, SessionRecord, UnitEntry } from '../../hooks/domain/records'
+import { temporaryExpiryMs } from '../../hooks/core/timing'
 import { test } from '../support/kit'
 import { buildPullRequest, diagnoseRuns, noFlow } from '../support/builders'
 import { conformanceGraph } from '../support/graph-fixture'
@@ -85,6 +86,24 @@ for (const trigger of ['startup', 'declaration']) {
     world.files.set(run, 'run file')
     await prune($, trigger)
     for (const path of [mirror, unit.declaration, unit.log, unit.end, run]) expect(world.files.has(path)).toBe(false)
+  })
+
+  test(`${trigger} leaves another chat's fresh unit-less mirror in place and deletes an expired one`, async ($, on) => {
+    const world = createWorld(on, checkout(), { issues: { 2: 'CLOSED' } })
+    await world.ready
+    const [retired] = seedMirror(world, 'dead', [buildEntry('gone', [2])])
+    await seedDeclaration(world, { branch: 'gone', issues: [2] }, 'fix')
+    const violation = { kind: 'unchecked', fact: { toolUseId: 't1' }, factId: 'a'.repeat(40), toolUseIds: ['t1'], start: 1, end: 1, sessionId: 'flowless', count: 1 }
+    const path = `${directory}/s/flowless.json`
+    const text = JSON.stringify({ ...world.sessions.get('sid')!, sessionId: 'flowless', unit: null, units: [], violations: [violation] })
+    world.files.set(path, text)
+    const expired = `${directory}/s/expired.json`
+    world.files.set(expired, JSON.stringify({ ...world.sessions.get('sid')!, sessionId: 'expired', unit: null, units: [], violations: [{ ...violation, sessionId: 'expired' }] }))
+    world.modified.set(expired, world.clock.now() - temporaryExpiryMs - 1)
+    await prune($, trigger)
+    expect(world.files.has(retired)).toBe(false)
+    expect(world.files.get(path)).toBe(text)
+    expect(world.files.has(expired)).toBe(false)
   })
 }
 

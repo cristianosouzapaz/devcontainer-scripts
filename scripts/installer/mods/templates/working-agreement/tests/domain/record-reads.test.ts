@@ -34,7 +34,7 @@ test("a unit declaration whose read rejects never drops the unit's Verify runs: 
   options.readFailurePrefix = `${records}/u/`
   const context = await readPromptContext($)
   expect(context).toContain(unreadable)
-  expect(context).not.toContain('not run on this tree')
+  expect(context).not.toMatch(/not run on this tree|no Verify run yet|since the last Verify/)
 })
 
 test("another chat's mirror whose read rejects never drops the Verify runs it holds: the state is unreadable", async ($, on) => {
@@ -46,7 +46,7 @@ test("another chat's mirror whose read rejects never drops the Verify runs it ho
   options.readFailurePrefix = `${records}/s/other.json`
   const context = await readPromptContext($)
   expect(context).toContain(unreadable)
-  expect(context).not.toContain('not run on this tree')
+  expect(context).not.toMatch(/not run on this tree|no Verify run yet|since the last Verify/)
 })
 
 test('a unit declaration that is not JSON is unreadable, never an absent flow', async ($, on) => {

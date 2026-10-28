@@ -17,7 +17,9 @@ python3 <skill-dir>/scripts/check.py --all --strict   # warnings are fatal too (
 ```
 
 It needs `python3` on PATH and nothing else. Git is optional: without it the growth check is
-skipped and everything else still runs.
+skipped and the path check falls back to the local disk. `--no-growth` skips the growth check
+with git present: it compares each page with HEAD, so a strict run over uncommitted edits, such
+as a test suite's, would otherwise fail on every page that grew.
 
 ## What it checks
 
@@ -42,10 +44,17 @@ Identifiers in `SCREAMING_SNAKE_CASE` are exempt from the reproduced-value warni
 convention those are env vars the reader sets. That keeps the warning rare enough to be worth
 reading rather than skimming.
 
-Two limits worth knowing. A path whose top-level directory does not exist at all is not
-resolved, so that a reference that merely looks like a path is never reported as stale —
-those stay with the reader. And nothing here judges whether a claim is *true*, only whether
-what it names still exists.
+In a git work tree a path exists when it is tracked or untracked-but-not-ignored, and present in
+the working tree: a clean checkout plus the uncommitted change. An ignored file and the git
+directory live on one machine only, so counting them would let the same tree pass on a
+workstation and fail in CI. For the same reason a git failure other than "not a work tree"
+stops the run instead of falling back to the disk.
+
+Two limits worth knowing. A path whose top-level directory is not in the repository is not
+resolved, so that a reference that merely looks like a path — git metadata included — is never
+reported as stale; neither is a path below a symlink or a submodule, whose contents git does
+not list. Those stay with the reader. And nothing here judges whether a claim is *true*, only
+whether what it names still exists.
 
 ## Configuring it for the project
 

@@ -262,3 +262,20 @@ export function retainRuns(runs: RunRecord[]): RunRecord[] {
   const capped = kept.slice(0, totalRuns)
   return (red && !capped.includes(red) ? [...capped.slice(0, -1), red] : capped).sort(newestFirst)
 }
+
+/**
+ * Serializes a unit identity so equivalent identities read the same.
+ * @param identity - The identity.
+ * @returns Its branch and issues as one string.
+ */
+export function canonicalIdentity(identity: Identity): string {
+  return JSON.stringify({ branch: identity.branch, issues: identity.issues })
+}
+
+/**
+ * Compares canonical unit identities.
+ * @param left - One identity.
+ * @param right - The other identity.
+ * @returns Whether both name the same branch and exact issue set.
+ */
+export const sameIdentity = (left: Identity, right: Identity): boolean => canonicalIdentity(left) === canonicalIdentity(right)

@@ -3,24 +3,24 @@ import { flowDefinitions, findFlow } from '../domain/flow-definitions'
 import type { FlowDefinition } from '../domain/flow-definitions'
 import { composeInstruction, composeStart, formatIssueReferences } from '../domain/instruction'
 import type { DeclaredFlow } from '../domain/instruction'
-import { createEmptyUnit, mergeSkills } from '../domain/records'
+import { createEmptyUnit, mergeSkills, sameIdentity } from '../domain/records'
 import type { Identity, IssueInfo, Unit, UnitRecord } from '../domain/records'
 import { describeRequirement } from '../domain/requirements'
-import { formatStepLabel, isUnitOnBase, projectDisplayStates } from '../domain/step-states'
+import { formatStepLabel, isUnitOnBase, markStep, projectDisplayStates } from '../domain/step-states'
 import { isAncestor, readForkPoint, readGitOutput, readParentBranch, runGit, readDefaultRef } from '../lib/git'
 import type { GitState } from '../lib/git'
-import { readClosingPullRequests, readIssue } from '../lib/github'
+import { readClosingPullRequests } from '../lib/github'
 import type { ClosingPullRequest, PullRequestCandidate } from '../lib/github'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
-import { stepSymbol } from '../ui/theme'
+import { symbol } from '../ui/symbols'
 import type { EnginePort } from './engine-port'
-import { describeIssue, readGithubStatus } from './github-sync'
+import { markIssuesDeclared, mergeIssue, readGithubStatus, readIssueAnswers } from './github-sync'
 import { carryLog, logEvent } from './flow-log'
 import { refreshView } from './pane-view'
 import { locatePosition } from './position'
-import { deleteDeclaration, nextGeneration, readBranchUnits, readDeclaration, readSession, readUnit, sameIdentity, writeDeclaration, updateSession, replaceUnitEntry } from './record-store'
-import { sessionMemory } from './session-memory'
+import { deleteDeclaration, nextGeneration, readBranchUnits, readDeclaration, readSession, readUnit, writeDeclaration, updateSession, replaceUnitEntry } from './record-store'
+import { readIsTreeChanged, sessionMemory } from './session-memory'
 import { readGit } from './repository'
 import { readUnitSlice } from './unit-slice'
 import { readCandidates, readDeclaredConclusion, selectBasePullRequest } from './unit-github'
@@ -63,15 +63,22 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
   const pullRequest = chosen.value
   const info: Record<string, IssueInfo> = {}
   const closing: Record<number, ClosingPullRequest[]> = {}
-  for (const issue of declared) {
-    const read = await readIssue(port.processes, issue)
-    if (!read.isOk) return fail(`Issue #${issue}: ${read.error} — check the number.`)
+  const readAt = await port.now()
+  const stored = (await readSession(port)).info
+  const answers = await readIssueAnswers(port.processes, flow, declared)
+  const errors: string[] = []
+  for (const [index, issue] of declared.entries()) {
+    const answer = answers[index]!
+    if (!answer.issue.isOk) return fail(`Issue #${issue}: ${answer.issue.error} — check the number.`)
     if (flow === 'follow-up') {
       const found = await readClosingPullRequests(port.processes, issue)
       if (!found.isOk) return fail('GitHub unreachable — retry')
       closing[issue] = found.value
-    } else if (read.value.state !== 'OPEN') return fail(`Issue #${issue} is ${read.value.state.toLowerCase()} — declare an open issue.`)
-    info[issue] = await describeIssue(port, flow, issue, read.value)
+    } else if (answer.issue.value.state !== 'OPEN') return fail(`Issue #${issue} is ${answer.issue.value.state.toLowerCase()} — declare an open issue.`)
+    // A re-declaration keeps the stored comments and sub-issues a failed read of them would otherwise erase.
+    const merge = mergeIssue(stored[issue], answer)
+    info[issue] = merge.info
+    if (merge.error !== null) errors.push(merge.error)
   }
   const declaration = await readDeclaration(port, identity)
   const predecessor = declaration ? null : await readPredecessor(port, flow, identity, git, candidates.isOk ? candidates.value : [])
@@ -139,11 +146,11 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
   const next = written.session
   const replaced = attached ?? (held && !sameIdentity(held, identity) ? held : undefined)
   logEvent(port, next, 'declare', { flow, declaredBy, ...(replaced ? { replaces: replaced } : {}) })
-  sessionMemory.issuesCheckedAt = await port.now()
+  markIssuesDeclared(readAt, errors[0] ?? null)
   sessionMemory.checks.clear()
   sessionMemory.rules.clear()
   const position = await locatePosition(port, next)
-  await refreshView(port, true, true)
+  await refreshView(port, { isQuiet: true, isSynced: true })
   void port.openPane()
   if (!position) return fail('The flow was declared but its position could not be located.')
   const localMerged = await Promise.all(merged.map(pr => readGitOutput(port.processes, ['rev-parse', '--verify', '--quiet', pr.headRefOid])))
@@ -155,7 +162,8 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
   const source = pullRequest && pullRequest.baseRefName === recordedBranch ? ` (PR #${pullRequest.number})` : parent && parent === recordedBranch ? ' (branch reflog)' : ''
   const origin = isOnDefault ? '' : recordedBranch ? `, base from ${recordedBranch}${source}` : isKeptBase ? ', base kept from the record' : ', base at the declaration tip'
   const shown = projectDisplayStates(position.states)
-  const steps = position.states.map((state, index) => `${stepSymbol[shown[index]!.state]} ${formatStepLabel(state.step, position.pullRequest, state.state === 'current')} (${describeRequirement(state, next, position)})`).join('; ')
+  const isTreeChanged = await readIsTreeChanged(port, next.unit, position.unit.generation)
+  const steps = position.states.map((state, index) => `${symbol[markStep(shown[index]!, position, isTreeChanged).mark]} ${formatStepLabel(state.step, position.pullRequest, state.state === 'current')} (${describeRequirement(state, next, position)})`).join('; ')
   return succeed({ reply: `Flow declared: ${definition.label}${which}${origin}.${notice} Steps: ${steps}. ${composeInstruction(position, next)}`, start: composeStart(position, next, `Flow declared: ${definition.label}${which}.`) })
 }
 

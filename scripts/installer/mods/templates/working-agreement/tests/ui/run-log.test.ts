@@ -10,44 +10,30 @@ import { sessionMemory } from '../../hooks/core/session-memory'
 import { handlePaneClose, handlePaneRender } from '../../hooks/handlers/pane-render'
 import type { PaneElements } from '../../hooks/ui/pane-sections'
 import { diagnosed, diagnosisComment } from '../support/builders'
-import { mountPane, readFlowStatus, readPromptContext } from '../support/helpers'
+import { checkTheme, mountPane, readFlowStatus, readPromptContext, textOf } from '../support/helpers'
+import type { DrawnNode } from '../support/helpers'
 import { common, configBlob, createTestPort, createWorld } from '../support/world'
 import type { World, Gate, Options } from '../support/world'
 
-interface Node { type?: string; props?: Record<string, unknown>; children?: unknown[] }
 interface RenderTable { elements?: PaneElements }
 
 const config = JSON.stringify({ verify: ['./check'], always: [['./lint']] })
 
-function textOf(node: unknown): string {
-  if (typeof node === 'string') return node
-  return typeof node === 'object' && node !== null ? ((node as Node).children ?? []).map(textOf).join('') : ''
-}
-
-function findInnermostBox(node: unknown, text: string): Node | undefined {
+function findInnermostBox(node: unknown, text: string): DrawnNode | undefined {
   if (typeof node !== 'object' || node === null) return undefined
-  const tree = node as Node
+  const tree = node as DrawnNode
   return (tree.children ?? []).map(child => findInnermostBox(child, text)).find(child => child !== undefined)
     ?? (tree.type === 'Box' && textOf(tree) === text ? tree : undefined)
 }
 
 function hasColumnBox(node: unknown): boolean {
   if (typeof node !== 'object' || node === null) return false
-  const tree = node as Node
+  const tree = node as DrawnNode
   return (tree.type === 'Box' && tree.props?.['flexDirection'] === 'column') || (tree.children ?? []).some(hasColumnBox)
 }
 
-function checkTheme(node: unknown): void {
-  if (typeof node !== 'object' || node === null) return
-  const { props, children } = node as Node
-  for (const key of ['color', 'backgroundColor']) {
-    if (props?.[key] !== undefined) expect(['text', 'inactive', 'suggestion', 'success', 'warning', 'error', 'merged', 'subtle']).toContain(props[key])
-  }
-  for (const child of children ?? []) checkTheme(child)
-}
-
 async function expectTheme(pane: Mounted<'terminal', 'Pane'>): Promise<void> {
-  checkTheme(await pane.drawn())
+  checkTheme(await pane.drawn(), ['text', 'inactive', 'suggestion', 'success', 'warning', 'error', 'merged', 'subtle'])
   expect((await pane.find({ type: 'Box' }))?.props['backgroundColor']).toBeUndefined()
 }
 
@@ -87,7 +73,7 @@ function seedRun(on: On, run: RunView, options: Options = {}): World {
 }
 
 for (const columns of [30, 60]) {
-  test(`a Verify re-run on a verified tree draws one current step on one row at ${columns} columns`, async ($, on) => {
+  test(`a Verify re-run on a verified tree keeps Commit current on one row at ${columns} columns`, async ($, on) => {
     const gate: Gate = {}
     const run = savedRun({ status: 'passed', commands: [
       { ...command('passed', 'exit 0'), argv: ['./lint'] },
@@ -107,17 +93,14 @@ for (const columns of [30, 60]) {
     const pending = $.tool.call({ tool: 'mcp__working-agreement__verify' })
     await clock.settle()
     const pane = await mountPane($, { columns })
-    const liveRow = findInnermostBox(await pane.drawn(), '▸ Verify')
+    const liveRow = findInnermostBox(await pane.drawn(), '▸ Commit · no commit in the slice')
     expect(liveRow).toBeDefined()
     expect(liveRow?.props?.['flexDirection']).not.toBe('column')
     expect((liveRow?.children ?? []).some(hasColumnBox)).toBe(false)
     const liveText = textOf(await pane.drawn())
-    expect(liveText).toContain('▸ Verify')
-    expect(liveText).toContain('○ Commit')
-    expect(liveText).not.toContain('▸ Commit')
-    expect(liveText).not.toContain('no commit in the slice')
-    await expectText(pane, '○ ', { color: 'inactive' })
-    await expectText(pane, 'Commit', { color: 'inactive' })
+    expect(liveText).toContain('✓ Verify')
+    expect(liveText).not.toContain('▸ Verify')
+    await expectText(pane, 'Commit', { color: 'text' })
 
     gate.open?.()
     await clock.settle()
@@ -145,10 +128,10 @@ for (const tool of ['verify', 'run']) {
     await clock.settle()
     const pane = await mountPane($)
     const live = textOf(await pane.drawn())
-    expect(live).toContain(tool === 'run' ? '▸ Diagnose' : '▸ Verify')
+    if (tool === 'run') expect(live).toContain('▸ Diagnose')
     expect(live).toContain(tool === 'run' ? './reproduce' : '▸ ./lint0:00')
     await expectText(pane, tool === 'run' ? 'run' : 'Verify', { color: 'text', weight: 'semibold' })
-    await expectText(pane, tool === 'run' ? 'Diagnose' : 'Verify', { color: 'text', weight: undefined })
+    await expectText(pane, tool === 'run' ? 'Diagnose' : 'Code', { color: 'text', weight: undefined })
     await expectText(pane, '▸ ', { color: 'suggestion' })
     await expectText(pane, '0:00', { color: 'inactive' })
     if (tool === 'verify') {
@@ -237,9 +220,9 @@ test('timeout clears the live section and leaves the short Verify fact', async (
   const pending = $.tool.call({ tool: 'mcp__working-agreement__verify' })
   await clock.settle()
   const flow = await mountPane($)
-  expect(textOf(await flow.drawn())).toContain('▸ Verify')
+  expect(textOf(await flow.drawn())).toContain('▸ Code')
   expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('already in flight')
-  expect(textOf(await flow.drawn())).toContain('▸ Verify')
+  expect(textOf(await flow.drawn())).toContain('○ Verify')
   await clock.advance(600)
   await pending
   const ended = textOf(await flow.drawn())
@@ -292,7 +275,7 @@ test('l switches the Flow pane to Run log; Flow or Esc returns and digit selecto
   expect(buttons.map(button => button.props['hotkey'])).toEqual(['1', '2', '3'])
   expect(buttons.map(button => button.text)).toEqual(['Verify · failed', 'green · exit 0', 'red · exit 1'])
   expect(buttons.every(button => button.props['plain'] === true)).toBe(true)
-  await expectText(log, '▸ ', { color: 'suggestion' })
+  await expectText(log, '❯ ', { color: 'suggestion' })
   await expectText(log, '  ', { color: 'suggestion' })
   await expectText(log, 'Verify', { color: 'text', weight: 'semibold' })
   await expectText(log, 'green', { color: 'text', weight: undefined })
@@ -315,7 +298,7 @@ test('l switches the Flow pane to Run log; Flow or Esc returns and digit selecto
   await expectText(log, 'green recorded', { color: 'text' })
   await log.press({ key: '3' })
   expect(textOf(await log.drawn())).toContain('✗ ./reproduceexit 1 · 0s│ red output')
-  await expectText(log, '▸ ', { color: 'suggestion' })
+  await expectText(log, '❯ ', { color: 'suggestion' })
   await expectText(log, 'exit 1 · 0s', { color: 'error' })
   await expectText(log, 'red recorded', { color: 'text' })
   await log.press({ key: '1' })
@@ -573,6 +556,8 @@ for (const [status, label, color] of [['passed', 'passed', 'text'], ['timed out'
       await expectText(log, 'killed', { color: 'inactive' })
       await expectText(log, './cancelled', { color: 'inactive', weight: undefined })
       await expectText(log, './waiting', { color: 'inactive', weight: undefined })
+      expect(textOf(await log.drawn())).toContain('↷ ./cancelled')
+      expect(textOf(await log.drawn())).toContain('○ ./waiting')
       expect(textOf(await log.drawn())).not.toContain('hidden')
     }
     await log.press({ key: 'flow' })
@@ -586,10 +571,10 @@ test('step rows keep fixed names and symbols, wrap current facts, and truncate s
   createWorld(on, { branch: 'feat' })
   const value: FlowView = { flow: 'Small feature', progress: '3/7', issues: [{ number: 1, title: 'A long issue title' }], pending: null, meta: [], labels: [], notes: [], footer: { action: 'continue', isRunning: false },
     steps: [
-      { isError: false, isMerged: false, id: 'verify', symbol: '✓', label: 'Verify', state: 'done' },
-      { isError: false, isMerged: false, id: 'commit', symbol: '▸', label: 'Commit', state: 'current', detail: 'a fact to act on that wraps' },
-      { isError: false, isMerged: false, id: 'pr', symbol: '○', label: 'PR', state: 'pending' },
-      { isError: false, isMerged: false, id: 'tickets', symbol: '↷', label: 'Tickets', state: 'skipped', detail: 'optional for this unit' },
+      { isError: false, isMerged: false, isRewritten: false, id: 'verify', symbol: '✓', label: 'Verify', state: 'done' },
+      { isError: false, isMerged: false, isRewritten: false, id: 'commit', symbol: '▸', label: 'Commit', state: 'current', detail: 'a fact to act on that wraps' },
+      { isError: false, isMerged: false, isRewritten: false, id: 'pr', symbol: '○', label: 'PR', state: 'pending' },
+      { isError: false, isMerged: false, isRewritten: false, id: 'tickets', symbol: '↷', label: 'Tickets', state: 'skipped', detail: 'optional for this unit' },
     ] }
   const displayed = { value, run: null as RunView | null }
   on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: displayed.value, version: 0 } }))
@@ -627,13 +612,13 @@ test('step rows keep fixed names and symbols, wrap current facts, and truncate s
   await flow.unmount()
 })
 
-test('a live red or green run marks the current step without its fact and leaves the other rows as judged', async ($, on) => {
+test('a live red or green run leaves every row as judged, the current step with its fact', async ($, on) => {
   createWorld(on, { branch: 'feat' })
   const value: FlowView = { flow: 'Fix', progress: '1/6', issues: [], pending: null, meta: [], labels: [], notes: [], footer: null,
     steps: [
-      { isError: false, isMerged: false, id: 'diagnose', symbol: '✓', label: 'Diagnose', state: 'done' },
-      { isError: false, isMerged: false, id: 'code', symbol: '▸', label: 'Code', state: 'current', detail: 'no green run on this tree' },
-      { isError: false, isMerged: false, id: 'verify', symbol: '○', label: 'Verify', state: 'pending' },
+      { isError: false, isMerged: false, isRewritten: false, id: 'diagnose', symbol: '✓', label: 'Diagnose', state: 'done' },
+      { isError: false, isMerged: false, isRewritten: false, id: 'code', symbol: '▸', label: 'Code', state: 'current', detail: 'no green run on this tree' },
+      { isError: false, isMerged: false, isRewritten: false, id: 'verify', symbol: '○', label: 'Verify', state: 'pending' },
     ] }
   const displayed = { value, run: null as RunView | null }
   on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: displayed.value, version: 0 } }))
@@ -645,9 +630,8 @@ test('a live red or green run marks the current step without its fact and leaves
     await flow.redraw()
     const drawn = textOf(await flow.drawn())
     expect(drawn).toContain('✓ Diagnose')
-    expect(drawn).toContain('▸ Code')
+    expect(drawn).toContain('▸ Code · no green run on this tree')
     expect(drawn).toContain('○ Verify')
-    expect(drawn).not.toContain('no green run on this tree')
   }
   await flow.unmount()
 })

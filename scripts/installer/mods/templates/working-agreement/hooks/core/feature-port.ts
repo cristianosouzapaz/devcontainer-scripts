@@ -29,7 +29,7 @@ export function createFeaturePort(port: EnginePort): FeaturePort {
     readUnit: key => readUnit(port, key),
     updateUnits: (session, change) => updateUnits(port, session, change),
     locate: session => locatePosition(createReadPort(port), session),
-    refresh: (isQuiet?: boolean) => refreshView(port, isQuiet),
+    refresh: (isQuiet?: boolean) => refreshView(port, { isQuiet }),
     readRoot: () => readRepositoryRoot(port),
     readCwd: () => port.readCwd(),
     readSessionId: () => port.readSessionId(),
