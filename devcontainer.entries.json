@@ -64,8 +64,8 @@
         "feature": {
             "url": "ghcr.io/devcontainers/features/node:2",
             "options": {
-                "version": "lts",
-                "pnpmVersion": "latest"
+                "version": "24.22.1",
+                "pnpmVersion": "12.16.1"
             }
         }
     },
@@ -95,7 +95,7 @@
         "feature": {
             "url": "ghcr.io/va-h/devcontainers-features/uv:1",
             "options": {
-                "version": "latest"
+                "version": "0.13.6"
             }
         }
     }
