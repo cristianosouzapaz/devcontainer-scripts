@@ -140,6 +140,7 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
   const violations = [...(session.violations ?? [])].sort((left, right) => Number(dismissed.has(left.factId) || left.kind === 'unchecked') - Number(dismissed.has(right.factId) || right.kind === 'unchecked') || right.end - left.end)
   if (violations.length) groups.push(violations.map(record => keyedLine('Violation', `${labelViolation(record, root ?? undefined)} · ${time(record.end)} · ${[...record.toolUseIds, ...(record.agentIds ?? [])].join(', ')} · ${dismissed.has(record.factId) ? 'dismissed' : record.kind === 'unchecked' ? 'unchecked' : 'open'}`)))
   const errors = [formatErrorWindow('herdr', 'report-metadata', sessionMemory.herdrError),
+    formatErrorWindow('herdr', 'worktree create', sessionMemory.worktreeError),
     formatErrorWindow('Records', 'record write', sessionMemory.recordError),
     formatErrorWindow('Log', 'log append', sessionMemory.logError),
     session.handoff?.state === 'failed' ? keyedLine('Handoff', `handoff not completed · ${session.handoff.reason}`) : null].filter((value): value is string => value !== null)

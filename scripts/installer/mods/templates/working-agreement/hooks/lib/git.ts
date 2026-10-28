@@ -263,7 +263,8 @@ export function hashObject(processes: ProcessPort, text: string): Promise<Proces
 }
 
 /**
- * Reads NUL-delimited changed paths with literal pathspec environment overrides disabled.
+ * Reads NUL-delimited changed paths with literal pathspec environment overrides disabled, matching the filters from the
+ * repository root whatever directory the session is in.
  * @param processes - The engine's process runner.
  * @param base - The base tree.
  * @param tree - The unit tree.
@@ -273,5 +274,5 @@ export function hashObject(processes: ProcessPort, text: string): Promise<Proces
 export function diffPaths(processes: ProcessPort, base: string, tree: string, paths: string[]): Promise<ProcessOutput> {
   return executeProcess(processes, ['env', 'GIT_LITERAL_PATHSPECS=0', 'GIT_GLOB_PATHSPECS=0', 'GIT_ICASE_PATHSPECS=0',
     ...gitArgv(['-c', 'core.quotePath=false', '-c', 'diff.relative=false', 'diff', '--name-only', '-z', '--no-renames', '--no-ext-diff', base, tree,
-    '--', ...paths.map(path => `:(glob)${path}`)])])
+    '--', ...paths.map(path => `:(top,glob)${path}`)])])
 }

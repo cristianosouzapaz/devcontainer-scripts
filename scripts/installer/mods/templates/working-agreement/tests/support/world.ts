@@ -52,6 +52,8 @@ export interface Options {
   herdrGate?: Promise<void>
   ghResponse?: GhResponse
   herdrResult?: HerdrResult
+  /** The standard output herdr prints for these arguments; empty when unset. */
+  herdrReply?: (args: string[]) => string
   approvedConfig?: string
   verifyFile?: string
   platform?: string
@@ -174,6 +176,8 @@ interface GitContext {
   graph: Graph; checkout: Checkout; worktrees: Record<string, Worktree>; stdin: string
   commitDates: Map<string, number>
   owner: [string, Repository]; localRoot: string; working: Record<string, string>
+  /** The process directory below the repository root, which git prepends to a pathspec without `top` magic. */
+  prefix: string
   resolve: (revision: string) => string | undefined
   filesAt: (revision: string) => Record<string, string> | undefined
   treeName: (files: Record<string, string>, alias?: string) => string
@@ -235,7 +239,7 @@ const gitAnswers: GitEntry[] = [
   } },
   { name: 'diff', pattern: /^diff --name-only -z --no-renames --no-ext-diff (\S+) (\S+) --(?: (.*))?$/, answer: (c, m) => {
     const [from, to] = [c.filesAt(m[1] ?? ''), c.filesAt(m[2] ?? '')]
-    const patterns = m[3]?.split(' ').map(pattern => pattern.replace(/^:\(glob\)/, '')) ?? []
+    const patterns = m[3]?.split(' ').map(pattern => pattern.startsWith(':(top,glob)') ? pattern.slice(11) : `${c.prefix}${pattern.replace(/^:\(glob\)/, '')}`) ?? []
     return from && to ? ok(diffFiles(from, to).filter(path => !patterns.length || patterns.some(pattern => matchesGlob(path, pattern)))
       .map(path => `${path}\0`).join('')) : fatal
   } },
@@ -254,6 +258,12 @@ const gitAnswers: GitEntry[] = [
   { name: 'ignore', pattern: /^check-ignore -- (.+)$/, answer: (c, m) => isIgnored(c, (m[1] ?? '').replace(`${c.owner[0]}/`, ''))
     ? ok(m[1] ?? '') : { exitCode: 1, stdout: '' } },
   { name: 'add', pattern: /^add -A$/, answer: () => ok('') },
+  // A safe delete leaves the graph alone: tests read the deletion from the recorded runs.
+  { name: 'branch-delete', pattern: /^branch -d (\S+)$/, answer: (c, m) => {
+    const tip = isLocalBranch(c.graph, m[1] ?? '') ? c.resolve(m[1] ?? '') : undefined
+    const head = c.resolve('HEAD')
+    return tip && head && listAncestors(c.graph, head).includes(tip) ? ok(`Deleted branch ${m[1]} (was ${tip}).`) : { exitCode: 1, stdout: '' }
+  } },
   { name: 'write', pattern: /^write-tree$/, answer: c =>
     ok(c.treeName(Object.fromEntries(Object.entries(c.working).filter(([path]) => !isIgnored(c, path))), c.checkout.tree)) },
   { name: 'remotes', pattern: /^remote$/, answer: c => ok([...new Set(Object.keys(c.graph.refs)
@@ -465,7 +475,8 @@ export function linearGraph(tips: Record<string, number>, config?: string, highe
  */
 export function createWorld(on: On, checkout: Checkout, options: Options = {}): World {
   mock.env(on, options.herdrEnv ?? {})
-  const session = { cwd: options.cwd ?? root }
+  // A test moves the session by setting options.cwd.
+  const session = { get cwd() { return options.cwd ?? root } }
   const chat = { id: 'sid' }
   const commands: string[] = []
   const runs: string[] = []
@@ -597,7 +608,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       herdrActivity.active += 1
       herdrActivity.maximum = Math.max(herdrActivity.maximum, herdrActivity.active)
       try { options.beforeHerdr?.(); if (herdrActivity.calls === 1) await options.herdrGate
-        return buildResult('', options.herdrResult?.exitCode ?? 0, options.herdrResult?.stderr ?? '')
+        return buildResult(options.herdrReply?.(e.argv.slice(1)) ?? '', options.herdrResult?.exitCode ?? 0, options.herdrResult?.stderr ?? '')
       } finally { herdrActivity.active -= 1 }
     }
     if (command === 'uname -s') return buildResult(options.platform ?? 'Linux')
@@ -674,7 +685,10 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
         graph.commits[resolve(revision) ?? '']?.files ?? treeFiles.get(revision)
       const entry = gitAnswers.find(candidate => candidate.pattern.test(local))
       if (!entry) throw new Error(`Unmodelled git command: ${local}`)
-      const answer = owner ? await entry.answer({ graph, commitDates, checkout: git, working, worktrees, localRoot, owner, resolve, filesAt,
+      // why: Without -C git runs in the session's directory, as the engine runs a process with no cwd.
+      const directory = normalized[1] === '-C' ? localRoot : e.init?.cwd ?? session.cwd
+      const prefix = owner && directory.startsWith(`${owner[0]}/`) ? `${directory.slice(owner[0].length + 1)}/` : ''
+      const answer = owner ? await entry.answer({ graph, commitDates, checkout: git, working, worktrees, localRoot, owner, prefix, resolve, filesAt,
         treeName,
         blobText: id => id === blob ? config ?? '' : graph.blobs?.[id] ?? `${id}\n`, stdin: e.init?.stdin ?? '',
       }, local.match(entry.pattern) ?? []) : fatal
@@ -842,6 +856,9 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   on('fs.list', async (_$, e) => ({ value: await boundaries.files.list(e.path) }))
   on('classic.SessionStart', () => ({ watchPaths: options.watchPaths }))
   on('classic.FileChanged', () => ({}))
+  on('classic.WorktreeCreate', () => ({}))
+  on('classic.WorktreeRemove', () => ({}))
+  on('classic.Stop', () => ({}))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('command.run', (_$, e) => {
     commands.push(e.command)

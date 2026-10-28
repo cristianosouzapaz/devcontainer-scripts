@@ -9,13 +9,14 @@ import { isJudgedTool } from '../core/judged-tools'
 import { refreshView } from '../core/pane-view'
 import { readSession, updateSession } from '../core/record-store'
 import { withRecordLock } from '../core/session-memory'
+import { composeHerdrRecipe, isInsideHerdr } from '../core/herdr-worktrees'
 import { flowDefinitions } from '../domain/flow-definitions'
 import { markForAgent } from '../domain/messages'
 import { recordHandoffDocument } from '../features/handoff'
 import { toStringOrEmpty } from '../lib/json'
 import { handleGuarantees } from './guarantees'
 
-const agentWorktreeNote = 'a subagent with isolation: worktree does not see the unit\'s uncommitted changes (with worktree.baseRef: "head" it sees only the committed HEAD); bring its changes back as an uncommitted patch (git -C <wt> diff --binary | git apply), never as a commit; with agent teams on, pass isolation on the Agent call itself, even for a subagent with a name.'
+const agentWorktreeNote = 'a subagent with isolation: worktree does not see the unit\'s uncommitted changes (inside herdr, or with worktree.baseRef: "head", it sees only the committed HEAD); bring its changes back as an uncommitted patch (git -C <wt> diff --binary | git apply), never as a commit; with agent teams on, pass isolation on the Agent call itself, even for a subagent with a name.'
 
 /**
  * Checks a tool call, runs it, and records what it did for the unit.
@@ -47,6 +48,8 @@ async function handleGatedCall(port: EnginePort, event: Frozen<Args<'tool.call'>
     }
     return next(event)
   }
+  const herdrDeny = await denyOutsideHerdr(port, event.tool)
+  if (herdrDeny) return { deny: herdrDeny }
   if (!isJudgedTool(event.tool)) return event.tool === 'Agent' ? appendAgentWorktreeNote(args, await next(event)) : next(event)
   const verdict = await judgeToolCall(port, args)
   if (verdict.decision === 'deny') {
@@ -62,6 +65,17 @@ async function handleGatedCall(port: EnginePort, event: Frozen<Args<'tool.call'>
   if (ran.deny !== undefined) return ran
   await bestEffort(port, 'handoff document record', () => recordHandoffDocument(createFeaturePort(port), event.tool, toStringOrEmpty(args.file_path), ran.isError === true), undefined)
   return ran
+}
+
+/**
+ * Refuses, inside herdr, the chat moving into a worktree herdr would not own.
+ * @param port - The engine calls.
+ * @param tool - The called tool.
+ * @returns The deny reason, or undefined when the call may run.
+ */
+async function denyOutsideHerdr(port: EnginePort, tool: string): Promise<string | undefined> {
+  if (tool !== 'EnterWorktree' || !await isInsideHerdr(port)) return undefined
+  return markForAgent(`EnterWorktree is refused inside herdr: a parallel unit gets its own herdr workspace and Claude session — ${composeHerdrRecipe('HEAD')}.`)
 }
 
 /**

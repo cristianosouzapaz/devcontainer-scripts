@@ -117,6 +117,15 @@ for (const issue of [362, 364]) {
   })
 }
 
+test('inside herdr the refused Follow-up names the herdr workspace and session recipe based on the parent', async ($, on) => {
+  const world = createWorld(on, parentCheckout(), { session: noFlow, closingPrs: { 362: [closingFrom('par')] }, herdrEnv: { HERDR_ENV: '1' } })
+  await world.ready
+  await seedChildren(world, exampleUnits())
+  const reply = (await runFlowCommand($, 'follow-up #362')).text ?? ''
+  expect(reply).toContain('herdr worktree create --cwd /repo --branch <branch> --base par --no-focus')
+  expect(reply).toContain('herdr agent start issue-<n> --kind claude')
+})
+
 test('on a child branch of the PR head, #362 enters through the closing PR of its base branch as a Follow-up child', async ($, on) => {
   const { sessions } = createWorld(on, childCheckout(), { session: noFlow, closingPrs: { 362: [closingFrom('par')] } })
   expect((await runFlowCommand($, 'follow-up #362')).text).toContain('Flow declared: Follow-up for #362, base from par (branch reflog).')

@@ -76,6 +76,18 @@ for (const [paths, full, commands] of [
   })
 }
 
+test('a rule-selected pass stays done after the session moves into a subdirectory', async ($, on) => {
+  const file = JSON.stringify(config)
+  const options: Options = { verifyFile: file }
+  createWorld(on, { ...changed, changed: ['docs/a.md'] }, options)
+  await runFlowCommand($, `approve verify ${configBlob(file).slice(0, 12)}`)
+  await $.tool.call({ tool: 'mcp__working-agreement__verify' })
+  options.cwd = '/repo/docs'
+  const status = await readFlowStatus($)
+  expect(status).toContain('✓ Verify')
+  expect(status).not.toContain('not run on this tree')
+})
+
 test('no rules always selects full and accepts schema metadata and fractional timeouts', async ($, on) => {
   const file = JSON.stringify({ $schema: 'schema.json', verify: ['full'], always: [['full']], timeoutMinutes: 0.5 })
   const world = createWorld(on, { ...changed }, { verifyFile: file })

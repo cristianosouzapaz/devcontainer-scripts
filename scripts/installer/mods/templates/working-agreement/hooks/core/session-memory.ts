@@ -39,6 +39,8 @@ interface PaintedVersion { sessionId: string; version: number }
 /** What the hooks share between events for the life of one module load. */
 interface SessionMemory {
   herdrError: ErrorWindow | null
+  /** A failed herdr worktree creation, after which Claude Code made a git worktree outside the volume. */
+  worktreeError: ErrorWindow | null
   recordError: ErrorWindow | null
   logError: ErrorWindow | null
   githubCache: GithubCache | null
@@ -72,6 +74,7 @@ interface SessionMemory {
 /** The hooks' shared in-memory state; a reload evaluates the module again, so it starts over. */
 export const sessionMemory: SessionMemory = {
   herdrError: null,
+  worktreeError: null,
   recordError: null,
   logError: null,
   githubCache: null,

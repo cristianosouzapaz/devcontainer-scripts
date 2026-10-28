@@ -4,6 +4,7 @@ import { bestEffort } from '../core/best-effort'
 import type { EnginePort } from '../core/engine-port'
 import { createFeaturePort } from '../core/feature-port'
 import { reread } from '../core/pane-view'
+import { sweepHerdrWorktrees } from '../core/herdr-worktrees'
 import { initializeSession, mirrorSession, readCommonDir, readSession } from '../core/record-store'
 import { withRecordLock } from '../core/session-memory'
 import { tickMs } from '../core/timing'
@@ -31,6 +32,7 @@ export async function handleSessionStart(port: EnginePort, event: Frozen<Args<'s
   await bestEffort(port, 'session length', () => withRecordLock(() => trackSessionLength(createFeaturePort(port))), undefined)
   await bestEffort(port, 'handoff recovery', () => recoverHandoff(createFeaturePort(port)), undefined)
   await bestEffort(port, 'startup pruning', () => withRecordLock(() => pruneRecords(port)), undefined)
+  port.defer(() => { void bestEffort(port, 'worktree sweep', () => sweepHerdrWorktrees(port), undefined) })
   await port.registerSurface()
   const session = await bestEffort(port, 'session read', () => readSession(port), null)
   if (session && (session.flow || session.violations?.length)) {

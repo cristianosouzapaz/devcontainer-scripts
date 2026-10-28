@@ -14,6 +14,7 @@ import { handleToolCall } from './handlers/tool-call'
 import { handleRun } from './handlers/run'
 import { handleVerify } from './handlers/verify'
 import { handleTurnComplete } from './handlers/turn'
+import { handleStop, handleWorktreeCreate, handleWorktreeRemove } from './handlers/worktree'
 import { runWithDeadline } from './lib/process'
 
 const paneId = 'working-agreement'
@@ -125,6 +126,12 @@ export const register: Register = (on, options): void => {
   on('classic.SessionStart', ($, e, next) => handleClassicSessionStart(createEnginePort($, 'session start'), e, next))
 
   on('classic.FileChanged', ($, e, next) => handleFileChanged(createEnginePort($, 'ref change'), e, next))
+
+  on('classic.WorktreeCreate', ($, e, next) => handleWorktreeCreate(createEnginePort($, 'worktree create'), e, next))
+
+  on('classic.WorktreeRemove', ($, e, next) => handleWorktreeRemove(createEnginePort($, 'worktree remove'), e, next))
+
+  on('classic.Stop', ($, e, next) => handleStop(createEnginePort($, 'stop'), e, next))
 
   // The read-only side fails open: a failed read submits the prompt with the notice instead of the flow line; a chain already called is passed through.
   on('prompt.submit', ($, e, next) => handlePromptSubmit(createEnginePort($, 'prompt'), e, next))
