@@ -20,7 +20,7 @@ ENV CLAUDE_CONFIG_DIR=/root/.claude \
 # SCRIPTS_REF defaults to the release tag this Dockerfile ships in: release-please bumps it in
 # each release PR, and a published tag never moves, so one Dockerfile builds one script tree.
 # x-release-please-start-version
-ARG SCRIPTS_REF="v4.1.0"
+ARG SCRIPTS_REF="v4.2.0"
 # x-release-please-end
 ARG SCRIPTS_REPO="cristianosouzapaz/devcontainer-scripts"
 ENV SCRIPTS_REF=${SCRIPTS_REF} \
