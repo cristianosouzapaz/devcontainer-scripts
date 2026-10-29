@@ -21,7 +21,7 @@ test('a live Verify run leaves every step drawn in its real state', async ($, on
   await clock.settle()
   const pane = await mountPane($)
   const live = textOf(await pane.drawn())
-  expect(live).toContain('▸ Code · no Verify run yet')
+  expect(live).toContain('▸ Code · no run yet')
   expect(live).toContain('○ Verify')
   expect(live).not.toContain('▸ Verify')
   gate.open?.()
@@ -45,13 +45,13 @@ for (const [step, checkout, options] of waiting) {
 test('a Verify config edited during its run reads ● with the approval fact, not the unrecorded run', async ($, on) => {
   const checkout: Checkout = { ...changed }
   const options: Options = { verifyFile, approvedConfig: verifyFile }
-  options.afterSpawn = () => { checkout.tree = 'two'; options.verifyFile = JSON.stringify({ verify: ['./edited.sh'] }) }
+  options.afterSpawn = () => { checkout.tree = 'two'; options.verifyFile = JSON.stringify({ always: [['./edited.sh']] }) }
   createWorld(on, checkout, options)
   await $.tool.call({ tool: 'mcp__working-agreement__verify' })
   const pane = await mountPane($)
   const drawn = textOf(await pane.drawn())
-  expect(drawn).toContain('● Verify · config not approved')
-  expect(drawn).not.toContain('tree changed during run')
+  expect(drawn).toContain('● Verify · /flow approve verify')
+  expect(drawn).not.toContain('tree changed in the run')
   await pane.unmount()
 })
 

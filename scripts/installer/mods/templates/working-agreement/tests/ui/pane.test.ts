@@ -4,7 +4,7 @@ import type { Engine } from 'claude-code/testing'
 import type { FlowView } from '../../types'
 import { sectionGap } from '../../hooks/ui/theme'
 import { buildWriteCall, buildPullRequest, noFlow, pushedCloseOut, twoIssueCloseOut } from '../support/builders'
-import { declareFlow, mountPane, endTurn, readFlowStatus, readPromptContext, runFlowCommand } from '../support/helpers'
+import { declareFlow, mountPane, endTurn, readFlowStatus, readPromptContext, runFlowCommand, textOf } from '../support/helpers'
 import { createWorld } from '../support/world'
 
 /** A node of a mounted pane's tree, as far as these tests read it. */
@@ -29,24 +29,22 @@ const countPaneText = async ($: Engine, text: RegExp): Promise<number> => {
   return found.length
 }
 
-test('the PR step reads Update PR #<n> with an open PR on record, and PR without one', async ($, on) => {
+test('the current PR step names its open PR', async ($, on) => {
   createWorld(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, unit: { skips: [{ step: 'verify', reason: 'covered separately' }], skills: ['generate-commit'] }, prs: [buildPullRequest({ closingIssuesReferences: [] })] })
-  expect(await readFlowStatus($)).toContain('Update PR #5')
-  expect(await readPromptContext($)).toContain('current step: Update PR #5')
+  expect(await readFlowStatus($)).toContain('▸ PR #5')
+  expect(await readPromptContext($)).toContain('current step: PR #5')
 })
 
 test('the PR step reads PR #<n> once done, in the status and in the declaration steps', async ($, on) => {
   createWorld(on, { branch: 'feat', ahead: 1 }, pushedCloseOut)
   expect(await readFlowStatus($)).toContain('✓ PR #5')
-  expect(await readFlowStatus($)).not.toContain('Update PR')
   const declared = (await declareFlow($, 'close-out', [1, 2])).result
   expect(declared).toContain('✓ PR #5 (')
-  expect(declared).not.toContain('Update PR')
 })
 
 test('the PR step reads PR with no PR on record', async ($, on) => {
   createWorld(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, unit: { skips: [{ step: 'verify', reason: 'covered separately' }], skills: ['generate-commit'] } })
-  expect(await readFlowStatus($)).not.toContain('Update PR')
+  expect(await readFlowStatus($)).toContain('▸ PR · no PR')
   expect(await readPromptContext($)).toContain('current step: PR.')
 })
 
@@ -60,7 +58,7 @@ test('the pane shows the current Commit fact after a new edit and turn end', asy
   git.isDirty = true
   await endTurn($)
   expect(await readFlowStatus($)).toContain('▸ Commit · uncommitted changes')
-  expect(await countPaneText($, /uncommitted changes/)).toBeGreaterThan(0)
+  expect(await countPaneText($, /^uncommitted changes/)).toBeGreaterThan(0)
 })
 
 test('the pane reports stale GitHub facts while a declared issue is unverified', async ($, on) => {
@@ -87,6 +85,21 @@ for (const [count, labels] of [[1, oneRow], [2, twoRows], [3, threeRows]] as con
   })
 }
 
+test('with several issues the pane draws the first issue with its labels and counts the rest, which /flow status lists', async ($, on) => {
+  createWorld(on, { branch: 'feat', ahead: 1 }, { session: { flow: 'close-out', issues: [1, 2, 3], info: { 1: { title: 'first', labels: ['bug'] }, 2: { title: 'second', labels: ['needs-info'] }, 3: { title: 'third', labels: [] } } } })
+  const status = (await readFlowStatus($)) ?? ''
+  const ui = await mountPane($, { columns: 40, rows: 30 })
+  const text = textOf(await ui.drawn())
+  expect(text).toContain('#1')
+  expect(text).toContain('first')
+  expect(text).not.toContain('second')
+  expect(text).toContain('+2 more · /flow status')
+  expect((await ui.findAll({ type: 'Button' })).filter(button => button.props['label'] === 'open')).toHaveLength(1)
+  expect((await ui.findAll({ type: 'Text', text: /^ [a-z-]+ $/ })).map(pill => pill.text)).toEqual([' bug '])
+  for (const line of ['#2', 'second', '#3', 'third']) expect(status).toContain(line)
+  await ui.unmount()
+})
+
 test('the mounted pane draws the label rows /flow status prints', async ($, on) => {
   createWorld(on, { branch: 'feat', ahead: 1 }, labelsOf(threeRows))
   const status = (await readFlowStatus($)) ?? ''
@@ -108,8 +121,8 @@ test('every keyed Flow button draws only its clean label, keeps its hotkey and f
   on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: displayed.value, version: 0 } }))
   const pane = await mountPane($)
   const buttons = await pane.findAll({ type: 'Button' })
-  expect(buttons.map(button => button.props['label'])).toEqual(['open', 'open', 'dismiss', 'Run log', 'Continue in new session'])
-  expect(buttons.map(button => button.props['hotkey'])).toEqual(['o', undefined, 'd', 'l', 'c'])
+  expect(buttons.map(button => button.props['label'])).toEqual(['open', 'dismiss', 'Run log', 'Continue in new session'])
+  expect(buttons.map(button => button.props['hotkey'])).toEqual(['o', 'd', 'l', 'c'])
   for (const key of ['o', 'd', 'l', 'c']) expect(await pane.findAll({ type: 'Text', text: new RegExp(`^${key}$`) })).toHaveLength(0)
   displayed.value = { ...value, footer: { action: 'start', isRunning: false } }
   await pane.redraw()

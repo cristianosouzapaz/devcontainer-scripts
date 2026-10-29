@@ -2,6 +2,7 @@ import type { Args, EventResult, Frozen, Next } from 'claude-code'
 
 import { bestEffort } from '../core/best-effort'
 import { judgeToolCall } from '../core/call-judgement'
+import { denyDelegatedCommand } from '../core/delegated-commits'
 import type { EnginePort } from '../core/engine-port'
 import { createFeaturePort } from '../core/feature-port'
 import { logEvent } from '../core/flow-log'
@@ -9,11 +10,13 @@ import { isJudgedTool } from '../core/judged-tools'
 import { refreshView } from '../core/pane-view'
 import { readSession, updateSession } from '../core/record-store'
 import { withRecordLock } from '../core/session-memory'
-import { composeHerdrRecipe, isInsideHerdr } from '../core/herdr-worktrees'
+import { isInsideHerdr, spawnGuide } from '../core/herdr-worktrees'
 import { flowDefinitions } from '../domain/flow-definitions'
-import { markForAgent } from '../domain/messages'
+import { judgeIssueBash } from '../domain/bash-guards'
+import { markForAgent, modToolPrefix } from '../domain/messages'
 import { recordHandoffDocument } from '../features/handoff'
 import { toStringOrEmpty } from '../lib/json'
+import { denyCoordinatorCall } from './coordinator'
 import { handleGuarantees } from './guarantees'
 
 const agentWorktreeNote = 'a subagent with isolation: worktree does not see the unit\'s uncommitted changes (inside herdr, or with worktree.baseRef: "head", it sees only the committed HEAD); bring its changes back as an uncommitted patch (git -C <wt> diff --binary | git apply), never as a commit; with agent teams on, pass isolation on the Agent call itself, even for a subagent with a name.'
@@ -38,7 +41,10 @@ export async function handleToolCall(port: EnginePort, event: Frozen<Args<'tool.
  * @returns The refusal or dispatched tool result.
  */
 async function handleGatedCall(port: EnginePort, event: Frozen<Args<'tool.call'>>, next: Next<'tool.call'>): Promise<EventResult<'tool.call'>> {
-  if (event.tool.startsWith('mcp__working-agreement__')) return next(event)
+  // The mod's own tools answer without next, so no permission check reaches them: the coordinator guard runs first.
+  const coordinatorDeny = await denyCoordinatorCall(port, event)
+  if (coordinatorDeny) return { deny: coordinatorDeny }
+  if (event.tool.startsWith(modToolPrefix)) return next(event)
   const args: Record<string, unknown> = { ...event }
   if (event.tool === 'Skill' && !event.agentId) {
     const name = toStringOrEmpty(args.skill).split(':').pop()
@@ -48,6 +54,11 @@ async function handleGatedCall(port: EnginePort, event: Frozen<Args<'tool.call'>
     }
     return next(event)
   }
+  // Every GitHub issue write goes through the issue tools, which check its fields; a raw one is refused before it runs.
+  const issueDeny = event.tool === 'Bash' ? judgeIssueBash(toStringOrEmpty(args.command)) : undefined
+  if (issueDeny) return { deny: issueDeny }
+  const delegatedDeny = event.tool === 'Bash' ? await denyDelegatedCommand(port, toStringOrEmpty(args.command)) : undefined
+  if (delegatedDeny) return { deny: delegatedDeny }
   const herdrDeny = await denyOutsideHerdr(port, event.tool)
   if (herdrDeny) return { deny: herdrDeny }
   if (!isJudgedTool(event.tool)) return event.tool === 'Agent' ? appendAgentWorktreeNote(args, await next(event)) : next(event)
@@ -75,7 +86,7 @@ async function handleGatedCall(port: EnginePort, event: Frozen<Args<'tool.call'>
  */
 async function denyOutsideHerdr(port: EnginePort, tool: string): Promise<string | undefined> {
   if (tool !== 'EnterWorktree' || !await isInsideHerdr(port)) return undefined
-  return markForAgent(`EnterWorktree is refused inside herdr: a parallel unit gets its own herdr workspace and Claude session — ${composeHerdrRecipe('HEAD')}.`)
+  return markForAgent(`EnterWorktree is refused inside herdr: a parallel unit never runs in this chat — ${spawnGuide}.`)
 }
 
 /**

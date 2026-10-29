@@ -37,7 +37,7 @@ test('a Close out on an integration branch requires a child merged later until i
   checkout.graph = withCommit(checkout.graph, 'mc', ['mpar', 'cc1'], 'par')
   options.prs = [buildRoundPullRequest('mc', [1, 2, 3])]
   await world.clock.advance(61000)
-  expect(await readFlowStatus($)).toContain('▸ Update PR #10 · PR does not close #4')
+  expect(await readFlowStatus($)).toContain('▸ PR #10 · missing Closes #4')
   options.prs = [buildRoundPullRequest('mc', [1, 2, 3, 4])]
   await world.clock.advance(61000)
   expect(await readFlowStatus($)).toContain('✓ PR #10')
@@ -51,7 +51,7 @@ test('a child deleted at an observed end its parent does not reach blocks the Cl
   const child = buildChildEntry('b', 3)
   await seedChildren(world, [child])
   await seedObservedEnd(world, child.identity, 'dead', 'b1', child.generation!)
-  expect(await readFlowStatus($)).toContain('▸ Update PR #10 · child #3: branch b deleted unmerged — restore it with git branch b b1')
+  expect(await readFlowStatus($)).toContain('▸ PR #10 · child #3: branch b deleted unmerged — restore it with git branch b b1')
   options.issues = { 3: 'CLOSED' }
   await world.clock.advance(61000)
   expect(await readFlowStatus($)).toContain('✓ PR #10')
@@ -68,7 +68,7 @@ test('a Close out whose PR targets a non-default branch keeps its PR step, requi
   await declareFlow($, 'close-out', [1])
   await runFlowCommand($, 'skip verify covered separately')
   const status = await readFlowStatus($)
-  expect(status).toContain('▸ Update PR #10 · PR does not close #2')
+  expect(status).toContain('▸ PR #10 · missing Closes #2')
   expect(status).not.toContain('Integrate')
   options.prs = [pullRequest('Closes #1\nCloses #2\nCloses #3')]
   await world.clock.advance(61000)
@@ -92,12 +92,12 @@ test("a child merged, observed once, then deleted is required by the Close out, 
   await world.ready
   const child = buildChildEntry('b', 3)
   const paths = await seedChildren(world, [child])
-  expect(await readFlowStatus($)).toContain('▸ Update PR #10 · PR does not close #3')
+  expect(await readFlowStatus($)).toContain('▸ PR #10 · missing Closes #3')
   const end = await observedEndFile(child.identity, 'sid')
   expect(world.files.has(end)).toBe(true)
   checkout.graph = withoutBranch(checkout.graph!, 'b')
   await world.clock.advance(61000)
-  expect(await readFlowStatus($)).toContain('▸ Update PR #10 · PR does not close #3')
+  expect(await readFlowStatus($)).toContain('▸ PR #10 · missing Closes #3')
   options.prs = [buildParentPullRequest({ number: 10, headRefOid: 'mpar', closingIssuesReferences: [{ number: 1 }, { number: 3 }] })]
   await $.session.start({ cwd: root, surface: null, isInteractive: false })
   for (const path of [...paths, end]) expect(world.files.has(path)).toBe(false)
@@ -109,7 +109,7 @@ test('a child never observed before its branch was deleted blocks the Close out 
   const world = createWorld(on, checkout, options)
   await world.ready
   const paths = await seedChildren(world, [buildChildEntry('b', 3)])
-  expect(await readFlowStatus($)).toContain('▸ Update PR #10 · child #3: end never observed (branch deleted)')
+  expect(await readFlowStatus($)).toContain('▸ PR #10 · child #3: end never observed (branch deleted)')
   options.issues = { 3: 'CLOSED' }
   await world.clock.advance(61000)
   expect(await readFlowStatus($)).toContain('✓ PR #10')

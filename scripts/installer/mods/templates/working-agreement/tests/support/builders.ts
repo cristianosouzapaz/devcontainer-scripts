@@ -9,13 +9,16 @@ interface WriteCall { tool: 'Write'; file_path: string; content: string }
 /** The session record of a session with no flow declared. */
 export const noFlow = { flow: null, issues: [], info: {} }
 
+/** A coordinator session with no flow. */
+export const coordinator = { ...noFlow, role: 'coordinator' }
+
 /** A Close out on #1 and #2, so a PR body must carry both Closes lines. */
 export const twoIssueCloseOut: Options = {
   session: { flow: 'close-out', issues: [1, 2], info: { 1: { title: 'a', labels: [] }, 2: { title: 'b', labels: [] } } },
 }
 
 /** A repository verify file naming `./test/run.sh`. */
-export const verifyFile = JSON.stringify({ verify: ['./test/run.sh'] })
+export const verifyFile = JSON.stringify({ always: [['./test/run.sh']] })
 
 /** A Close out with committed work and Verify skipped, awaiting only its PR. */
 export const pushedCloseOut: Options = {

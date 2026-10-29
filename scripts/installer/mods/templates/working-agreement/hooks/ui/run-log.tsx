@@ -20,6 +20,26 @@ function kindLabel(kind: RunView['kind']): string {
 }
 
 /**
+ * Names a command argument by its last path segment before any extension, so a runner and its test paths read as names.
+ * @param arg - One argument; a flag, or one with no name left, is kept as given.
+ * @returns The argument's short name.
+ */
+function nameArgument(arg: string): string {
+  return arg.startsWith('-') ? arg : arg.split('/').filter(Boolean).pop()?.replace(/\..*$/, '') || arg
+}
+
+/**
+ * Words a Verify command as its runner and the buckets it runs, since the full paths do not fit a pane row and stay in
+ * the Run log.
+ * @param argv - The command's argv.
+ * @returns `runner: bucket, bucket`, or the runner alone.
+ */
+export function summarizeCommand(argv: string[]): string {
+  const [runner = '', ...args] = argv.map(nameArgument)
+  return args.length ? `${runner}: ${[...new Set(args)].join(', ')}` : runner
+}
+
+/**
  * Keeps the kind and details flexible while the elapsed time stays at the right edge.
  * @param elements - The pane's element table.
  * @param kind - The displayed run kind.
@@ -90,14 +110,15 @@ function outputRows({ Box, Text }: PaneElements, output: string, live = false): 
 export function drawLiveRun(elements: PaneElements, run: RunView): RenderElement {
   const { Box, Text } = elements
   const current = run.commands.find(command => command.status === 'running')
+  // A Verify command comes from the config's runners; any other run shows the argv the agent gave.
+  const commandLine = (command: RunCommandView): string => run.kind === 'Verify' ? summarizeCommand(command.argv) : command.argv.join(' ')
   return <Box flexDirection="column">
-    {runHeader(elements, run.kind,
-      run.kind === 'Verify' && run.selection && <Text color="inactive" wrap="truncate-end">  {run.selection}</Text>, clock(run.duration))}
-    {run.commands.length === 1 ? <Text color="text" wrap="truncate-end">{run.commands[0]!.argv.join(' ')}</Text>
+    {runHeader(elements, run.kind, null, clock(run.duration))}
+    {run.commands.length === 1 ? <Text color="text" wrap="truncate-end">{commandLine(run.commands[0]!)}</Text>
       : run.commands.map(command => <Box gap={1}>
         <Box flexGrow={1} minWidth={0}>
           <Box width={2} flexShrink={0}><Text color={commandColors[command.status]}>{commandSymbol[command.status]} </Text></Box>
-          <Text color={isInactiveCommand(command.status) ? 'inactive' : 'text'} wrap="truncate-end">{command.argv.join(' ')}</Text>
+          <Text color={isInactiveCommand(command.status) ? 'inactive' : 'text'} wrap="truncate-end">{commandLine(command)}</Text>
         </Box>
         {command.status !== 'waiting' && <Box flexShrink={0}><Text color={command.status === 'running' ? 'text' : command.status === 'failed' || command.status === 'timeout' ? 'error' : 'inactive'}>
           {command.status === 'running' ? clock(command.duration) : command.status === 'timeout' ? 'timed out' : command.status === 'failed' ? command.outcome : command.status === 'cancelled' ? 'killed' : duration(command.duration)}

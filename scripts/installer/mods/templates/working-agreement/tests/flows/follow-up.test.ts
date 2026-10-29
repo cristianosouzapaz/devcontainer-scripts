@@ -58,7 +58,7 @@ test("a Follow-up child is integrated by the user's merge and its issue is requi
   options.prs = [buildRoundPullRequest('mpb', [7])]
   await declareFlow($, 'close-out', [7])
   await runFlowCommand($, 'skip verify covered by the children')
-  expect(await readFlowStatus($)).toContain('PR does not close #1')
+  expect(await readFlowStatus($)).toContain('missing Closes #1')
 })
 
 test("a Follow-up child is concluded by its parent's merged PR", async ($, on) => {

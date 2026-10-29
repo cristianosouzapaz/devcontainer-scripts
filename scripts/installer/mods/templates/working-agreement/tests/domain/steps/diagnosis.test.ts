@@ -10,8 +10,8 @@ const green = diagnoseRuns[1]!
 const info = { 1: { title: 'bug', labels: [], comments: [diagnosisComment] } }
 
 for (const [runs, fact, need] of [
-  [[], 'no red run', 'red'],
-  [[green], 'no red run', 'red'],
+  [[], 'no red run yet', 'red'],
+  [[green], 'no red run yet', 'red'],
 ] as [RunRecord[], string, 'red'][]) {
   test(`Diagnose needs a failing run first: ${JSON.stringify(runs)}`, () => {
     expect(judgeDiagnose({ runs }, [1], info)).toEqual({ done: false, fact, need })
@@ -34,7 +34,7 @@ test('Diagnose waits for a comment strictly after the earliest red, then approva
   for (const at of [0.5, 1]) expect(judgeDiagnose({ runs: [red, second] }, [1], {
     1: { ...info[1], comments: [{ ...diagnosisComment, createdAt: new Date(at).toISOString() }] },
   }).fact).toBe('no comment after the red')
-  expect(judgeDiagnose({ runs: [red] }, [1], info)).toMatchObject({ fact: 'waiting for /flow approve <url>', need: 'approval', isWaitingApproval: true })
+  expect(judgeDiagnose({ runs: [red] }, [1], info)).toMatchObject({ fact: 'waiting for /flow approve', need: 'approval', isWaitingApproval: true })
   expect(judgeDiagnose({ runs: [red], approval: 'other' }, [1], info).done).toBe(false)
 })
 
@@ -80,9 +80,9 @@ test('a deleted approved comment reopens Diagnose, while a newer comment does no
 test('Diagnose displays unavailable issue and comment facts, including a comments read error', () => {
   expect(judgeDiagnose(diagnosed, [], {}).fact).toBe('issue not yet created')
   expect(judgeDiagnose(diagnosed, [1], {}).fact).toBe('issue facts unavailable')
-  expect(judgeDiagnose(diagnosed, [1], { 1: { error: 'issue missing' } }).fact).toBe('issue missing')
+  expect(judgeDiagnose(diagnosed, [1], { 1: { error: 'issue missing' } })).toMatchObject({ fact: 'issue unreadable', detail: 'issue missing' })
   expect(judgeDiagnose(diagnosed, [1], { 1: { title: 'bug', labels: [] } }).fact).toBe('issue comments unavailable')
-  expect(judgeDiagnose(diagnosed, [1], { 1: { ...info[1], comments: { error: 'comments unreadable' } } }).fact).toBe('comments unreadable')
+  expect(judgeDiagnose(diagnosed, [1], { 1: { ...info[1], comments: { error: 'comments unreadable' } } })).toMatchObject({ fact: 'issue comments unavailable', detail: 'comments unreadable' })
   expect(judgeDiagnose(diagnosed, [], {})).toMatchObject({ need: 'issue' })
   const unreadableIssues: Record<string, IssueInfo>[] = [{}, { 1: { error: 'issue missing' } }, { 1: { title: 'bug', labels: [] } }, { 1: { ...info[1], comments: { error: 'comments unreadable' } } }]
   for (const unreadable of unreadableIssues) {

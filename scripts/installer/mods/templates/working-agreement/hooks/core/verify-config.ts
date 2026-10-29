@@ -1,21 +1,29 @@
-import { runGit, diffPaths } from '../lib/git'
+import { parseIssuesConfig } from '../domain/issue-fields'
+import type { IssuesConfig } from '../domain/issue-fields'
+import { diffPaths, hashObject, runGit } from '../lib/git'
 import { parseJson } from '../lib/json'
-import { isFiniteNumber, isNonEmptyString, isRecord } from '../lib/guards'
+import { formatError } from '../lib/result'
+import { isFiniteNumber, isNonEmptyString, isRecord, rejectUnknownFields } from '../lib/guards'
+import { bestEffort } from './best-effort'
 import type { EnginePort } from './engine-port'
+import { readRepositoryRoot } from './repository'
+import { facts } from '../domain/facts'
 
 interface VerifyRule { paths: string[]; run: string[] }
-/** Validated argv and git pathspecs from the unit tree. */
-export interface VerifyConfig { verify: string[]; always: string[][]; full: string[]; rules: VerifyRule[]; timeoutMinutes: number }
+/** The validated config: Verify's argv and git pathspecs, and the issue-write rules. */
+export interface VerifyConfig { always: string[][]; rules: VerifyRule[]; timeoutMinutes: number; waitForCiLabels: string[]; issues: IssuesConfig }
 interface ValidConfig { kind: 'valid'; blob: string; config: VerifyConfig }
-type UnavailableConfigKind = 'invalid' | 'missing'
-interface UnavailableConfig { kind: UnavailableConfigKind; fact: string }
-type ConfigResult = ValidConfig | UnavailableConfig
+interface MissingConfig { kind: 'missing'; fact: string }
+interface InvalidConfig { kind: 'invalid'; fact: string }
+/** A config as read: valid with its blob id, missing, or invalid with the error naming the field. */
+export type ConfigResult = ValidConfig | MissingConfig | InvalidConfig
 /** The commands selected for this exact slice. */
-export interface VerifySelection { commands: string[][]; description: string }
+export interface VerifySelection { commands: string[][]; description: string; isLeftToCi: boolean }
 
 /** The timeout used when a Verify config does not specify one. */
 export const defaultVerifyTimeoutMinutes = 30
-const configPath = '.claude/working-agreement.json'
+/** Where the config lives, relative to the repository root. */
+export const configPath = '.claude/working-agreement.json'
 
 /**
  * Rejects malformed command arrays with a configuration field location.
@@ -46,17 +54,6 @@ function globs(value: unknown, path: string): string[] {
 }
 
 /**
- * Rejects unknown configuration fields before they can silently change intent.
- * @param value - The configuration object.
- * @param allowed - The permitted field names.
- * @param path - The parent field location for validation failures.
- */
-function keys(value: Record<string, unknown>, allowed: string[], path: string): void {
-  const extra = Object.keys(value).find(key => !allowed.includes(key))
-  if (extra !== undefined) throw new Error(`${path ? `${path}.` : ''}${extra}: unknown field`)
-}
-
-/**
  * Validates Verify configuration and supplies defaults for omitted options.
  * @param text - The untrusted configuration JSON.
  * @returns The validated Verify configuration, rejecting malformed fields.
@@ -66,20 +63,24 @@ function parseConfig(text: string): VerifyConfig {
   if (!parsed.isOk) throw new Error('$: invalid JSON')
   const data = parsed.value
   if (!isRecord(data)) throw new Error('$: expected an object')
-  keys(data, ['$schema', 'verify', 'always', 'full', 'rules', 'timeoutMinutes'], '')
-  const verify = argv(data.verify, 'verify')
+  // A retired field fails instead of being ignored, so an approved config that relied on it is edited and approved again.
+  const retired = ['verify', 'full'].find(key => key in data)
+  if (retired !== undefined) throw new Error(`${retired}: retired field in ${configPath}, local Verify runs only rule-selected checks and leaves full suites to CI; regenerate the config, or move per-change checks into rules`)
+  rejectUnknownFields(data, ['$schema', 'always', 'rules', 'timeoutMinutes', 'waitForCiLabels', 'issues'], '')
   if (data.always !== undefined && !Array.isArray(data.always)) throw new Error('always: expected an array of argv arrays')
   if (data.rules !== undefined && !Array.isArray(data.rules)) throw new Error('rules: expected an array')
   const always = (data.always ?? []).map((item, index) => argv(item, `always[${index}]`))
   const rules = (data.rules ?? []).map((rule, index) => {
     const path = `rules[${index}]`
     if (!isRecord(rule)) throw new Error(`${path}: expected an object`)
-    keys(rule, ['paths', 'run'], path)
+    rejectUnknownFields(rule, ['paths', 'run'], path)
     return { paths: globs(rule.paths, `${path}.paths`), run: argv(rule.run, `${path}.run`) }
   })
   const timeoutMinutes = data.timeoutMinutes === undefined ? defaultVerifyTimeoutMinutes : data.timeoutMinutes
   if (!isFiniteNumber(timeoutMinutes) || timeoutMinutes <= 0) throw new Error('timeoutMinutes: expected a positive finite number')
-  return { verify, always, rules, full: globs(data.full === undefined ? [] : data.full, 'full'), timeoutMinutes }
+  const waitForCiLabels = data.waitForCiLabels === undefined ? [] : data.waitForCiLabels
+  if (!Array.isArray(waitForCiLabels) || !waitForCiLabels.every(isNonEmptyString)) throw new Error('waitForCiLabels: expected an array of non-empty strings')
+  return { always, rules, timeoutMinutes, waitForCiLabels, issues: parseIssuesConfig(data.issues) }
 }
 
 /**
@@ -89,17 +90,43 @@ function parseConfig(text: string): VerifyConfig {
  * @returns A validated config with its blob id, or a short failing fact.
  */
 export async function readVerifyConfig(port: EnginePort, tree: string | null): Promise<ConfigResult> {
-  if (!tree) return { kind: 'missing', fact: 'no verify command configured' }
+  if (!tree) return { kind: 'missing', fact: facts.verifyConfigMissing }
   const ref = `${tree}:${configPath}`
   const read = await runGit(port.processes, ['cat-file', 'blob', ref])
-  if (read.exitCode !== 0) return { kind: 'missing', fact: 'no verify command configured' }
+  if (read.exitCode !== 0) return { kind: 'missing', fact: facts.verifyConfigMissing }
   try {
     const config = parseConfig(read.stdout)
     const blob = await runGit(port.processes, ['rev-parse', ref])
     if (blob.exitCode !== 0 || !blob.stdout.trim()) throw new Error('$: cannot resolve config blob')
     return { kind: 'valid', config, blob: blob.stdout.trim() }
-  } catch (error) { return { kind: 'invalid', fact: error instanceof Error ? error.message : String(error) } }
+  } catch (error) { return { kind: 'invalid', fact: formatError(error) } }
 }
+
+/**
+ * Parses the working tree's config afresh on every call, so an edit shows at the next refresh; a read error counts as invalid.
+ * @param port - Engine calls.
+ * @param root - The repository root, or null outside a repository.
+ * @returns The config with the blob id its text hashes to, missing, or invalid with the error naming the field.
+ */
+export async function readRepositoryConfig(port: EnginePort, root: string | null): Promise<ConfigResult> {
+  const path = `${root}/${configPath}`
+  if (!root || !await port.files.exists(path).catch(() => false)) return { kind: 'missing', fact: facts.verifyConfigMissing }
+  try {
+    const text = await port.files.read(path)
+    const config = parseConfig(text)
+    const blob = await hashObject(port.processes, text)
+    if (blob.exitCode !== 0 || !blob.stdout.trim()) throw new Error('$: cannot hash the config')
+    return { kind: 'valid', config, blob: blob.stdout.trim() }
+  } catch (error) { return { kind: 'invalid', fact: formatError(error) } }
+}
+
+/**
+ * Reads the working tree's config at a hook's start, where a failed read must not stop the hook.
+ * @param port - Engine calls.
+ * @returns The config as read, or null when the read itself failed.
+ */
+export const readWorkingTreeConfig = (port: EnginePort): Promise<ConfigResult | null> =>
+  bestEffort(port, 'config read', async () => readRepositoryConfig(port, await readRepositoryRoot(port)), null)
 
 /**
  * Uses git's case-sensitive glob semantics, preserving NUL-delimited filenames.
@@ -116,22 +143,44 @@ export async function changedPaths(port: EnginePort, base: string, tree: string,
 }
 
 /**
- * Selects every matching rule, falling back to full verification for uncovered changes; an unchanged slice selects only `always`.
+ * Tells a repository runner script taking only test paths, whose commands can merge into one run.
+ * @param command - A selected argv.
+ * @returns Whether the runner is a path and no argument is an option.
+ */
+const isPathRunner = ([runner, ...args]: string[]): boolean => runner!.includes('/') && !args.some(arg => arg.startsWith('-'))
+
+/**
+ * Runs each repository runner script once: its arguments name the test paths to run, so its commands merge theirs, a path inside
+ * another one is dropped, and a bare run, which runs everything, absorbs the rest. Any other command runs as written, once.
+ * @param commands - The selected argv in config order.
+ * @returns The argv to run, each merged runner where it first appears.
+ */
+function mergeByRunner(commands: string[][]): string[][] {
+  const unique = commands.filter((command, index) => commands.findIndex(other => JSON.stringify(other) === JSON.stringify(command)) === index)
+  return unique.flatMap(command => {
+    if (!isPathRunner(command)) return [command]
+    const runner = command[0]!
+    const runs = unique.filter(other => other[0] === runner && isPathRunner(other))
+    if (runs[0] !== command) return []
+    if (runs.some(run => run.length === 1)) return [[runner]]
+    const args = [...new Set(runs.flatMap(([, ...rest]) => rest))]
+    return [[runner, ...args.filter(arg => !args.some(other => arg.startsWith(`${other}/`)))]]
+  })
+}
+
+/**
+ * Selects `always` plus every rule matching a changed path; full suites are CI's, so nothing falls back to them.
  * @param port - Engine calls.
  * @param config - Validated config.
- * @param base - Base tree, or null for a unit without a base.
+ * @param base - Base tree, or null for a unit without a base, whose change set no rule can match.
  * @param tree - Unit tree.
- * @returns Deduplicated argv in config order and the selection reason.
+ * @returns One argv per runner in config order and the selection reason.
  */
 export async function selectVerify(port: EnginePort, config: VerifyConfig, base: string | null, tree: string): Promise<VerifySelection> {
-  const changes = base ? await changedPaths(port, base, tree) : []
-  const matches = await Promise.all(config.rules.map(rule => base && rule.paths.length ? changedPaths(port, base, tree, rule.paths) : []))
-  const covered = new Set(matches.flat())
-  const fullPaths = base && config.full.length ? await changedPaths(port, base, tree, config.full) : []
-  const reason = !base ? 'no base' : !config.rules.length ? 'no rules' : fullPaths.length ? 'full path changed' : changes.some(path => !covered.has(path)) ? 'unmatched file' : null
-  const isUnchanged = Boolean(base) && !changes.length
+  const isUnchanged = base !== null && !(await changedPaths(port, base, tree)).length
+  const matches = await Promise.all(config.rules.map(rule => base && !isUnchanged && rule.paths.length ? changedPaths(port, base, tree, rule.paths) : []))
   const selected = config.rules.filter((_rule, index) => matches[index]!.length)
-  const commands = [...config.always, ...(isUnchanged ? [] : reason ? [config.verify] : selected.map(rule => rule.run))]
-    .filter((command, index, all) => all.findIndex(other => JSON.stringify(other) === JSON.stringify(command)) === index)
-  return { commands, description: isUnchanged ? 'no change from the base' : reason ? `full (${reason})` : `rules ${selected.flatMap(rule => rule.paths).join(', ')}` }
+  const commands = mergeByRunner([...config.always, ...selected.map(rule => rule.run)])
+  const isLeftToCi = !isUnchanged && !selected.length
+  return { commands, isLeftToCi, description: isUnchanged ? 'no change from the base' : isLeftToCi ? facts.leftToCi : `rules ${selected.flatMap(rule => rule.paths).join(', ')}` }
 }

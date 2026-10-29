@@ -13,11 +13,12 @@ import { githubTtlMs } from './timing'
 import { knownEnd, readChildEnd } from './child-end'
 import { readDeclaration } from './record-store'
 import { readUnitSlice } from './unit-slice'
+import { facts } from '../domain/facts'
 
 interface Cached<T> { at: number; result: Result<T> }
 
 /** The GitHub facts used to judge delivery independently of local evidence. */
-type Delivery = Pick<Evidence, 'checks' | 'pullRequest' | 'prFact' | 'prFactCode' | 'isConcluded'>
+type Delivery = Pick<Evidence, 'checks' | 'pullRequest' | 'prFact' | 'prDetail' | 'prFactCode' | 'isConcluded'>
 
 /**
  * Identifies one lifetime of a unit for absorbing conclusions.
@@ -202,19 +203,19 @@ export async function readConclusion(port: EnginePort, identity: Identity, unit:
  */
 export async function readDelivery(port: EnginePort, slice: UnitSlice | null, issues: number[], describeMissing: (issue: number) => DeliveryFact, unit: Unit, candidates: Result<PullRequestCandidate[]>, isLocal: boolean, isForced = false): Promise<Delivery> {
   const unknown: Delivery = { checks: 'off', isConcluded: false }
-  if (!candidates.isOk) return { ...unknown, prFact: 'GitHub unreachable', prFactCode: 'github-unreachable' }
+  if (!candidates.isOk) return { ...unknown, prFact: facts.githubUnreachable, prFactCode: 'github-unreachable' }
   const chosen = selectBasePullRequest(candidates.value)
-  if (!chosen.isOk) return { ...unknown, prFact: chosen.error, prFactCode: 'pr-ambiguous' }
+  if (!chosen.isOk) return { ...unknown, prFact: facts.closeExtraPrs, prDetail: chosen.error, prFactCode: 'pr-ambiguous' }
   const eligible = candidates.value.filter(pr => pr.state === 'OPEN' || (slice && slice.commits > 0 && pr.state === 'MERGED')).sort((a, b) => a.number - b.number)
   const found = slice ? await filterByComparison(port, slice.end, eligible, isContaining) : succeed([])
-  if (!found.isOk) return { ...unknown, prFact: 'GitHub unreachable', prFactCode: 'github-unreachable' }
+  if (!found.isOk) return { ...unknown, prFact: facts.githubUnreachable, prFactCode: 'github-unreachable' }
   const containing = found.value
   const selected = containing.find(pr => pr.state === 'MERGED') ?? containing.find(pr => pr.state === 'OPEN')
   const open = eligible.find(pr => pr.state === 'OPEN')
-  if (!selected) return { ...unknown, pullRequest: open, prFact: open ? "PR does not contain the unit's last commit — push" : 'no PR', prFactCode: open ? 'push-required' : undefined }
-  if (selected.state !== 'OPEN') return { ...unknown, pullRequest: selected, prFact: 'no PR' }
+  if (!selected) return { ...unknown, pullRequest: open, prFact: open ? facts.pushRequired : facts.noPr, prFactCode: open ? 'push-required' : undefined }
+  if (selected.state !== 'OPEN') return { ...unknown, pullRequest: selected, prFact: facts.noPr }
   const mismatch = describeBaseMismatch(unit, selected)
-  if (mismatch) return { ...unknown, pullRequest: selected, prFact: mismatch, prFactCode: 'base-mismatch' }
+  if (mismatch) return { ...unknown, pullRequest: selected, prFact: facts.retargetPr, prDetail: mismatch, prFactCode: 'base-mismatch' }
   const missing = issues.find(issue => !selected.closingIssuesReferences.includes(issue))
   if (missing !== undefined) return { ...unknown, pullRequest: selected, ...describeMissing(missing) }
   const ci = await readCi(port, slice?.end ?? '', selected.baseRefName, isLocal, isForced)
@@ -230,7 +231,7 @@ export async function readDelivery(port: EnginePort, slice: UnitSlice | null, is
  * @param isForced - Whether cached facts must be refreshed.
  * @returns The CI state and any fact preventing delivery.
  */
-async function readCi(port: EnginePort, sha: string, base: string, isLocal: boolean, isForced: boolean): Promise<Pick<Delivery, 'checks' | 'prFact' | 'prFactCode'>> {
+async function readCi(port: EnginePort, sha: string, base: string, isLocal: boolean, isForced: boolean): Promise<Pick<Delivery, 'checks' | 'prFact' | 'prDetail' | 'prFactCode'>> {
   const now = await port.now()
   const checks = sessionMemory.checks.get(sha)
   const rules = sessionMemory.rules.get(base)
@@ -247,15 +248,15 @@ async function readCi(port: EnginePort, sha: string, base: string, isLocal: bool
  * @param required - The checks the target branch requires, when read.
  * @returns The CI state and any fact preventing delivery.
  */
-function judgeCi(reported: Result<CommitCheck[]> | undefined, required: Result<RequiredChecks> | undefined): Pick<Delivery, 'checks' | 'prFact' | 'prFactCode'> {
-  if (!reported?.isOk || !required?.isOk) return { checks: 'unknown', prFact: 'CI could not be read', prFactCode: 'ci-unreadable' }
+function judgeCi(reported: Result<CommitCheck[]> | undefined, required: Result<RequiredChecks> | undefined): Pick<Delivery, 'checks' | 'prFact' | 'prDetail' | 'prFactCode'> {
+  if (!reported?.isOk || !required?.isOk) return { checks: 'unknown', prFact: facts.ciUnreadable, prFactCode: 'ci-unreadable' }
   const failing = reported.value.find(check => check.state === 'failing')
-  if (failing) return { checks: 'failing', prFact: `CI failing: ${failing.name}` }
+  if (failing) return { checks: 'failing', prFact: facts.ciFailing, prDetail: `CI failing: ${failing.name}` }
   const pending = reported.value.find(check => check.state === 'pending')
-  if (pending) return { checks: 'pending', prFact: `CI pending: ${pending.name}` }
+  if (pending) return { checks: 'pending', prFact: facts.ciPending, prDetail: `CI pending: ${pending.name}` }
   const missing = required.value.contexts.find(name => !reported.value.some(check => check.name === name))
-  if (missing) return { checks: 'pending', prFact: `required check ${missing} missing` }
-  return { checks: 'passing', ...(!reported.value.length ? { prFact: 'CI: no checks reported' } : {}) }
+  if (missing) return { checks: 'pending', prFact: facts.ciRequiredMissing, prDetail: `required check ${missing} missing` }
+  return { checks: 'passing', ...(!reported.value.length ? { prFact: facts.ciNoChecks } : {}) }
 }
 
 /**

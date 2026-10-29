@@ -1,6 +1,7 @@
 import type { Session } from './records'
 import { describeUnknownEnd, isCodeJudgedByFix, isOnBase, isUnitOnBase } from './step-states'
 import type { ChildState, ChildUnit, DeliveryFact, Position, StepState } from './step-states'
+import { facts } from './facts'
 
 /** Holds the instruction that sends the agent to a branch before its first write on the default branch. */
 export const branchFirstInstruction = 'create a branch for the issue (git switch -c <name>)'
@@ -63,13 +64,14 @@ export function describeMissingIssue(flow: string | null, issues: number[], issu
     ? children.find(child => 'openIssues' in child && child.openIssues.includes(issue)) : undefined
   if (unsettled?.state === 'deleted-unmerged') {
     return {
-      prFact: `child #${issue}: branch ${unsettled.identity.branch} deleted unmerged — restore it with ${unsettled.command} and merge it, or add Closes #${issue} to the PR or close #${issue}`,
+      prFact: facts.settleChildDeleted(issue),
+      prDetail: `child #${issue}: branch ${unsettled.identity.branch} deleted unmerged — restore it with ${unsettled.command} and merge it, or add Closes #${issue} to the PR or close #${issue}`,
       prFactCode: 'child-unmerged',
     }
   }
-  if (unsettled?.state !== 'unknown-end') return { prFact: `PR does not close #${issue}` }
+  if (unsettled?.state !== 'unknown-end') return { prFact: facts.addCloses(issue) }
   const end = unsettled.end === 'ambiguous' ? 'end ambiguous' : 'end never observed (branch deleted)'
-  return { prFact: `child #${issue}: ${end} — verify it is merged, then add Closes #${issue} to the PR or close #${issue}`, prFactCode: 'child-end-unknown' }
+  return { prFact: facts.settleChildEndUnknown(issue), prDetail: `child #${issue}: ${end} — verify it is merged, then add Closes #${issue} to the PR or close #${issue}`, prFactCode: 'child-end-unknown' }
 }
 
 /**
@@ -90,7 +92,7 @@ export function describeRequirement(state: StepState, session: Session, position
   if (step.skill && !step.observe) return `run the ${step.skill} skill`
   if (step.isUnlocking) return state.factCode === 'verify-not-run' ? 'call the verify tool on this tree (finish any change still in progress first)' : describeCode(position)
   if (step.observe === 'verify.passed') return position.verify.factCode === 'verify-config-missing'
-    ? "propose the minimum .claude/working-agreement.json: verify alone, as an argv taken from the project's docs, scripts or CI; rules only when the full command is slow and the repository has clear boundaries (workspaces, manifests, CI paths: filters); argv only, strict keys (verify, always, full, rules, timeoutMinutes, $schema), sub-packages as [\"sh\",\"-c\",\"cd pkg && …\"]; write it on the unit's branch as a normal change, ship it in its PR, then stop and ask the user to approve it with /flow approve verify" : 'call the verify tool'
+    ? "propose the minimum .claude/working-agreement.json: rules mapping path globs to the targeted check each change needs, as argvs taken from the project's docs, scripts or CI (workspaces, manifests, CI paths: filters), never the full suite, which CI runs; a change no rule matches is left to CI; argv only, strict keys (always, rules, timeoutMinutes, waitForCiLabels, issues, $schema), sub-packages as [\"sh\",\"-c\",\"cd pkg && …\"]; write it on the unit's branch as a normal change, ship it in its PR, then stop and ask the user to approve it with /flow approve verify" : 'call the verify tool'
   // The agent never commits or pushes: it hands the user the commands, and the step follows what git then reports.
   if (step.observe === 'commit') {
     const target = pullRequest?.baseRefName && pullRequest.baseRefName !== git?.base ? pullRequest.baseRefName : 'the default branch'
@@ -121,6 +123,8 @@ export function describeRequirement(state: StepState, session: Session, position
   }
   if (step.observe === 'pr.created') {
     if (state.factCode === 'github-unreachable' || state.factCode === 'ci-unreadable') return 'retry; if it keeps failing, stop and tell the user'
+    if (state.factCode === 'issues-non-compliant') return 'fix every issue the Flow pane lists (field, expected, actual) with issue_edit; the audit re-reads them at turn end'
+    if (state.factCode === 'issue-audit-pending') return 'the audit re-reads the issues at turn end; if it keeps failing, stop and tell the user'
     if (state.factCode === 'pr-ambiguous') return 'stop and ask the user which PR delivers this unit and to close the others'
     if (state.factCode === 'child-end-unknown') return "the user's step: stop and ask them to check that the child's work is merged, then add its Closes line to the PR or close its issue (never do either yourself)"
     if (state.factCode === 'child-unmerged') return "the user's step: stop and ask them to restore the child's branch and merge it into this branch, or add its Closes line to the PR or close its issue (never do any of it yourself)"

@@ -1,7 +1,9 @@
 import { isAncestor, readGitOutput } from '../lib/git'
+import { parseJson } from '../lib/json'
 import { executeProcess } from '../lib/process'
 import { formatError } from '../lib/result'
 import type { EnginePort } from './engine-port'
+import { readRepositoryRoot } from './repository'
 import { holdError, sessionMemory } from './session-memory'
 
 /** Names a worktree this mod created through herdr: its workspace, checkout and Claude Code worktree name. */
@@ -10,6 +12,8 @@ interface HerdrWorktree { workspaceId: string; path: string; name: string }
 const herdrTimeoutMs = 5000
 /** Every mod-created workspace label starts with this, followed by the creating session's id prefix. */
 const labelPrefix = 'claude-'
+/** Where a parallel unit starts inside herdr: the coordinator's spawn tool opens its workspace and session. */
+export const spawnGuide = 'a coordinator session (/flow coordinate) starts it with the spawn tool, in its own herdr workspace and Claude session'
 
 /**
  * Tells whether the session runs in a herdr pane.
@@ -64,7 +68,7 @@ export async function removeHerdrWorktree(port: EnginePort, path: string): Promi
  */
 export async function sweepHerdrWorktrees(port: EnginePort): Promise<void> {
   if (!await isInsideHerdr(port)) return
-  const root = await readGitOutput(port.processes, ['rev-parse', '--show-toplevel'])
+  const root = await readRepositoryRoot(port)
   for (const worktree of await listHerdrWorktrees(port, await ownLabelPrefix(port))) {
     if (worktree.path === root || await readGitOutput(port.processes, ['-C', worktree.path, 'status', '--porcelain=v2', '-z', '--untracked-files=all']) !== '') continue
     const head = await readGitOutput(port.processes, ['-C', worktree.path, 'rev-parse', 'HEAD'])
@@ -75,24 +79,13 @@ export async function sweepHerdrWorktrees(port: EnginePort): Promise<void> {
 }
 
 /**
- * Writes the steps that start a unit as its own herdr worktree workspace and Claude session.
- * @param base - The ref the unit's branch starts from.
- * @param cwd - The checkout the worktree is created from, when not the chat's own.
- * @returns The recipe for the agent.
- */
-export function composeHerdrRecipe(base: string, cwd?: string): string {
-  return `once the unit has its issue, run \`herdr worktree create${cwd ? ` --cwd ${cwd}` : ''} --branch <branch> --base ${base} --no-focus\`, `
-    + 'then `herdr agent start issue-<n> --kind claude --pane <pane>` with the `.result.root_pane.pane_id` of its JSON reply, '
-    + 'then `herdr agent prompt issue-<n> "Work on issue #<n> on branch <branch>."` without --wait'
-}
-
-/**
  * Lists the herdr worktree workspaces whose label carries a prefix.
  * @param port - The engine calls.
- * @param prefix - The label prefix: one session's, or any mod-created one.
- * @returns The matching worktrees.
+ * @param prefix - The label prefix: one session's, any mod-created one, or the spawn label.
+ * @returns The matching worktrees, each named by what its label holds after the first colon.
+ * @throws When herdr fails or answers with no JSON.
  */
-async function listHerdrWorktrees(port: EnginePort, prefix: string): Promise<HerdrWorktree[]> {
+export async function listHerdrWorktrees(port: EnginePort, prefix: string): Promise<HerdrWorktree[]> {
   const workspaces = readField(await runHerdr(port, ['workspace', 'list']), 'result', 'workspaces')
   return (Array.isArray(workspaces) ? workspaces : []).flatMap((workspace: unknown) => {
     const label = readField(workspace, 'label')
@@ -113,15 +106,35 @@ async function ownLabelPrefix(port: EnginePort): Promise<string> {
 }
 
 /**
+ * Runs a herdr command and returns what it printed.
+ * @param port - The engine calls.
+ * @param args - The herdr arguments.
+ * @param timeoutMs - How long it may run.
+ * @returns Its standard output.
+ * @throws With the first stderr line, or the message of the JSON error herdr prints on stdout, when it exits non-zero.
+ */
+export async function runHerdrText(port: EnginePort, args: string[], timeoutMs = herdrTimeoutMs): Promise<string> {
+  const result = await executeProcess(port.processes, ['herdr', ...args], { timeoutMs })
+  if (result.exitCode === 0) return result.stdout
+  const stderr = result.stderr.trim().split(/\r?\n/)[0]
+  const parsed = parseJson(result.stdout)
+  const reply = parsed.isOk ? readField(parsed.value, 'error', 'message') : undefined
+  const detail = stderr || (typeof reply === 'string' ? reply : '')
+  throw new Error(`herdr ${args.slice(0, 2).join(' ')}: exit ${result.exitCode}${detail ? `: ${detail}` : ''}`)
+}
+
+/**
  * Runs a herdr command and parses its JSON reply.
  * @param port - The engine calls.
  * @param args - The herdr arguments.
+ * @param timeoutMs - How long it may run.
  * @returns The parsed reply.
+ * @throws When herdr exits non-zero or prints no JSON.
  */
-async function runHerdr(port: EnginePort, args: string[]): Promise<unknown> {
-  const result = await executeProcess(port.processes, ['herdr', ...args], { timeoutMs: herdrTimeoutMs })
-  if (result.exitCode !== 0) throw new Error(`exit ${result.exitCode}${result.stderr.trim() ? `: ${result.stderr.trim().split(/\r?\n/)[0]}` : ''}`)
-  return JSON.parse(result.stdout) as unknown
+export async function runHerdr(port: EnginePort, args: string[], timeoutMs = herdrTimeoutMs): Promise<unknown> {
+  const parsed = parseJson(await runHerdrText(port, args, timeoutMs))
+  if (!parsed.isOk) throw new Error(`herdr ${args.slice(0, 2).join(' ')}: not JSON`)
+  return parsed.value
 }
 
 /**
@@ -130,6 +143,6 @@ async function runHerdr(port: EnginePort, args: string[]): Promise<unknown> {
  * @param keys - The field path.
  * @returns The field, or undefined when any step is missing.
  */
-function readField(value: unknown, ...keys: string[]): unknown {
+export function readField(value: unknown, ...keys: string[]): unknown {
   return keys.reduce<unknown>((current, key) => typeof current === 'object' && current !== null ? (current as Record<string, unknown>)[key] : undefined, value)
 }

@@ -12,21 +12,21 @@ function buildChanged(): Checkout {
 test('a change with no Verify run on its tree leaves Code current in every display and Verify pending', async ($, on) => {
   const world = createWorld(on, buildChanged(), { verifyFile, approvedConfig: verifyFile, herdrEnv: inside })
   const status = await readFlowStatus($)
-  expect(status).toContain('▸ Code · no Verify run yet')
+  expect(status).toContain('▸ Code · no run yet')
   expect(status).toContain('○ Verify')
   const context = await readPromptContext($)
-  expect(context).toContain('current step: Code. no Verify run yet.')
+  expect(context).toContain('current step: Code. no run yet.')
   expect(context).toContain('Next action: call the verify tool on this tree (finish any change still in progress first)')
   await endTurn($)
   expect(readPaneCurrentStep(world.views)).toBe('Code')
-  expect(world.views.at(-1)?.steps.find(step => step.label === 'Code')?.detail).toBe('no Verify run yet')
+  expect(world.views.at(-1)?.steps.find(step => step.label === 'Code')?.detail).toBe('no run yet')
   expect(world.views.at(-1)?.steps.find(step => step.label === 'Verify')?.state).toBe('pending')
   expect(world.runs.at(-1)).toContain('--token flow_step=▸ Code --token')
 })
 
 test('work committed without a Verify run on its tree leaves Code current', async ($, on) => {
   createWorld(on, { branch: 'feat', ahead: 1 }, { verifyFile, approvedConfig: verifyFile })
-  expect(await readFlowStatus($)).toContain('▸ Code · no Verify run yet')
+  expect(await readFlowStatus($)).toContain('▸ Code · no run yet')
   expect(await readCurrentStep($)).toBe('Code')
 })
 
@@ -50,7 +50,7 @@ for (const [outcome, overrides, fact] of [
     expect(status).toContain(fact)
     expect(await readCurrentStep($)).toBe(outcome === 'a pass' ? 'Commit' : 'Verify')
     checkout.tree = 'two'
-    expect(await readFlowStatus($)).toContain('▸ Code · tree changed since the last Verify — run Verify')
+    expect(await readFlowStatus($)).toContain('▸ Code · tree changed')
     expect(await readPromptContext($)).toContain('Next action: call the verify tool on this tree')
   })
 }
@@ -58,11 +58,11 @@ for (const [outcome, overrides, fact] of [
 test('a Verify run on the tree under another base leaves Code current with the base move as its fact', async ($, on) => {
   const run = { tree: 'one', base: 'c0', configBlob: configBlob(verifyFile), commands: [['./test/run.sh']], outcome: { kind: 'pass' }, runId: 'r', at: 1 }
   createWorld(on, { branch: 'feat', ahead: 8, isDirty: true, tree: 'one' }, { verifyFile, approvedConfig: verifyFile, unit: { verifyRuns: [run], base: 'c1' } })
-  expect(await readFlowStatus($)).toContain('▸ Code · base moved since the last Verify — run Verify')
+  expect(await readFlowStatus($)).toContain('▸ Code · base moved')
 })
 
 test('a timed-out Verify completes Code', async ($, on) => {
-  const file = JSON.stringify({ verify: ['slow'], timeoutMinutes: 0.01 })
+  const file = JSON.stringify({ always: [['slow']], timeoutMinutes: 0.01 })
   const world = createWorld(on, buildChanged(), { verifyFile: file, approvedConfig: file, spawnGate: new Promise(() => {}) })
   const run = $.tool.call({ tool: 'mcp__working-agreement__verify' })
   await world.clock.settle()
@@ -70,7 +70,7 @@ test('a timed-out Verify completes Code', async ($, on) => {
   await run
   const status = await readFlowStatus($)
   expect(status).toContain('✓ Code')
-  expect(status).toContain('✗ Verify · timed out, 0.01 min')
+  expect(status).toContain('✗ Verify · timed out after 0.01 min')
 })
 
 test('a Verify run on the tree and base completes Code whatever its config', async ($, on) => {
@@ -100,7 +100,7 @@ test('an unapproved verify config completes Code and Verify waits on its approva
   const world = createWorld(on, buildChanged(), { verifyFile })
   const status = await readFlowStatus($)
   expect(status).toContain('✓ Code')
-  expect(status).toContain('config not approved')
+  expect(status).toContain('/flow approve verify')
   expect(await readCurrentStep($)).toBe('Verify')
   await endTurn($)
   expect(world.suggestions.at(-1)).toBe(`/flow approve verify ${configBlob(verifyFile).slice(0, 12)}`)
@@ -113,13 +113,13 @@ const fixOptions = (unit: Options['unit']): Options => ({
 
 test('in a Fix a change without a green after the approval leaves Code current', async ($, on) => {
   createWorld(on, buildChanged(), fixOptions(diagnosed))
-  expect(await readFlowStatus($)).toContain('▸ Code · no green after the approval')
+  expect(await readFlowStatus($)).toContain('▸ Code · run the fix: no green since approval')
   expect(await readCurrentStep($)).toBe('Code')
 })
 
 test('in a Fix the green after the approval alone leaves Code current until a Verify run', async ($, on) => {
   createWorld(on, buildChanged(), fixOptions(fixed))
-  expect(await readFlowStatus($)).toContain('▸ Code · no Verify run yet')
+  expect(await readFlowStatus($)).toContain('▸ Code · no run yet')
   const instruction = await readPromptContext($)
   expect(instruction).toContain('Next action: call the verify tool on this tree')
   expect(instruction).not.toContain('apply the approved fix')
@@ -131,7 +131,7 @@ test('in a Fix the green after the approval alone leaves Code current until a Ve
 test('in a Fix a Verify run without the green leaves Code current', async ($, on) => {
   createWorld(on, buildChanged(), fixOptions(diagnosed))
   await $.tool.call({ tool: 'mcp__working-agreement__verify' })
-  expect(await readFlowStatus($)).toContain('▸ Code · no green after the approval')
+  expect(await readFlowStatus($)).toContain('▸ Code · run the fix: no green since approval')
 })
 
 test('in a Fix the green after the approval without a change leaves Code current', async ($, on) => {

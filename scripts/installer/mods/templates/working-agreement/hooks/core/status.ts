@@ -13,7 +13,7 @@ import { readGit, readRepositoryRoot } from './repository'
 import { readSession, unitLogPath } from './record-store'
 import { sessionMemory } from './session-memory'
 import { isVerifyApproved } from './verify'
-import { readVerifyConfig, selectVerify } from './verify-config'
+import { configPath, readRepositoryConfig, readVerifyConfig, selectVerify } from './verify-config'
 import { readBranchProtection, readBranchRulesets } from '../lib/github'
 import { readWorktrees } from '../lib/git'
 import { describeBaseMismatch, readCandidates, selectBasePullRequest } from './unit-github'
@@ -115,6 +115,7 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
     const root = await worktree(statusPort, session.unit.branch)
     if (root) rows.push(keyedLine('Worktree', root))
     if (candidate) rows.push(keyedLine('PR', candidate.url))
+    if (position.verify.queued) rows.push(keyedLine('Verify', position.verify.queued))
     rows.push(keyedLine('Log', await unitLogPath(statusPort, session.unit)))
     const checks = slice ? sessionMemory.checks.get(slice.end)?.result : undefined
     if (slice && checks?.isOk && checks.value.length) rows.push(keyedLine('CI', `${short(slice.end)} · ${checks.value.map(check => `${check.name}: ${check.state}`).join(' · ')}`))
@@ -123,8 +124,15 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
     if (config.kind === 'valid') {
       const approved = await isVerifyApproved(port, config.blob)
       const selection = await selectVerify(statusPort, config.config, slice?.baseTree ?? null, slice?.tree ?? '')
-      groups.push([keyedLine('Config', `.claude/working-agreement.json @ blob ${short(config.blob)} · ${approved ? 'approved' : 'needs /flow approve verify'}`), keyedLine('Selection', selection.commands.length ? `${selection.commands.map(command => command.join(' ')).join(' · ')} · ${selection.description}` : `none: ${selection.description}`)])
-    } else groups.push([keyedLine('Config', `.claude/working-agreement.json · ${config.kind === 'missing' ? 'not found in the unit tree' : `invalid: ${config.fact}`}`), keyedLine('Selection', 'none: verify refuses until a config exists')])
+      groups.push([keyedLine('Config', `${configPath} @ blob ${short(config.blob)} · ${approved ? 'approved' : 'needs /flow approve verify'}`), keyedLine('Selection', selection.commands.length ? `${selection.commands.map(command => command.join(' ')).join(' · ')} · ${selection.description}` : `none: ${selection.description}`)])
+    } else groups.push([keyedLine('Config', `${configPath} · ${config.kind === 'missing' ? 'not found in the unit tree' : `invalid: ${config.fact}`}`), keyedLine('Selection', 'none: verify refuses until a config exists')])
+  }
+  const root = await readRepositoryRoot(statusPort)
+  const repository = await readRepositoryConfig(statusPort, root)
+  // The working tree's file, which the pane flags with or without a unit; the unit tree's copy is the Config row above.
+  if (repository.kind === 'invalid') groups.push([keyedLine('Config', `${configPath} in the working tree · invalid: ${repository.fact} · fix that field, or update the mod to the version the file was written for`)])
+  else if (repository.kind === 'valid' && !await isVerifyApproved(port, repository.blob)) {
+    groups.push([keyedLine('Issues', `${configPath} in the working tree is not approved · issue writes use the built-in defaults until /flow approve verify`)])
   }
   const lastOk = `last ok ${time(sessionMemory.githubLastOk)}`
   const failure = timedOut ? null : readGithubFailure(result.github)
@@ -135,7 +143,6 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
   const rules = timedOut ? fail('timed out after 30 s') : result.rules
   const classic = timedOut ? fail('timed out after 30 s') : result.classic
   groups.push([keyedLine('GitHub', github), ...(rules.isOk ? (rules.value.length ? rules.value.map(rule => keyedLine('Rulesets', `${base} · ${rule.types.join(', ')} · you can bypass: ${rule.bypass ?? 'unknown'}`)) : [keyedLine('Rulesets', `${base} · no active rules`)]) : [keyedLine('Rulesets', `not read: ${rules.error}`)]), keyedLine('Classic', classic.isOk ? `${base} · protection ${classic.value ? 'on' : 'off'}` : `not read: ${classic.error}`)])
-  const root = await readRepositoryRoot(statusPort)
   const dismissed = await readDismissals(port)
   const violations = [...(session.violations ?? [])].sort((left, right) => Number(dismissed.has(left.factId) || left.kind === 'unchecked') - Number(dismissed.has(right.factId) || right.kind === 'unchecked') || right.end - left.end)
   if (violations.length) groups.push(violations.map(record => keyedLine('Violation', `${labelViolation(record, root ?? undefined)} · ${time(record.end)} · ${[...record.toolUseIds, ...(record.agentIds ?? [])].join(', ')} · ${dismissed.has(record.factId) ? 'dismissed' : record.kind === 'unchecked' ? 'unchecked' : 'open'}`)))
@@ -147,6 +154,9 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
   if (errors.length) groups.push(errors)
   // why: A missing or unreadable manifest shows the version unknown, the safe direction for a display-only record; bestEffort logs a failure.
   const manifest = await bestEffort(port, 'manifest read', async () => readJson(port.files, `${await port.readPluginRoot()}/.claude-plugin/plugin.json`), undefined)
-  groups.push([keyedLine('Mod', isRecord(manifest) && typeof manifest.version === 'string' ? manifest.version : 'unknown')])
+  const ahead = sessionMemory.modulesAhead
+  groups.push([keyedLine('Mod', isRecord(manifest) && typeof manifest.version === 'string' ? manifest.version : 'unknown'),
+    keyedLine('Guards', ahead === null ? 'module order unknown after a plugin refresh · coordinator and delegation refused until the session restarts'
+      : ahead.length ? `overridden by ${ahead.join(', ')}, hooks modules ahead · coordinator and delegation refused` : 'outermost hooks module')])
   return groups.map(group => group.join('\n')).join('\n\n')
 }

@@ -209,7 +209,7 @@ test('a Verify done → current logs the fact it shows and the slice it was judg
   const [done, current] = readLog(files).filter(line => line.event === 'step' && line.step === 'verify')
   expect(done).toMatchObject({ from: 'pending', to: 'done', base: 'c0', tree: expect.any(String) })
   expect(done?.fact).toBeUndefined()
-  expect(current).toMatchObject({ from: 'done', to: 'current', fact: 'config not approved', base: 'c0', tree: done?.tree, cause: ['turn end'] })
+  expect(current).toMatchObject({ from: 'done', to: 'current', fact: '/flow approve verify', base: 'c0', tree: done?.tree, cause: ['turn end'] })
 })
 
 test('steps judged on an unreadable slice log no base and no tree', async ($, on) => {

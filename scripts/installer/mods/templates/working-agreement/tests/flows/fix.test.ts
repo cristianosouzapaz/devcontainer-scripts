@@ -51,6 +51,6 @@ test('a Fix unit runs from Triage to a merged PR', async ($, on) => {
   options.spawnCode = 0
   expect((await $.tool.call({ tool: 'mcp__working-agreement__run', argv: ['./check'] })).result).toContain('green after red: the approved fix passes; call the verify tool')
   expect(readPaneCurrentStep(views)).toBe('Code')
-  expect(await readFlowStatus($)).toContain('▸ Code · no Verify run yet')
+  expect(await readFlowStatus($)).toContain('▸ Code · no run yet')
   await completeDelivery($, { git, options, clock, views })
 })

@@ -15,6 +15,8 @@ import { sessionMemory } from './session-memory'
 import { readUnitSlice } from './unit-slice'
 import { readCandidates, readConclusion, readDelivery, unitMemoryKey } from './unit-github'
 import { readVerifyState } from './verify'
+import { readVerifyQueue } from './verify-queue'
+import { facts } from '../domain/facts'
 
 /** Holds the flow a unit runs, with the record and checkout it was chosen from and whether that made it a child unit. */
 interface UnitFlow { flow: FlowDefinition; unit: Unit; git: GitState | null; isChild: boolean }
@@ -49,16 +51,17 @@ export async function locatePosition(port: EnginePort, session: Session, isLocal
   const conclusion = judged ? judged.conclusion : candidates && session.unit && git
     ? candidates.isOk ? await readConclusion(port, session.unit, unit, candidates.value, git.base, false, deliverableEnd(slice)) : candidates : null
   if (conclusion?.isOk && conclusion.value) return finish({ ...empty, pullRequest: conclusion.value })
-  const verify = await readVerifyState(port, slice, unit)
+  const queued = await readVerifyQueue(port)
+  const verify = { ...await readVerifyState(port, slice, unit), ...(queued ? { queued } : {}) }
   // why: Only a Close out's PR closes the children's issues; any other unit needs no more than whether the branch is an integration branch.
   const children = git && session.unit && !located.isChild
     ? await readBranchChildren(port, session.unit.branch, git, { isLocal, isForced, isUntilIntegrated: session.flow !== 'close-out' }) : null
   const childUnits = children?.isOk ? children.value.map(({ entry: _entry, ...child }) => child) : undefined
   const issues = session.flow === 'trivial' ? [] : listRequiredIssues(session.flow, session.issues, childUnits ?? [])
-  const delivery = !candidates || !git ? { checks: 'off' as const, isConcluded: false, prFact: 'GitHub unreachable', prFactCode: 'github-unreachable' as const }
+  const delivery = !candidates || !git ? { checks: 'off' as const, isConcluded: false, prFact: facts.githubUnreachable, prFactCode: 'github-unreachable' as const }
     // why: A Close out whose children cannot be read could require fewer issues than its round delivers, so its PR step waits for the read.
     : session.flow === 'close-out' && children && !children.isOk
-      ? { checks: 'off' as const, isConcluded: false, prFact: `children unreadable: ${children.error}`, prFactCode: 'github-unreachable' as const }
+      ? { checks: 'off' as const, isConcluded: false, prFact: facts.childUnitsUnreadable, prDetail: `children unreadable: ${children.error}`, prFactCode: 'github-unreachable' as const }
       : await readDelivery(port, slice, issues, issue => describeMissingIssue(session.flow, session.issues, issue, childUnits ?? []), unit,
         conclusion && !conclusion.isOk ? conclusion : candidates, isLocal, isForced)
   const integration = judged?.integration && session.unit ? await guideMerge(port, judged.integration, session.unit.branch) : undefined

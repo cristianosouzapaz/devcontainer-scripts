@@ -125,5 +125,5 @@ test('a default-branch unit asks to re-declare on its branch', async ($, on) => 
   createWorld(on, { branch: 'main' })
   const context = await readPromptContext($)
   expect(context).toContain('current step: Code')
-  expect(context).toContain("check out the unit's branch and re-declare")
+  expect(context).toContain("re-declare on the unit's branch")
 })

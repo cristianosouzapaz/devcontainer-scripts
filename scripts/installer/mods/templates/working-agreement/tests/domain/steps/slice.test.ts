@@ -175,7 +175,7 @@ test('a unit declared on the default branch has no Code or Commit evidence', asy
   const checkout = { ...branch(), branch: 'main', dirty: { 'src/new': 'new' } }
   const world = createWorld(on, checkout, { session: { flow: 'trivial' } })
   const status = await readFlowStatus($)
-  expect(status).toContain("▸ Code · check out the unit's branch and re-declare")
+  expect(status).toContain("▸ Code · re-declare on the unit's branch")
   expect(status).toContain('○ Commit\n')
   expect(status).not.toContain('✓ Code')
   expect((await readStepStates(world)).Commit).not.toBe('done')
@@ -213,7 +213,7 @@ test('known limit: detached HEAD at main is not on the default branch', async ($
   checkout.graph!.refs.HEAD = checkout.graph!.refs.main!
   const prompt = await readPromptContext($)
   expect(prompt).not.toContain('create a branch')
-  expect(prompt).not.toContain("check out the unit's branch and re-declare")
+  expect(prompt).not.toContain("re-declare on the unit's branch")
   expect(prompt).toContain("checked out: HEAD (not this unit's branch)")
 })
 
@@ -319,7 +319,7 @@ test('a PR into another base than the unit base came from is a mismatch until re
   options.prs = [buildPullRequest({ baseRefName: 'next', headRefOid: 'f1' })]
   await clock.advance(61000)
   const status = await readFlowStatus($)
-  expect(status).toContain("▸ Update PR #5 · PR #5 targets next, but the unit's base was taken from main")
+  expect(status).toContain("▸ PR #5 · PR #5 targets next, but the unit's base was taken from main")
   expect(status).toContain('Slice     c0..f1 · base from main, PR into next')
   expect(await readPromptContext($)).toContain("call declare_flow again with the same flow and issues, so the unit's base is taken from next")
   expect((await declareFlow($, 'small-feature', [1])).deny).toBeUndefined()

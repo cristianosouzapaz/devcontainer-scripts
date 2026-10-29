@@ -117,13 +117,13 @@ for (const issue of [362, 364]) {
   })
 }
 
-test('inside herdr the refused Follow-up names the herdr workspace and session recipe based on the parent', async ($, on) => {
+test('inside herdr the refused Follow-up names the spawn tool and the parent the child is cut from', async ($, on) => {
   const world = createWorld(on, parentCheckout(), { session: noFlow, closingPrs: { 362: [closingFrom('par')] }, herdrEnv: { HERDR_ENV: '1' } })
   await world.ready
   await seedChildren(world, exampleUnits())
   const reply = (await runFlowCommand($, 'follow-up #362')).text ?? ''
-  expect(reply).toContain('herdr worktree create --cwd /repo --branch <branch> --base par --no-focus')
-  expect(reply).toContain('herdr agent start issue-<n> --kind claude')
+  expect(reply).toContain('spawn tool')
+  expect(reply).toContain('cut from par')
 })
 
 test('on a child branch of the PR head, #362 enters through the closing PR of its base branch as a Follow-up child', async ($, on) => {
@@ -192,7 +192,7 @@ test("a Follow-up on the Close out's own issue on an integration branch is refus
   expect(reply).toContain(cutFromPar('/repo'))
   const status = await readFlowStatus($)
   expect(status).toContain('Close out')
-  expect(status).toContain('PR does not close #2')
+  expect(status).toContain('missing Closes #2')
 })
 
 test("an issue of a child unit of the branch is refused on the branch, with the command that cuts a child branch", async ($, on) => {

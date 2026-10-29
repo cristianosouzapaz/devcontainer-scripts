@@ -61,7 +61,7 @@ export function composeStart(position: Position, session: Session, lead: string)
   if (position.isConcluded || position.slice?.isRewritten || position.integration?.state === 'unknown-end' || !current) return null
   const stop = /[.!?]$/.test(lead) ? '' : '.'
   const source = session.issues.length ? ' from the issue' : ''
-  return `${lead}${stop} Start the current step (${formatStepLabel(current.step, pullRequest, true)})${source}. ${composeFlowLine(position, session)}`
+  return `${lead}${stop} Start the current step (${formatStepLabel(current.step, pullRequest)})${source}. ${composeFlowLine(position, session)}`
 }
 
 /**
@@ -92,7 +92,7 @@ function composeUnitInstruction(position: Position, session: Session): string {
     : `${flow.label}${issue} — all steps done.`
   if (isCiWait(position)) {
     const { reason, action } = describeCiBlocker(position.checks, `#${pullRequest?.number ?? ''}`)
-    return `${flow.label}${issue} — current step: ${formatStepLabel(current.step, pullRequest, true)}. ${current.fact ?? reason}: ${action}; do not report the unit as done before every check passes.`
+    return `${flow.label}${issue} — current step: ${formatStepLabel(current.step, pullRequest)}. ${current.detail ?? current.fact ?? reason}: ${action}; do not report the unit as done before every check passes.`
   }
   // Name a following human step now: otherwise the agent closes this step by offering to run it itself.
   const next = position.states.slice(position.states.indexOf(current) + 1).find(state => state.state === 'pending')
@@ -100,7 +100,7 @@ function composeUnitInstruction(position: Position, session: Session): string {
     ? ` When it is done, do not run or offer ${next.step.skill} yourself: the next step is the user's — tell them to run /${next.step.skill}.`
     : ''
   const requirement = describeRequirement(current, session, position)
-  const detail = current.step.isInWorktree ? describeDiagnoseNeed(current.need, session.issues) : current.fact
+  const detail = current.step.isInWorktree ? describeDiagnoseNeed(current.need, session.issues) : current.detail ?? current.fact
   const fact = detail && detail !== requirement ? ` ${detail}.` : ''
-  return `${flow.label}${issue} — current step: ${formatStepLabel(current.step, pullRequest, true)}.${fact} Next action: ${requirement}.${handover}`
+  return `${flow.label}${issue} — current step: ${formatStepLabel(current.step, pullRequest)}.${fact} Next action: ${requirement}.${handover}`
 }

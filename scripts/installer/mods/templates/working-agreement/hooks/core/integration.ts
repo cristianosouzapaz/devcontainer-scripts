@@ -9,7 +9,7 @@ import type { Result } from '../lib/result'
 import { isReachableFromParent, knownEnd, readChildEnd } from './child-end'
 import type { ChildEnd } from './child-end'
 import type { EnginePort } from './engine-port'
-import { composeHerdrRecipe, isInsideHerdr } from './herdr-worktrees'
+import { isInsideHerdr, spawnGuide } from './herdr-worktrees'
 import { readBaseBranchUnits } from './record-store'
 import { examineCandidates, filterByComparison, isContaining, isDescending, readCandidates, readConclusion, readIssueState } from './unit-github'
 import { readUnitSlice } from './unit-slice'
@@ -90,12 +90,12 @@ export async function guideMerge(port: EnginePort, integration: ChildIntegration
  * records it as the start point; from the parent's worktree a relative path lands beside it, and no path is ever assumed.
  * @param port - The engine calls.
  * @param parent - The parent branch.
- * @returns Inside herdr, the herdr recipe based on the parent; otherwise a `git -C` worktree add in the parent's worktree,
+ * @returns Inside herdr, the spawn guidance, the child's issue blocked by the parent's; otherwise a `git -C` worktree add in the parent's worktree,
  * or a branch cut when no worktree holds the parent.
  */
 export async function composeCutCommand(port: EnginePort, parent: string): Promise<string> {
   const root = await readWorktreeRoot(port, parent)
-  if (await isInsideHerdr(port)) return composeHerdrRecipe(quoteArgument(parent), root ? quoteArgument(root) : undefined)
+  if (await isInsideHerdr(port)) return `${spawnGuide}, its branch cut from ${quoteArgument(parent)} when its issue is blocked by this unit's issue`
   return root ? `git -C ${quoteArgument(root)} worktree add -b <child-branch> <path> ${quoteArgument(parent)}` : `git branch <child-branch> ${quoteArgument(parent)}`
 }
 
@@ -222,7 +222,7 @@ async function readParentDelivery(port: EnginePort, base: string | undefined, en
  * @param child - The child branch.
  * @returns A `git -C` merge in the parent's worktree, or a command naming both branches when no worktree holds the parent.
  */
-async function composeMergeCommand(port: EnginePort, parent: string, child: string): Promise<string> {
+export async function composeMergeCommand(port: EnginePort, parent: string, child: string): Promise<string> {
   const root = await readWorktreeRoot(port, parent)
   return root ? `git -C ${quoteArgument(root)} merge --no-ff ${quoteArgument(child)}` : `git switch ${quoteArgument(parent)} && git merge --no-ff ${quoteArgument(child)}`
 }

@@ -61,7 +61,7 @@ test('a Small feature unit runs from Grill to a merged PR', async ($, on) => {
   git.changed = ['src/a.ts']
   git.tree = 'tree'
   expect(await readCurrentStep($)).toBe('Code')
-  expect(await readFlowStatus($)).toContain('▸ Code · no Verify run yet')
+  expect(await readFlowStatus($)).toContain('▸ Code · no run yet')
   await completeDelivery($, { git, options, clock, views })
 })
 

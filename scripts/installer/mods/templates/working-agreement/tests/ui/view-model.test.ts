@@ -39,9 +39,9 @@ test('the progress counts the steps settled out of all of them', () => {
   expect(buildView(session(), positionOf({}, 2), null, false).progress).toBe(`2/${flow.steps.length}`)
 })
 
-test('an issue is listed with its title, and the labels of all issues once each', () => {
+test('every issue is listed with its title, and the labels are the first issue\'s, the one the pane shows', () => {
   const view = buildView(session({
-    issues: [1, 2], info: { 1: { title: 'one', labels: ['bug', 'ready'] }, 2: { title: 'two', labels: ['bug'] } },
+    issues: [1, 2], info: { 1: { title: 'one', labels: ['bug', 'ready'] }, 2: { title: 'two', labels: ['needs-info'] } },
   }), positionOf(), null, false)
   expect(view.issues).toEqual([{ number: 1, title: 'one' }, { number: 2, title: 'two' }])
   expect(view.labels).toEqual(['bug', 'ready'])

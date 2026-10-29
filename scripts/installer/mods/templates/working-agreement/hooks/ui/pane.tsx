@@ -43,7 +43,7 @@ export function renderFlowPane(elements: PaneElements, view: FlowView | null, ru
     (view.pending || view.issues.length > 0) && drawIssueList(elements, { pending: view.pending, issues: view.issues, openIssue: actions.openIssue }),
     labelRows.length > 0 && drawLabelRows(elements, { rows: labelRows }),
     view.meta.length > 0 && drawMetaRows(elements, { rows: view.meta }),
-    drawStepList(elements, { steps: view.steps }),
+    drawStepList(elements, { steps: view.steps, columns: layout.columns }),
     run && drawLiveRun(elements, run),
     notes.length > 0 && <Box flexDirection="column">
       {drawNotes(elements, { rows: notes })}

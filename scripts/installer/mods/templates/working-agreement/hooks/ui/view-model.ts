@@ -2,19 +2,9 @@ import type { FlowRow, FlowView, GithubFailure } from '../../types'
 import type { Session } from '../domain/records'
 import { formatLocalTime } from '../lib/time'
 import { formatStepLabel, isUnitFinished, listDeclaredLabels, markStep, projectDisplayStates } from '../domain/step-states'
-import type { DiagnoseNeed, Position } from '../domain/step-states'
+import type { Position } from '../domain/step-states'
+import { facts } from '../domain/facts'
 import { symbol } from './symbols'
-
-/**
- * Uses the pane's short wording for the resolved Diagnose requirement.
- * @param need - The first unmet Diagnose requirement, if any.
- * @param fact - The domain fact used for all other requirements.
- * @returns The pane detail without rejudging the unit.
- */
-function describeDiagnoseFact(need: DiagnoseNeed | undefined, fact: string | undefined): string | undefined {
-  return need === 'red' ? 'no red run yet'
-    : need === 'approval' ? 'needs /flow approve' : fact
-}
 
 /**
  * Counts a noun in English.
@@ -34,6 +24,19 @@ function pluralize(count: number, word: string): string {
  */
 export function handoffNotes(session: Session): FlowRow[] {
   return session.handoff?.state === 'failed' ? [{ key: 'Handoff', value: `not completed — ${session.handoff.reason}.`, tone: 'error' }] : []
+}
+
+/**
+ * Lists every finding of the session's issue audit, or why the audit is pending, so a non-compliant issue is never hidden.
+ * @param session - The current session.
+ * @returns One note per finding, one for a pending audit, or none.
+ */
+export function auditNotes(session: Session): FlowRow[] {
+  const result = session.audit?.result
+  if (result?.state === 'pending') return [{ key: 'Issue audit', value: `pending — ${result.reason}`, tone: 'warn' }]
+  return result?.state === 'violations'
+    ? result.findings.map((finding): FlowRow => ({ key: `Issue #${finding.issue}`, value: `${finding.field}: expected ${finding.expected}, has ${finding.actual}`, tone: 'error' }))
+    : []
 }
 
 /**
@@ -73,7 +76,8 @@ export function buildView(session: Session, position: Position, githubFailure: G
   }
   const merge = position.current?.step.observe === 'integrated' && position.integration?.state === 'pending' ? position.integration.command : undefined
   if (merge) notes.push({ key: 'Merge', value: merge, tone: 'text' })
-  notes.push(...handoffNotes(session))
+  if (position.verify.queued) notes.push({ key: 'Verify', value: position.verify.queued, tone: 'warn' })
+  notes.push(...handoffNotes(session), ...auditNotes(session))
   const isFinished = !position.slice?.isRewritten && isUnitFinished(position)
   const states = projectDisplayStates(position.states)
   // Every step before the current one is settled, and none after it has been reached.
@@ -88,24 +92,24 @@ export function buildView(session: Session, position: Position, githubFailure: G
     }),
     pending: !session.issues.length && position.flow.issue === 'produced' ? 'issue not yet created' : null,
     meta,
-    labels: [...new Set(listDeclaredLabels(session))],
+    labels: listDeclaredLabels(session),
     steps: states.map(entry => {
       const { mark, isMerged, isFailed, isRunUnrecorded, isRewritten } = markStep(entry, position, isTreeChanged)
-      const diagnoseFact = describeDiagnoseFact(entry.need, entry.fact)
+      const isCurrentFact = !isRewritten && !isRunUnrecorded && !isMerged && entry.state === 'current'
       return {
         id: entry.step.id,
         symbol: symbol[mark],
-        label: formatStepLabel(entry.step, position.pullRequest, entry.state === 'current'),
+        label: formatStepLabel(entry.step, position.pullRequest),
         state: entry.state,
         isError: isFailed,
         isMerged,
         isRewritten,
-        // The PR step's label already names its PR; Integrate's fact names the parent's.
-        detail: isRewritten ? undefined : isRunUnrecorded ? 'tree changed during run' : isMerged ? (entry.step.observe === 'integrated' ? entry.fact : 'merged')
-          : entry.state === 'skipped' ? entry.reason || 'optional'
-          : entry.state === 'current' ? diagnoseFact
+        detail: isRewritten ? undefined : isRunUnrecorded ? facts.verifyTreeChangedInRun : isMerged ? (entry.step.observe === 'integrated' ? entry.fact : facts.merged)
+          : entry.state === 'skipped' ? entry.reason || facts.optional
+          : entry.state === 'current' ? entry.fact
           // An integrated child's Integrate names where its delivery stands, because the unit is finished and shows no current step.
           : entry.state === 'done' && entry.step.observe === 'integrated' ? entry.fact : undefined,
+        ...(entry.detail && (isCurrentFact || (!isRewritten && entry.state === 'skipped') || (entry.state === 'done' && entry.step.observe === 'integrated')) ? { fullDetail: entry.detail } : {}),
       }
     }),
     notes,

@@ -1,6 +1,6 @@
 import type { Identity, UnitEntry } from '../../hooks/domain/records'
 import { buildParentGraph, buildParentPullRequest } from './builders'
-import { common, hashIdentity } from './world'
+import { buildScope, common, delegatedFile, hashIdentity, records, scopeFile } from './world'
 import type { Checkout, Graph, Options, World } from './world'
 
 /** A child unit cut from parent, as the declaration caches it. */
@@ -61,11 +61,10 @@ export const buildChildEntry = (branch: string, issue: number, changes: Partial<
  * @returns The mirror's and the declarations' paths.
  */
 export async function seedChildren(world: World, units: UnitEntry[]): Promise<string[]> {
-  const directory = `${common}/working-agreement`
-  const mirror = `${directory}/s/dead.json`
+  const mirror = `${records}/s/dead.json`
   world.files.set(mirror, JSON.stringify({ ...world.sessions.get('sid')!, sessionId: 'dead', unit: units[0]!.identity, units }))
   const declarations = await Promise.all(units.map(async ({ identity, generation }) => {
-    const path = `${directory}/u/${await hashIdentity(identity.branch, identity.issues)}.json`
+    const path = `${records}/u/${await hashIdentity(identity.branch, identity.issues)}.json`
     world.files.set(path, JSON.stringify({ v: 1, identity, flow: 'small-feature', generation }))
     return path
   }))
@@ -146,3 +145,40 @@ export async function seedGeneration(world: World, identity: Identity, generatio
  * @returns The history without the branch.
  */
 export const withoutBranch = (graph: Graph, branch: string): Graph => ({ ...graph, refs: Object.fromEntries(Object.entries(graph.refs).filter(([name]) => name !== branch)) })
+
+/**
+ * Checks out the coordinator on the default branch, with parent `par` held by `/par` and child `a` (#2, cut from `par`) by `/a`.
+ * @param change - Rewrites the reference workflow's history before the call.
+ * @returns The checkout.
+ */
+export const delegationCheckout = (change: (git: Graph) => Graph = git => git): Checkout => ({
+  branch: 'main', graph: change(buildParentGraph()), worktrees: { '/repo': { branch: 'main' }, '/par': { branch: 'par' }, '/a': { branch: 'a' } },
+})
+
+/**
+ * Seeds the child's and the parent's unit sessions, the coordinator's scope over the issues, and the child's delegated commits.
+ * @param world - The world.
+ * @param issues - The issues the scope delegates.
+ */
+export async function seedDelegatedChild(world: World, issues = [1, 2]): Promise<void> {
+  await world.ready
+  const own = world.sessions.get('sid')!
+  const skipped = ['grill', 'spec', 'code', 'verify'].map(step => ({ step, reason: 'covered' }))
+  const seedUnit = async (sessionId: string, branch: string, issue: number, entry: object): Promise<void> => {
+    world.files.set(`${records}/s/${sessionId}.json`, JSON.stringify({ ...own, role: undefined, sessionId, info: { [issue]: { title: branch, labels: [] } },
+      unit: { branch, issues: [issue] }, units: [{ identity: { branch, issues: [issue] }, skills: [], verifyRuns: [], runs: [], skips: skipped, ...entry }] }))
+    world.files.set(`${records}/u/${await hashIdentity(branch, [issue])}.json`, JSON.stringify({ v: 1, identity: { branch, issues: [issue] }, flow: 'small-feature' }))
+  }
+  await seedUnit('child', 'a', 2, { base: 'p1', baseBranch: 'par' })
+  await seedUnit('parent', 'par', 1, {})
+  world.files.set(scopeFile('sid'), buildScope('sid', issues))
+  for (const sha of ['a1', 'a2']) world.files.set(delegatedFile(sha), JSON.stringify({ v: 1, key: sha, sha, branch: 'a' }))
+}
+
+/**
+ * Lists the delegated-commit records the mod wrote.
+ * @param world - The world.
+ * @returns The decoded records.
+ */
+export const readDelegated = (world: World): unknown[] =>
+  [...world.files].filter(([path]) => path.startsWith(`${records}/delegated/`)).map(([, text]) => JSON.parse(text) as unknown)

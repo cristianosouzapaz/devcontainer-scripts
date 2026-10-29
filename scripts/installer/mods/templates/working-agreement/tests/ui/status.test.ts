@@ -27,7 +27,7 @@ test('status prints every group with the declared unit facts and reads status en
   const text = result.text ?? ''
   for (const fact of ['Issue     #1 open', 'Slice     c0..c1', `Worktree  ${root}`, 'PR        https://github.test/pull/5',
     'CI        c1 · mods: pending · docs: passing', `.claude/working-agreement.json @ blob ${configBlob(verifyFile).slice(0, 7)} · approved`,
-    'Selection ./test/run.sh · full (no rules)', 'GitHub    last ok ', 'Rulesets  main · pull_request · you can bypass: always',
+    'Selection ./test/run.sh · no local check selected — left to CI', 'GitHub    last ok ', 'Rulesets  main · pull_request · you can bypass: always',
     'Classic   main · protection off', 'Mod       1.2.3']) expect(text, fact).toContain(fact)
   expect(text.split('\n').filter(row => row.startsWith('GitHub'))).toHaveLength(1)
   expect('context' in result).toBe(false)
@@ -225,11 +225,11 @@ test('status joins an in-flight reread without queuing another refresh', async (
 for (const [always, changed, selection] of [
   [[], [], 'Selection none: no change from the base'],
   [[['lint']], [], 'Selection lint · no change from the base'],
-  [[], ['src/a.ts'], 'Selection full · full (unmatched file)'],
+  [[], ['src/a.ts'], 'Selection none: no local check selected — left to CI'],
   [[['lint']], ['docs/a.md'], 'Selection lint · docs · rules docs/**'],
 ] as [string[][], string[], string][]) {
   test(`status separates the Verify commands from the selection: ${selection}`, async ($, on) => {
-    const file = JSON.stringify({ verify: ['full'], always, rules: [{ paths: ['docs/**'], run: ['docs'] }] })
+    const file = JSON.stringify({ always, rules: [{ paths: ['docs/**'], run: ['docs'] }] })
     createWorld(on, { branch: 'feat', isDirty: true, tree: 'one', changed }, { unit: { base: 'c0' }, verifyFile: file })
     const text = (await runFlowCommand($, 'status')).text ?? ''
     expect(text.split('\n').find(row => row.startsWith('Selection'))).toBe(selection)
@@ -244,7 +244,7 @@ test('status explains missing invalid and unapproved Verify configs', async ($, 
   expect(missing).toContain('Selection none: verify refuses until a config exists')
   options.verifyFile = '{"verify":[]}'
   const invalid = (await runFlowCommand($, 'status')).text ?? ''
-  expect(invalid).toContain('Config    .claude/working-agreement.json · invalid: verify: expected a non-empty argv array')
+  expect(invalid).toContain('Config    .claude/working-agreement.json · invalid: verify: retired field in .claude/working-agreement.json, local Verify runs only rule-selected checks and leaves full suites to CI; regenerate the config, or move per-change checks into rules')
   expect(invalid).toContain('Selection none: verify refuses until a config exists')
   options.verifyFile = verifyFile
   expect((await runFlowCommand($, 'status')).text).toContain(' · needs /flow approve verify')

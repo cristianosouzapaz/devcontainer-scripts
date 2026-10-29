@@ -95,9 +95,7 @@ test('no sweep while a background subagent runs', async ($, on) => {
 test('EnterWorktree is refused inside herdr only', async ($, on) => {
   createWorld(on, { branch: 'main' }, { herdrEnv: inside })
   const reason = (await $.tool.call({ tool: 'EnterWorktree', name: 'oak' } as never)).deny ?? ''
-  expect(reason).toContain('herdr worktree create --branch <branch> --base HEAD --no-focus')
-  expect(reason).toContain('herdr agent start issue-<n> --kind claude')
-  expect(reason).toContain('herdr agent prompt issue-<n> "Work on issue #<n> on branch <branch>."')
+  expect(reason).toContain('spawn tool')
 })
 
 test('EnterWorktree runs outside herdr', async ($, on) => {

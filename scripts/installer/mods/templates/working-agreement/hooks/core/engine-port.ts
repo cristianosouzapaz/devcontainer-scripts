@@ -22,7 +22,6 @@ export interface EnginePort {
   processes: StreamingProcesses
   files: FilePort
   clock: ClockPort
-  clearLegacyStore: () => Promise<void>
   readSessionState: () => Promise<SessionSnapshot>
   writeSessionState: (value: SessionRecord, version: number) => Promise<boolean>
   /** Writes only to the engine debug log. */
@@ -47,6 +46,6 @@ export interface EnginePort {
   submitPrompt: (text: string) => Promise<void>
   /** Proposes a prompt box suggestion; resolves whether the engine showed it. */
   suggestPrompt: (text: string) => Promise<boolean>
-  /** Registers `/flow` and the `declare_flow`, `verify`, and `run` tools, whose specs the entry file holds. */
+  /** Registers `/flow` and the mod's tools, whose specs the entry file holds. */
   registerSurface: () => Promise<void>
 }

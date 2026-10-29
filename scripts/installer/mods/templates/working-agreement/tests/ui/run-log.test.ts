@@ -9,6 +9,7 @@ import { withRunView } from '../../hooks/core/run-view'
 import { sessionMemory } from '../../hooks/core/session-memory'
 import { handlePaneClose, handlePaneRender } from '../../hooks/handlers/pane-render'
 import type { PaneElements } from '../../hooks/ui/pane-sections'
+import { summarizeCommand } from '../../hooks/ui/run-log'
 import { diagnosed, diagnosisComment } from '../support/builders'
 import { checkTheme, mountPane, readFlowStatus, readPromptContext, textOf } from '../support/helpers'
 import type { DrawnNode } from '../support/helpers'
@@ -17,7 +18,7 @@ import type { World, Gate, Options } from '../support/world'
 
 interface RenderTable { elements?: PaneElements }
 
-const config = JSON.stringify({ verify: ['./check'], always: [['./lint']] })
+const config = JSON.stringify({ always: [['./lint'], ['./check']] })
 
 function findInnermostBox(node: unknown, text: string): DrawnNode | undefined {
   if (typeof node !== 'object' || node === null) return undefined
@@ -83,8 +84,10 @@ for (const columns of [30, 60]) {
     await readFlowStatus($)
     const before = await mountPane($, { columns })
     expect(textOf(await before.drawn())).toContain('✓ Verify')
-    expect(textOf(await before.drawn())).toContain('▸ Commit · no commit in the slice')
-    const beforeRow = findInnermostBox(await before.drawn(), '▸ Commit · no commit in the slice')
+    // At 30 columns the fact is cut at a word boundary, still on the step's row.
+    const commitRow = `▸ Commit · ${columns === 30 ? 'nothing yet' : 'nothing yet'}`
+    expect(textOf(await before.drawn())).toContain(commitRow)
+    const beforeRow = findInnermostBox(await before.drawn(), commitRow)
     expect(beforeRow).toBeDefined()
     expect(beforeRow?.props?.['flexDirection']).not.toBe('column')
     expect((beforeRow?.children ?? []).some(hasColumnBox)).toBe(false)
@@ -93,7 +96,7 @@ for (const columns of [30, 60]) {
     const pending = $.tool.call({ tool: 'mcp__working-agreement__verify' })
     await clock.settle()
     const pane = await mountPane($, { columns })
-    const liveRow = findInnermostBox(await pane.drawn(), '▸ Commit · no commit in the slice')
+    const liveRow = findInnermostBox(await pane.drawn(), commitRow)
     expect(liveRow).toBeDefined()
     expect(liveRow?.props?.['flexDirection']).not.toBe('column')
     expect((liveRow?.children ?? []).some(hasColumnBox)).toBe(false)
@@ -108,7 +111,7 @@ for (const columns of [30, 60]) {
     const ended = textOf(await pane.drawn())
     expect(ended).toContain('✗ Verify · failed, exit 1')
     expect(ended).toContain('○ Commit')
-    expect(ended).not.toContain('no commit in the slice')
+    expect(ended).not.toContain('nothing yet')
     const failedRow = findInnermostBox(await pane.drawn(), '✗ Verify · failed, exit 1')
     expect(failedRow).toBeDefined()
     expect(failedRow?.props?.['flexDirection']).not.toBe('column')
@@ -129,18 +132,18 @@ for (const tool of ['verify', 'run']) {
     const pane = await mountPane($)
     const live = textOf(await pane.drawn())
     if (tool === 'run') expect(live).toContain('▸ Diagnose')
-    expect(live).toContain(tool === 'run' ? './reproduce' : '▸ ./lint0:00')
+    expect(live).toContain(tool === 'run' ? './reproduce' : '▸ lint0:00')
     await expectText(pane, tool === 'run' ? 'run' : 'Verify', { color: 'text', weight: 'semibold' })
     await expectText(pane, tool === 'run' ? 'Diagnose' : 'Code', { color: 'text', weight: undefined })
     await expectText(pane, '▸ ', { color: 'suggestion' })
     await expectText(pane, '0:00', { color: 'inactive' })
     if (tool === 'verify') {
-      expect(live).toContain('○ ./check')
+      expect(live).toContain('○ check')
       await expectText(pane, '0:00', { color: 'text' })
-      expect(live).toContain('full (no rules)')
-      await expectText(pane, '  full (no rules)', { color: 'inactive', wrap: 'truncate-end' })
-      await expectText(pane, './lint', { color: 'text', wrap: 'truncate-end' })
-      await expectText(pane, './check', { color: 'inactive', wrap: 'truncate-end' })
+      // The header names the run and its clock; why the checks were selected stays in the Run log and /flow status.
+      expect(live).not.toContain('no local check selected — left to CI')
+      await expectText(pane, 'lint', { color: 'text', wrap: 'truncate-end' })
+      await expectText(pane, 'check', { color: 'inactive', wrap: 'truncate-end' })
       await expectText(pane, '○ ', { color: 'inactive' })
     } else {
       expect(live).not.toContain('▸ ./reproduce')
@@ -168,7 +171,7 @@ for (const tool of ['verify', 'run']) {
     expect(ended).toContain(tool === 'verify' ? '✗ Verify · failed, exit 1' : 'Diagnose · no comment after the red')
     if (tool === 'verify') {
       await expectText(pane, '✗ ', { color: 'error' })
-      await expectText(pane, 'failed, exit 1', { color: 'error', wrap: 'wrap' })
+      await expectText(pane, 'failed, exit 1', { color: 'error', wrap: 'truncate-end' })
     }
     expect((await pane.find({ key: 'l' }))?.props['hotkey']).toBe('l')
     expect(await pane.find({ key: 'c' })).toBeUndefined()
@@ -194,7 +197,7 @@ test('completed commands stay above the running command, and each log block keep
   options.spawnOutput = 'second live output'
   await clock.advance(1000)
   const flow = await mountPane($)
-  expect(textOf(await flow.drawn())).toContain('✓ ./lint0s▸ ./check0:01│ second live output')
+  expect(textOf(await flow.drawn())).toContain('✓ lint0s▸ check0:01│ second live output')
   await expectText(flow, '✓ ', { color: 'success' })
   await expectText(flow, '0s', { color: 'inactive' })
   gate.open?.()
@@ -215,7 +218,7 @@ test('completed commands stay above the running command, and each log block keep
 })
 
 test('timeout clears the live section and leaves the short Verify fact', async ($, on) => {
-  const file = JSON.stringify({ verify: ['./silent'], timeoutMinutes: 0.01 })
+  const file = JSON.stringify({ always: [['./silent']], timeoutMinutes: 0.01 })
   const { clock } = createWorld(on, { branch: 'feat', isDirty: true, tree: 'changed' }, { approvedConfig: file, verifyFile: file, spawnGate: new Promise(() => {}) })
   const pending = $.tool.call({ tool: 'mcp__working-agreement__verify' })
   await clock.settle()
@@ -226,9 +229,9 @@ test('timeout clears the live section and leaves the short Verify fact', async (
   await clock.advance(600)
   await pending
   const ended = textOf(await flow.drawn())
-  expect(ended).toContain('✗ Verify · timed out, 0.01 min')
+  expect(ended).toContain('✗ Verify · timed out after 0.01 min')
   expect(ended).not.toContain('./silent')
-  await expectText(flow, 'timed out, 0.01 min', { color: 'error', wrap: 'wrap' })
+  await expectText(flow, 'timed out after 0.01 min', { color: 'error', wrap: 'truncate-end' })
   await flow.press({ key: 'l' })
   const log = flow
   await expectText(log, 'timed out', { color: 'error' })
@@ -283,7 +286,7 @@ test('l switches the Flow pane to Run log; Flow or Esc returns and digit selecto
   await expectText(log, 'green-t', { color: 'inactive' })
   expect((await log.findAll({ type: 'Box' })).some(box => box.props['marginY'] === 1 && /^─+$/.test(textOf(box)))).toBe(true)
   const verify = textOf(await log.drawn())
-  expect(verify).toContain('Selectionfull (no rules)')
+  expect(verify).toContain('Selectionno local check selected — left to CI')
   expect(verify).toContain('Cwd/repo')
   expect(verify).toContain('File/repo.git/working-agreement/runs/')
   expect(verify).toContain('✗ ./lintexit 1 · 0s│ Verify output')
@@ -358,8 +361,8 @@ test('an unrecorded tree-changing Verify remains in Run log until the next run',
   await $.tool.call({ tool: 'mcp__working-agreement__verify' })
   expect(sessions.get('sid')?.units[0]?.verifyRuns).toEqual([])
   const pane = await mountPane($)
-  expect(textOf(await pane.drawn())).toContain('▸ Code · tree changed during run')
-  await expectText(pane, 'tree changed during run', { color: 'text', wrap: 'wrap' })
+  expect(textOf(await pane.drawn())).toContain('▸ Code · tree changed in the run')
+  await expectText(pane, 'tree changed in the run', { color: 'text', wrap: 'truncate-end' })
   await pane.press({ key: 'l' })
   expect(textOf(await pane.drawn())).toContain('Verify · not recorded')
   expect(textOf(await pane.drawn())).toContain('Changedsrc/a.ts')
@@ -389,7 +392,7 @@ test('an unrecorded tree-changing Verify on a tree another run covers shows on t
   const pane = await mountPane($)
   const drawn = textOf(await pane.drawn())
   expect(drawn).toContain('✓ Code')
-  expect(drawn).toContain('▸ Verify · tree changed during run')
+  expect(drawn).toContain('▸ Verify · tree changed in the run')
   await pane.unmount()
 })
 
@@ -403,9 +406,9 @@ test('an unrecorded tree-changing Verify leaves any other Code blocker shown, as
   await $.tool.call({ tool: 'mcp__working-agreement__verify' })
   const pane = await mountPane($)
   const drawn = textOf(await pane.drawn())
-  expect(drawn).toContain('▸ Code · no green after the approval')
-  expect(drawn).not.toContain('tree changed during run')
-  expect(await readFlowStatus($)).toContain('▸ Code · no green after the approval')
+  expect(drawn).toContain('▸ Code · run the fix: no green since approval')
+  expect(drawn).not.toContain('tree changed in the run')
+  expect(await readFlowStatus($)).toContain('▸ Code · run the fix: no green since approval')
   await pane.unmount()
 })
 
@@ -440,9 +443,16 @@ test('resize stacks whole footer buttons above the primary, while identifiers yi
   await pane.unmount()
 })
 
+test('a live Verify command reads as its runner and the buckets it runs, flags kept', () => {
+  expect(summarizeCommand(['test/runners/bash.sh', 'test/bats/mods', 'test/bats/runners', 'test/bats/conventions/'])).toBe('bash: mods, runners, conventions')
+  expect(summarizeCommand(['test/runners/bash.sh', 'test/bats/conventions/mod-tests.test.bats', '--jobs'])).toBe('bash: mod-tests, --jobs')
+  expect(summarizeCommand(['test/runners/mods.sh'])).toBe('mods')
+  expect(summarizeCommand(['npm', 'test', 'test'])).toBe('npm: test')
+})
+
 test('single-command Verify has a plain live argv and appears before recorded history in Run log', async ($, on) => {
   const gate: Gate = {}
-  const file = '{"verify":["./only"]}'
+  const file = '{"always":[["./only"]]}'
   const options: Options = { verifyFile: file, spawnOutput: 'one\ntwo\n\nfour\nfive\n', spawnGate: new Promise<void>(resolve => { gate.open = resolve }),
     unit: { runs: [{ argv: ['./before'], tree: 'abcdef123456', runId: 'older', at: 0, outcome: { kind: 'fail', code: 7, signal: null } }] } }
   options.approvedConfig = file
@@ -452,10 +462,10 @@ test('single-command Verify has a plain live argv and appears before recorded hi
   await clock.settle()
   await clock.advance(14000)
   const flow = await mountPane($)
-  await expectText(flow, './only', { color: 'text', wrap: 'truncate-end' })
+  await expectText(flow, 'only', { color: 'text', wrap: 'truncate-end' })
   await expectText(flow, '0:14', { color: 'inactive' })
   await expectText(flow, ' ', { color: 'text', wrap: 'truncate-end' })
-  expect(textOf(await flow.drawn())).not.toContain('▸ ./only')
+  expect(textOf(await flow.drawn())).not.toContain('▸ only')
   await flow.press({ key: 'l' })
   const log = flow
   const picks = (await log.findAll({ type: 'Button' })).filter(button => button.props['hotkey'])
@@ -567,7 +577,7 @@ for (const [status, label, color] of [['passed', 'passed', 'text'], ['timed out'
   })
 }
 
-test('step rows keep fixed names and symbols, wrap current facts, and truncate skipped reasons', async ($, on) => {
+test('step rows keep fixed names and symbols, and fit current facts and skipped reasons to the row', async ($, on) => {
   createWorld(on, { branch: 'feat' })
   const value: FlowView = { flow: 'Small feature', progress: '3/7', issues: [{ number: 1, title: 'A long issue title' }], pending: null, meta: [], labels: [], notes: [], footer: { action: 'continue', isRunning: false },
     steps: [
@@ -584,7 +594,7 @@ test('step rows keep fixed names and symbols, wrap current facts, and truncate s
   await expectText(flow, 'Verify', { color: 'text', weight: undefined })
   await expectText(flow, '▸ ', { color: 'suggestion' })
   await expectText(flow, 'Commit', { color: 'text', weight: undefined })
-  await expectText(flow, 'a fact to act on that wraps', { color: 'text', wrap: 'wrap' })
+  await expectText(flow, 'a fact to act on that wraps', { color: 'text', wrap: 'truncate-end' })
   await expectText(flow, '○ ', { color: 'inactive' })
   await expectText(flow, 'PR', { color: 'inactive' })
   await expectText(flow, '↷ ', { color: 'inactive' })
@@ -598,14 +608,14 @@ test('step rows keep fixed names and symbols, wrap current facts, and truncate s
   displayed.run = run
   await flow.redraw()
   await expectText(flow, 'Verify', { color: 'text', weight: 'semibold' })
-  await expectText(flow, '  rules: hooks/**', { color: 'inactive', wrap: 'truncate-end' })
+  expect(textOf(await flow.drawn())).not.toContain('rules: hooks/**')
   await expectText(flow, '1:05', { color: 'inactive' })
   await expectText(flow, '1m05s', { color: 'inactive' })
   await expectText(flow, 'exit 7', { color: 'error' })
   await expectText(flow, 'timed out', { color: 'error' })
   await expectText(flow, '✗ ', { color: 'error' })
   await expectText(flow, '0:00', { color: 'text' })
-  await expectText(flow, './waiting', { color: 'inactive', wrap: 'truncate-end' })
+  await expectText(flow, 'waiting', { color: 'inactive', wrap: 'truncate-end' })
   await expectText(flow, ' ', { color: 'text', wrap: 'truncate-end' })
   await expectText(flow, '│ ', { color: 'subtle' })
   await expectTheme(flow)
@@ -643,7 +653,7 @@ test('an unrecorded attempt leaves a done Verify row without status when an earl
   await $.tool.call({ tool: 'mcp__working-agreement__verify' })
   expect(await readFlowStatus($)).toContain('✓ Verify\n')
   const flow = await mountPane($)
-  expect(textOf(await flow.drawn())).not.toContain('tree changed during run')
+  expect(textOf(await flow.drawn())).not.toContain('tree changed in the run')
   await expectText(flow, '✓ ', { color: 'success' })
   await flow.unmount()
   const log = await mountRunLog($)

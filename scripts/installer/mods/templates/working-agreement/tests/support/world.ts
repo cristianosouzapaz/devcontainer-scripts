@@ -21,11 +21,11 @@ export interface Checkout extends Worktree {
 }
 
 /** A commit's parents, file hashes by repo-relative path, and optional committer date in epoch seconds. */
-interface Commit { parents: string[]; files: Record<string, string>; committerDate?: number }
+interface Commit { parents: string[]; files: Record<string, string>; committerDate?: number; isSigned?: boolean }
 
 /**
  * Seeded commit ids are immutable and ordered by creation time; the real-git harness assigns dates in that order.
- * Later commits default to the world's clock unless their committer date is specified.
+ * Later commits default to the world's clock unless their committer date is specified; a commit is unsigned unless `isSigned`.
  * Two commits with the same files have the same tree. Optional trees and blobs give object ids readable fixture aliases.
  * `created` names the start point each listed branch's reflog records as `branch: Created from <start>`; every other
  * branch's reflog holds one entry with no message, as `git update-ref` writes it.
@@ -34,6 +34,8 @@ export interface Graph {
   commits: Record<string, Commit>; refs: Record<string, string>
   trees?: Record<string, Record<string, string>>; blobs?: Record<string, string>; upstreams?: Record<string, string>
   created?: Record<string, string>
+  /** The git aliases `git config` lists, by name; none when unset. */
+  aliases?: Record<string, string>
 }
 
 interface Worktree {
@@ -43,6 +45,9 @@ interface HerdrResult { exitCode: number; stderr: string }
 interface ProtectionError { status?: number; message: string }
 interface Repository { common: string; branch: string }
 interface GhResponse { body: unknown; exitCode?: number }
+/** A GitHub Actions job: its status and the runner labels it asks for. */
+interface ActionsJob { status: string; labels: string[] }
+interface GhAnswer { stdout?: string; exitCode?: number; stderr?: string }
 interface HerdrActivity { calls: number; active: number; maximum: number }
 
 /** The records and external responses that replace a world's defaults. */
@@ -51,6 +56,8 @@ export interface Options {
   beforeHerdr?: () => void
   herdrGate?: Promise<void>
   ghResponse?: GhResponse
+  /** Answers a gh call ahead of every modelled one; undefined leaves it to them. */
+  gh?: (args: string[]) => GhAnswer | undefined
   herdrResult?: HerdrResult
   /** The standard output herdr prints for these arguments; empty when unset. */
   herdrReply?: (args: string[]) => string
@@ -81,6 +88,8 @@ export interface Options {
   removeExitCode?: number
   appendExitCode?: number
   listFailurePrefix?: string
+  /** The pid namespace `readlink /proc/self/ns/pid` prints; unset, the host exposes none and only leases count. */
+  pidNamespace?: string
   /** Makes reading a present file under this prefix reject, as an I/O error does. */
   readFailurePrefix?: string
   /** Whether listing a directory no file lives under fails, as the engine's listing of a missing directory does. */
@@ -93,12 +102,13 @@ export interface Options {
   isStateAbsent?: boolean
   /** Holds the first GitHub issue read until it opens. */
   issueGate?: Promise<void>
-  legacy?: Record<string, unknown>
   issueLabels?: Record<number, string[]>
   checkRuns?: Record<string, CheckRun[]>
   statuses?: Record<string, Status[]>
   workflowRuns?: Record<string, WorkflowRun[]>
-  rules?: Record<string, unknown>[]
+  /** The repository's Actions jobs, each in a run of its own status, read live so a test can end them; a string fails the read with it. */
+  actionsJobs?: ActionsJob[] | string
+  rules?:Record<string, unknown>[]
   rulesError?: number
   rulesMessage?: string
   rulesGate?: Promise<void>
@@ -161,7 +171,6 @@ export interface World {
    * @param record - The record.
    */
   seedChat: (id: string, record: SessionRecord) => void
-  legacy: Set<string>
   views: (FlowView | null)[]
   /** Every live-run display written, in order. */
   liveRuns: (RunView | null)[]
@@ -182,13 +191,17 @@ interface GitContext {
   filesAt: (revision: string) => Record<string, string> | undefined
   treeName: (files: Record<string, string>, alias?: string) => string
   blobText: (blob: string) => string
+  /** Adds a branch to the world's graph, as `git update-ref` writes it. */
+  createBranch: (name: string, id: string) => void
+  /** Moves the selected worktree's branch onto a commit, adding it to the seeded graph when given. */
+  moveBranch: (sha: string, commit?: Commit) => void
 }
 interface GitEntry { name: string; pattern: RegExp; answer: (context: GitContext, match: readonly string[]) => GitAnswer | Promise<GitAnswer> }
 
 const ancestorCache = new WeakMap<Commit, string[]>()
 const fatal: GitAnswer = { exitCode: 128, stdout: '' }
 const gitAnswers: GitEntry[] = [
-  { name: 'hash', pattern: /^hash-object --stdin$/, answer: async c => ok(await hashBlob(c.stdin)) },
+  { name: 'hash', pattern: /^hash-object --stdin$/, answer: c => ok(configBlob(c.stdin)) },
   { name: 'common', pattern: /^rev-parse --path-format=absolute --git-common-dir$/, answer: c => ok(c.owner[1].common) },
   { name: 'repository', pattern: /^rev-parse --path-format=absolute --git-common-dir --show-toplevel$/,
     answer: c => ok(`${c.owner[1].common}\n${c.owner[0]}`) },
@@ -219,11 +232,31 @@ const gitAnswers: GitEntry[] = [
   { name: 'count', pattern: /^rev-list --count (\S+)\.\.(\S+)$/, answer: (c, m) => revisionDifference(c, m[2] ?? '', m[1] ?? '', true) },
   { name: 'merge', pattern: /^merge-base (?!-)(\S+) (\S+)$/, answer: (c, m) => {
     const [from, to] = [c.resolve(m[1] ?? ''), c.resolve(m[2] ?? '')]
-    const ancestors = new Set(to ? listAncestors(c.graph, to) : [])
-    const common = from ? listAncestors(c.graph, from).filter(id => ancestors.has(id)) : []
-    // A best common ancestor is no ancestor of another common ancestor.
-    const base = common.find(id => !common.some(other => other !== id && listAncestors(c.graph, other).includes(id)))
+    const base = from && to ? findMergeBase(c.graph, from, to) : undefined
     return base ? ok(base) : { exitCode: from && to ? 1 : 128, stdout: '' }
+  } },
+  // A conflicting merge changes nothing, so the model never leaves a merge in progress.
+  { name: 'merge-run', pattern: /^merge --no-gpg-sign --no-edit (--ff-only|--no-ff) (\S+)$/, answer: (c, m) => {
+    const [head, theirs] = [c.resolve('HEAD'), c.resolve(m[2] ?? '')]
+    if (!head || !theirs) return fatal
+    if (listAncestors(c.graph, head).includes(theirs)) return ok('Already up to date.')
+    if (listAncestors(c.graph, theirs).includes(head) && m[1] === '--ff-only') {
+      c.moveBranch(theirs)
+      return ok('')
+    }
+    const [base, ours, other] = [c.filesAt(findMergeBase(c.graph, head, theirs) ?? '') ?? {}, c.filesAt(head) ?? {}, c.filesAt(theirs) ?? {}]
+    const paths = [...new Set([...Object.keys(ours), ...Object.keys(other)])]
+    if (m[1] === '--ff-only' || paths.some(path => ours[path] !== base[path] && other[path] !== base[path] && ours[path] !== other[path])) {
+      return { exitCode: m[1] === '--ff-only' ? 128 : 1, stdout: '' }
+    }
+    const files = Object.fromEntries(paths.map(path => [path, ours[path] === base[path] ? other[path] : ours[path]]).filter(([, hash]) => hash))
+    c.moveBranch(`merge-${theirs}`, { parents: [head, theirs], files: files as Record<string, string> })
+    return ok('')
+  } },
+  { name: 'merge-abort', pattern: /^merge --abort$/, answer: () => fatal },
+  { name: 'parents', pattern: /^log -1 --format=%P (\S+)$/, answer: (c, m) => {
+    const id = c.resolve(m[1] ?? '')
+    return id ? ok(c.graph.commits[id]?.parents.join(' ') ?? '') : fatal
   } },
   { name: 'ancestor', pattern: /^merge-base --is-ancestor (\S+) (\S+)$/, answer: (c, m) => {
     const [from, to] = [c.resolve(m[1] ?? ''), c.resolve(m[2] ?? '')]
@@ -257,6 +290,25 @@ const gitAnswers: GitEntry[] = [
   } },
   { name: 'ignore', pattern: /^check-ignore -- (.+)$/, answer: (c, m) => isIgnored(c, (m[1] ?? '').replace(`${c.owner[0]}/`, ''))
     ? ok(m[1] ?? '') : { exitCode: 1, stdout: '' } },
+  { name: 'signatures', pattern: /^log --no-walk --format=%H:%G\? (.+)$/, answer: (c, m) => {
+    const ids = (m[1] ?? '').split(' ').map(revision => c.resolve(revision))
+    return ids.every(id => id) ? ok(ids.map(id => `${id}:${c.graph.commits[id ?? '']?.isSigned ? 'G' : 'N'}`).join('\n')) : fatal
+  } },
+  // With -m a merge is diffed against each parent in turn; a root commit has no parent to diff against, so git prints nothing for it.
+  { name: 'diff-tree', pattern: /^diff-tree -r --no-commit-id -m (\S+)$/, answer: (c, m) => {
+    const id = c.resolve(m[1] ?? '')
+    const parents = c.graph.commits[id ?? '']?.parents
+    if (!id || !parents) return fatal
+    const after = c.filesAt(id) ?? {}
+    const zero = '0'.repeat(40)
+    return ok(parents.flatMap(parent => {
+      const before = c.filesAt(parent) ?? {}
+      return diffFiles(before, after).sort().map(path => `:${before[path] ? '100644' : '000000'} ${after[path] ? '100644' : '000000'} `
+        + `${before[path] ?? zero} ${after[path] ?? zero} ${!before[path] ? 'A' : !after[path] ? 'D' : 'M'}\t${path}`)
+    }).join('\n'))
+  } },
+  { name: 'aliases', pattern: /^config --get-regexp \^alias\\\.$/, answer: c => c.graph.aliases
+    ? ok(Object.entries(c.graph.aliases).map(([name, value]) => `alias.${name} ${value}`).join('\n')) : { exitCode: 1, stdout: '' } },
   { name: 'add', pattern: /^add -A$/, answer: () => ok('') },
   // A safe delete leaves the graph alone: tests read the deletion from the recorded runs.
   { name: 'branch-delete', pattern: /^branch -d (\S+)$/, answer: (c, m) => {
@@ -268,6 +320,13 @@ const gitAnswers: GitEntry[] = [
     ok(c.treeName(Object.fromEntries(Object.entries(c.working).filter(([path]) => !isIgnored(c, path))), c.checkout.tree)) },
   { name: 'remotes', pattern: /^remote$/, answer: c => ok([...new Set(Object.keys(c.graph.refs)
     .flatMap(ref => ref.startsWith('origin/') ? ['origin'] : ref.startsWith('refs/remotes/') ? [ref.split('/')[2] ?? ''] : []))].sort().join('\n')) },
+  // An empty old value makes the update create-only: an existing branch is left alone.
+  { name: 'update-ref', pattern: /^update-ref refs\/heads\/(\S+) (\S+) $/, answer: (c, m) => {
+    const id = c.resolve(m[2] ?? '')
+    if (!id || c.resolve(m[1] ?? '')) return fatal
+    c.createBranch(m[1] ?? '', id)
+    return ok('')
+  } },
   { name: 'worktrees', pattern: /^worktree list --porcelain$/, answer: c => ok(Object.entries(c.worktrees)
     .sort(([a], [b]) => a === root ? -1 : b === root ? 1 : a.localeCompare(b))
     .map(([path, wt]) => `worktree ${path}\nHEAD ${wt.head ?? c.graph.refs[wt.branch]}\n`
@@ -282,6 +341,44 @@ export const root = '/repo'
 
 /** The git common directory shared by test chats. */
 export const common = '/repo.git'
+
+/** The mod's record directory under the git common directory. */
+export const records = `${common}/working-agreement`
+
+/**
+ * Names a coordinator's delegation scope file.
+ * @param sessionId - The coordinator session.
+ * @returns The scope's path.
+ */
+export const scopeFile = (sessionId: string): string => `${records}/delegation/${sessionId}.json`
+
+/**
+ * Writes a coordinator's delegation scope as `/flow delegate` leaves it.
+ * @param sessionId - The coordinator session.
+ * @param issues - The delegated issues.
+ * @returns The scope's JSON.
+ */
+export const buildScope = (sessionId: string, issues: number[]): string => JSON.stringify({ v: 1, sessionId, issues, coversCreated: false })
+
+/**
+ * Names a delegated-commit record.
+ * @param key - The commit's change key.
+ * @returns The record's path.
+ */
+export const delegatedFile = (key: string): string => `${records}/delegated/${key}.json`
+
+/**
+ * Finds the best common ancestor of two commits: a common ancestor that is no ancestor of another one.
+ * @param graph - The history.
+ * @param from - One commit.
+ * @param to - The other commit.
+ * @returns The merge base, or undefined for unrelated histories.
+ */
+function findMergeBase(graph: Graph, from: string, to: string): string | undefined {
+  const ancestors = new Set(listAncestors(graph, to))
+  const common = listAncestors(graph, from).filter(id => ancestors.has(id))
+  return common.find(id => !common.some(other => other !== id && listAncestors(graph, other).includes(id)))
+}
 
 /**
  * Builds a successful process answer.
@@ -323,12 +420,32 @@ function isIgnored(context: GitContext, path: string): boolean {
 }
 
 /**
- * Gives test blobs stable ids that change with their content.
- * @param text - Config content.
- * @returns A deterministic hex id.
+ * Hashes the exact UTF-8 bytes using git's blob header, synchronously, so a fixture names a blob as `git hash-object` does.
+ * @param text - The blob's content, without an implicit newline.
+ * @returns Git's SHA-1 blob id.
  */
 export function configBlob(text: string): string {
-  return ([...text].reduce((hash, char) => Math.imul(hash ^ char.charCodeAt(0), 16777619), 2166136261) >>> 0).toString(16).padStart(8, '0').repeat(5)
+  const body = new TextEncoder().encode(text)
+  const header = new TextEncoder().encode(`blob ${body.length}\0`)
+  const length = header.length + body.length
+  const bytes = new Uint8Array(Math.ceil((length + 9) / 64) * 64)
+  bytes.set(header)
+  bytes.set(body, header.length)
+  bytes[length] = 0x80
+  const view = new DataView(bytes.buffer)
+  view.setUint32(bytes.length - 4, length * 8)
+  const rotate = (value: number, by: number): number => (value << by) | (value >>> (32 - by))
+  const range = (from: number, to: number): number[] => Array.from({ length: to - from }, (_, index) => from + index)
+  const round = (i: number, b: number, c: number, d: number): number => i < 20 ? ((b & c) | (~b & d)) + 0x5a827999
+    : i < 40 ? (b ^ c ^ d) + 0x6ed9eba1 : i < 60 ? ((b & c) | (b & d) | (c & d)) + 0x8f1bbcdc : (b ^ c ^ d) + 0xca62c1d6
+  const compress = (hash: number[], block: number): number[] => {
+    const words = range(0, 16).map(i => view.getUint32(block + i * 4))
+    for (const i of range(16, 80)) words.push(rotate(words[i - 3]! ^ words[i - 8]! ^ words[i - 14]! ^ words[i - 16]!, 1))
+    const final = range(0, 80).reduce(([a, b, c, d, e], i) => [(rotate(a!, 5) + round(i, b!, c!, d!) + e! + words[i]!) | 0, a!, rotate(b!, 30), c!, d!], hash)
+    return hash.map((word, index) => (word + final[index]!) | 0)
+  }
+  const state = range(0, bytes.length / 64).map(n => n * 64).reduce(compress, [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0])
+  return state.map(word => (word >>> 0).toString(16).padStart(8, '0')).join('')
 }
 
 /**
@@ -343,24 +460,12 @@ function matchesGlob(path: string, pattern: string): boolean {
 }
 
 /**
- * Hashes the exact UTF-8 bytes using git's blob header.
- * @param text - Standard input, without an implicit newline.
- * @returns Git's SHA-1 blob id.
- */
-async function hashBlob(text: string): Promise<string> {
-  const encoder = new TextEncoder()
-  const bytes = encoder.encode(text)
-  const digest = await crypto.subtle.digest('SHA-1', encoder.encode(`blob ${bytes.length}\0${text}`))
-  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
-}
-
-/**
  * Names a unit's record files the way the mod does, so a test can seed or find its declaration and transition log.
  * @param branch - The unit's branch.
  * @param issues - The unit's sorted issues.
  * @returns The hash shared by the unit's declaration and log.
  */
-export const hashIdentity = (branch: string, issues: number[]): Promise<string> => hashBlob(JSON.stringify({ branch, issues }))
+export const hashIdentity = async (branch: string, issues: number[]): Promise<string> => configBlob(JSON.stringify({ branch, issues }))
 
 /**
  * Resolves a revision of a graph to a commit id: a branch, `refs/heads/<branch>`, `origin/HEAD` (the default branch), `HEAD` or a commit id.
@@ -489,6 +594,8 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   const suggestions: string[] = []
   const files = new Map<string, string>()
   const modified = new Map<string, number>()
+  // Directories a bare mkdir made; every other directory exists only while a file lives under it.
+  const created = new Set<string>()
   /**
    * Seeds approval without exposing the approval record to scenarios.
    * @param text - The approved config content.
@@ -510,10 +617,9 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   const seed = options.isStateAbsent ? undefined : initial
   if (seed) sessions.set(chat.id, seed)
   const flow = options.session?.flow ?? (options.session?.flow === null ? null : 'small-feature')
-  const ready = flow ? hashBlob(JSON.stringify(identity)).then(hash => {
+  const ready = flow ? Promise.resolve(configBlob(JSON.stringify(identity))).then(hash => {
     files.set(`${common}/working-agreement/u/${hash}.json`, JSON.stringify({ v: 1, identity, flow }))
   }) : Promise.resolve()
-  const legacy = new Set(Object.keys(options.legacy ?? {}))
   const views: (FlowView | null)[] = []
   const liveRuns: (RunView | null)[] = []
   const paneViews: PaneView[] = []
@@ -524,6 +630,8 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   const herdrActivity = { calls: 0, active: 0, maximum: 0 }
   const initialConfig = options.verifyFile
   const graphCache: GraphCache = { highest: 0 }
+  // Branches the mod created, laid over whichever graph the checkout holds without changing a shared fixture.
+  const createdRefs: { refs: Record<string, string>; base?: Graph; graph?: Graph } = { refs: {} }
   const commitDates = new Map<string, number>()
   const treeFiles = new Map<string, Record<string, string>>()
   const treeNames = new Map<string, string>()
@@ -535,8 +643,6 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     treeFiles.set(name, contents)
     return name
   }
-  on('store.keys', () => ({ value: [...legacy] }))
-  on('store.delete', (_$, e) => { legacy.delete(e.key); return { value: undefined } })
   on('state.set', { plugin: 'working-agreement', key: 'view' }, (_$, e, next) => { views.push(e.value); return next(e) })
   on('state.set', { plugin: 'working-agreement', key: 'liveRun' }, (_$, e, next) => { liveRuns.push(e.value); return next(e) })
   // why: The kit hosts one engine session, so only the first chat has the engine's store; another chat is another
@@ -614,7 +720,29 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     if (command === 'uname -s') return buildResult(options.platform ?? 'Linux')
     if (e.argv[0] === 'tail') return buildResult((options.spawnOutput ?? '').replace(/\n$/, '').split('\n').slice(-4).join('\n'))
     if (e.argv[0] === 'sh') return buildResult(options.spawnOutput ?? '')
-    if (e.argv[0] === 'cp' || e.argv[0] === 'mkdir') return buildResult('')
+    if (e.argv[0] === 'cp' || e.argv[0] === 'mkdir' && e.argv[1] === '-p') return buildResult('')
+    const isPresent = (path: string) => created.has(path) || files.has(path) || [...files.keys()].some(file => file.startsWith(`${path}/`))
+    if (e.argv[0] === 'mkdir') {
+      const directory = e.argv[2] ?? ''
+      if (isPresent(directory)) return buildResult('', 1, `mkdir: cannot create directory '${directory}': File exists`)
+      created.add(directory)
+      modified.set(directory, clock.now())
+      return buildResult('')
+    }
+    if (e.argv[0] === 'touch') {
+      for (const path of e.argv.slice(2)) if (isPresent(path)) modified.set(path, clock.now())
+      return buildResult('')
+    }
+    if (e.argv[0] === 'readlink') return options.pidNamespace ? buildResult(`${options.pidNamespace}\n`) : buildResult('', 1)
+    if (e.argv[0] === 'mv' && e.argv[1] === '--') {
+      const [source, target] = [e.argv[2] ?? '', e.argv[3] ?? '']
+      if (files.has(source) || !isPresent(source)) return buildResult('', 1, `mv: cannot stat '${source}': No such file or directory`)
+      if (isPresent(target)) return buildResult('', 1, `mv: cannot overwrite '${target}'`)
+      for (const [path, text] of [...files]) if (path.startsWith(`${source}/`)) { files.delete(path); files.set(`${target}${path.slice(source.length)}`, text) }
+      for (const path of [...created]) if (path === source || path.startsWith(`${source}/`)) { created.delete(path); created.add(`${target}${path.slice(source.length)}`) }
+      modified.set(target, modified.get(source) ?? clock.now())
+      return buildResult('')
+    }
     if (e.argv[0] === 'tee') {
       if (options.appendExitCode) return buildResult('', options.appendExitCode, 'append failed')
       const target = e.argv[3] ?? ''
@@ -623,12 +751,19 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     }
     if (e.argv[0] === 'rm') {
       if (options.removeExitCode) return buildResult('', options.removeExitCode, 'delete failed')
-      for (const path of e.argv.slice(3)) files.delete(path)
+      for (const path of e.argv.slice(3)) {
+        files.delete(path)
+        if (e.argv[1] !== '-rf') continue
+        for (const file of [...files.keys()]) if (file.startsWith(`${path}/`)) files.delete(file)
+        for (const directory of [...created]) if (directory === path || directory.startsWith(`${path}/`)) created.delete(directory)
+      }
       return buildResult('')
     }
     if (e.argv[0] === 'rmdir') {
       const directory = e.argv[2] ?? ''
-      return [...files.keys()].some(path => path.startsWith(`${directory}/`)) ? buildResult('', 1, 'Directory not empty') : buildResult('')
+      if ([...files.keys(), ...created].some(path => path.startsWith(`${directory}/`))) return buildResult('', 1, 'Directory not empty')
+      created.delete(directory)
+      return buildResult('')
     }
     if (e.argv[0] === 'mv') {
       if (failures.renames > 0) { failures.renames -= 1; return buildResult('', 1, 'rename failed') }
@@ -648,7 +783,9 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       graphCache.highest = Math.max(graphCache.highest, ...tips.values())
       graphCache.linear = linearGraph(Object.fromEntries(tips), initialConfig, graphCache.highest)
     }
-    const graph = checkout.graph ?? graphCache.linear ?? linearGraph(Object.fromEntries(tips), initialConfig)
+    const base = checkout.graph ?? graphCache.linear ?? linearGraph(Object.fromEntries(tips), initialConfig)
+    if (createdRefs.base !== base) Object.assign(createdRefs, { base, graph: undefined })
+    const graph = !Object.keys(createdRefs.refs).length ? base : createdRefs.graph ?? (createdRefs.graph = { ...base, refs: { ...base.refs, ...createdRefs.refs } })
     const isInitialGraph = commitDates.size === 0
     for (const [ordinal, [id, commit]] of Object.entries(graph.commits).entries()) {
       // Seeded history matches the real conformance repo; later commits default to the live clock.
@@ -689,7 +826,11 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       const directory = normalized[1] === '-C' ? localRoot : e.init?.cwd ?? session.cwd
       const prefix = owner && directory.startsWith(`${owner[0]}/`) ? `${directory.slice(owner[0].length + 1)}/` : ''
       const answer = owner ? await entry.answer({ graph, commitDates, checkout: git, working, worktrees, localRoot, owner, prefix, resolve, filesAt,
-        treeName,
+        treeName, createBranch: (name, id) => { createdRefs.refs[name] = id; createdRefs.graph = undefined }, moveBranch: (sha, commit) => {
+          if (!checkout.graph) throw new Error('A merge needs a seeded graph')
+          checkout.graph = { ...checkout.graph, commits: commit ? { ...checkout.graph.commits, [sha]: commit } : checkout.graph.commits,
+            refs: { ...checkout.graph.refs, [git.branch]: sha } }
+        },
         blobText: id => id === blob ? config ?? '' : graph.blobs?.[id] ?? `${id}\n`, stdin: e.init?.stdin ?? '',
       }, local.match(entry.pattern) ?? []) : fatal
       answeredEntries.add(entry.name)
@@ -697,6 +838,8 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       if (gate && !statusGates.has(gate)) { statusGates.add(gate); await gate }
       return buildResult(answer.stdout, answer.exitCode)
     }
+    const ghAnswer = e.argv[0] === 'gh' ? options.gh?.(e.argv.slice(1)) : undefined
+    if (ghAnswer) return buildResult(ghAnswer.stdout ?? '', ghAnswer.exitCode ?? 0, ghAnswer.stderr ?? '')
     if (options.isLoggedOut && command.startsWith('gh ')) return buildResult('', 4, 'To get started with GitHub CLI, please run:  gh auth login')
     if (command.startsWith('gh ') && options.ghResponse) return buildResult(JSON.stringify(options.ghResponse.body), options.ghResponse.exitCode ?? 0)
     if (command.startsWith('gh api user')) return buildResult('me')
@@ -737,6 +880,12 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     const workflowRuns = command.match(/^gh api --paginate repos\/\{owner\}\/\{repo\}\/actions\/runs\?head_sha=(\S+) --jq /)
     if (workflowRuns) return buildResult((options.workflowRuns?.[workflowRuns[1] ?? ''] ?? [])
       .map(row => JSON.stringify(row)).join('\n'))
+    const activeRuns = command.match(/^gh api --paginate repos\/\{owner\}\/\{repo\}\/actions\/runs\?status=(\w+) --jq /)
+    const runJobs = command.match(/^gh api --paginate repos\/\{owner\}\/\{repo\}\/actions\/runs\/(\d+)\/jobs --jq /)
+    if ((activeRuns || runJobs) && typeof options.actionsJobs === 'string') return buildResult('', 1, options.actionsJobs)
+    const jobs = Array.isArray(options.actionsJobs) ? options.actionsJobs : []
+    if (activeRuns) return buildResult(jobs.flatMap((job, index) => job.status === activeRuns[1] ? [JSON.stringify({ id: index + 1 })] : []).join('\n'))
+    if (runJobs) return buildResult(jobs.slice(Number(runJobs[1]) - 1, Number(runJobs[1])).map(job => JSON.stringify(job)).join('\n'))
     if (command.startsWith('gh api --include repos/{owner}/{repo}/rules/branches/')) {
       const answer = () => options.rulesError
         ? rest(options.rulesError, { message: options.rulesMessage ?? githubSamples['branch-rules'][1].body.message })
@@ -823,9 +972,9 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
         const realPath = link ? `${link[1]}${path.slice(link[0].length)}` : path
         const directories = ['/', '/tmp', root, common, session.cwd, ...Object.keys(checkout.worktrees ?? {}),
           ...Object.keys(options.repositories ?? {}), ...Object.values(options.repositories ?? {}).map(repo => repo.common)]
-        const isDirectory = directories.includes(realPath) || [...files.keys()].some(file => file.startsWith(`${realPath}/`))
+        const isDirectory = directories.includes(realPath) || created.has(realPath) || [...files.keys()].some(file => file.startsWith(`${realPath}/`))
         if (!isDirectory && !files.has(realPath)) throw new Error(`no such file: ${path}`)
-        return { kind: isDirectory ? 'dir' as const : 'file' as const, realPath, size: 0, mtimeMs: 0, isLink: !!link }
+        return { kind: isDirectory ? 'dir' as const : 'file' as const, realPath, size: 0, mtimeMs: modified.get(realPath) ?? clock.now(), isLink: !!link }
       },
       exists: async path => files.has(path),
       read: async path => {
@@ -838,11 +987,12 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       list: async directory => {
         if (options.listFailurePrefix && directory.startsWith(options.listFailurePrefix)) throw new Error('listing failed')
         if (options.isMissingListFailed && ![...files.keys()].some(path => path.startsWith(`${directory}/`))) throw new Error(`no such directory: ${directory}`)
-        const names = [...new Set([...files.keys()].filter(path => path.startsWith(`${directory}/`)).map(path => path.slice(directory.length + 1).split('/')[0]!))]
+        const names = [...new Set([...files.keys(), ...created].filter(path => path.startsWith(`${directory}/`)).map(path => path.slice(directory.length + 1).split('/')[0]!))]
         return names.map(name => files.has(`${directory}/${name}`)
           ? { name, kind: 'file' as const, isLink: false, size: files.get(`${directory}/${name}`)?.length ?? 0,
             mtimeMs: modified.get(`${directory}/${name}`) ?? clock.now() }
-          : { name, kind: 'dir' as const, isLink: false, size: 0, mtimeMs: clock.now() })
+          // The engine's listing gives no time for a directory; only a stat does.
+          : { name, kind: 'dir' as const, isLink: false, size: 0, mtimeMs: 0 })
       },
     },
     readHerdrEnv: async () => ({ environment: options.herdrEnv?.HERDR_ENV, paneId: options.herdrEnv?.HERDR_PANE_ID }),
@@ -880,7 +1030,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   on('turn.complete', () => ({ text: '' }))
   on('classic.UserPromptSubmit', () => ({}))
   return { ready, answeredEntries, herdrActivity, approveConfig, boundaries, directSessionState, herdrCalls, registeredCommands, registeredTools,
-    commands, prompts, suggestions, clock, files, modified, runs, chat, sessions, seedChat, legacy, views, liveRuns, paneViews, opened, logs }
+    commands, prompts, suggestions, clock, files, modified, runs, chat, sessions, seedChat, views, liveRuns, paneViews, opened, logs }
 }
 
 /**
@@ -894,7 +1044,7 @@ export function createTestPort(world: World): EnginePort {
     logDebug: text => { world.logs.push({ text, to: 'debug' }) },
     processes: { ...world.boundaries.processes, spawn: () => { throw new Error('unexpected spawn') } },
     clock: { sleep: delayMs => world.clock.sleep(delayMs) },
-    clearLegacyStore: async () => {}, now: async () => world.clock.now(), repeat: () => {}, defer: work => { work() },
+    now: async () => world.clock.now(), repeat: () => {}, defer: work => { work() },
     readPluginRoot: async () => '/plugin', readContext: async () => ({ window: 200000 }), readView: async () => world.views.at(-1) ?? null,
     writeView: async view => { world.views.push(view) }, readLiveRun: async () => world.liveRuns.at(-1) ?? null,
     writeLiveRun: async run => { world.liveRuns.push(run) }, readPaneView: async () => world.paneViews.at(-1) ?? 'flow',

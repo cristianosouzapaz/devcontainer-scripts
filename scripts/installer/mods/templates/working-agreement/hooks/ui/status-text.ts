@@ -22,12 +22,13 @@ function rowLine(row: FlowRow): string {
 }
 
 /**
- * Retains a flow step's symbol and optional detail in plain-text status.
+ * Retains a flow step's symbol and optional detail in plain-text status, in its full wording.
  * @param step - The displayed flow step.
  * @returns The complete step line.
  */
 function stepLine(step: FlowStep): string {
-  return `${step.symbol} ${step.label}${step.detail ? ` · ${step.detail}` : ''}`
+  const detail = step.fullDetail ?? step.detail
+  return `${step.symbol} ${step.label}${detail ? ` · ${detail}` : ''}`
 }
 
 /**

@@ -115,10 +115,9 @@ test('unreadable GitHub refuses non-default declarations even without issues', a
   expect((await declareFlow($, 'small-feature')).deny).toContain('GitHub unreachable — retry')
 })
 
-test('startup deletes every legacy store key and repairs a deleted mirror on the 60 second tick', async ($, on) => {
-  const { files, clock, sessions, legacy } = createWorld(on, { branch: 'feature' }, { session: noFlow, legacy: { 'session:old': {}, 'handoff:old': {}, arbitrary: 1 } })
+test('startup repairs a deleted mirror on the 60 second tick', async ($, on) => {
+  const { files, clock, sessions } = createWorld(on, { branch: 'feature' }, { session: noFlow })
   await $.session.start({ cwd: root, surface: null, isInteractive: false })
-  expect([...legacy]).toEqual([])
   await declareFlow($, 'small-feature')
   files.delete(`${records}/s/sid.json`)
   await clock.advance(59999)

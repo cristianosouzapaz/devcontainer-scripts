@@ -112,6 +112,18 @@ export type Violation = ViolationFact & ViolationAttribution
 export type ViolationTone = 'error' | 'warn'
 /** Supplies a persistent pane note and its shared dismissal identity. */
 export interface ViolationNote { factId: string; text: string; tone: ViolationTone }
+/** One field of an audited issue that the `issues` config does not accept. */
+export interface AuditFinding { issue: number; field: string; expected: string; actual: string }
+/** Every audited issue read back and met the `issues` config. */
+export interface AuditCompliant { state: 'compliant' }
+/** At least one audited issue misses a required field. */
+export interface AuditViolations { state: 'violations'; findings: AuditFinding[] }
+/** The audit could not read GitHub or the config, so it proves nothing either way. */
+export interface AuditPending { state: 'pending'; reason: string }
+/** Where the latest audit of the session's issues stands. */
+export type AuditResult = AuditCompliant | AuditViolations | AuditPending
+/** The issues the session wrote, from when its window opened, and the latest audit of them; absent before either. */
+export interface IssueAudit { since: number; issues: number[]; result?: AuditResult }
 /** Holds the versioned, authoritative chat record and its disk mirror. */
 export interface SessionRecord {
   v: 1
@@ -126,6 +138,24 @@ export interface SessionRecord {
   skills?: string[]
   violations?: Violation[]
   prSnapshot?: PrSnapshot
+  /** Set only by the user's `/flow coordinate`: the session never writes in the repository. */
+  role?: 'coordinator'
+  audit?: IssueAudit
+}
+/**
+ * Holds one coordinator's delegation scope, shared with every worktree's sessions: only the coordinator that owns it writes it,
+ * and only its `/flow delegate stop` removes it.
+ */
+export interface DelegationScope {
+  v: 1
+  /** The coordinator session that holds the scope; the file is named after it. */
+  sessionId: string
+  /** The delegated issues, ascending: the ones the user named and, while `coversCreated`, the ones the coordinator created. */
+  issues: number[]
+  /** Set by a `/flow delegate` without numbers: each issue the coordinator creates joins `issues`. */
+  coversCreated: boolean
+  /** Set when `/flow delegate` found no GitHub ruleset requiring signed commits, so an unsigned push would not be refused. */
+  isPushUnguarded?: true
 }
 /** Holds the declaration shared by chats with the same identity. */
 export interface UnitRecord { v: 1; identity: Identity; flow: string; generation?: string }
@@ -175,6 +205,8 @@ export interface Unit {
   baseBranch?: string
   skips?: StepSkip[]
   skills: string[]
+  /** The user's steps taken while the unit was delegated, as their commands (`/to-spec`, `/flow skip pr`); the user's own steps are never listed. */
+  delegated?: string[]
   verifyRuns: VerifyRecord[]
   runs: RunRecord[]
   approval?: string
@@ -193,7 +225,8 @@ export interface RowSuffix { text: string; tone: FlowTone }
 /** A labelled line of the Flow pane, such as the branch or a blocked-write count. */
 export interface FlowRow { key: string; value: string; tone: FlowTone; suffix?: RowSuffix }
 /** One step of the declared flow with its inline status and symbol styling. */
-export interface FlowStep { id: string; symbol: string; label: string; state: FlowStepState; detail?: string; isError: boolean; isMerged: boolean; isRewritten: boolean }
+/** `detail` is the pane's fact, at most `maxFactLength` characters; `fullDetail` is its full wording for `/flow status`, when that is longer. */
+export interface FlowStep { id: string; symbol: string; label: string; state: FlowStepState; detail?: string; fullDetail?: string; isError: boolean; isMerged: boolean; isRewritten: boolean }
 /** An issue the session's unit of work resolves. */
 export interface FlowIssue { number: number; title: string }
 /** Names whether the footer starts a fresh session or continues in a new one. */

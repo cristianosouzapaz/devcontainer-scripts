@@ -370,7 +370,7 @@ for (const tool of ['run', 'verify']) {
   test(`registration order wraps the answering ${tool} handler`, async ($, on) => {
     const git = graph()
     const checkout: Checkout = { branch: 'feature', graph: git, dirty: { file: 'pending' } }
-    const options: Options = { session: { flow: 'fix' }, verifyFile: '{"verify":["./check"]}', afterSpawn: () => checkout.graph = commit(checkout.graph!) }
+    const options: Options = { session: { flow: 'fix' }, verifyFile: '{"always":[["./check"]]}', afterSpawn: () => checkout.graph = commit(checkout.graph!) }
     options.approvedConfig = options.verifyFile!
     const { sessions } = createWorld(on, checkout, options)
     const result = await $.tool.call({ tool: `mcp__working-agreement__${tool}`, ...(tool === 'run' ? { argv: ['./check'] } : {}) })

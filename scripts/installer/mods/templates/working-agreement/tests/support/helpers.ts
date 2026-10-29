@@ -1,4 +1,4 @@
-import type { CommandRunResult, PromptOrigin, ToolCallResult } from 'claude-code'
+import type { CommandRunResult, PromptOrigin, SkillPromptArgs, ToolCallResult } from 'claude-code'
 import { expect } from 'claude-code/testing'
 import type { Engine, Mounted } from 'claude-code/testing'
 import type { FlowStepState } from '../../types'
@@ -11,6 +11,9 @@ interface PaneOptions { columns?: number; rows?: number; requestId?: string; tit
 
 /** Holds a node of a drawn tree as the engine returns it. */
 export interface DrawnNode { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+
+/** What the model reads of a tool call. */
+export interface ToolOutcome { text: string; isError: boolean; deny?: string }
 
 /** The environment of a session inside herdr, where every re-read reports the sidebar tokens. */
 export const inside = { HERDR_ENV: '1', HERDR_PANE_ID: 'pane id' }
@@ -84,6 +87,18 @@ export const declareFlow = ($: Engine, id: string, issues: number[] = [], agentI
   $.tool.call({ tool: 'mcp__working-agreement__declare_flow', flow: id, issues, ...(agentId ? { agentId } : {}) })
 
 /**
+ * Calls one of the mod's tools.
+ * @param $ - The test's engine.
+ * @param tool - The tool's name after the mod's prefix.
+ * @param args - The call's arguments.
+ * @returns What the model reads: the text, whether it is an error, and any deny.
+ */
+export async function callModTool($: Engine, tool: string, args: object = {}): Promise<ToolOutcome> {
+  const result = await $.tool.call({ tool: `mcp__working-agreement__${tool}`, ...args } as never)
+  return { text: result.text ?? String(result.result ?? ''), isError: result.isError === true, ...(result.deny ? { deny: result.deny } : {}) }
+}
+
+/**
  * Ends the main agent's turn with an answer.
  *
  * @param $ - The test's engine.
@@ -94,14 +109,15 @@ export const endTurn = async ($: Engine): Promise<void> => {
 }
 
 /**
- * Starts a skill.
+ * Starts a skill, by default one the installer put in the user's skills.
  *
  * @param $ - The test's engine.
  * @param skill - The skill's name.
+ * @param source - Where the skill was loaded from.
  * @returns Once the skill hooks ran.
  */
-export const startSkill = async ($: Engine, skill: string): Promise<void> => {
-  await $.skill.prompt({ skill, text: '' })
+export const startSkill = async ($: Engine, skill: string, source: SkillPromptArgs['source'] = 'userSettings'): Promise<void> => {
+  await $.skill.prompt({ skill, text: '', ...(source === undefined ? {} : { source }) })
 }
 
 /**

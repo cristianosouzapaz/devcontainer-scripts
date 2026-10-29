@@ -173,9 +173,9 @@ export function runStatus(outcome: VerifyRecord['outcome']): RecordedRunStatus {
 }
 
 /**
- * Identifies a readable terminal sidecar without tightening its persisted schema.
+ * Identifies a terminal sidecar as the run log writes it.
  * @param value - The decoded sidecar.
- * @returns Whether the legacy display fields are readable.
+ * @returns Whether every display field is readable.
  */
 function isRunView(value: unknown): value is RunView {
   return isRecord(value) && ['runId', 'selection', 'tree', 'cwd', 'log'].every(key => typeof value[key] === 'string')

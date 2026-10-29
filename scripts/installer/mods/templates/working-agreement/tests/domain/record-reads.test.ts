@@ -34,7 +34,7 @@ test("a unit declaration whose read rejects never drops the unit's Verify runs: 
   options.readFailurePrefix = `${records}/u/`
   const context = await readPromptContext($)
   expect(context).toContain(unreadable)
-  expect(context).not.toMatch(/not run on this tree|no Verify run yet|since the last Verify/)
+  expect(context).not.toMatch(/not run on this tree|no run yet|since the last Verify/)
 })
 
 test("another chat's mirror whose read rejects never drops the Verify runs it holds: the state is unreadable", async ($, on) => {
@@ -46,7 +46,7 @@ test("another chat's mirror whose read rejects never drops the Verify runs it ho
   options.readFailurePrefix = `${records}/s/other.json`
   const context = await readPromptContext($)
   expect(context).toContain(unreadable)
-  expect(context).not.toMatch(/not run on this tree|no Verify run yet|since the last Verify/)
+  expect(context).not.toMatch(/not run on this tree|no run yet|since the last Verify/)
 })
 
 test('a unit declaration that is not JSON is unreadable, never an absent flow', async ($, on) => {
@@ -69,7 +69,7 @@ for (const [failure, text, options] of [
     world.files.set(`${records}/s/sid.json`, text === 'mirror' ? mirror : text)
     await $.session.start({ cwd: root, surface: null, isInteractive: false })
     expect(world.registeredCommands.map(command => command.name)).toContain('flow')
-    expect(world.registeredTools.map(tool => tool.name).sort()).toEqual(['declare_flow', 'run', 'verify'])
+    expect(world.registeredTools.map(tool => tool.name).sort()).toEqual(['declare_flow', 'issue_close', 'issue_comment', 'issue_create', 'issue_edit', 'merge_child', 'run', 'spawn', 'suggest_coordinate', 'suggest_delegate', 'unit_prompt', 'unit_read', 'verify'])
     expect(world.sessions.get('sid')).toBeUndefined()
     world.files.set(`${records}/s/sid.json`, mirror)
     delete start.readFailurePrefix
@@ -78,12 +78,12 @@ for (const [failure, text, options] of [
   })
 }
 
-test('a config approval whose read rejects is unreadable, never a config not approved', async ($, on) => {
+test('a config approval whose read rejects is unreadable, never a /flow approve verify', async ($, on) => {
   const options = verified()
   createWorld(on, { ...checkout }, options)
   expect(await readCurrentStep($)).toBe('Commit')
   options.readFailurePrefix = `${records}/ok/`
   const context = await readPromptContext($)
   expect(context).toContain(unreadable)
-  expect(context).not.toContain('config not approved')
+  expect(context).not.toContain('/flow approve verify')
 })

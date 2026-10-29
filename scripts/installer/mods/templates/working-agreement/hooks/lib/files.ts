@@ -6,7 +6,8 @@ interface FileEntry { name: string; mtimeMs: number }
 
 /** The path resolved by the engine's file system. */
 type FileKind = 'file' | 'dir' | 'other'
-interface FileStat { kind: FileKind; realPath?: string }
+/** A path's kind, where it resolved, and its modification time in epoch ms, which a listing gives only for files. */
+interface FileStat { kind: FileKind; realPath?: string; mtimeMs: number }
 
 /** The engine's file system. */
 export interface FilePort { stat: (path: string) => Promise<FileStat>; exists: (path: string) => Promise<boolean>; read: (path: string) => Promise<string>; write: (path: string, text: string) => Promise<void>; list: (path: string) => Promise<FileEntry[]> }

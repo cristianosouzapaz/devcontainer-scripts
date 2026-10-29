@@ -4,9 +4,10 @@ import { noFlow, verifyFile } from '../../support/builders'
 import { readCurrentStep, readFlowStatus, readPromptContext, runFlowCommand } from '../../support/helpers'
 import { configBlob, createWorld } from '../../support/world'
 import type { Checkout, Options } from '../../support/world'
+import { facts } from '../../../hooks/domain/facts'
 
 const changed = { branch: 'feat', ahead: 8, isDirty: true, tree: 'one' }
-const config = { verify: ['full'], always: [['lint'], ['docs']], full: ['package.json', 'ci/**'],
+const config = { always: [['lint'], ['docs']],
   rules: [{ paths: ['docs/**'], run: ['docs'] }, { paths: ['docs/**', 'src/**'], run: ['second'] }] }
 
 test('Verify stays present without config and proposes an argv config for approval', async ($, on) => {
@@ -14,23 +15,22 @@ test('Verify stays present without config and proposes an argv config for approv
   expect(await readCurrentStep($)).toBe('Verify')
   expect(await readFlowStatus($)).toContain('no verify command configured')
   const instruction = await readPromptContext($)
-  expect(instruction).toContain("verify alone, as an argv taken from the project's docs, scripts or CI")
-  expect(instruction).toContain('rules only when the full command is slow')
-  expect(instruction).toContain('strict keys (verify, always, full, rules, timeoutMinutes, $schema)')
+  expect(instruction).toContain('rules mapping path globs to the targeted check each change needs')
+  expect(instruction).toContain('never the full suite, which CI runs')
+  expect(instruction).toContain('strict keys (always, rules, timeoutMinutes, waitForCiLabels, issues, $schema)')
   expect(instruction).toContain('/flow approve verify')
 })
 
 for (const [file, path] of [
-  ['{', '$'], ['[]', '$'], ['{}', 'verify'], ['{"verify":"sh"}', 'verify'], ['{"verify":[]}', 'verify'],
-  ['{"verify":[""]}', 'verify[0]'], ['{"verify":["x"],"oops":1}', 'oops'],
-  ['{"verify":["x"],"always":[[]]}', 'always[0]'], ['{"verify":["x"],"rules":{}}', 'rules'],
-  ['{"verify":["x"],"rules":[{"paths":["docs/**",":x"],"run":["x"]}]}', 'rules[0].paths[1]'],
-  ['{"verify":["x"],"rules":[{"paths":[],"run":[""]}]}', 'rules[0].run[0]'],
-  ['{"verify":["x"],"rules":[{"paths":[],"run":["x"],"extra":1}]}', 'rules[0].extra'],
-  ['{"verify":["x"],"full":["/root"]}', 'full[0]'], ['{"verify":["x"],"full":["a..b"]}', 'full[0]'],
-  ['{"verify":["x"],"full":["a\\\\b"]}', 'full[0]'],
-  ['{"verify":["x"],"timeoutMinutes":0}', 'timeoutMinutes'], ['{"verify":["x"],"timeoutMinutes":1e999}', 'timeoutMinutes'],
-  ['{"verify":["x"],"timeoutMinutes":null}', 'timeoutMinutes'], ['{"verify":["x"],"full":null}', 'full'],
+  ['{', '$'], ['[]', '$'], ['{"verify":["x"]}', 'verify'], ['{"full":["ci/**"]}', 'full'], ['{"oops":1}', 'oops'],
+  ['{"always":[[""]]}', 'always[0][0]'], ['{"always":[[]]}', 'always[0]'], ['{"always":{}}', 'always'], ['{"rules":{}}', 'rules'],
+  ['{"rules":[{"paths":["docs/**",":x"],"run":["x"]}]}', 'rules[0].paths[1]'],
+  ['{"rules":[{"paths":["/root"],"run":["x"]}]}', 'rules[0].paths[0]'], ['{"rules":[{"paths":["a..b"],"run":["x"]}]}', 'rules[0].paths[0]'],
+  ['{"rules":[{"paths":["a\\\\b"],"run":["x"]}]}', 'rules[0].paths[0]'],
+  ['{"rules":[{"paths":[],"run":[""]}]}', 'rules[0].run[0]'],
+  ['{"rules":[{"paths":[],"run":["x"],"extra":1}]}', 'rules[0].extra'],
+  ['{"timeoutMinutes":0}', 'timeoutMinutes'], ['{"timeoutMinutes":1e999}', 'timeoutMinutes'], ['{"timeoutMinutes":null}', 'timeoutMinutes'],
+  ['{"waitForCiLabels":"home"}', 'waitForCiLabels'], ['{"waitForCiLabels":[""]}', 'waitForCiLabels'],
 ]) {
   test(`invalid config names its JSON path: ${file}`, async ($, on) => {
     const world = createWorld(on, { ...changed }, { approvedConfig: file!, verifyFile: file })
@@ -42,13 +42,21 @@ for (const [file, path] of [
   })
 }
 
+test('a retired field names the config file and the remedy', async ($, on) => {
+  const file = '{"full":["ci/**"]}'
+  createWorld(on, { ...changed }, { approvedConfig: file, verifyFile: file })
+  const result = await $.tool.call({ tool: 'mcp__working-agreement__verify' })
+  expect(result.result).toContain('full: retired field in .claude/working-agreement.json')
+  expect(result.result).toContain('regenerate the config, or move per-change checks into rules')
+})
+
 test('approval previews all argv and globs, requires the current prefix, and is composer-only', async ($, on) => {
   const file = JSON.stringify(config)
   createWorld(on, { ...changed }, { verifyFile: file })
   const refused = await $.tool.call({ tool: 'mcp__working-agreement__verify' })
   expect(refused.result).toContain('Stop and ask the user to run /flow approve verify')
   expect((await runFlowCommand($, 'approve verify')).text).toContain('Run /flow approve verify')
-  expect((await runFlowCommand($, 'approve verify')).text).toContain('ci/**')
+  expect((await runFlowCommand($, 'approve verify')).text).toContain('src/**')
   expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('Stop and ask the user to run /flow approve verify')
   expect((await runFlowCommand($, 'approve verify deadbee')).text).toContain('Current config:')
   const id = configBlob(file).slice(0, 12)
@@ -58,23 +66,36 @@ test('approval previews all argv and globs, requires the current prefix, and is 
   expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('Verify passed')
 })
 
-for (const [paths, full, commands] of [
-  [['docs/a.md'], false, [['lint'], ['docs'], ['second']]],
-  [['unmatched'], true, [['lint'], ['docs'], ['full']]],
-  [['package.json'], true, [['lint'], ['docs'], ['full']]],
-  [['ci/build'], true, [['lint'], ['docs'], ['full']]],
-] as [string[], boolean, string[][]][]) {
-  test(`selection for ${paths.join(', ')} is ordered, deduplicated, and complete`, async ($, on) => {
-    const file = JSON.stringify(config)
-    const world = createWorld(on, { ...changed, changed: paths }, { verifyFile: file })
-    await runFlowCommand($, `approve verify ${configBlob(file).slice(0, 12)}`)
-    const result = await $.tool.call({ tool: 'mcp__working-agreement__verify' })
-    expect(result.result).toContain(full ? 'Selection: full' : 'Selection: rules docs/**')
-    expect(world.sessions.get('sid')?.units[0]?.verifyRuns[0]?.commands).toEqual(commands)
-    expect(await readCurrentStep($)).toBe('Commit')
-    expect(await readFlowStatus($)).toContain('✓ Verify')
-  })
-}
+test('a rule selection is ordered, deduplicated, and runs only the matching rules', async ($, on) => {
+  const file = JSON.stringify(config)
+  const world = createWorld(on, { ...changed, changed: ['docs/a.md'] }, { verifyFile: file })
+  await runFlowCommand($, `approve verify ${configBlob(file).slice(0, 12)}`)
+  const result = await $.tool.call({ tool: 'mcp__working-agreement__verify' })
+  expect(result.result).toContain('Selection: rules docs/**')
+  expect(world.sessions.get('sid')?.units[0]?.verifyRuns[0]?.commands).toEqual([['lint'], ['docs'], ['second']])
+  expect(await readCurrentStep($)).toBe('Commit')
+  expect(await readFlowStatus($)).toContain('✓ Verify')
+})
+
+test('rules sharing a runner run it once with every path', async ($, on) => {
+  const rules = [{ paths: ['docs/**'], run: ['t/bats.sh', 'mods'] }, { paths: ['docs/**'], run: ['sh', '-c', 'a'] },
+    { paths: ['docs/**'], run: ['t/bats.sh', 'conventions'] }, { paths: ['docs/**'], run: ['t/bats.sh', 'mods/one.bats', 'mods'] },
+    { paths: ['docs/**'], run: ['sh', '-c', 'b'] }, { paths: ['docs/**'], run: ['t/bats.sh', '--keep'] }]
+  const merged = JSON.stringify({ rules })
+  const world = createWorld(on, { ...changed, changed: ['docs/a.md'] }, { verifyFile: merged })
+  await runFlowCommand($, `approve verify ${configBlob(merged).slice(0, 12)}`)
+  await $.tool.call({ tool: 'mcp__working-agreement__verify' })
+  expect(world.sessions.get('sid')?.units[0]?.verifyRuns[0]?.commands)
+    .toEqual([['t/bats.sh', 'mods', 'conventions'], ['sh', '-c', 'a'], ['sh', '-c', 'b'], ['t/bats.sh', '--keep']])
+})
+
+test('a bare runner absorbs the same runner with paths', async ($, on) => {
+  const bare = JSON.stringify({ always: [['t/bats.sh', 'mods']], rules: [{ paths: ['docs/**'], run: ['t/bats.sh'] }] })
+  const world = createWorld(on, { ...changed, changed: ['docs/a.md'] }, { verifyFile: bare })
+  await runFlowCommand($, `approve verify ${configBlob(bare).slice(0, 12)}`)
+  await $.tool.call({ tool: 'mcp__working-agreement__verify' })
+  expect(world.sessions.get('sid')?.units[0]?.verifyRuns[0]?.commands).toEqual([['t/bats.sh']])
+})
 
 test('a rule-selected pass stays done after the session moves into a subdirectory', async ($, on) => {
   const file = JSON.stringify(config)
@@ -88,21 +109,23 @@ test('a rule-selected pass stays done after the session moves into a subdirector
   expect(status).not.toContain('not run on this tree')
 })
 
-test('no rules always selects full and accepts schema metadata and fractional timeouts', async ($, on) => {
-  const file = JSON.stringify({ $schema: 'schema.json', verify: ['full'], always: [['full']], timeoutMinutes: 0.5 })
+test('a change no rule selects passes with nothing run, left to CI, and accepts schema metadata and fractional timeouts', async ($, on) => {
+  const file = JSON.stringify({ $schema: 'schema.json', rules: [{ paths: ['nothing/**'], run: ['never'] }], timeoutMinutes: 0.5 })
   const world = createWorld(on, { ...changed }, { verifyFile: file })
   await runFlowCommand($, `approve verify ${configBlob(file).slice(0, 12)}`)
-  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('full (no rules)')
-  expect(world.sessions.get('sid')?.units[0]?.verifyRuns[0]?.commands).toEqual([['full']])
+  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain(`Verify passed on tree one: no command run. Selection: ${facts.leftToCi}.`)
+  expect(world.sessions.get('sid')?.units[0]?.verifyRuns[0]?.commands).toEqual([])
+  expect(await readCurrentStep($)).toBe('Commit')
+  expect(await readFlowStatus($)).toContain(facts.leftToCi)
 })
 
-test('a unit with no common base runs full verification', async ($, on) => {
+test('a unit with no common base selects no rule and is left to CI', async ($, on) => {
   const world = createWorld(on, { branch: 'feat', graph: {
     commits: { m: { parents: [], files: {} }, f: { parents: [], files: { code: 'changed' } } },
     refs: { main: 'm', 'origin/main': 'm', feat: 'f' },
   } }, { verifyFile })
   await runFlowCommand($, `approve verify ${configBlob(verifyFile).slice(0, 12)}`)
-  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('full (no base)')
+  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain(`Selection: ${facts.leftToCi}`)
   expect(world.sessions.get('sid')?.units[0]?.verifyRuns[0]?.base).toBeNull()
 })
 
@@ -135,10 +158,10 @@ test('passes are bound to tree, base, config and recomputed command set; records
   expect(world.sessions.get('sid')?.units[0]?.verifyRuns).toHaveLength(1)
   checkout.tree = 'two'
   expect(await readCurrentStep($)).toBe('Code')
-  expect(await readFlowStatus($)).toContain('▸ Code · tree changed since the last Verify — run Verify')
+  expect(await readFlowStatus($)).toContain('▸ Code · tree changed')
   checkout.tree = 'one'
-  options.verifyFile = JSON.stringify({ verify: ['different'] })
-  expect(await readFlowStatus($)).toContain('config not approved')
+  options.verifyFile = JSON.stringify({ always: [['different']] })
+  expect(await readFlowStatus($)).toContain('/flow approve verify')
 })
 
 for (const [scenario, run, unit, step] of [
@@ -183,7 +206,7 @@ for (const [code, signal, fact] of [[7, null, 'failed, exit 7'], [null, 'SIGTERM
 }
 
 test('timeout is a recorded failure and concurrent runs are refused', async ($, on) => {
-  const options: Options = { verifyFile: JSON.stringify({ verify: ['slow'], timeoutMinutes: 0.01 }), spawnGate: new Promise(() => {}) }
+  const options: Options = { verifyFile: JSON.stringify({ always: [['slow']], timeoutMinutes: 0.01 }), spawnGate: new Promise(() => {}) }
   const world = createWorld(on, { ...changed }, options)
   await runFlowCommand($, `approve verify ${configBlob(options.verifyFile!).slice(0, 12)}`)
   const run = $.tool.call({ tool: 'mcp__working-agreement__verify' })
@@ -191,7 +214,7 @@ test('timeout is a recorded failure and concurrent runs are refused', async ($, 
   expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('already in flight')
   await world.clock.advance(600)
   expect((await run).result).toContain('timed out after 0.01 min')
-  expect(await readFlowStatus($)).toContain('timed out, 0.01 min')
+  expect(await readFlowStatus($)).toContain('timed out after 0.01 min')
 })
 
 test('no unit refuses normally without an ignored config prompt notice', async ($, on) => {

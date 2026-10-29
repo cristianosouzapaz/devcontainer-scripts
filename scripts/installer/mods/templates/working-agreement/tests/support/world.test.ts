@@ -4,7 +4,7 @@ import type { Plugin } from 'claude-code/testing'
 import { test } from './kit'
 import { noFlow } from './builders'
 import { declareFlow, startSkill } from './helpers'
-import { createWorld, root } from './world'
+import { configBlob, createWorld, root } from './world'
 
 // A test cannot read the session store itself, but any plugin may read another's value through it.
 const reader: Plugin = { name: 'reader', register: on => {
@@ -27,4 +27,10 @@ test('a dispatch reads one moment of the session while another dispatch writes i
   const [first, second] = (await reading).text?.split(' ') ?? []
   expect(first).toBeDefined()
   expect(second).toBe(first)
+})
+
+test('a fixture names a blob as git hash-object does', () => {
+  expect(configBlob('')).toBe('e69de29bb2d1d6434b8b29ae775ad8c2e48c5391')
+  expect(configBlob('hello')).toBe('b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0')
+  expect(configBlob('x'.repeat(200))).toBe('debcf03c10222209e6ac75be3fa2c1796d204d91')
 })

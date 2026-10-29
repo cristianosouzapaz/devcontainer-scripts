@@ -17,12 +17,12 @@ const cases: CiCase[] = [
   { name: 'zero checks with an incomplete Actions run', extra: { workflowRuns: { c1: [{ name: 'CI', path: '.github/workflows/ci.yml', status: 'queued' }] } }, fact: 'CI pending: CI', isDone: false },
   { name: 'zero checks with an incomplete unnamed Actions run', extra: { workflowRuns: { c1: [{ name: null, path: '.github/workflows/ci.yml', status: 'queued' }] } }, fact: 'CI pending: .github/workflows/ci.yml', isDone: false },
   { name: 'zero checks with only completed Actions runs', extra: { workflowRuns: { c1: [{ name: 'CI', path: '.github/workflows/ci.yml', status: 'completed' }] } }, fact: '✓ PR #5', isDone: true },
-  { name: 'zero checks with Actions runs unreadable', extra: { failing: 'gh api --paginate repos/{owner}/{repo}/actions/runs' }, fact: 'CI could not be read', isDone: false },
+  { name: 'zero checks with Actions runs unreadable', extra: { failing: 'gh api --paginate repos/{owner}/{repo}/actions/runs' }, fact: 'CI unreadable', isDone: false },
   { name: 'rules forbidden', extra: { rulesError: 403 }, fact: '✓ PR #5', isDone: true },
   { name: 'rules not found', extra: { rulesError: 404 }, fact: '✓ PR #5', isDone: true },
-  { name: 'other rules failure', extra: { rulesError: 500 }, fact: 'CI could not be read', isDone: false },
-  { name: 'check runs unreadable', extra: { failing: 'gh api --paginate repos/{owner}/{repo}/commits/c1/check-runs' }, fact: 'CI could not be read', isDone: false },
-  { name: 'statuses unreadable', extra: { failing: 'gh api --paginate repos/{owner}/{repo}/commits/c1/status' }, fact: 'CI could not be read', isDone: false },
+  { name: 'other rules failure', extra: { rulesError: 500 }, fact: 'CI unreadable', isDone: false },
+  { name: 'check runs unreadable', extra: { failing: 'gh api --paginate repos/{owner}/{repo}/commits/c1/check-runs' }, fact: 'CI unreadable', isDone: false },
+  { name: 'statuses unreadable', extra: { failing: 'gh api --paginate repos/{owner}/{repo}/commits/c1/status' }, fact: 'CI unreadable', isDone: false },
   { name: 'required context missing', extra: { rules: [{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'required' }] } }] }, fact: 'required check required missing', isDone: false },
   { name: 'required context passes', extra: { rules: [{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'required' }] } }], statuses: { c1: [{ context: 'required', state: 'success' }] } }, fact: '✓ PR #5', isDone: true },
   { name: 'required context matching is exact', extra: { rules: [{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'Test' }] } }], statuses: { c1: [{ context: 'test', state: 'success' }] } }, fact: 'required check Test missing', isDone: false },
@@ -49,7 +49,7 @@ test('CI is read on the slice end even when the PR head is ahead', async ($, on)
 test('CI refresh recovers from an unreadable report and can turn red after green', async ($, on) => {
   const options: Options = { ...pushedCloseOut, rulesError: 500 }
   const { clock } = createWorld(on, { branch: 'feat', ahead: 1 }, options)
-  expect(await readFlowStatus($)).toContain('CI could not be read')
+  expect(await readFlowStatus($)).toContain('CI unreadable')
   options.rulesError = undefined
   await clock.advance(61000)
   expect(await readFlowStatus($)).toContain('Start new session: /clear')
@@ -69,7 +69,7 @@ for (const before of ['pending', 'success']) {
     await clock.settle()
     options.statuses = { c1: [{ context: 'test', state: 'failure' }] }
     await clock.advance(59000)
-    expect(views.at(-1)?.steps.find(step => step.id === 'pr')?.detail === 'CI failing: test').toBe(before === 'pending')
+    expect(views.at(-1)?.steps.find(step => step.id === 'pr')?.fullDetail === 'CI failing: test').toBe(before === 'pending')
   })
 }
 
@@ -84,9 +84,9 @@ test('a ref change returns before its slow GitHub read ends, and the pane repain
   const changed = $.classic.FileChanged({ file_path: `${common}/HEAD`, event: 'change' }).then(() => { handled.isDone = true })
   await clock.settle()
   expect(handled.isDone).toBe(true)
-  expect(views.at(-1)?.steps.find(step => step.id === 'pr')?.detail).not.toBe('CI failing: test')
+  expect(views.at(-1)?.steps.find(step => step.id === 'pr')?.fullDetail).not.toBe('CI failing: test')
   gate.open?.()
   await changed
   await clock.settle()
-  expect(views.at(-1)?.steps.find(step => step.id === 'pr')?.detail).toBe('CI failing: test')
+  expect(views.at(-1)?.steps.find(step => step.id === 'pr')?.fullDetail).toBe('CI failing: test')
 })

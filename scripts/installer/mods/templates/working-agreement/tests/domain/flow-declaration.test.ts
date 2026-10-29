@@ -6,11 +6,14 @@ import { declareFlow, readCurrentStep, readFlowStatus, readPromptContext, runFlo
 import { createWorld, root } from '../support/world'
 import type { Checkout, Options } from '../support/world'
 
-test('run, verify and declare_flow register in front of ToolSearch', async ($, on) => {
+test('run, verify, declare_flow, the suggestion tools, the issue tools and the unit tools register in front of ToolSearch', async ($, on) => {
   const { registeredTools } = createWorld(on, { branch: 'feat' }, { session: noFlow })
   await $.session.start({ cwd: root, surface: null, isInteractive: false })
   expect(registeredTools).toEqual([
     { name: 'run', isDeferred: false }, { name: 'verify', isDeferred: false }, { name: 'declare_flow', isDeferred: false },
+    { name: 'suggest_coordinate', isDeferred: false }, { name: 'suggest_delegate', isDeferred: false }, { name: 'merge_child', isDeferred: false }, { name: 'issue_create', isDeferred: false }, { name: 'issue_edit', isDeferred: false },
+    { name: 'issue_close', isDeferred: false }, { name: 'issue_comment', isDeferred: false }, { name: 'spawn', isDeferred: false },
+    { name: 'unit_prompt', isDeferred: false }, { name: 'unit_read', isDeferred: false },
   ])
 })
 
@@ -83,7 +86,7 @@ test('the unit branch takes over the skips recorded for its issues on the defaul
   git.branch = 'fix'
   expect((await declareFlow($, 'fix', [1])).result).toContain('current step: Code')
   expect(await readFlowStatus($)).toContain('reproduced elsewhere')
-  expect(await readPromptContext($)).not.toContain('no green after the approval')
+  expect(await readPromptContext($)).not.toContain('run the fix: no green since approval')
 })
 
 test('the unit branch takes over the approval and red run recorded on the default branch', async ($, on) => {
@@ -101,7 +104,7 @@ test('the unit branch takes over the approval and red run recorded on the defaul
   git.branch = 'fix'
   git.dirty = { 'src/a.ts': 'fix' }
   expect((await declareFlow($, 'fix', [1])).result).toContain('current step: Code')
-  expect(await readPromptContext($)).toContain('no green after the approval')
+  expect(await readPromptContext($)).toContain('run the fix: no green since approval')
 })
 
 test('a branch takes over nothing from a different flow or issue set on the default branch', async ($, on) => {

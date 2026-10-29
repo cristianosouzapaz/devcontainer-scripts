@@ -1,6 +1,6 @@
 {
   "name": "working-agreement",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Enforces and shows the AGENTS.md work flows",
   "author": {
     "name": "cristianosouzapaz"
@@ -12,6 +12,12 @@
       "title": "Handoff threshold (tokens)",
       "description": "Context size, in tokens, from which the Flow pane offers Continue in new session",
       "default": 150000
+    },
+    "spawnLimit": {
+      "type": "number",
+      "title": "Spawned unit limit",
+      "description": "How many units the coordinator's spawn tool may run at once",
+      "default": 4
     }
   }
 }

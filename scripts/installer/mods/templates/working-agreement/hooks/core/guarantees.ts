@@ -3,10 +3,12 @@ import { listNewCommits, readContentTree, readGitOutput, readGitState, readWorkt
 import { readPrFields } from '../lib/github'
 import { symbol } from '../ui/symbols'
 import { bestEffort } from './best-effort'
+import { claimDelegatedCommits } from './delegated-commits'
 import type { EnginePort } from './engine-port'
 import { isJudgedTool } from './judged-tools'
 import { createReadPort } from './read-port'
 import { readCommonDir, readSession, temporaryPath, updateSession, recordsPath } from './record-store'
+import { modToolPrefix } from '../domain/messages'
 import { sameIdentity } from '../domain/records'
 import { readRepositoryRoot } from './repository'
 import { withRecordLock } from './session-memory'
@@ -31,7 +33,7 @@ const readOnly = new Set([
   'ExitPlanMode', 'EnterPlanMode', 'ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool',
   'TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate', 'ListAgents', 'CronList', 'GetTask', 'FetchInboxMessage',
   'ListConnectors', 'ListPlugins', 'ListSkills', 'SearchMcpRegistry', 'SearchPlugins', 'SearchSkills',
-  'memory_list', 'memory_read', 'ReadNotifications', 'WaitForMcpServers', 'mcp__working-agreement__declare_flow',
+  'memory_list', 'memory_read', 'ReadNotifications', 'WaitForMcpServers', `${modToolPrefix}declare_flow`,
 ])
 
 /**
@@ -174,7 +176,9 @@ export async function judgeGuarantees(engine: EnginePort, before: GuaranteeSnaps
       const fetched = candidates.length ? await listNewCommits(port.processes, remoteTips(afterRefs), beforeTips, before.windowStartSeconds - 1) : []
       const unfetched = candidates.filter(sha => !fetched.includes(sha))
       const verdict = unfetched.length ? await territory.judgeCommits(unfetched, beforeTips) : { shas: [], isUnplaced: false }
-      const shas = verdict.shas
+      // A delegated unit's own unsigned commit is recorded as delegated, never as a violation.
+      const delegated = await claimDelegatedCommits(port, beforeRefs, afterRefs, verdict.shas)
+      const shas = verdict.shas.filter(sha => !delegated.includes(sha))
       if (shas.length) facts.push({ kind: 'commit', fact: { shas }, checkouts: afterRefs.worktrees
         .filter(wt => shas.includes(wt.head)).map(wt => ({ root: wt.root, branch: wt.branch ? wt.branch.replace('refs/heads/', '') : null })) })
       const local = await listNewCommits(port.processes, localTips(beforeRefs), remoteTips(beforeRefs))

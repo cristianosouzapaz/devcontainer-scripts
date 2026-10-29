@@ -15,6 +15,18 @@ export const isRecord = (value: unknown): value is Record<string, unknown> => ty
 export const hasOnlyKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean => Object.keys(value).every(key => keys.includes(key))
 
 /**
+ * Rejects fields a config section does not define, so a typo fails instead of silently changing intent.
+ * @param value - The object read.
+ * @param allowed - The defined fields.
+ * @param path - The section's JSON path, empty at the root.
+ * @throws With the first unknown field's JSON path.
+ */
+export function rejectUnknownFields(value: Record<string, unknown>, allowed: readonly string[], path: string): void {
+  const extra = Object.keys(value).find(key => !allowed.includes(key))
+  if (extra !== undefined) throw new Error(`${path ? `${path}.` : ''}${extra}: unknown field`)
+}
+
+/**
  * Identifies arrays containing only strings.
  * @param value - The value to inspect.
  * @returns Whether the value is a string array.
@@ -41,3 +53,10 @@ export const isNonEmptyString = (value: unknown): value is string => typeof valu
  * @returns Whether the value is a safe integer.
  */
 export const isSafeInteger = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value)
+
+/**
+ * Identifies a GitHub issue number.
+ * @param value - The value to inspect.
+ * @returns Whether the value is a positive safe integer.
+ */
+export const isIssueNumber = (value: unknown): value is number => isSafeInteger(value) && value > 0

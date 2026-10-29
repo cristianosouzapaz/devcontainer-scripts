@@ -69,6 +69,9 @@ interface SessionMemory {
   painted: PaintedVersion | null
   /** The command the engine last showed as the prompt suggestion, until the step stops waiting on one. */
   shownSuggestion: string | null
+  /** The hooks modules the engine nests outside this one, outermost first: any of them has the last word over its guards; null after a refresh that
+   * did not list this mod, which leaves the order unknown. */
+  modulesAhead: readonly string[] | null
 }
 
 /** The hooks' shared in-memory state; a reload evaluates the module again, so it starts over. */
@@ -95,6 +98,7 @@ export const sessionMemory: SessionMemory = {
   runViews: new Map(),
   painted: null,
   shownSuggestion: null,
+  modulesAhead: [],
 }
 
 /**

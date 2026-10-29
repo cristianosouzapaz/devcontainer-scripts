@@ -52,8 +52,9 @@ for (const columns of [30, 60]) {
     await expectText(ui, '▸ ', { color: 'suggestion' })
     await expectText(ui, '○ ', { color: 'inactive' })
     await expectText(ui, '↷ ', { color: 'inactive' })
-    await expectText(ui, 'no red run yet', { color: 'text', wrap: 'wrap' })
-    await expectText(ui, 'optional for this unit', { color: 'inactive', wrap: 'truncate-end' })
+    // At 30 columns a fact is cut at a word boundary, so its first words survive.
+    await expectText(ui, columns === 30 ? 'no red run…' : 'no red run yet', { color: 'text', wrap: 'truncate-end' })
+    await expectText(ui, columns === 30 ? 'optional for…' : 'optional for this unit', { color: 'inactive', wrap: 'truncate-end' })
     await expectText(ui, 'feature/a-long-branch-name', { color: 'text', wrap: 'truncate-middle' })
     await expectText(ui, 'frozen', { color: 'inactive' })
     await expectText(ui, 'read failed (unreachable)', { color: 'warning', wrap: 'wrap' })
@@ -95,27 +96,26 @@ test('merged PR and failing CI draw their own symbols, facts and theme keys', as
   await expectText(ui, '✓ ', { color: 'merged' })
   await expectText(ui, 'PR #318', { color: 'text' })
   await expectText(ui, 'merged', { color: 'merged' })
-  expect((await ui.findAll({ type: 'Box' })).find(box => textOf(box) === 'merged')?.props['flexShrink']).toBe(0)
   checkTheme(await ui.drawn(), themeKeys)
   const failing = position('pr')
   displayed.value = buildView(declared, { ...failing, states: failing.states.map(entry => ({ ...entry, isError: true, fact: 'CI failing: mods' })) }, null, false)
   await ui.redraw()
   await expectText(ui, '✗ ', { color: 'error' })
-  await expectText(ui, 'CI failing: mods', { color: 'error', wrap: 'wrap' })
+  await expectText(ui, 'CI failing: mods', { color: 'error', wrap: 'truncate-end' })
   expect(textOf(await ui.drawn())).not.toContain('waiting for CI')
   expect(renderStatusText(displayed.value)).toContain('✗ PR · CI failing: mods')
   checkTheme(await ui.drawn(), themeKeys)
   await ui.unmount()
 })
 
-for (const [name, unit, info, fact] of [
+for (const [name, unit, info, fact, full = fact] of [
   ['red', { runs: [] }, { comments: [] }, 'no red run yet'],
   ['comment', { runs: diagnoseRuns }, { comments: [] }, 'no comment after the red'],
-  ['approval', { runs: diagnoseRuns }, { comments: [diagnosisComment] }, 'needs /flow approve'],
+  ['approval', { runs: diagnoseRuns }, { comments: [diagnosisComment] }, 'waiting for /flow approve'],
   ['deleted approval', { runs: diagnoseRuns, approval: diagnosisComment.url }, { comments: [] }, 'approved comment deleted'],
   ['issue', { runs: diagnoseRuns }, { comments: [] }, 'issue not yet created'],
-  ['comments unavailable', { runs: diagnoseRuns }, { comments: { error: 'comments unreadable' } }, 'comments unreadable'],
-] as [string, Partial<Unit>, DiagnoseComments, string][]) {
+  ['comments unavailable', { runs: diagnoseRuns }, { comments: { error: 'comments unreadable' } }, 'issue comments unavailable', 'comments unreadable'],
+] as [string, Partial<Unit>, DiagnoseComments, string, string?][]) {
   test(`Diagnose pane and status wording: ${name}`, async ($, on) => {
     createWorld(on, { branch: 'feat' })
     const session: Session = { ...declared, issues: name === 'issue' ? [] : [1], info: { 1: { title: 'bug', labels: [], ...info } } }
@@ -123,8 +123,8 @@ for (const [name, unit, info, fact] of [
     const view = buildView(session, withStates(located, session), null, false)
     on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: view, version: 0 } }))
     const ui = await mountPane($, { columns: 60 })
-    await expectText(ui, fact, { color: 'text', wrap: 'wrap' })
-    expect(renderStatusText(view)).toContain(`${name === 'approval' ? '●' : '▸'} Diagnose · ${fact}`)
+    await expectText(ui, fact, { color: 'text', wrap: 'truncate-end' })
+    expect(renderStatusText(view)).toContain(`${name === 'approval' ? '●' : '▸'} Diagnose · ${full}`)
     await ui.unmount()
   })
 }

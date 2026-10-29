@@ -12,6 +12,7 @@ import type { FinishedCommand } from './run-command'
 import { formatExit } from './run-view'
 import { readUnitSlice } from './unit-slice'
 import { readVerifyConfig, selectVerify } from './verify-config'
+import { facts } from '../domain/facts'
 
 /**
  * Checks clone-local trust for the immutable blob, across units and chats.
@@ -64,21 +65,23 @@ export async function approveVerify(port: EnginePort, id?: string): Promise<Resu
  */
 export async function readVerifyState(port: EnginePort, slice: UnitSlice | null, unit: Unit): Promise<Evidence['verify']> {
   const loaded = await readVerifyConfig(port, slice?.tree ?? null)
-  if (loaded.kind !== 'valid') return { isVerified: false, isReached: true, fact: loaded.fact, factCode: loaded.kind === 'missing' ? 'verify-config-missing' : undefined }
+  if (loaded.kind === 'missing') return { isVerified: false, isReached: true, fact: loaded.fact, factCode: 'verify-config-missing' }
+  if (loaded.kind === 'invalid') return { isVerified: false, isReached: true, fact: facts.verifyConfigInvalid, detail: loaded.fact }
   if (!await isVerifyApproved(port, loaded.blob)) {
-    return { isVerified: false, isReached: true, fact: 'config not approved', isWaitingApproval: true, command: `/flow approve verify ${shortenBlob(loaded.blob)}` }
+    return { isVerified: false, isReached: true, fact: facts.verifyConfigApproval, isWaitingApproval: true, command: `/flow approve verify ${shortenBlob(loaded.blob)}` }
   }
-  if (!slice?.tree) return { isVerified: false, isReached: false, fact: 'not run on this tree' }
+  if (!slice?.tree) return { isVerified: false, isReached: false, fact: facts.verifyNotRun }
   // Any outcome, config or selection on this tree and base ends Code; whether it verifies the current config is judged below.
   const onSlice = unit.verifyRuns.filter(run => run.tree === slice.tree && run.base === slice.base)
   const isReached = onSlice.length > 0
   const selection = await selectVerify(port, loaded.config, slice.baseTree, slice.tree)
   const records = onSlice.filter(run => run.configBlob === loaded.blob).sort((a, b) => b.at - a.at)
   const matching = records.filter(run => JSON.stringify(run.commands) === JSON.stringify(selection.commands))
-  if (matching.some(run => run.outcome.kind === 'pass')) return { isVerified: true, isReached, fact: 'passed' }
+  if (matching.some(run => run.outcome.kind === 'pass')) return { isVerified: true, isReached, fact: selection.isLeftToCi ? facts.leftToCi : facts.verifyPassed }
   const outcome = records[0]?.outcome
-  return { isVerified: false, isReached, isError: outcome?.kind === 'fail' || outcome?.kind === 'timeout', fact: outcome?.kind === 'timeout' ? `timed out, ${outcome.minutes} min`
-    : outcome?.kind === 'fail' ? `failed, ${formatExit(outcome.code, outcome.signal)}` : 'not run on this tree' }
+  return { isVerified: false, isReached, isError: outcome?.kind === 'fail' || outcome?.kind === 'timeout', fact: outcome?.kind === 'timeout' ? facts.verifyTimedOut(outcome.minutes)
+    : outcome?.kind === 'fail' ? (outcome.signal ? facts.verifyFailedSignal : outcome.code === null ? facts.verifyFailed : facts.verifyFailedExit(outcome.code)) : facts.verifyNotRun,
+    ...(outcome?.kind === 'fail' && outcome.signal ? { detail: `failed, ${formatExit(outcome.code, outcome.signal)}` } : {}) }
 }
 
 /**

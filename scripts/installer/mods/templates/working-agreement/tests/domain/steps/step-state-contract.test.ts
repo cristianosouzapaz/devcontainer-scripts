@@ -74,7 +74,7 @@ const rows: ContractRow[] = [
     },
   },
   {
-    step: 'Update PR #5', doneStep: 'PR #5', doneWhen: 'CI is green', fallsBackWhen: 'CI turns red', failureFact: 'CI failing: test', next: null,
+    step: 'PR #5', doneStep: 'PR #5', doneWhen: 'CI is green', fallsBackWhen: 'CI turns red', failureFact: 'CI failing: test', next: null,
     start: (_$, on) => {
       const options: Options = { ...pushedCloseOut, statuses: { c1: [{ context: 'test', state: 'pending' }] } }
       const { clock } = createWorld(on, { branch: 'feat', ahead: 1 }, options)

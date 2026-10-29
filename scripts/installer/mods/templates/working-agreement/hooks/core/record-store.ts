@@ -4,13 +4,14 @@ import type { Result } from '../lib/result'
 import { createQueue } from '../lib/queue'
 import { removeFile } from '../lib/files'
 import { executeProcess, runProcess } from '../lib/process'
-import { canonicalIdentity, createEmptySession, sameIdentity, createEmptyUnit, mergeSkills, parseObservedEnd, parseSession, parseUnitRecord, retainRuns } from '../domain/records'
+import { canonicalIdentity, createEmptySession, sameIdentity, createEmptyUnit, mergeUnique, parseObservedEnd, parseSession, parseUnitRecord, retainRuns } from '../domain/records'
 import type { Identity, ObservedEndRecord, Session, SessionRecord, Unit, UnitEntry, UnitRecord } from '../domain/records'
 import { isAncestor, readGitOutput, runGit, hashObject } from '../lib/git'
 import type { EnginePort } from './engine-port'
 import { sessionMemory, holdError } from './session-memory'
 
-interface SessionMirror { path: string; session: SessionRecord; mtimeMs: number | null }
+/** A session's mirror file, as read with its path and modification time. */
+export interface SessionMirror { path: string; session: SessionRecord; mtimeMs: number | null }
 
 /** Holds where a unit's records live: the common directory and the hash its files are named by. */
 interface IdentityHash { common: string; hash: string }
@@ -314,10 +315,11 @@ export async function readUnit(port: EnginePort, identity: Identity): Promise<Un
  */
 async function mergeUnits(port: EnginePort, units: UnitEntry[]): Promise<Unit> {
   const evidence = units.reduce<Unit>((merged, unit) => ({
-    ...unit, ...merged, skills: mergeSkills(merged.skills, unit.skills), verifyRuns: [...merged.verifyRuns, ...unit.verifyRuns].sort((a, b) => b.at - a.at)
+    ...unit, ...merged, skills: mergeUnique(merged.skills, unit.skills), verifyRuns: [...merged.verifyRuns, ...unit.verifyRuns].sort((a, b) => b.at - a.at)
       .filter((run, index, runs) => runs.findIndex(other => other.tree === run.tree && other.base === run.base) === index),
     base: merged.base ?? unit.base, baseBranch: merged.base ? merged.baseBranch : unit.baseBranch, skips: [...(merged.skips ?? []), ...(unit.skips ?? [])]
       .filter((skip, index, skips) => skips.findIndex(other => other.step === skip.step && other.reason === skip.reason) === index),
+    ...(merged.delegated || unit.delegated ? { delegated: mergeUnique(merged.delegated ?? [], unit.delegated ?? []) } : {}),
     // why: A pin judges only the approval it was stored with, so both come from the same entry.
     ...(merged.approval ? { approval: merged.approval, approvedRed: merged.approvedRed } : { approval: unit.approval, approvedRed: unit.approvedRed }),
   }), createEmptyUnit())

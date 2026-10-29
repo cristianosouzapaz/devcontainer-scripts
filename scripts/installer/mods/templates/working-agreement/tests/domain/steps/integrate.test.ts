@@ -74,7 +74,7 @@ test('after a --no-ff merge into the parent the child is integrated: every step 
 test('known limit: a fast-forward of the parent onto the child empties the slice, so Commit and Integrate stay current', async ($, on) => {
   createWorld(on, childCheckout({ par: 'a2' }), child)
   const status = await readFlowStatus($)
-  expect(status).toContain('▸ Commit · no commit in the slice')
+  expect(status).toContain('▸ Commit · nothing yet')
   expect(status).not.toContain('✓ Integrate')
 })
 
@@ -183,11 +183,11 @@ test('a child deleted before its end was observed is a definite fact: Integrate 
   const world = await createChildWorld(on, deletedCheckout())
   const status = await readFlowStatus($)
   expect(status).toContain('Branch    a · deleted')
-  expect(status).toContain('▸ Integrate · branch deleted before its end was observed')
+  expect(status).toContain('▸ Integrate · branch deleted, end never observed')
   // why: Nothing proves the work before Integrate, so it is set aside, never shown done.
   expect(status).toContain('↷ Commit · branch deleted')
   expect(status).not.toContain('slice unavailable')
-  expect(await readInstruction(world)).toBe('Small feature #1 — branch deleted before its end was observed; stop and tell the user.')
+  expect(await readInstruction(world)).toBe('Small feature #1 — branch deleted, end never observed; stop and tell the user.')
   expect(await readPromptContext($)).not.toContain('Next action')
 })
 
@@ -219,14 +219,14 @@ test('a child observed before its branch was deleted unmerged is told to restore
 test("observations from an earlier lifetime of the unit are never its observed end", async ($, on) => {
   const world = await createChildWorld(on, deletedCheckout())
   await seedObservedEnd(world, identity, 'other', 'a2', 'other:1:1')
-  expect(await readFlowStatus($)).toContain('▸ Integrate · branch deleted before its end was observed')
+  expect(await readFlowStatus($)).toContain('▸ Integrate · branch deleted, end never observed')
 })
 
 test('an unreadable observed end file counts as absent', async ($, on) => {
   const world = await createChildWorld(on, deletedCheckout())
   const path = await seedObservedEnd(world, identity, 'other', 'a2', generation)
   world.files.set(path, JSON.stringify({ v: 1, identity, generation, end: 'a2', at: 1 }))
-  expect(await readFlowStatus($)).toContain('▸ Integrate · branch deleted before its end was observed')
+  expect(await readFlowStatus($)).toContain('▸ Integrate · branch deleted, end never observed')
 })
 
 test('of the ends observed by several sessions, the one every other precedes is used', async ($, on) => {
@@ -243,12 +243,12 @@ test("divergent ends are ambiguous unless the parent's tip reaches one, and neve
   await seedObservedEnd(world, identity, 'x', 'ax', generation)
   await world.clock.advance(1000)
   await seedObservedEnd(world, identity, 'y', 'ay', generation)
-  expect(await readFlowStatus($)).toContain('▸ Integrate · end ambiguous')
-  expect(await readInstruction(world)).toBe('Small feature #1 — end ambiguous; stop and tell the user.')
+  expect(await readFlowStatus($)).toContain('▸ Integrate · branch deleted, end ambiguous')
+  expect(await readInstruction(world)).toBe('Small feature #1 — branch deleted, end ambiguous; stop and tell the user.')
   checkout.graph = withCommit(checkout.graph, 'max', ['ma', 'ax'], 'par')
   expect(await readFlowStatus($)).toContain("✓ Integrate · awaiting par's PR")
   checkout.graph = withCommit(checkout.graph, 'may', ['max', 'ay'], 'par')
-  expect(await readFlowStatus($)).toContain('▸ Integrate · end ambiguous')
+  expect(await readFlowStatus($)).toContain('▸ Integrate · branch deleted, end ambiguous')
 })
 
 test("the parent's fetched origin copy decides divergent ends as its local tip does", async ($, on) => {

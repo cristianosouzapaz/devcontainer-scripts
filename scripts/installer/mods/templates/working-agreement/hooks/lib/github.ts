@@ -9,6 +9,9 @@ import type { ProcessPort } from './process'
 import { fail, succeed } from './result'
 import type { Result } from './result'
 
+/** An issue comment with its body, as the delegated-decision markers are read from it. */
+export interface MarkedComment { url: string; body: string }
+
 /** Whether gh reaches GitHub: logged in and answering, not logged in, or not answering. */
 type GithubAccess = 'connected' | 'unauth' | 'unreachable'
 /** Holds GitHub reachability and the reason it is unavailable. */
@@ -44,6 +47,8 @@ interface RepositoryIdentity { nameWithOwner: string; defaultBranch: string | nu
 
 /** How long the reachability probe may take: it runs on every refresh that has no cached answer. */
 const probeTimeoutMs = 8000
+// why: gh writes and reads several GitHub objects per call; the default 15 s is too tight on a slow API.
+const writeTimeoutMs = 60000
 
 /**
  * Reads one REST endpoint with its response head and selected failure policy.
@@ -139,6 +144,29 @@ export async function readIssueComments(processes: ProcessPort, issue: number): 
 }
 
 /**
+ * Reads an issue's comments with their bodies, across every page.
+ * @param processes - The engine's process runner.
+ * @param issue - The issue number.
+ * @returns The comments, or the read failure.
+ */
+export async function readMarkedComments(processes: ProcessPort, issue: number): Promise<Result<MarkedComment[]>> {
+  const rows = await readRows(processes, ['gh', 'api', `repos/{owner}/{repo}/issues/${issue}/comments`, '--paginate', '--jq', '.[] | {url: .html_url, body}'])
+  return rows.isOk ? succeed(rows.value.map(row => ({ url: toStringOrEmpty(row.url), body: toStringOrEmpty(row.body) })))
+    : fail(`cannot read the comments of #${issue}: ${rows.error}`)
+}
+
+/**
+ * Runs gh, failing on a non-zero exit with its first error line.
+ * @param processes - The engine's process runner.
+ * @param args - The gh arguments.
+ * @returns What gh printed, or the failure.
+ */
+export async function runGh(processes: ProcessPort, args: string[]): Promise<Result<string>> {
+  const run = hasExitedZero(await runProcess(processes, ['gh', ...args], writeTimeoutMs))
+  return run.isOk ? succeed(run.value.stdout) : run
+}
+
+/**
  * Opens an issue in the browser.
  *
  * @param processes - The engine's process runner.
@@ -224,6 +252,25 @@ export async function readCommitChecks(processes: ProcessPort, sha: string): Pro
       : row.conclusion !== null && ['success', 'neutral', 'skipped'].includes(row.conclusion) ? 'passing' : 'failing' })),
     ...statuses.value.map((row): CommitCheck => ({ name: row.context, state: row.state === 'success' ? 'passing' : row.state === 'pending' ? 'pending' : 'failing' })),
   ])
+}
+
+/**
+ * Tells whether a queued or in-progress GitHub Actions job of this repository asks for a runner with one of the labels.
+ * @param processes - The process runner.
+ * @param labels - The runner labels that identify the machine's runner.
+ * @returns Whether such a job exists, or a failure when any read is unreadable.
+ */
+export async function readLabelledJobs(processes: ProcessPort, labels: string[]): Promise<Result<boolean>> {
+  const active = ['queued', 'in_progress']
+  const runs = await Promise.all(active.map(status => readRows(processes, ['gh', 'api', '--paginate', `repos/{owner}/{repo}/actions/runs?status=${status}`, '--jq', '.workflow_runs[] | {id}'])))
+  const failed = runs.find(run => !run.isOk)
+  if (failed && !failed.isOk) return failed
+  for (const id of new Set(runs.flatMap(run => run.isOk ? run.value.map(row => row.id) : []))) {
+    const jobs = await readRows(processes, ['gh', 'api', '--paginate', `repos/{owner}/{repo}/actions/runs/${String(id)}/jobs`, '--jq', '.jobs[] | {status, labels}'])
+    if (!jobs.isOk) return jobs
+    if (jobs.value.some(job => active.includes(String(job.status)) && Array.isArray(job.labels) && job.labels.some(label => labels.includes(String(label))))) return succeed(true)
+  }
+  return succeed(false)
 }
 
 /**
@@ -361,7 +408,7 @@ export async function readPrFields(processes: ProcessPort, number: number): Prom
  * @param failures - The messages for command, GraphQL and payload failures.
  * @returns The repository payload, or the corresponding failure.
  */
-async function readGraphql(processes: ProcessPort, query: string, variables: string[] = [], failures: GraphqlFailures = {}): Promise<Result<Record<string, unknown>>> {
+export async function readGraphql(processes: ProcessPort, query: string, variables: string[] = [], failures: GraphqlFailures = {}): Promise<Result<Record<string, unknown>>> {
   const run = hasExitedZero(await runProcess(processes, ['gh', 'api', 'graphql', '-F', 'owner={owner}', '-F', 'name={repo}', ...variables.flatMap(value => ['-f', value]), '-f', `query=${query}`]), failures.fallback)
   if (!run.isOk) return run
   const data = parseJson(run.value.stdout)

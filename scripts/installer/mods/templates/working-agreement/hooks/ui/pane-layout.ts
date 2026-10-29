@@ -7,6 +7,25 @@ interface LabelLayout {
 }
 
 /**
+ * The body columns of the dock at its default width in a 144-column terminal, the narrowest where a pane opened unasked
+ * docks: the engine opens the dock at min(45%, 90, terminal − 70) columns, one of them its grip.
+ */
+const defaultDockColumns = Math.min(Math.floor(144 * 0.45), 90, 144 - 70) - 1
+
+/** The columns a step's mark and its space take, and the ` · ` between its label and its fact. */
+const factMarkColumns = 2
+const factSeparatorColumns = 3
+
+/** The longest step label, `Integrate` or a five-digit `PR #12345`. */
+const longestLabelColumns = 'PR #12345'.length
+
+/** The columns reserved before a fact: the mark and its space, the longest label, and ` · `. */
+export const factPrefixColumns = factMarkColumns + longestLabelColumns + factSeparatorColumns
+
+/** The longest fact a step shows, so a fact at the default dock width is never cut. */
+export const maxFactLength = defaultDockColumns - 2 * panePadding.x - factPrefixColumns
+
+/**
  * Reserves the label's surrounding padding during pill layout.
  * @param label - The displayed label.
  * @returns The columns occupied by the padded pill.
@@ -51,6 +70,30 @@ export function layoutLabelRows(labels: string[], width: number): string[][] {
  */
 export function measureLabelWidth(bodyColumns: number): number {
   return Math.max(bodyColumns - 2 * panePadding.x - keyWidth, 1)
+}
+
+/**
+ * Fits a fact into the columns left beside its step, cutting at a word boundary so no word is split.
+ * @param fact - The fact.
+ * @param width - The columns left after the step's prefix.
+ * @returns The fact, or its first whole words and an ellipsis.
+ */
+export function fitFact(fact: string, width: number): string {
+  if (fact.length <= width) return fact
+  // A space at the last column still ends a whole word, which the ellipsis then replaces.
+  const space = fact.slice(0, width).lastIndexOf(' ')
+  const head = space > 0 ? fact.slice(0, space) : fact.slice(0, Math.max(width - 1, 0))
+  return `${head.replace(/[\s:,—]+$/, '')}…`
+}
+
+/**
+ * Measures the columns a step's fact may span beside its mark, label and separator.
+ * @param bodyColumns - The width of the pane's body.
+ * @param label - The step's label.
+ * @returns The columns left of the body after its padding and the step's prefix, none in a pane too narrow for them.
+ */
+export function measureFactWidth(bodyColumns: number, label: string): number {
+  return Math.max(bodyColumns - 2 * panePadding.x - (factMarkColumns + label.length + factSeparatorColumns), 0)
 }
 
 /**

@@ -422,6 +422,6 @@ test('Close out keeps its recorded conclusion base while its slice follows the l
   expect(await readFlowStatus($)).toContain('✓ Commit')
   checkout.graph!.refs.main = 'f2'
   checkout.graph!.refs['origin/main'] = 'f2'
-  expect(await readFlowStatus($)).toContain('▸ Commit · no commit in the slice')
+  expect(await readFlowStatus($)).toContain('▸ Commit · nothing yet')
   expect(sessions.get('sid')?.units[0]?.base).toBe('m1')
 })

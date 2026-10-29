@@ -81,7 +81,7 @@ for (const scenario of ['plain', 'verify-approval', 'verify-fail', 'verify-timeo
     await reportHerdr(port, declared, position, new Set(), false)
     const expected = scenario === 'concluded' ? '✓ PR #318' : scenario === 'rewritten' ? '? Verify'
       : scenario === 'approval' ? '● Diagnose' : scenario === 'verify-approval' ? '● Verify' : scenario === 'issue-error' ? '▸ Map'
-      : scenario === 'ci-fail' ? '✗ Update PR #318' : scenario.startsWith('verify-') ? '✗ Verify' : '▸ Verify'
+      : scenario === 'ci-fail' ? '✗ PR #318' : scenario.startsWith('verify-') ? '✗ Verify' : '▸ Verify'
     expect(world.runs.at(-1)).toContain(`--token flow_step=${expected} --token`)
     expect(world.runs.at(-1)).toContain(`flow_unit=${flow.label} #307${scenario === 'approval' ? '' : ' +1'}`)
     expect(world.runs.at(-1)).not.toContain('arbitrary fact')

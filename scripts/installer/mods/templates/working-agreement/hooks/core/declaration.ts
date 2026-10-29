@@ -3,7 +3,7 @@ import { flowDefinitions, findFlow } from '../domain/flow-definitions'
 import type { FlowDefinition } from '../domain/flow-definitions'
 import { composeInstruction, composeStart, formatIssueReferences } from '../domain/instruction'
 import type { DeclaredFlow } from '../domain/instruction'
-import { createEmptyUnit, mergeSkills, sameIdentity } from '../domain/records'
+import { createEmptyUnit, mergeUnique, sameIdentity } from '../domain/records'
 import type { Identity, IssueInfo, Unit, UnitRecord } from '../domain/records'
 import { describeRequirement } from '../domain/requirements'
 import { formatStepLabel, isUnitOnBase, markStep, projectDisplayStates } from '../domain/step-states'
@@ -139,7 +139,7 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
   }
   const written = await updateSession(port, current => {
     const remaining = attached ? { ...current, units: current.units.filter(unit => !sameIdentity(unit.identity, attached)) } : current
-    const entry = { ...inherited, base, baseBranch: recordedBranch, generation, identity, skills: mergeSkills(inherited.skills, current.skills ?? []) }
+    const entry = { ...inherited, base, baseBranch: recordedBranch, generation, identity, skills: mergeUnique(inherited.skills, current.skills ?? []) }
     return { ...replaceUnitEntry(remaining, identity, entry), unit: identity, flow, issues: declared, info, gh: github, skills: undefined }
   })
   if (!written) return fail('The declaration could not be recorded — retry.')
@@ -163,7 +163,7 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
   const origin = isOnDefault ? '' : recordedBranch ? `, base from ${recordedBranch}${source}` : isKeptBase ? ', base kept from the record' : ', base at the declaration tip'
   const shown = projectDisplayStates(position.states)
   const isTreeChanged = await readIsTreeChanged(port, next.unit, position.unit.generation)
-  const steps = position.states.map((state, index) => `${symbol[markStep(shown[index]!, position, isTreeChanged).mark]} ${formatStepLabel(state.step, position.pullRequest, state.state === 'current')} (${describeRequirement(state, next, position)})`).join('; ')
+  const steps = position.states.map((state, index) => `${symbol[markStep(shown[index]!, position, isTreeChanged).mark]} ${formatStepLabel(state.step, position.pullRequest)} (${describeRequirement(state, next, position)})`).join('; ')
   return succeed({ reply: `Flow declared: ${definition.label}${which}${origin}.${notice} Steps: ${steps}. ${composeInstruction(position, next)}`, start: composeStart(position, next, `Flow declared: ${definition.label}${which}.`) })
 }
 

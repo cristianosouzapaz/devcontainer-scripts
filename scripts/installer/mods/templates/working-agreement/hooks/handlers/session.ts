@@ -5,14 +5,16 @@ import type { EnginePort } from '../core/engine-port'
 import { createFeaturePort } from '../core/feature-port'
 import { reread } from '../core/pane-view'
 import { sweepHerdrWorktrees } from '../core/herdr-worktrees'
+import { openAuditWindow } from '../core/issue-audit'
 import { initializeSession, mirrorSession, readCommonDir, readSession } from '../core/record-store'
-import { withRecordLock } from '../core/session-memory'
+import { sessionMemory, withRecordLock } from '../core/session-memory'
 import { tickMs } from '../core/timing'
+import { readWorkingTreeConfig } from '../core/verify-config'
 import { pruneRecords } from '../core/pruning'
 import { recoverHandoff, trackSessionLength } from '../features/handoff'
 
 /**
- * Starts the session, registers `/flow` and the `declare_flow`, `verify`, and `run` tools, and keeps the pane current.
+ * Starts the session, registers `/flow` and the mod's tools, and keeps the pane current.
  *
  * @param port - The engine calls.
  * @param event - The session start.
@@ -20,7 +22,6 @@ import { recoverHandoff, trackSessionLength } from '../features/handoff'
  * @returns What the chain answers.
  */
 export async function handleSessionStart(port: EnginePort, event: Frozen<Args<'session.start'>>, next: Next<'session.start'>): Promise<EventResult<'session.start'>> {
-  await port.clearLegacyStore()
   // why: Registered before the seed, so a startup whose mirror read failed still retries it on every tick.
   port.repeat(tickMs, async () => {
     // atomicReplace holds the error in sessionMemory.recordError.
@@ -29,13 +30,16 @@ export async function handleSessionStart(port: EnginePort, event: Frozen<Args<'s
   })
   // why: A seed whose mirror read failed must not stop the chain before the surface registers; every later read retries it.
   await bestEffort(port, 'session seed', () => initializeSession(port), undefined)
+  await bestEffort(port, 'audit window', () => openAuditWindow(port), undefined)
   await bestEffort(port, 'session length', () => withRecordLock(() => trackSessionLength(createFeaturePort(port))), undefined)
   await bestEffort(port, 'handoff recovery', () => recoverHandoff(createFeaturePort(port)), undefined)
   await bestEffort(port, 'startup pruning', () => withRecordLock(() => pruneRecords(port)), undefined)
   port.defer(() => { void bestEffort(port, 'worktree sweep', () => sweepHerdrWorktrees(port), undefined) })
   await port.registerSurface()
   const session = await bestEffort(port, 'session read', () => readSession(port), null)
-  if (session && (session.flow || session.violations?.length)) {
+  // An invalid config shows at start, before any unit reaches Verify; so does a hooks module ahead, before any guard is relied on.
+  const config = await readWorkingTreeConfig(port)
+  if (session && (session.flow || session.violations?.length || config?.kind === 'invalid' || sessionMemory.modulesAhead?.length !== 0)) {
     await reread(port, true)
     void port.openPane()
   }

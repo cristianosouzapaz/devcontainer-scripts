@@ -1,7 +1,7 @@
 import type { ElementTable, RenderElement } from 'claude-code'
 
 import type { FlowFooter, FlowIssue, FlowRow, FlowStep } from '../../types'
-import { drawRule } from './pane-layout'
+import { drawRule, fitFact, measureFactWidth } from './pane-layout'
 import { issueGap, keyWidth, labelColor, panePadding, pillGap, pillRowGap, symbolColor, toneColor } from './theme'
 
 /** The elements the Flow pane draws with, which `$.ui.resolve(e)` hands out. */
@@ -31,9 +31,10 @@ interface KeyedRowsProps {
   rows: FlowRow[]
 }
 
-/** The steps of the flow. */
+/** The steps of the flow and the body's width. */
 interface StepListProps {
   steps: FlowStep[]
+  columns: number
 }
 
 /** The footer, the body's width and what pressing the button does. */
@@ -88,25 +89,28 @@ export function drawHeader({ Box, Text }: PaneElements, props: HeaderProps): Ren
 }
 
 /**
- * Draws the pending text and the issues, each with a button that opens it.
+ * Draws the pending text and the first issue with a button that opens it, then how many more `/flow status` lists, so
+ * many issues never push the steps off screen.
  *
  * @param elements - The element table.
  * @param props - The pending text, the issues and what pressing `open` does.
  * @returns The issue list.
  */
 export function drawIssueList({ Box, Text, Button }: PaneElements, props: IssueListProps): RenderElement {
+  const [issue] = props.issues
   return (
     <Box flexDirection="column">
       {props.pending && <Text color="inactive">{props.pending}</Text>}
-      {props.issues.map((issue, index) => (
+      {issue && (
         <Box flexDirection="column">
           <Box gap={issueGap}>
             <Box flexShrink={0}><Text color="suggestion">#{issue.number}</Text></Box>
-            <Box flexShrink={0}><Button key={`open-${issue.number}`} label="open" hotkey={index === 0 ? 'o' : undefined} onPress={() => props.openIssue(issue.number)} /></Box>
+            <Box flexShrink={0}><Button key={`open-${issue.number}`} label="open" hotkey="o" onPress={() => props.openIssue(issue.number)} /></Box>
           </Box>
           {issue.title && <Text color="inactive" wrap="truncate-end">{issue.title}</Text>}
         </Box>
-      ))}
+      )}
+      {props.issues.length > 1 && <Text color="inactive" wrap="truncate-end">+{props.issues.length - 1} more · /flow status</Text>}
     </Box>
   )
 }
@@ -183,7 +187,7 @@ export function drawMetaRows(elements: PaneElements, props: KeyedRowsProps): Ren
  * Draws the flow's steps with their state marks and facts.
  *
  * @param elements - The element table.
- * @param props - The steps.
+ * @param props - The steps and the body's width, which each fact is fitted to.
  * @returns The step list.
  */
 export function drawStepList({ Box, Text }: PaneElements, props: StepListProps): RenderElement {
@@ -197,8 +201,7 @@ export function drawStepList({ Box, Text }: PaneElements, props: StepListProps):
             {/* Fragments render as column Boxes, which would stack the fact below its label. */}
             {step.detail && [
               <Box flexShrink={0}><Text color="inactive"> · </Text></Box>,
-              step.isMerged ? <Box flexShrink={0}><Text color="merged">{step.detail}</Text></Box>
-                : <Text color={step.isError ? 'error' : step.state === 'skipped' ? 'inactive' : 'text'} wrap={step.state === 'current' ? 'wrap' : 'truncate-end'}>{step.detail}</Text>,
+              <Text color={step.isMerged ? 'merged' : step.isError ? 'error' : step.state === 'skipped' ? 'inactive' : 'text'} wrap="truncate-end">{fitFact(step.detail, measureFactWidth(props.columns, step.label))}</Text>,
             ]}
           </Box>
         </Box>

@@ -8,11 +8,10 @@ import { readRepositoryRoot } from '../core/repository'
 import { reread, refreshView } from '../core/pane-view'
 import { forgetCandidates } from '../core/unit-github'
 import { readDismissals, recordViolations } from '../core/violation-store'
-import { markForAgent } from '../domain/messages'
+import { markForAgent, modToolPrefix } from '../domain/messages'
 
 interface ToolCallResult { value?: EventResult<'tool.call'> }
 
-const ownToolPrefix = 'mcp__working-agreement__'
 // `gh` as a command word: at the start, or after a separator, a subshell or a substitution.
 const ghCommand = /(^|[\s;&|(`])gh\s/
 
@@ -23,7 +22,7 @@ const ghCommand = /(^|[\s;&|(`])gh\s/
  */
 function mayChangeIssues(event: Frozen<Args<'tool.call'>>): boolean {
   if (event.tool === 'Bash') return ghCommand.test(event.command)
-  return event.tool.startsWith('mcp__') && !event.tool.startsWith(ownToolPrefix)
+  return event.tool.startsWith('mcp__') && !event.tool.startsWith(modToolPrefix)
 }
 
 /**

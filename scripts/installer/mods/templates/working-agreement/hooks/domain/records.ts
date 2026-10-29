@@ -1,4 +1,4 @@
-import type { ApprovedRed, GithubStatus, IssueInfo, Identity, ObservedEndRecord, SessionRecord, Unit, UnitEntry, UnitRecord, VerifyRecord, RunRecord, Violation } from '../../types'
+import type { ApprovedRed, GithubStatus, IssueAudit, IssueInfo, Identity, ObservedEndRecord, SessionRecord, Unit, UnitEntry, UnitRecord, VerifyRecord, RunRecord, Violation } from '../../types'
 import { hasOnlyKeys, isStringArray, isFiniteNumber, isNonEmptyString, isSafeInteger, isRecord } from '../lib/guards'
 import { isPrFields } from '../lib/github-rows'
 import { flowDefinitions } from './flow-definitions'
@@ -102,7 +102,8 @@ function hasRunIdentity(value: Record<string, unknown>): boolean {
  * @returns Whether the unit entry is valid.
  */
 function isUnit(value: unknown): value is UnitEntry {
-  return isRecord(value) && hasOnlyKeys(value, ['identity', 'skills', 'verifyRuns', 'runs', 'approval', 'approvedRed', 'generation', 'base', 'baseBranch', 'skips']) && isIdentity(value.identity) && isStringArray(value.skills)
+  return isRecord(value) && hasOnlyKeys(value, ['identity', 'skills', 'verifyRuns', 'runs', 'approval', 'approvedRed', 'generation', 'base', 'baseBranch', 'skips', 'delegated']) && isIdentity(value.identity) && isStringArray(value.skills)
+    && (value.delegated === undefined || isStringArray(value.delegated))
     && Array.isArray(value.verifyRuns) && value.verifyRuns.every(isVerifyRecord)
     && Array.isArray(value.runs) && value.runs.every(isRunRecord)
     && ['approval', 'generation', 'base', 'baseBranch'].every(key => value[key] === undefined || typeof value[key] === 'string')
@@ -136,12 +137,28 @@ function isViolation(value: unknown): value is Violation {
 }
 
 /**
+ * Identifies the session's issue audit: its window, the issues it tracks and its latest result.
+ * @param value - The decoded value.
+ * @returns Whether the audit is valid.
+ */
+function isIssueAudit(value: unknown): value is IssueAudit {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['since', 'issues', 'result']) || !isFiniteNumber(value.since)
+    || !Array.isArray(value.issues) || !value.issues.every(issue => isSafeInteger(issue) && issue > 0)) return false
+  const result = value.result
+  return result === undefined || (isRecord(result) && ((result.state === 'compliant' && hasOnlyKeys(result, ['state']))
+    || (result.state === 'pending' && hasOnlyKeys(result, ['state', 'reason']) && typeof result.reason === 'string')
+    || (result.state === 'violations' && hasOnlyKeys(result, ['state', 'findings']) && Array.isArray(result.findings) && result.findings.every(finding =>
+      isRecord(finding) && hasOnlyKeys(finding, ['issue', 'field', 'expected', 'actual']) && isSafeInteger(finding.issue)
+      && ['field', 'expected', 'actual'].every(key => typeof finding[key] === 'string')))))
+}
+
+/**
  * Identifies a complete disk session without filling missing fields.
  * @param value - The decoded JSON.
  * @returns Whether the complete session is valid.
  */
 function isSessionRecord(value: unknown): value is SessionRecord {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['v', 'sessionId', 'unit', 'units', 'info', 'blocked', 'gh', 'isLong', 'handoff', 'skills', 'violations', 'prSnapshot']) || value.v !== 1 || typeof value.sessionId !== 'string' || !value.sessionId
+  if (!isRecord(value) || !hasOnlyKeys(value, ['v', 'sessionId', 'unit', 'units', 'info', 'blocked', 'gh', 'isLong', 'handoff', 'skills', 'violations', 'prSnapshot', 'role', 'audit']) || value.v !== 1 || typeof value.sessionId !== 'string' || !value.sessionId
     || !(value.unit === null || isIdentity(value.unit)) || !Array.isArray(value.units) || !value.units.every(isUnit)
     || !isRecord(value.info) || !Object.values(value.info).every(isIssueInfo)
     || !isRecord(value.blocked) || !hasOnlyKeys(value.blocked, ['edits']) || !isSafeInteger(value.blocked.edits) || Number(value.blocked.edits) < 0
@@ -150,6 +167,8 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     || (value.prSnapshot !== undefined && (!isRecord(value.prSnapshot) || !hasOnlyKeys(value.prSnapshot, ['unit', 'number', 'fields']) || !isIdentity(value.prSnapshot.unit)
       || !isSafeInteger(value.prSnapshot.number) || Number(value.prSnapshot.number) <= 0 || !isPrFields(value.prSnapshot.fields)))
     || (value.skills !== undefined && !isStringArray(value.skills))
+    || (value.role !== undefined && value.role !== 'coordinator')
+    || (value.audit !== undefined && !isIssueAudit(value.audit))
     || (value.handoff !== undefined && (!isRecord(value.handoff) || !(
       (value.handoff.state === 'running' && hasOnlyKeys(value.handoff, ['state'])) || (value.handoff.state === 'failed' && hasOnlyKeys(value.handoff, ['state', 'reason']) && typeof value.handoff.reason === 'string'))))) return false
   return true
@@ -219,13 +238,13 @@ export const createEmptySession = (sessionId: string): Session => ({
 export const createEmptyUnit = (): Unit => ({ skills: [], verifyRuns: [], runs: [] })
 
 /**
- * Joins two skill lists, each skill once, in first-seen order.
+ * Joins two lists of names, such as skills or delegated steps, each name once, in first-seen order.
  *
- * @param recorded - The skills already on record.
- * @param added - The skills to add.
+ * @param recorded - The names already on record.
+ * @param added - The names to add.
  * @returns The union of both lists.
  */
-export const mergeSkills = (recorded: string[], added: string[]): string[] => [...new Set([...recorded, ...added])]
+export const mergeUnique = (recorded: string[], added: string[]): string[] => [...new Set([...recorded, ...added])]
 
 /**
  * Orders runs newest first, breaking time ties by run id so the order never depends on input order.

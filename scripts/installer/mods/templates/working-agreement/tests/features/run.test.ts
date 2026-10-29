@@ -120,7 +120,7 @@ test('run discards evidence when the command changes worktree content and names 
 
 for (const first of ['run', 'verify']) {
   test(`run and verify share an in-flight guard when ${first} starts first`, async ($, on) => {
-    const options: Options = { session: { flow: 'fix' }, verifyFile: '{"verify":["./check"],"timeoutMinutes":0.01}', spawnGate: new Promise(() => {}) }
+    const options: Options = { session: { flow: 'fix' }, verifyFile: '{"always":[["./check"]],"timeoutMinutes":0.01}', spawnGate: new Promise(() => {}) }
     options.approvedConfig = options.verifyFile!
     const { clock, sessions } = createWorld(on, { branch: 'fix', isDirty: true, tree: 'changed' }, options)
     const pending = $.tool.call({ tool: `mcp__working-agreement__${first}`, ...(first === 'run' ? { argv } : {}) })
@@ -135,7 +135,7 @@ for (const first of ['run', 'verify']) {
 
 for (const tool of ['run', 'verify']) {
   test(`${tool} preserves the lifetime when a carried chat contributes its first run`, async ($, on) => {
-    const options: Options = { session: noFlow, verifyFile: '{"verify":["./check"]}', issueLabels: { 1: ['ready-for-agent'] }, spawnCode: tool === 'run' ? 7 : 0 }
+    const options: Options = { session: noFlow, verifyFile: '{"always":[["./check"]]}', issueLabels: { 1: ['ready-for-agent'] }, spawnCode: tool === 'run' ? 7 : 0 }
     options.approvedConfig = options.verifyFile!
     const world = createWorld(on, { branch: 'fix', isDirty: true, tree: 'changed' }, options)
     const { chat, sessions, seedChat } = world

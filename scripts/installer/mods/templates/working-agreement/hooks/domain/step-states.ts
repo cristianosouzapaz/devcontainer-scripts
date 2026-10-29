@@ -1,19 +1,25 @@
 import type { ApprovedRed, FlowStepState, IssueComment, IssueRead, RunRecord } from '../../types'
 import type { GitState } from '../lib/git'
 import type { CiState } from './ci-blocker'
+import { describeAuditBlocker } from './issue-audit'
+import type { AuditBlocker } from './issue-audit'
 import { hasDiagnoseStep, isDeliveryStep } from './flow-definitions'
 import type { FlowDefinition, Step } from './flow-definitions'
 import { findEarliestRed } from './records'
 import type { Identity, IssueInfo, PullRequest, Session, Unit } from './records'
+import { facts } from './facts'
 
 /** Selects an action independently of the displayed fact's wording. */
 type FactCode = 'verify-config-missing' | 'verify-not-run' | 'github-unreachable' | 'ci-unreadable' | 'push-required' | 'pr-ambiguous' | 'base-mismatch'
-  | 'child-end-unknown' | 'child-unmerged'
+  | 'child-end-unknown' | 'child-unmerged' | AuditBlocker['factCode']
 
 /** Holds a step of the declared flow and where it stands. */
 interface StepStateFields {
   step: Step
+  /** The pane's wording, at most `maxFactLength` characters. */
   fact?: string
+  /** The full wording, for `/flow status` and the agent, when the fact names its subject briefly. */
+  detail?: string
   factCode?: FactCode
   need?: DiagnoseNeed
   /** The user-only `/flow` command the current step waits on, offered as the prompt suggestion. */
@@ -30,6 +36,7 @@ export type StepState = SkippedStepState | ActiveStepState
 /** Holds the Verify fact and whether selected commands passed on the current slice. */
 interface VerifyState {
   fact: string
+  detail?: string
   factCode?: FactCode
   command?: string
   isError?: boolean
@@ -37,13 +44,15 @@ interface VerifyState {
   isVerified: boolean
   /** Whether the change has reached Verify, which ends Code: a run of any outcome exists on the current tree and base, or the config keeps Verify from running. */
   isReached: boolean
+  /** This session's place in the repository's Verify queue, such as `queued, 2nd of 3`, while it waits for another session's Verify. */
+  queued?: string
 }
 
 /** Holds whether a GitHub-judged step is done and the first fact that prevents it. */
 type IssueJudgement = IssueDone | IssuePending
 interface IssueJudgementFlags { isError?: boolean; isWaitingApproval?: boolean }
-interface IssueDone extends IssueJudgementFlags { done: true; fact?: never }
-interface IssuePending extends IssueJudgementFlags { done: false; fact: string }
+interface IssueDone extends IssueJudgementFlags { done: true; fact?: never; detail?: never }
+interface IssuePending extends IssueJudgementFlags { done: false; fact: string; detail?: string }
 
 interface DiagnosePending extends IssuePending {
   need: DiagnoseNeed
@@ -65,7 +74,7 @@ interface IssueStepIdentity { id: IssueStepId }
 type IssueStep = Step & IssueStepIdentity
 
 /** Holds a fact that prevents an issue step completing. */
-interface IssueProblem { fact: string; isError?: boolean }
+interface IssueProblem { fact: string; detail?: string; isError?: boolean }
 
 /** The branch slice and content used to judge Code and Commit. */
 export interface UnitSlice {
@@ -83,7 +92,7 @@ export interface UnitSlice {
 interface CodeSlice extends UnitSlice { tree: string }
 
 /** Holds whether Integrate is done and the fact it shows either way. */
-interface IntegrateJudgement { done: boolean; fact: string }
+interface IntegrateJudgement { done: boolean; fact: string; detail?: string }
 
 /** Holds the parent branch every Integrate fact is judged against: the unit's cached base branch. */
 interface IntegrationParent { parent: string }
@@ -170,6 +179,8 @@ export interface Evidence {
   checks: CiState
   pullRequest?: PullRequest
   prFact?: string
+  /** The PR fact's full wording, when the fact names its subject briefly. */
+  prDetail?: string
   prFactCode?: FactCode
   /** The Integrate facts, present only for a child unit. */
   integration?: Integration
@@ -190,7 +201,7 @@ export interface Position extends Evidence {
 }
 
 /** Holds a PR step fact and the code that selects its action. */
-export type DeliveryFact = Pick<Evidence, 'prFact' | 'prFactCode'>
+export type DeliveryFact = Pick<Evidence, 'prFact' | 'prDetail' | 'prFactCode'>
 
 /** The legend entry a step is drawn with. */
 export type StepMarkKind = FlowStepState | 'failed' | 'rewritten' | 'waitingApproval'
@@ -237,7 +248,7 @@ export const isChildUnit = (unit: Pick<Unit, 'baseBranch'>, defaultBranch: strin
  * @param end - Why the slice end is unknown.
  * @returns The fact.
  */
-export const describeUnknownEnd = (end: UnknownEndKind): string => end === 'ambiguous' ? 'end ambiguous' : 'branch deleted before its end was observed'
+export const describeUnknownEnd = (end: UnknownEndKind): string => end === 'ambiguous' ? facts.endAmbiguous : facts.endNeverObserved
 
 /**
  * Judges a child unit's Integrate step: done once the unit is integrated into its parent branch, by SHA ancestry, and not stranded.
@@ -245,14 +256,22 @@ export const describeUnknownEnd = (end: UnknownEndKind): string => end === 'ambi
  * @returns Completion and the step's fact: where the integrated slice is delivered from, or why it is not integrated.
  */
 function judgeIntegrate(integration: Integration | undefined): IntegrateJudgement {
-  if (!integration) return { done: false, fact: 'integration unreadable' }
+  if (!integration) return { done: false, fact: facts.integrationUnreadable }
   const { parent } = integration
-  if (integration.state === 'integrated') return { done: true, fact: integration.parentPullRequest ? `in PR #${integration.parentPullRequest}` : `awaiting ${parent}'s PR` }
-  if (integration.state === 'delivered') return { done: true, fact: `merged #${integration.pullRequest}` }
+  if (integration.state === 'integrated') {
+    return integration.parentPullRequest ? { done: true, fact: facts.inParentPr(integration.parentPullRequest) } : { done: true, fact: facts.awaitingParentPr, detail: `awaiting ${parent}'s PR` }
+  }
+  if (integration.state === 'delivered') return { done: true, fact: facts.mergedPr(integration.pullRequest) }
   if (integration.state === 'unknown-end') return { done: false, fact: describeUnknownEnd(integration.end) }
-  if (integration.state === 'deleted-unmerged') return { done: false, fact: `branch ${integration.branch} deleted unmerged at ${integration.end} — restore it with ${integration.command}` }
-  if (integration.state === 'stranded') return { done: false, fact: `parent PR #${integration.pullRequest} merged without this unit's commits — deliver it with another PR` }
-  return { done: false, fact: integration.childPullRequest ? `PR #${integration.childPullRequest} into ${parent} open — merge it` : `not merged into ${parent}` }
+  if (integration.state === 'deleted-unmerged') {
+    return { done: false, fact: facts.restoreBranch, detail: `branch ${integration.branch} deleted unmerged at ${integration.end} — restore it with ${integration.command}` }
+  }
+  if (integration.state === 'stranded') {
+    return { done: false, fact: facts.strandedPr(integration.pullRequest), detail: `parent PR #${integration.pullRequest} merged without this unit's commits — deliver it with another PR` }
+  }
+  return integration.childPullRequest
+    ? { done: false, fact: facts.mergeChildPr(integration.childPullRequest), detail: `PR #${integration.childPullRequest} into ${parent} open — merge it` }
+    : { done: false, fact: facts.mergeIntoParent, detail: `not merged into ${parent}` }
 }
 
 /**
@@ -267,17 +286,14 @@ export function withStates(position: Omit<Position, 'states' | 'current'>, sessi
 }
 
 /**
- * Names a step as the pane and the instruction show it: the PR step names its PR, and says what it does to an open PR only while current.
+ * Names a step as the pane and the instruction show it: the PR step names its open or merged PR.
  *
  * @param step - The step.
  * @param pullRequest - The unit's PR read from GitHub, if any.
- * @param isCurrent - Whether the step is the unit's current step.
  * @returns The step's label.
  */
-export function formatStepLabel(step: Step, pullRequest: PullRequest | undefined, isCurrent: boolean): string {
-  if (step.observe !== 'pr.created' || !pullRequest || pullRequest.state === 'CLOSED') return step.label
-  if (!isCurrent || pullRequest.state === 'MERGED') return `PR #${pullRequest.number}`
-  return step.skill ? `Update PR #${pullRequest.number}` : `Push to PR #${pullRequest.number}`
+export function formatStepLabel(step: Step, pullRequest: PullRequest | undefined): string {
+  return step.observe !== 'pr.created' || !pullRequest || pullRequest.state === 'CLOSED' ? step.label : `PR #${pullRequest.number}`
 }
 
 /**
@@ -353,15 +369,15 @@ export function projectDisplayStates(states: StepState[]): StepState[] {
 }
 
 /**
- * Lists the labels of the session's declared issues, as last read from GitHub.
+ * Lists the labels of the session's first declared issue, the one the pane shows, as last read from GitHub.
  *
  * @param session - The session.
- * @returns Every declared issue's labels, in issue order.
+ * @returns The first issue's labels, or none.
  */
-export const listDeclaredLabels = (session: Session): string[] => session.issues.flatMap(number => {
-  const info = session.info[number]
+export const listDeclaredLabels = (session: Session): string[] => {
+  const info = session.issues[0] === undefined ? undefined : session.info[session.issues[0]]
   return info && 'labels' in info ? info.labels : []
-})
+}
 
 /**
  * Judges every declared issue, stopping at its first unmet condition.
@@ -370,10 +386,10 @@ export const listDeclaredLabels = (session: Session): string[] => session.issues
  * @returns Completion or the first missing fact or unmet condition.
  */
 const judgeIssues = (declared: (IssueInfo | undefined)[], judge: (info: IssueRead) => IssueProblem | undefined): IssueJudgement => {
-  if (!declared.length) return { done: false, fact: 'issue not yet created' }
+  if (!declared.length) return { done: false, fact: facts.issueNotCreated }
   for (const info of declared) {
-    if (!info) return { done: false, fact: 'issue facts unavailable', isError: true }
-    if ('error' in info) return { done: false, fact: info.error, isError: true }
+    if (!info) return { done: false, fact: facts.issueFactsUnavailable, isError: true }
+    if ('error' in info) return { done: false, fact: facts.issueUnreadable, detail: info.error, isError: true }
     const problem = judge(info)
     if (problem) return { done: false, ...problem }
   }
@@ -395,23 +411,23 @@ const isIssueStep = (step: Step): step is IssueStep => ['grill', 'spec', 'triage
  */
 const judgeIssueStep = (id: IssueStepId, declared: (IssueInfo | undefined)[]): IssueJudgement => {
   /** Judges readiness labels for Spec and Grill. */
-  const spec = (): IssueJudgement => judgeIssues(declared, info => info.labels.includes('ready-for-agent') ? undefined : { fact: 'no ready-for-agent label' })
+  const spec = (): IssueJudgement => judgeIssues(declared, info => info.labels.includes('ready-for-agent') ? undefined : { fact: facts.noReadyLabel })
   if (id === 'grill' || id === 'spec') return spec()
   if (id === 'triage') return judgeIssues(declared, info => {
     if (info.labels.includes('ready-for-agent') || info.labels.includes('ready-for-human')) return undefined
-    return { fact: info.labels.find(label => label === 'needs-info' || label === 'wontfix') ?? 'no triage label' }
+    return { fact: info.labels.includes('needs-info') ? facts.needsInfo : info.labels.includes('wontfix') ? facts.wontfix : facts.noTriageLabel }
   })
   if (id === 'map') return judgeIssues(declared, info => {
-    if (!info.labels.includes('wayfinder:map')) return { fact: 'no wayfinder:map label' }
-    if (info.subIssues && !Array.isArray(info.subIssues)) return { fact: info.subIssues.error, isError: true }
+    if (!info.labels.includes('wayfinder:map')) return { fact: facts.noMapLabel }
+    if (info.subIssues && !Array.isArray(info.subIssues)) return { fact: facts.subIssuesUnreadable, detail: info.subIssues.error, isError: true }
     const mapped = (info.subIssues ?? []).filter(subIssue => subIssue.labels.some(label => label.startsWith('wayfinder:')))
-    if (!mapped.length) return { fact: 'no wayfinder:* sub-issue' }
+    if (!mapped.length) return { fact: facts.noMappedSubIssue }
     const open = mapped.filter(subIssue => subIssue.state !== 'closed').length
-    return open ? { fact: `${open} wayfinder:* sub-issue${open === 1 ? '' : 's'} open` } : undefined
+    return open ? { fact: facts.openMappedSubIssues(open) } : undefined
   })
   return judgeIssues(declared, info => {
-    if (info.subIssues && !Array.isArray(info.subIssues)) return { fact: info.subIssues.error, isError: true }
-    return info.subIssues?.some(subIssue => subIssue.labels.includes('ready-for-agent')) ? undefined : { fact: 'no ready-for-agent sub-issue' }
+    if (info.subIssues && !Array.isArray(info.subIssues)) return { fact: facts.subIssuesUnreadable, detail: info.subIssues.error, isError: true }
+    return info.subIssues?.some(subIssue => subIssue.labels.includes('ready-for-agent')) ? undefined : { fact: facts.noReadySubIssue }
   })
 }
 
@@ -444,6 +460,8 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
   // Integrate, while an unknown end proves none of it, so those steps are set aside rather than done.
   const isBranchGone = !slice && !!evidence.integration
   const isEndUnknown = isBranchGone && evidence.integration?.state === 'unknown-end'
+  // A session's non-compliant issues hold its delivery back, since nothing else catches a write that bypassed the issue tools.
+  const auditBlocker = describeAuditBlocker(session.audit?.result)
 
   const isDone = (step: Step): boolean => {
     if (evidence.isConcluded) return true
@@ -455,7 +473,7 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
     if (step.observe === 'commit') return isCommitDone
     // Only a qualifying open PR can complete delivery before conclusion.
     if (step.observe === 'pr.created') {
-      return evidence.pullRequest?.state === 'OPEN' && isCiGreen
+      return evidence.pullRequest?.state === 'OPEN' && isCiGreen && !auditBlocker
     }
     if (step.observe === 'integrated') return integrate.done
     return false
@@ -471,24 +489,28 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
     const shared = {
       step,
       isError: !!(isIssueStep(step) ? issueJudgements.get(step)?.isError : step.isInWorktree ? diagnose.isError
-        : step.observe === 'verify.passed' ? verify.isError : step.observe === 'pr.created' ? checks === 'failing' : step.observe === 'integrated' && evidence.integration?.state === 'stranded'),
+        : step.observe === 'verify.passed' ? verify.isError : step.observe === 'pr.created' ? checks === 'failing' || !!auditBlocker : step.observe === 'integrated' && evidence.integration?.state === 'stranded'),
       isWaitingApproval: step.observe === 'verify.passed' ? verify.isWaitingApproval === true : !!step.isInWorktree && diagnose.isWaitingApproval === true,
-      ...(state === 'current' && isIssueStep(step) ? { fact: issueJudgements.get(step)?.fact } : {}),
-      ...((step.isUnlocking || step.observe === 'commit') && !isBranchGone ? { fact: isOnDefault ? "check out the unit's branch and re-declare"
-        : !slice ? 'slice unavailable — re-declare'
-        : step.isUnlocking ? (!isCodeChanged ? 'no change from the base' : !isCodeWritten ? 'no green after the approval' : describeMissingVerify(unit, slice)) : slice.commits === 0 ? 'no commit in the slice' : 'uncommitted changes' } : {}),
+      ...(state === 'current' && isIssueStep(step) ? { fact: issueJudgements.get(step)?.fact, detail: issueJudgements.get(step)?.detail } : {}),
+      ...((step.isUnlocking || step.observe === 'commit') && !isBranchGone ? { fact: isOnDefault ? facts.redeclareOnBranch
+        : !slice ? facts.redeclareSliceUnavailable
+        : step.isUnlocking ? (!isCodeChanged ? facts.noChange : !isCodeWritten ? facts.noFixGreen : describeMissingVerify(unit, slice))
+        : slice.commits === 0 ? facts.nothingCommitted : facts.uncommitted } : {}),
       ...(step.isUnlocking && !isOnDefault && isCodeWritten && !verify.isReached ? { factCode: 'verify-not-run' as const } : {}),
-      ...(step.observe === 'verify.passed' ? { fact: verify.fact, factCode: verify.factCode } : {}),
+      ...(step.observe === 'verify.passed' ? { fact: verify.fact, detail: verify.detail, factCode: verify.factCode } : {}),
       ...(state === 'current' && step.observe === 'verify.passed' && verify.command ? { command: verify.command } : {}),
-      ...(step.observe === 'pr.created' ? { fact: evidence.isConcluded ? `merged #${evidence.pullRequest?.number}` : evidence.prFact ?? 'no PR', factCode: evidence.prFactCode } : {}),
-      ...(step.observe === 'integrated' ? { fact: evidence.isConcluded ? `merged #${evidence.pullRequest?.number}` : integrate.fact } : {}),
-      ...(step.isInWorktree ? { fact: diagnose.fact, ...(!diagnose.done ? { need: diagnose.need } : {}) } : {}),
+      ...(step.observe === 'pr.created' ? evidence.isConcluded ? { fact: (evidence.pullRequest ? facts.mergedPr(evidence.pullRequest.number) : facts.merged), factCode: evidence.prFactCode }
+        : auditBlocker ?? { fact: evidence.prFact ?? facts.noPr, detail: evidence.prDetail, factCode: evidence.prFactCode } : {}),
+      ...(step.observe === 'integrated' ? evidence.isConcluded ? { fact: (evidence.pullRequest ? facts.mergedPr(evidence.pullRequest.number) : facts.merged) } : { fact: integrate.fact, detail: integrate.detail } : {}),
+      ...(step.isInWorktree ? { fact: diagnose.fact, detail: diagnose.detail, ...(!diagnose.done ? { need: diagnose.need } : {}) } : {}),
       ...(state === 'current' && step.isInWorktree && !diagnose.done && diagnose.command ? { command: diagnose.command } : {}),
     }
     if (state === 'skipped') {
-      const reason = unit.skips?.find(skip => skip.step === step.id)?.reason ?? (isEndUnknown && step.observe !== 'integrated' ? 'branch deleted' : undefined)
-        ?? (step.isOptional && isIssueStep(step) && issueJudgements.get(step)?.isError ? issueJudgements.get(step)?.fact : 'optional')
-      return { ...shared, state, reason }
+      const unread = step.isOptional && isIssueStep(step) && issueJudgements.get(step)?.isError ? issueJudgements.get(step) : undefined
+      const chosen = unit.skips?.find(skip => skip.step === step.id)?.reason ?? (isEndUnknown && step.observe !== 'integrated' ? facts.branchDeleted : undefined)
+      // A skipped step's detail words its reason, never the step's own fact.
+      const { detail: _detail, ...rest } = shared
+      return { ...rest, state, reason: chosen ?? unread?.fact ?? facts.optional, ...(!chosen && unread?.detail ? { detail: unread.detail } : {}) }
     }
     return { ...shared, state }
   })
@@ -526,22 +548,22 @@ export function findFixGreen(runs: RunRecord[], after: number, pinned?: Approved
  */
 export function judgeDiagnose(unit: Pick<Unit, 'runs' | 'approval' | 'approvedRed'>, issues: number[], info: Record<string, IssueInfo>): DiagnoseJudgement {
   const red = (unit.approval && unit.approvedRed) || findEarliestRed(unit.runs)
-  if (!red) return { done: false, need: 'red', fact: 'no red run' }
-  if (!issues.length) return { done: false, need: 'issue', fact: 'issue not yet created' }
+  if (!red) return { done: false, need: 'red', fact: facts.noRedRun }
+  if (!issues.length) return { done: false, need: 'issue', fact: facts.issueNotCreated }
   const comments: IssueComment[] = []
   for (const number of issues) {
     const issue = info[number]
-    if (!issue || 'error' in issue) return { done: false, need: 'comments', fact: issue && 'error' in issue ? issue.error : 'issue facts unavailable' }
-    if (!issue.comments || !Array.isArray(issue.comments)) return { done: false, need: 'comments', fact: issue.comments?.error ?? 'issue comments unavailable' }
+    if (!issue || 'error' in issue) return { done: false, need: 'comments', fact: issue ? facts.issueUnreadable : facts.issueFactsUnavailable, ...(issue ? { detail: issue.error } : {}) }
+    if (!issue.comments || !Array.isArray(issue.comments)) return { done: false, need: 'comments', fact: facts.issueCommentsUnavailable, ...(issue.comments ? { detail: issue.comments.error } : {}) }
     comments.push(...issue.comments)
   }
-  if (unit.approval && !comments.some(comment => comment.url === unit.approval)) return { done: false, need: 'comment', fact: 'approved comment deleted' }
+  if (unit.approval && !comments.some(comment => comment.url === unit.approval)) return { done: false, need: 'comment', fact: facts.approvedCommentDeleted }
   const after = comments.filter(comment => Date.parse(comment.createdAt) > red.at)
-  if (!after.length) return { done: false, need: 'comment', fact: 'no comment after the red' }
+  if (!after.length) return { done: false, need: 'comment', fact: facts.noCommentAfterRed }
   const approved = after.find(comment => comment.url === unit.approval)
   if (!approved) {
     const newest = after.reduce((latest, comment) => Date.parse(comment.createdAt) >= Date.parse(latest.createdAt) ? comment : latest)
-    return { done: false, need: 'approval', fact: 'waiting for /flow approve <url>', isWaitingApproval: true, command: `/flow approve ${newest.url}` }
+    return { done: false, need: 'approval', fact: facts.waitingForApproval, isWaitingApproval: true, command: `/flow approve ${newest.url}` }
   }
   return { done: true, approvedAt: Date.parse(approved.createdAt) }
 }
@@ -561,6 +583,6 @@ export const hasCodeChange = (slice: UnitSlice | null): slice is CodeSlice => !!
  */
 function describeMissingVerify(unit: Pick<Unit, 'verifyRuns'>, slice: UnitSlice): string {
   const latest = unit.verifyRuns[0]
-  if (!latest) return 'no Verify run yet'
-  return `${latest.tree === slice.tree ? 'base moved' : 'tree changed'} since the last Verify — run Verify`
+  if (!latest) return facts.verifyNoRun
+  return latest.tree === slice.tree ? facts.verifyBaseMoved : facts.verifyTreeChanged
 }

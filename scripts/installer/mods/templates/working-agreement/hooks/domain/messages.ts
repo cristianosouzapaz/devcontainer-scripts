@@ -1,3 +1,6 @@
+/** The prefix the engine gives every tool this mod registers. */
+export const modToolPrefix = 'mcp__working-agreement__'
+
 /**
  * Marks a text as the working agreement's, for text the agent reads (prompt context, denies, tool results).
  *

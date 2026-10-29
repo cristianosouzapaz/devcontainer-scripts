@@ -1,6 +1,8 @@
 import { withStates } from '../domain/step-states'
-import { buildView, handoffNotes } from '../ui/view-model'
+import { auditNotes, buildView, handoffNotes } from '../ui/view-model'
+import { describeScope } from '../domain/delegation'
 import { bestEffort } from './best-effort'
+import { findDelegation, readOwnScope } from './delegation'
 import { logSteps } from './flow-log'
 import type { EnginePort } from './engine-port'
 import { createReadPort } from './read-port'
@@ -10,8 +12,11 @@ import { clearIssuesFailure, readGithubFailure, readGithubStatus, syncIssues } f
 import { locatePosition } from './position'
 import { readVersionedSession } from './record-store'
 import { readGit, readRepositoryRoot } from './repository'
+import { readRepositoryConfig } from './verify-config'
+import { facts } from '../domain/facts'
 import { reportHerdr } from './herdr'
 import { isTreeChangedRun, readRunDisplay, sessionMemory } from './session-memory'
+import { isCoordinatorSession } from '../domain/coordinator'
 
 interface RefreshRequest { port: EnginePort; full: boolean; forceGithub: boolean; generation: number; causes: string[] }
 /** How one observation runs; every flag defaults to false. */
@@ -127,6 +132,9 @@ export async function refreshView(engine: EnginePort, options: RefreshOptions = 
   if (!isQuiet && !isSynced) await bestEffort(port, 'PR snapshot refresh', () => refreshPrSnapshot(port, located?.pullRequest?.state === 'OPEN' ? located.pullRequest.number : undefined), undefined)
   const dismissed = await readDismissals(port)
   const root = await readRepositoryRoot(port)
+  const config = await readRepositoryConfig(port, root)
+  const warningNotes = [...config.kind === 'invalid' ? [{ key: 'Config', value: facts.verifyConfigInvalid, tone: 'error' as const }] : [],
+    ...sessionMemory.modulesAhead?.length !== 0 ? [{ key: 'Guards', value: facts.guardsOverridable, tone: 'error' as const }] : []]
   const violations = (session.violations ?? []).filter(record => !dismissed.has(record.factId)).map(record => ({
     factId: record.factId, text: labelViolation(record, root ?? undefined), tone: record.kind === 'unchecked' ? 'warn' as const : 'error' as const,
   }))
@@ -136,17 +144,23 @@ export async function refreshView(engine: EnginePort, options: RefreshOptions = 
   const previous = await port.readView()
   const isTreeChanged = isTreeChangedRun(display)
   const built = position && github ? buildView(session, position, readGithubFailure(github), isTreeChanged) : null
-  const notes = handoffNotes(session)
-  const view = position && built ? { ...built, violations,
+  const notes = [...handoffNotes(session), ...auditNotes(session), ...warningNotes]
+  const scope = isCoordinatorSession(session) ? await bestEffort(port, 'delegation read', () => readOwnScope(port), null) : null
+  const delegation = position ? await bestEffort(port, 'delegation read', () => findDelegation(port, session.issues), null) : null
+  const taken = position?.unit.delegated ?? []
+  const delegationRow = delegation || taken.length
+    ? [{ key: 'Delegation', value: [delegation ? 'delegated by the coordinator' : 'delegation stopped', ...taken.length ? [`took ${taken.join(', ')}`] : []].join(' · '), tone: 'text' as const }] : []
+  const view = position && built ? { ...built, meta: [...built.meta, ...delegationRow], notes: [...built.notes, ...warningNotes], violations,
     hasRunLog: !!(position.unit.verifyRuns.length || position.unit.runs.length || display?.live || display?.last),
     ...(previous?.selectedRunId ? { selectedRunId: previous.selectedRunId } : {}),
-  } : violations.length || notes.length ? { flow: 'No flow declared.', progress: '', issues: [], pending: null, meta: [], labels: [], steps: [], notes, footer: null, violations } : null
+  } : violations.length || notes.length || session.role ? { flow: isCoordinatorSession(session) ? 'Coordinator · writes denied' : 'No flow declared.', progress: '', issues: [], pending: null,
+    meta: scope ? [{ key: 'Delegating', value: describeScope(scope), tone: 'text' as const }] : [], labels: [], steps: [], notes, footer: null, violations } : null
   if (generation !== undefined && generation !== refreshQueue.forcedGeneration) return
   if (await isOutdated(port, session.sessionId, observed.version)) return
   sessionMemory.painted = { sessionId: session.sessionId, version: observed.version }
   if (position && view) logSteps(port, session, view.steps, position.slice, causes)
   if (JSON.stringify(previous) !== JSON.stringify(view)) await port.writeView(view)
   await clearStaleRun(port, !!display?.live)
-  await reportHerdr(port, session, position, dismissed, isTreeChanged)
+  await reportHerdr(port, session, position, dismissed, isTreeChanged, !!(delegation ?? scope))
   await suggestCommand(port, position?.current?.command)
 }
