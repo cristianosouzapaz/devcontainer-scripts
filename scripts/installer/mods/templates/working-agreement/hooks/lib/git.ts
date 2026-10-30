@@ -86,6 +86,20 @@ export async function readGitOutput(processes: ProcessPort, args: string[]): Pro
 }
 
 /**
+ * Lists the paths a merge of two commits would leave conflicted, without touching any worktree or index.
+ * @param processes - The process runner.
+ * @param ours - The commit merged into.
+ * @param theirs - The commit merged.
+ * @returns The conflicted paths, empty for a clean merge, or null when git cannot tell.
+ */
+export async function readMergeConflicts(processes: ProcessPort, ours: string, theirs: string): Promise<string[] | null> {
+  // why: merge-tree exits 1 on a conflict, printing the merged tree's id and then one conflicted path per line.
+  const run = await runGit(processes, ['merge-tree', '--write-tree', '--name-only', '--no-messages', ours, theirs])
+  if (run.exitCode !== 0 && run.exitCode !== 1) return null
+  return run.exitCode === 0 ? [] : [...new Set(run.stdout.split('\n').slice(1).filter(Boolean))]
+}
+
+/**
  * Tests ancestry without treating an unreadable revision as an ancestor.
  * @param processes - The process runner.
  * @param base - The possible ancestor.
@@ -175,6 +189,26 @@ export async function readWorktrees(processes: ProcessPort): Promise<Worktree[] 
 }
 
 /**
+ * Reads a worktree's status with untracked files, so an empty text means a clean worktree.
+ * @param processes - The engine's process runner.
+ * @param root - The worktree; the current one when absent.
+ * @returns The NUL-separated porcelain status, or null when git cannot read it.
+ */
+export async function readWorktreeStatus(processes: ProcessPort, root?: string): Promise<string | null> {
+  return readGitOutput(processes, [...(root === undefined ? [] : ['-C', root]), 'status', '--porcelain=v2', '-z', '--untracked-files=all'])
+}
+
+/**
+ * Finds the worktree that holds a branch, as `git worktree list` reports it.
+ * @param processes - The engine's process runner.
+ * @param branch - The branch name.
+ * @returns The worktree's root, or undefined when no worktree holds the branch or the list is unreadable.
+ */
+export async function findWorktreeRoot(processes: ProcessPort, branch: string): Promise<string | undefined> {
+  return (await readWorktrees(processes))?.find(worktree => worktree.branch === `refs/heads/${branch}`)?.root
+}
+
+/**
  * Reads the names of every local branch, so a missing branch is told apart from a failed read.
  * @param processes - The engine's process runner.
  * @returns The local branch names, or null when git cannot list the refs.
@@ -203,6 +237,18 @@ export async function readLocalBranchTips(processes: ProcessPort): Promise<Map<s
  */
 export async function readDefaultRef(processes: ProcessPort, base: string): Promise<string> {
   return await readGitOutput(processes, ['rev-parse', '--verify', '--quiet', `origin/${base}`]) ? `origin/${base}` : `refs/heads/${base}`
+}
+
+/**
+ * Tells whether a branch moved after it was cut: a branch never moved since is contained in its parent too, yet holds no work
+ * the parent took, and only its reflog tells it from a fast-forward.
+ * @param processes - The engine's process runner.
+ * @param branch - The branch whose reflog is read.
+ * @returns Whether the reflog holds more than the branch's creation; false when it is absent or expired.
+ */
+export async function hasMovedSinceCut(processes: ProcessPort, branch: string): Promise<boolean> {
+  const reflog = await readGitOutput(processes, ['log', '--walk-reflogs', '--format=%gs', `refs/heads/${branch}`, '--'])
+  return !!reflog?.includes('\n')
 }
 
 /**
@@ -243,7 +289,7 @@ export async function readForkPoint(processes: ProcessPort, branch: string, tip:
  * @param tip - The commit whose history ends the walk.
  * @returns The first reached commit, or null when the ref does not exist or its chain never meets the tip's history.
  */
-async function readFirstParentFork(processes: ProcessPort, ref: string, tip: string): Promise<string | null> {
+export async function readFirstParentFork(processes: ProcessPort, ref: string, tip: string): Promise<string | null> {
   const head = await readGitOutput(processes, ['rev-parse', '--verify', '--quiet', ref])
   if (!head) return null
   // why: The walk lists the chain commits the tip does not reach, newest first; the last one's first parent is the fork point.

@@ -1,8 +1,7 @@
 import { withStates } from '../domain/step-states'
-import { auditNotes, buildView, handoffNotes } from '../ui/view-model'
-import { describeScope } from '../domain/delegation'
+import { auditNotes, buildView, handoffNotes, scopeRows } from '../ui/view-model'
 import { bestEffort } from './best-effort'
-import { findDelegation, readOwnScope } from './delegation'
+import { findDelegation, readLiveness, readOwnScope } from './delegation'
 import { logSteps } from './flow-log'
 import type { EnginePort } from './engine-port'
 import { createReadPort } from './read-port'
@@ -147,20 +146,22 @@ export async function refreshView(engine: EnginePort, options: RefreshOptions = 
   const notes = [...handoffNotes(session), ...auditNotes(session), ...warningNotes]
   const scope = isCoordinatorSession(session) ? await bestEffort(port, 'delegation read', () => readOwnScope(port), null) : null
   const delegation = position ? await bestEffort(port, 'delegation read', () => findDelegation(port, session.issues), null) : null
+  const liveness = delegation ? await bestEffort(port, 'coordinator liveness', () => readLiveness(port, delegation), 'unknown' as const) : null
   const taken = position?.unit.delegated ?? []
+  const state = liveness === 'live' ? 'on' : liveness === 'gone' ? facts.coordinatorGone : liveness ? facts.coordinatorUnknown : 'stopped'
   const delegationRow = delegation || taken.length
-    ? [{ key: 'Delegation', value: [delegation ? 'delegated by the coordinator' : 'delegation stopped', ...taken.length ? [`took ${taken.join(', ')}`] : []].join(' · '), tone: 'text' as const }] : []
+    ? [{ key: 'Delegation', value: [state, ...taken.length ? [`took ${taken.join(', ')}`] : []].join(' · '), tone: liveness && liveness !== 'live' ? 'warn' as const : 'text' as const }] : []
   const view = position && built ? { ...built, meta: [...built.meta, ...delegationRow], notes: [...built.notes, ...warningNotes], violations,
     hasRunLog: !!(position.unit.verifyRuns.length || position.unit.runs.length || display?.live || display?.last),
     ...(previous?.selectedRunId ? { selectedRunId: previous.selectedRunId } : {}),
   } : violations.length || notes.length || session.role ? { flow: isCoordinatorSession(session) ? 'Coordinator · writes denied' : 'No flow declared.', progress: '', issues: [], pending: null,
-    meta: scope ? [{ key: 'Delegating', value: describeScope(scope), tone: 'text' as const }] : [], labels: [], steps: [], notes, footer: null, violations } : null
+    meta: scope ? scopeRows(scope) : [], labels: [], steps: [], notes, footer: null, violations } : null
   if (generation !== undefined && generation !== refreshQueue.forcedGeneration) return
   if (await isOutdated(port, session.sessionId, observed.version)) return
   sessionMemory.painted = { sessionId: session.sessionId, version: observed.version }
   if (position && view) logSteps(port, session, view.steps, position.slice, causes)
   if (JSON.stringify(previous) !== JSON.stringify(view)) await port.writeView(view)
   await clearStaleRun(port, !!display?.live)
-  await reportHerdr(port, session, position, dismissed, isTreeChanged, !!(delegation ?? scope))
+  await reportHerdr(port, session, position, dismissed, isTreeChanged, liveness === 'live' || !!scope)
   await suggestCommand(port, position?.current?.command)
 }

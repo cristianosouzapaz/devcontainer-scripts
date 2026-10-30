@@ -69,6 +69,9 @@ export function createIssueGithub(options: IssueGithubOptions = {}): IssueGithub
       const types = options.issueTypes ?? null
       return { stdout: JSON.stringify({ data: { repository: { issueTypes: types && { nodes: types.map(name => ({ name })) } } } }) }
     }
+    const snapshot = /issue\(number:(\d+)\)\{state title labels/.exec(query)
+    const viewed = snapshot && issues.get(Number(snapshot[1]))
+    if (viewed) return { stdout: JSON.stringify({ data: { repository: { issue: { state: viewed.state, title: 'feat: x', labels: { nodes: viewed.labels.map(name => ({ name })) } } } } }) }
     const read = /issue\(number:(\d+)\)\{state stateReason/.exec(query)
     if (read) {
       const issue = issues.get(Number(read[1]))
@@ -87,6 +90,8 @@ export function createIssueGithub(options: IssueGithubOptions = {}): IssueGithub
     const number = Number(args[2])
     const issue = issues.get(number)
     if (args[0] === 'issue' && issue && args[1] === 'edit') {
+      const unknown = values(args, '--add-label').find(label => !(options.labels ?? defaultIssueLabels).includes(label))
+      if (unknown) return { exitCode: 1, stderr: `'${unknown}' not found` }
       const removed = values(args, '--remove-label')
       issue.labels = [...new Set([...issue.labels.filter(label => !removed.includes(label)), ...values(args, '--add-label')])]
       issue.assignees.push(...values(args, '--add-assignee').map(login))

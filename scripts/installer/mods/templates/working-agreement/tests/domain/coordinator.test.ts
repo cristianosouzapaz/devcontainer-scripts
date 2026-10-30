@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { buildWriteCall, coordinator, noFlow } from '../support/builders'
+import { buildWriteCall, coordinator, noFlow, trivialFlow } from '../support/builders'
 import { declareFlow, inside, readFlowStatus, readPromptContext, runFlowCommand } from '../support/helpers'
 import { test } from '../support/kit'
 import { createWorld } from '../support/world'
@@ -63,6 +63,26 @@ test('/flow coordinate is refused from a non-composer origin and on a session wi
   expect((await runFlowCommand($, 'coordinate')).text).toContain('declared flow')
 })
 
+test('/flow coordinate submits a fixed prompt that starts nothing, with the free text appended verbatim', async ($, on) => {
+  const world = createWorld(on, { branch: 'feat' }, { session: noFlow, herdrEnv: inside })
+  await runFlowCommand($, 'coordinate')
+  await runFlowCommand($, 'coordinate')
+  await runFlowCommand($, 'coordinate  focus on #12\n  first')
+  await world.clock.settle()
+  expect(world.prompts).toHaveLength(3)
+  expect(world.prompts[0]).toBe(world.prompts[1] ?? '')
+  expect(world.prompts[0]).toContain('Start nothing: spawn no unit')
+  expect(world.prompts[0]).not.toContain("User's instructions:")
+  expect(world.prompts[2]).toBe(`${world.prompts[0]}\n\nUser's instructions:\nfocus on #12\n  first`)
+})
+
+test('a refused /flow coordinate submits no prompt', async ($, on) => {
+  const world = createWorld(on, { branch: 'feat' }, { session: trivialFlow() })
+  await runFlowCommand($, 'coordinate')
+  await world.clock.settle()
+  expect(world.prompts).toEqual([])
+})
+
 test('asking for a manager pre-fills /flow coordinate without setting the role', async ($, on) => {
   const world = createAllowingWorld(on, { session: noFlow })
   const result = await $.tool.call({ tool: 'mcp__working-agreement__suggest_coordinate' } as never)
@@ -104,6 +124,14 @@ for (const agentId of loops) {
     })
   }
 }
+
+test('a coordinator denies a compound read as unrecognized and suggests running each part on its own', async ($, on) => {
+  createAllowingWorld(on)
+  const refusal = await readRefusal($, { tool: 'Bash', command: 'gh issue view 445 --comments | head -20; herdr agent list' }, undefined)
+  expect(refusal).toContain('not recognized as read-only')
+  expect(refusal).toContain('each part')
+  expect(refusal).not.toContain('never writes')
+})
 
 test('a coordinator permission check allows a read-only call and denies any other', async ($, on) => {
   createAllowingWorld(on)

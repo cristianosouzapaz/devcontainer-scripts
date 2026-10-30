@@ -4,11 +4,14 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { EnginePort } from './core/engine-port'
 import { issueTools, readModulesAhead, suggestCoordinateTool, unitTools } from './domain/coordinator'
 import { suggestDelegateTool } from './domain/delegation'
-import { markForAgent, modToolPrefix } from './domain/messages'
+import { closeReasons, triageLabels } from './domain/issue-fields'
+import { answerTool, describeHookError, failedToolAnswer, markForAgent, modToolPrefix } from './domain/messages'
 import { sessionMemory } from './core/session-memory'
 import { setSpawnLimit } from './core/spawn'
 import { setHandoffThreshold } from './features/handoff'
-import { denyCoordinatorCall, handleAgentSpawn, handleMergeChildCall, handleSuggestCall, handleSuggestDelegateCall, handleToolCheck } from './handlers/coordinator'
+import { commitDelegated } from './core/delegated-commits'
+import { mergeParent } from './core/parent-merge'
+import { denyCoordinatorCall, handleAgentSpawn, handleMergeChildCall, handlePlanCall, handleSuggestCall, handleSuggestDelegateCall, handleToolCheck } from './handlers/coordinator'
 import { handleDeclareFlowCall } from './handlers/declare-flow'
 import { handleFlowCommand } from './handlers/flow-command'
 import { handleIssueCall } from './handlers/issues'
@@ -19,7 +22,7 @@ import { handleSkillPrompt } from './handlers/skill'
 import { handleToolCall } from './handlers/tool-call'
 import { handleRun } from './handlers/run'
 import { handleVerify } from './handlers/verify'
-import { handleTurnComplete } from './handlers/turn'
+import { handleNotification, handleTurnComplete } from './handlers/turn'
 import { handleUnitCall } from './handlers/units'
 import { handleStop, handleWorktreeCreate, handleWorktreeRemove } from './handlers/worktree'
 import { runWithDeadline } from './lib/process'
@@ -32,7 +35,7 @@ const issueFields = {
   sections: { type: 'object', additionalProperties: { type: 'string', minLength: 1 }, description: 'The body: each heading mapped to its markdown, in order; the kind\'s sections are required.' },
   type: { type: 'string', description: 'Sets the type::<type> label (and the native type when GitHub has it); required when issues.types is configured.' },
   priority: { type: 'string', description: 'Sets the priority::<priority> label; required when issues.priorities is configured.' },
-  triage: { type: 'string', enum: ['needs-triage', 'needs-info', 'ready-for-agent', 'ready-for-human', 'wontfix'] },
+  triage: { type: 'string', enum: triageLabels },
   labels: { type: 'array', items: { type: 'string', minLength: 1 }, description: 'Other labels to add, e.g. wayfinder:map.' },
   assignees: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 }, description: 'Logins to assign; @me by default on create.' },
   milestone: { type: 'string', minLength: 1 },
@@ -67,6 +70,10 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
     defer: work => { $.clock.after(0, work) },
     readHerdrEnv: async () => ({ environment: await $.env.get('HERDR_ENV'), paneId: await $.env.get('HERDR_PANE_ID') }),
     readCwd: () => $.session.cwd(),
+    readClaudeDir: async () => {
+      const home = await $.env.get('HOME')
+      return await $.env.get('CLAUDE_CONFIG_DIR') ?? (home ? `${home}/.claude` : undefined)
+    },
     readPluginRoot: async () => $.plugin.root,
     readSessionId: () => $.session.id(),
     readContext: async () => (await $.session.usage({ breakdown: 'summary' })).context,
@@ -83,8 +90,8 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
     registerSurface: async () => {
       await $.command.register({
         name: 'flow',
-        description: 'Working agreement: open the pane; status | report | coordinate | delegate [#n …|stop] | setup-labels | handoff [cancel] | trivial | follow-up #n | skip <step> <reason> | approve <comment-url> | approve verify [id]',
-        argumentHint: '[status|report|coordinate|delegate [#n …|stop]|setup-labels|handoff [cancel]|trivial|follow-up #n|skip <step> <reason>|approve <comment-url>|approve verify [id]]',
+        description: 'Working agreement: open the pane; status | report | coordinate | delegate [#n …|stop] | retire #n [id] | setup-labels | handoff [cancel] | trivial | follow-up #n | skip <step> <reason> | approve <comment-url> | approve verify [id]',
+        argumentHint: '[status|report|coordinate|delegate [#n …|stop]|retire #n [id]|setup-labels|handoff [cancel]|trivial|follow-up #n|skip <step> <reason>|approve <comment-url>|approve verify [id]]',
       })
       await $.tool.register({
         name: 'run',
@@ -137,9 +144,24 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
       await $.tool.register({
         name: 'merge_child',
         isDeferred: false,
-        description: 'Coordinator only, under delegation: merges a finished child unit\'s branch into the parent branch it was cut from — fast-forward when the parent has not moved, '
+        description: 'Coordinator only, under delegation: merges a finished child unit\'s branch into the parent branch it was cut from — fast-forward when the parent\'s tip is on the child\'s first-parent chain, '
           + 'else --no-ff when it merges cleanly, aborted on conflict — and records it as delegated. Refused for a pair the mod does not know; a merge into the default branch is always the user\'s.',
         inputSchema: { type: 'object', properties: { child: { type: 'string', minLength: 1 } }, required: ['child'], additionalProperties: false },
+      })
+      await $.tool.register({
+        name: 'commit',
+        isDeferred: false,
+        description: 'Delegated unit only: commits the staged work (stage it with git add first) unsigned on the unit\'s own branch checked out here, '
+          + 'and records it as delegated; Bash git commit is refused in a delegated unit. Never pushes.',
+        inputSchema: { type: 'object', properties: { message: { type: 'string', minLength: 1 } }, required: ['message'], additionalProperties: false },
+      })
+      await $.tool.register({
+        name: 'merge_parent',
+        isDeferred: false,
+        description: 'Delegated unit only, when the coordinator asks for it: merges the parent branch\'s current tip into the unit\'s own branch checked out clean here, '
+          + 'unsigned and recorded as delegated, so merge_child then merges the child cleanly; on a conflict it names the paths and leaves the merge in progress: '
+          + 'resolve, git add, then conclude it with the commit tool. Run Verify on the merged tree. Never rebases or pushes.',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       })
       await $.tool.register({
         name: 'issue_create',
@@ -159,7 +181,7 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
         name: 'issue_close',
         isDeferred: false,
         description: 'The only way to close a GitHub issue, with its state reason and an optional closing comment; reads the issue back.',
-        inputSchema: { type: 'object', properties: { number: issueNumber, reason: { type: 'string', enum: ['completed', 'not planned', 'duplicate'] },
+        inputSchema: { type: 'object', properties: { number: issueNumber, reason: { type: 'string', enum: closeReasons },
           duplicateOf: issueNumber, comment: { type: 'string', minLength: 1 } }, required: ['number', 'reason'], additionalProperties: false },
       })
       await $.tool.register({
@@ -174,10 +196,18 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
       await $.tool.register({
         name: 'spawn',
         isDeferred: false,
-        description: 'Coordinator only: starts the unit session of an issue in its own herdr worktree on branch <n>-<title slug>, from the default branch, ' +
-          'or from the branch of the open issue blocking it once that branch has a commit. Idempotent: a live session is reused, ' +
-          'a worktree without one is reopened and its session resumed. Refused beyond the configured cap of concurrent units.',
-        inputSchema: { type: 'object', properties: { number: issueNumber }, required: ['number'], additionalProperties: false },
+        description: 'Coordinator only: starts the unit session of an issue in its own herdr worktree on branch <type>/<n>-<title slug> (<n>-<title slug> without a Conventional Commit prefix), ' +
+          'from the default branch, or from the branch of its one open blocker once that blocker\'s unit is finished or integrated. Idempotent: a live session is reused, ' +
+          'a worktree without one is reopened and its session resumed. Refused beyond the configured cap of concurrent units. ' +
+          'instructions: the unit-specific rules, appended verbatim to the start prompt so its first turn starts with them; a unit already prompted does not get them.',
+        inputSchema: { type: 'object', properties: { number: issueNumber, instructions: { type: 'string' } }, required: ['number'], additionalProperties: false },
+      })
+      await $.tool.register({
+        name: 'plan',
+        isDeferred: false,
+        description: 'Coordinator only, read-only: for each delegated issue lists its open blockers and their unit states (none, working, finished, integrated), '
+          + 'its own unit state, and whether spawn would start it now and from which branch, by spawn\'s own rules; issues that can start now come first.',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       })
       await $.tool.register({
         name: 'unit_prompt',
@@ -190,6 +220,16 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
         isDeferred: false,
         description: "Coordinator only: reads the recent terminal output of an issue's unit session.",
         inputSchema: { type: 'object', properties: { number: issueNumber, lines: { type: 'integer', minimum: 1, maximum: 500 } }, required: ['number'], additionalProperties: false },
+      })
+      await $.tool.register({
+        name: 'retire_unit',
+        isDeferred: false,
+        description: 'Coordinator only, under delegation: retires the unit of an issue in its scope so a later spawn starts it fresh. The mod archives the branch tip '
+          + 'as refs/retired/<n>/<timestamp> and uncommitted changes as a patch, posts the retirement as a delegated decision on the issue, then removes the herdr workspace, '
+          + 'worktree, branch, records and transcript, and names the restore command. Refused for a branch with a PR or merged into another branch, the calling session\'s own unit, '
+          + 'and issues outside the scope, whose retirement is the user\'s /flow retire.',
+        inputSchema: { type: 'object', properties: { number: issueNumber, reason: { type: 'string', minLength: 1, description: 'Why the unit is redone: the decision\'s reason.' } },
+          required: ['number', 'reason'], additionalProperties: false },
       })
     },
   }
@@ -231,56 +271,75 @@ export const register: Register = (on, options): void => {
 
   on('classic.Stop', ($, e, next) => handleStop(createEnginePort($, 'stop'), e, next))
 
+  // why: no engine call reads the permission mode, so spawn takes the one the session last reported, at most one tool call old.
+  on('classic.UserPromptSubmit', (_$, e, next) => { sessionMemory.permissionMode = e.permission_mode ?? null; return next(e) })
+  on('classic.PostToolUse', (_$, e, next) => { sessionMemory.permissionMode = e.permission_mode ?? null; return next(e) })
+
   // The read-only side fails open: a failed read submits the prompt with the notice instead of the flow line; a chain already called is passed through.
   on('prompt.submit', ($, e, next) => handlePromptSubmit(createEnginePort($, 'prompt'), e, next))
-    .catch((_$, e, next) => next.called ? next(e) : next({ ...e, context: [...(e.context ?? []), describeUnreadState(next.error.message ?? next.error.kind)] }))
+    .catch((_$, e, next) => next.called ? next(e) : next({ ...e, context: [...(e.context ?? []), describeUnreadState(describeHookError(next.error))] }))
 
   on('skill.prompt', ($, e, next) => handleSkillPrompt(createEnginePort($, `skill ${e.skill}`), e, next))
 
   on('turn.complete', ($, e, next) => handleTurnComplete(createEnginePort($, 'turn end'), e, next))
+  // A permission dialog holds a delegated unit mid-turn, so its coordinator hears of it here rather than at the turn end.
+  on('classic.Notification', ($, e, next) => handleNotification(createEnginePort($, 'notification'), e, next))
 
   // A coordinator never declares a flow; this hook answers without next, so the guard runs inside it.
   on('tool.call', { tool: declareTool }, async ($, e) => {
     const port = createEnginePort($, 'declare_flow')
     const deny = await denyCoordinatorCall(port, e)
     return deny ? { deny } : handleDeclareFlowCall(port, e)
-  }).catch((_$, _e, next) => ({ deny: `${checkFailed} ${next.error.message ?? next.error.kind}` }))
+  }).catch((_$, _e, next) => ({ deny: `${checkFailed} ${describeHookError(next.error)}` }))
 
   // Registration order nests hooks: the window must precede Verify and Run, which answer without next.
   // Its .catch also answers a call re-entered beneath the hook's own $ calls (next.called false): the check never ran on it, so it is denied.
-  on('tool.call', ($, e, next) => handleToolCall(createEnginePort($, `tool ${e.tool}`), e, next)).catch((_$, e, next) => next.called ? next(e) : { deny: checkFailed })
+  on('tool.call', ($, e, next) => handleToolCall(createEnginePort($, `tool ${e.tool}`), e, next)).catch((_$, e, next) => next.called ? next(e) : { deny: `${checkFailed} ${describeHookError(next.error)}` })
 
   on('tool.call', { tool: `${modToolPrefix}verify` }, ($, _e, next) => handleVerify(createEnginePort($, 'verify'), next.signal))
-    .catch((_$, _e, next) => ({ result: markForAgent(`Verify could not run: ${next.error.message ?? next.error.kind}`), isError: true }))
+    .catch((_$, _e, next) => failedToolAnswer('Verify could not run', next.error))
 
   on('tool.call', { tool: `${modToolPrefix}run` }, ($, e, next) => handleRun(createEnginePort($, 'run'), { argv: e.argv }, next.signal))
-    .catch((_$, _e, next) => ({ result: markForAgent(`Run could not run: ${next.error.message ?? next.error.kind}`), isError: true }))
+    .catch((_$, _e, next) => failedToolAnswer('Run could not run', next.error))
 
   on('tool.call', { tool: suggestCoordinateTool }, $ => handleSuggestCall(createEnginePort($, 'suggest coordinate')))
-    .catch((_$, _e, next) => ({ result: markForAgent(`The suggestion was not shown: ${next.error.message ?? next.error.kind}`), isError: true }))
+    .catch((_$, _e, next) => failedToolAnswer('The suggestion was not shown', next.error))
 
   on('tool.call', { tool: suggestDelegateTool }, ($, e) => handleSuggestDelegateCall(createEnginePort($, 'suggest delegate'), e))
-    .catch((_$, _e, next) => ({ result: markForAgent(`The suggestion was not shown: ${next.error.message ?? next.error.kind}`), isError: true }))
+    .catch((_$, _e, next) => failedToolAnswer('The suggestion was not shown', next.error))
 
   on('tool.call', { tool: `${modToolPrefix}merge_child` }, ($, e) => handleMergeChildCall(createEnginePort($, 'merge child'), e))
-    .catch((_$, _e, next) => ({ result: markForAgent(`merge_child could not run, so check the parent branch before anything else: ${next.error.message ?? next.error.kind}`), isError: true }))
+    .catch((_$, _e, next) => failedToolAnswer('merge_child could not run, so check the parent branch before anything else', next.error))
+
+  on('tool.call', { tool: `${modToolPrefix}commit` }, async ($, e) => {
+    const message: unknown = ({ ...e } as Record<string, unknown>).message
+    if (typeof message !== 'string' || !message.trim()) return { result: markForAgent('message must be the commit message.'), isError: true }
+    const done = await commitDelegated(createEnginePort($, 'commit'), message)
+    return answerTool('commit', done)
+  })
+  on('tool.call', { tool: `${modToolPrefix}merge_parent` }, async $ => {
+    const done = await mergeParent(createEnginePort($, 'merge parent'))
+    return answerTool('merge_parent', done)
+  })
+  on('tool.call', { tool: `${modToolPrefix}plan` }, $ => handlePlanCall(createEnginePort($, 'plan')))
+    .catch((_$, _e, next) => failedToolAnswer('plan could not run', next.error))
 
   for (const tool of issueTools) {
     on('tool.call', { tool: `${modToolPrefix}${tool}` }, ($, e) => handleIssueCall(createEnginePort($, tool), tool, e))
-      .catch((_$, _e, next) => ({ result: markForAgent(`${tool} could not run, so nothing is confirmed written: ${next.error.message ?? next.error.kind}`), isError: true }))
+      .catch((_$, _e, next) => failedToolAnswer(`${tool} could not run, so nothing is confirmed written`, next.error))
   }
 
   for (const tool of unitTools) {
     on('tool.call', { tool: `${modToolPrefix}${tool}` }, ($, e) => handleUnitCall(createEnginePort($, tool), tool, e))
-      .catch((_$, _e, next) => ({ result: markForAgent(`${tool} failed: ${next.error.message ?? next.error.kind}`), isError: true }))
+      .catch((_$, _e, next) => failedToolAnswer(`${tool} failed`, next.error))
   }
 
   // A coordinator's role must hold in every loop; a check that cannot read the role denies.
   on('tool.check', ($, e, next) => handleToolCheck(createEnginePort($, `check ${e.tool}`), e, next))
-    .catch(() => ({ decision: 'deny', reason: checkFailed }))
+    .catch((_$, _e, next) => ({ decision: 'deny', reason: `${checkFailed} ${describeHookError(next.error)}` }))
 
   on('agent.spawn', ($, e, next) => handleAgentSpawn(createEnginePort($, 'agent spawn'), e, next))
-    .catch(() => ({ deny: checkFailed }))
+    .catch((_$, _e, next) => ({ deny: `${checkFailed} ${describeHookError(next.error)}` }))
 
   on('command.run', { command: 'flow' }, async ($, e) => ({ text: await handleFlowCommand(createEnginePort($, `/flow ${e.args.trim().split(/\s+/)[0] ?? ''}`.trim()), e) }))
 

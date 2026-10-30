@@ -1,7 +1,7 @@
-import type { ElementTable, RenderElement } from 'claude-code'
+import type { ElementTable, RenderElement, ThemeKey } from 'claude-code'
 
 import type { FlowFooter, FlowIssue, FlowRow, FlowStep } from '../../types'
-import { drawRule, fitFact, measureFactWidth } from './pane-layout'
+import { drawRule, fitFact, measureFactWidth, measureLabelWidth, wrapWords } from './pane-layout'
 import { issueGap, keyWidth, labelColor, panePadding, pillGap, pillRowGap, symbolColor, toneColor } from './theme'
 
 /** The elements the Flow pane draws with, which `$.ui.resolve(e)` hands out. */
@@ -26,9 +26,10 @@ interface LabelRowsProps {
   rows: string[][]
 }
 
-/** The rows of a keyed section. */
+/** The rows of a keyed section and the body's width. */
 interface KeyedRowsProps {
   rows: FlowRow[]
+  columns: number
 }
 
 /** The steps of the flow and the body's width. */
@@ -138,18 +139,34 @@ export function drawLabelRows({ Box, Text }: PaneElements, props: LabelRowsProps
 }
 
 /**
+ * Draws a value as its wrapped lines, one under the other in the value column.
+ * @param elements - The pane's render elements.
+ * @param value - The value.
+ * @param columns - The body's width.
+ * @param color - The value's color.
+ * @returns The value's lines.
+ */
+function drawWrappedValue({ Box, Text }: PaneElements, value: string, columns: number, color: ThemeKey): RenderElement {
+  return <Box flexDirection="column">{wrapWords(value, measureLabelWidth(columns)).map(line => <Text color={color} wrap="wrap">{line}</Text>)}</Box>
+}
+
+/**
  * Keeps metadata values aligned while preserving suffix tone and branch truncation.
  * @param elements - The pane's render elements.
  * @param row - The metadata row.
+ * @param columns - The body's width.
  * @returns The rendered metadata row.
  */
-function drawMetaRow({ Box, Text }: PaneElements, row: FlowRow): RenderElement {
+function drawMetaRow(elements: PaneElements, row: FlowRow, columns: number): RenderElement {
+  const { Box, Text } = elements
   return (
     <Box>
       <Box width={keyWidth} flexShrink={0}>
         <Text color="inactive">{row.key}</Text>
       </Box>
-      <Text wrap={row.key === 'Branch' ? 'truncate-middle' : 'wrap'} color={toneColor[row.tone]}>{row.value}</Text>
+      {row.key === 'Branch' || row.suffix
+        ? <Text wrap={row.key === 'Branch' ? 'truncate-middle' : 'wrap'} color={toneColor[row.tone]}>{row.value}</Text>
+        : drawWrappedValue(elements, row.value, columns, toneColor[row.tone])}
       {row.suffix && <Box flexShrink={0}><Text color="inactive"> · </Text><Text color={toneColor[row.suffix.tone]}>{row.suffix.text}</Text></Box>}
     </Box>
   )
@@ -159,15 +176,17 @@ function drawMetaRow({ Box, Text }: PaneElements, row: FlowRow): RenderElement {
  * Emphasizes a note's label without truncating its explanation.
  * @param elements - The pane's render elements.
  * @param row - The note row.
+ * @param columns - The body's width.
  * @returns The rendered note row.
  */
-function drawNoteRow({ Box, Text }: PaneElements, row: FlowRow): RenderElement {
+function drawNoteRow(elements: PaneElements, row: FlowRow, columns: number): RenderElement {
+  const { Box, Text } = elements
   return (
     <Box>
       <Box width={keyWidth} flexShrink={0}>
         <Text color={toneColor[row.tone]} weight="semibold">{row.key}</Text>
       </Box>
-      <Text color="text" wrap="wrap">{row.value}</Text>
+      {drawWrappedValue(elements, row.value, columns, 'text')}
     </Box>
   )
 }
@@ -176,11 +195,11 @@ function drawNoteRow({ Box, Text }: PaneElements, row: FlowRow): RenderElement {
  * Draws the meta rows, such as the branch.
  *
  * @param elements - The element table.
- * @param props - The rows.
+ * @param props - The rows and the body's width.
  * @returns The meta rows.
  */
 export function drawMetaRows(elements: PaneElements, props: KeyedRowsProps): RenderElement {
-  return <elements.Box flexDirection="column">{props.rows.map(row => drawMetaRow(elements, row))}</elements.Box>
+  return <elements.Box flexDirection="column">{props.rows.map(row => drawMetaRow(elements, row, props.columns))}</elements.Box>
 }
 
 /**
@@ -214,11 +233,11 @@ export function drawStepList({ Box, Text }: PaneElements, props: StepListProps):
  * Draws blocked writes and a failed handoff.
  *
  * @param elements - The element table.
- * @param props - The rows.
+ * @param props - The rows and the body's width.
  * @returns The notes.
  */
 export function drawNotes(elements: PaneElements, props: KeyedRowsProps): RenderElement {
-  return <elements.Box flexDirection="column">{props.rows.map(row => drawNoteRow(elements, row))}</elements.Box>
+  return <elements.Box flexDirection="column">{props.rows.map(row => drawNoteRow(elements, row, props.columns))}</elements.Box>
 }
 
 /**

@@ -11,14 +11,14 @@ import { facts } from '../domain/facts'
 
 interface VerifyRule { paths: string[]; run: string[] }
 /** The validated config: Verify's argv and git pathspecs, and the issue-write rules. */
-export interface VerifyConfig { always: string[][]; rules: VerifyRule[]; timeoutMinutes: number; waitForCiLabels: string[]; issues: IssuesConfig }
+interface VerifyConfig { always: string[][]; rules: VerifyRule[]; timeoutMinutes: number; waitForCiLabels: string[]; issues: IssuesConfig }
 interface ValidConfig { kind: 'valid'; blob: string; config: VerifyConfig }
 interface MissingConfig { kind: 'missing'; fact: string }
 interface InvalidConfig { kind: 'invalid'; fact: string }
 /** A config as read: valid with its blob id, missing, or invalid with the error naming the field. */
-export type ConfigResult = ValidConfig | MissingConfig | InvalidConfig
-/** The commands selected for this exact slice. */
-export interface VerifySelection { commands: string[][]; description: string; isLeftToCi: boolean }
+type ConfigResult = ValidConfig | MissingConfig | InvalidConfig
+/** The commands selected for this exact slice, with the selected rules' path globs, each once. */
+interface VerifySelection { commands: string[][]; description: string; isLeftToCi: boolean; paths: string[] }
 
 /** The timeout used when a Verify config does not specify one. */
 export const defaultVerifyTimeoutMinutes = 30
@@ -169,6 +169,19 @@ function mergeByRunner(commands: string[][]): string[][] {
 }
 
 /**
+ * Tells whether a run's commands ran everything a selection asks for: each selected argv ran as written, or its runner ran bare
+ * or on paths that include each selected path.
+ * @param ran - The argv of the recorded run.
+ * @param selected - The argv the current selection would run.
+ * @returns Whether the run covers the selection.
+ */
+export function coversSelection(ran: string[][], selected: string[][]): boolean {
+  return selected.every(command => ran.some(run => JSON.stringify(run) === JSON.stringify(command)
+    || (isPathRunner(command) && isPathRunner(run) && run[0] === command[0] && (run.length === 1
+      || (command.length > 1 && command.slice(1).every(path => run.slice(1).some(other => path === other || path.startsWith(`${other}/`))))))))
+}
+
+/**
  * Selects `always` plus every rule matching a changed path; full suites are CI's, so nothing falls back to them.
  * @param port - Engine calls.
  * @param config - Validated config.
@@ -182,5 +195,6 @@ export async function selectVerify(port: EnginePort, config: VerifyConfig, base:
   const selected = config.rules.filter((_rule, index) => matches[index]!.length)
   const commands = mergeByRunner([...config.always, ...selected.map(rule => rule.run)])
   const isLeftToCi = !isUnchanged && !selected.length
-  return { commands, isLeftToCi, description: isUnchanged ? 'no change from the base' : isLeftToCi ? facts.leftToCi : `rules ${selected.flatMap(rule => rule.paths).join(', ')}` }
+  const paths = [...new Set(selected.flatMap(rule => rule.paths))]
+  return { commands, isLeftToCi, paths, description: isUnchanged ? 'no change from the base' : isLeftToCi ? facts.leftToCi : `rules ${paths.join(', ')}` }
 }

@@ -1,4 +1,5 @@
 import type { AuditFinding, AuditResult } from '../../types'
+import { formatIssueReferences } from './messages'
 import { isDecisionIssue, listLabelFamilies } from './issue-fields'
 import type { IssuesConfig } from './issue-fields'
 import { facts } from './facts'
@@ -65,7 +66,7 @@ const listNonCompliant = (findings: AuditFinding[]): number[] => [...new Set(fin
 export function describeAuditBlocker(result: AuditResult | undefined): AuditBlocker | undefined {
   if (result?.state === 'violations') {
     const issues = listNonCompliant(result.findings)
-    return { fact: facts.fixIssues(issues.length), detail: `${issues.map(issue => `#${issue}`).join(', ')} non-compliant — fix with issue_edit`, factCode: 'issues-non-compliant' }
+    return { fact: facts.fixIssues(issues.length), detail: `${formatIssueReferences(issues, ', ')} non-compliant — fix with issue_edit`, factCode: 'issues-non-compliant' }
   }
   return result?.state === 'pending' ? { fact: facts.auditPending, detail: `issue audit pending (${result.reason})`, factCode: 'issue-audit-pending' } : undefined
 }

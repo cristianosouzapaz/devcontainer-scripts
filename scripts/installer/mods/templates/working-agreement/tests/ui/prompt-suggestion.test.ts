@@ -1,8 +1,8 @@
 import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
-import { diagnoseRuns, diagnosisComment, noFlow, verifyFile } from '../support/builders'
+import { diagnoseRuns, diagnosisComment, noFlow, verifyFile, verifyId } from '../support/builders'
 import { endTurn, readCurrentStep } from '../support/helpers'
-import { configBlob, createWorld } from '../support/world'
+import { createWorld } from '../support/world'
 import type { Options } from '../support/world'
 
 const newer = { url: 'https://github.com/o/r/issues/1#issuecomment-2', createdAt: new Date(5).toISOString() }
@@ -21,7 +21,7 @@ test('Diagnose waiting for approval suggests approving the newest comment after 
 test('Verify with an unapproved config suggests approving it by its twelve-character id', async ($, on) => {
   const { suggestions } = createWorld(on, { ...unapprovedVerify }, { verifyFile })
   await endTurn($)
-  expect(suggestions).toEqual([`/flow approve verify ${configBlob(verifyFile).slice(0, 12)}`])
+  expect(suggestions).toEqual([`/flow approve verify ${verifyId()}`])
 })
 
 test('a suggestion is not repeated while the step is unchanged', async ($, on) => {

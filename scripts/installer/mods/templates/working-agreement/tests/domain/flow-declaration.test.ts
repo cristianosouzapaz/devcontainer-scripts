@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
-import { buildParentGraph, buildPullRequest, diagnosisComment, noFlow } from '../support/builders'
+import { buildParentGraph, buildPullRequest, diagnosisComment, modToolNames, noFlow } from '../support/builders'
 import { declareFlow, readCurrentStep, readFlowStatus, readPromptContext, runFlowCommand, startSkill } from '../support/helpers'
 import { createWorld, root } from '../support/world'
 import type { Checkout, Options } from '../support/world'
@@ -9,12 +9,7 @@ import type { Checkout, Options } from '../support/world'
 test('run, verify, declare_flow, the suggestion tools, the issue tools and the unit tools register in front of ToolSearch', async ($, on) => {
   const { registeredTools } = createWorld(on, { branch: 'feat' }, { session: noFlow })
   await $.session.start({ cwd: root, surface: null, isInteractive: false })
-  expect(registeredTools).toEqual([
-    { name: 'run', isDeferred: false }, { name: 'verify', isDeferred: false }, { name: 'declare_flow', isDeferred: false },
-    { name: 'suggest_coordinate', isDeferred: false }, { name: 'suggest_delegate', isDeferred: false }, { name: 'merge_child', isDeferred: false }, { name: 'issue_create', isDeferred: false }, { name: 'issue_edit', isDeferred: false },
-    { name: 'issue_close', isDeferred: false }, { name: 'issue_comment', isDeferred: false }, { name: 'spawn', isDeferred: false },
-    { name: 'unit_prompt', isDeferred: false }, { name: 'unit_read', isDeferred: false },
-  ])
+  expect(registeredTools).toEqual(modToolNames.map(name => ({ name, isDeferred: false })))
 })
 
 test('the agent cannot declare a flow that only the user declares', async ($, on) => {

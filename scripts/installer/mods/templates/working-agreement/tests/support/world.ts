@@ -4,7 +4,7 @@ import type { FlowView, ReadFailure, RunView } from '../../types'
 import type { ProcessPort } from '../../hooks/lib/process'
 import type { EnginePort, PaneView } from '../../hooks/core/engine-port'
 import { createEmptySession } from '../../hooks/domain/records'
-import type { SessionRecord } from '../../hooks/domain/records'
+import type { Identity, SessionRecord } from '../../hooks/domain/records'
 import type { MockClock } from 'claude-code/testing'
 import { githubSamples } from './github-samples'
 
@@ -28,18 +28,22 @@ interface Commit { parents: string[]; files: Record<string, string>; committerDa
  * Later commits default to the world's clock unless their committer date is specified; a commit is unsigned unless `isSigned`.
  * Two commits with the same files have the same tree. Optional trees and blobs give object ids readable fixture aliases.
  * `created` names the start point each listed branch's reflog records as `branch: Created from <start>`; every other
- * branch's reflog holds one entry with no message, as `git update-ref` writes it.
+ * branch's reflog holds one entry with no message, as `git update-ref` writes it. `moved` lists the branches whose reflog
+ * also holds a later entry, as a commit or merge on the branch writes it.
  */
 export interface Graph {
   commits: Record<string, Commit>; refs: Record<string, string>
   trees?: Record<string, Record<string, string>>; blobs?: Record<string, string>; upstreams?: Record<string, string>
   created?: Record<string, string>
+  moved?: string[]
   /** The git aliases `git config` lists, by name; none when unset. */
   aliases?: Record<string, string>
 }
 
 interface Worktree {
   branch: string; head?: string; dirty?: Record<string, string>; staged?: Record<string, string>; tree?: string; isDirty?: boolean
+  /** The commit a merge stopped on conflicts is merging, as `MERGE_HEAD` names it, so the next commit concludes that merge. */
+  merging?: string
 }
 interface HerdrResult { exitCode: number; stderr: string }
 interface ProtectionError { status?: number; message: string }
@@ -59,8 +63,8 @@ export interface Options {
   /** Answers a gh call ahead of every modelled one; undefined leaves it to them. */
   gh?: (args: string[]) => GhAnswer | undefined
   herdrResult?: HerdrResult
-  /** The standard output herdr prints for these arguments; empty when unset. */
-  herdrReply?: (args: string[]) => string
+  /** The standard output herdr prints for these arguments, or its whole result; empty when unset. */
+  herdrReply?: (args: string[]) => string | Partial<HerdrResult> & { stdout?: string }
   approvedConfig?: string
   verifyFile?: string
   platform?: string
@@ -88,7 +92,7 @@ export interface Options {
   removeExitCode?: number
   appendExitCode?: number
   listFailurePrefix?: string
-  /** The pid namespace `readlink /proc/self/ns/pid` prints; unset, the host exposes none and only leases count. */
+  /** The pid namespace `readlink /proc/self/ns/pid` prints, `hostNamespace` when unset; empty, the host exposes none. */
   pidNamespace?: string
   /** Makes reading a present file under this prefix reject, as an I/O error does. */
   readFailurePrefix?: string
@@ -135,14 +139,14 @@ interface Chat { id: string }
 /** A session store value the world holds, at the version the engine would give it. */
 interface HeldSession { value: SessionRecord | undefined; version: number }
 
-interface WorldBoundaries extends Pick<EnginePort, 'files' | 'readCwd' | 'readSessionId' | 'readHerdrEnv'> { processes: ProcessPort }
+interface WorldBoundaries extends Pick<EnginePort, 'files' | 'readCwd' | 'readSessionId' | 'readHerdrEnv' | 'readClaudeDir'> { processes: ProcessPort }
 interface LogEntry { text: string; to: UiLogSink }
 interface HerdrCall { argv: string[]; timeoutMs?: number }
 
 /** A promise gate controlled by its test. */
 export interface Gate { open?: () => void }
 
-/** The world's command log, prompt log and clock. */
+/** The mocked engine's observable state: command, prompt, run and herdr logs, files, sessions, views and clock. */
 export interface World {
   ready: Promise<void>
   answeredEntries: Set<string>
@@ -181,6 +185,7 @@ export interface World {
 
 interface GraphCache { highest: number; linear?: Graph; indexed?: Graph }
 interface GitAnswer { exitCode: number; stdout: string }
+interface MergedFiles { files: Record<string, string>; conflicts: string[] }
 interface GitContext {
   graph: Graph; checkout: Checkout; worktrees: Record<string, Worktree>; stdin: string
   commitDates: Map<string, number>
@@ -191,10 +196,14 @@ interface GitContext {
   filesAt: (revision: string) => Record<string, string> | undefined
   treeName: (files: Record<string, string>, alias?: string) => string
   blobText: (blob: string) => string
-  /** Adds a branch to the world's graph, as `git update-ref` writes it. */
-  createBranch: (name: string, id: string) => void
+  /** Adds a branch to the world's graph, as `git update-ref` writes it, its reflog naming the start point a message gave. */
+  createBranch: (name: string, id: string, from?: string) => void
   /** Moves the selected worktree's branch onto a commit, adding it to the seeded graph when given. */
   moveBranch: (sha: string, commit?: Commit) => void
+  /** Deletes a ref the graph holds, seeded or created. */
+  deleteRef: (name: string) => void
+  /** Drops a linked worktree from the list git keeps. */
+  removeWorktree: (path: string) => void
 }
 interface GitEntry { name: string; pattern: RegExp; answer: (context: GitContext, match: readonly string[]) => GitAnswer | Promise<GitAnswer> }
 
@@ -224,7 +233,8 @@ const gitAnswers: GitEntry[] = [
     return from && stop ? ok(walkFirstParents(c.graph, from, new Set(listAncestors(c.graph, stop))).join('\n')) : fatal
   } },
   { name: 'reflog', pattern: /^log --walk-reflogs --format=%gs refs\/heads\/(\S+) --$/, answer: (c, m) =>
-    isLocalBranch(c.graph, m[1] ?? '') ? ok(c.graph.created?.[m[1] ?? ''] ? `branch: Created from ${c.graph.created[m[1] ?? '']}` : '') : fatal },
+    isLocalBranch(c.graph, m[1] ?? '') ? ok([...c.graph.moved?.includes(m[1] ?? '') ? ['commit: work'] : [],
+      c.graph.created?.[m[1] ?? ''] ? `branch: Created from ${c.graph.created[m[1] ?? '']}` : ''].join('\n')) : fatal },
   { name: 'show-ref', pattern: /^show-ref --verify --quiet refs\/heads\/(\S+)$/, answer: (c, m) =>
     isLocalBranch(c.graph, m[1] ?? '') ? ok('') : { exitCode: 1, stdout: '' } },
   { name: 'list', pattern: /^rev-list (--count )?(?:--min-age=(-?\d+) )?(.+) --not (.+)$/, answer: (c, m) =>
@@ -235,7 +245,7 @@ const gitAnswers: GitEntry[] = [
     const base = from && to ? findMergeBase(c.graph, from, to) : undefined
     return base ? ok(base) : { exitCode: from && to ? 1 : 128, stdout: '' }
   } },
-  // A conflicting merge changes nothing, so the model never leaves a merge in progress.
+  // A conflicting merge moves no ref: it leaves the merge in progress, with the conflicted paths left to the staged overlay.
   { name: 'merge-run', pattern: /^merge --no-gpg-sign --no-edit (--ff-only|--no-ff) (\S+)$/, answer: (c, m) => {
     const [head, theirs] = [c.resolve('HEAD'), c.resolve(m[2] ?? '')]
     if (!head || !theirs) return fatal
@@ -244,16 +254,36 @@ const gitAnswers: GitEntry[] = [
       c.moveBranch(theirs)
       return ok('')
     }
-    const [base, ours, other] = [c.filesAt(findMergeBase(c.graph, head, theirs) ?? '') ?? {}, c.filesAt(head) ?? {}, c.filesAt(theirs) ?? {}]
-    const paths = [...new Set([...Object.keys(ours), ...Object.keys(other)])]
-    if (m[1] === '--ff-only' || paths.some(path => ours[path] !== base[path] && other[path] !== base[path] && ours[path] !== other[path])) {
-      return { exitCode: m[1] === '--ff-only' ? 128 : 1, stdout: '' }
+    if (m[1] === '--ff-only') return fatal
+    const { files, conflicts } = mergeFiles(c, head, theirs)
+    if (conflicts.length) {
+      c.checkout.merging = theirs
+      return { exitCode: 1, stdout: '' }
     }
-    const files = Object.fromEntries(paths.map(path => [path, ours[path] === base[path] ? other[path] : ours[path]]).filter(([, hash]) => hash))
-    c.moveBranch(`merge-${theirs}`, { parents: [head, theirs], files: files as Record<string, string> })
+    c.moveBranch(`merge-${theirs}`, { parents: [head, theirs], files })
     return ok('')
   } },
-  { name: 'merge-abort', pattern: /^merge --abort$/, answer: () => fatal },
+  { name: 'merge-tree', pattern: /^merge-tree --write-tree --name-only --no-messages (\S+) (\S+)$/, answer: (c, m) => {
+    const [ours, theirs] = [c.resolve(m[1] ?? ''), c.resolve(m[2] ?? '')]
+    if (!ours || !theirs) return fatal
+    const { files, conflicts } = mergeFiles(c, ours, theirs)
+    return { exitCode: conflicts.length ? 1 : 0, stdout: [c.treeName(files), ...conflicts].join('\n') }
+  } },
+  // Only the staged overlay is committed; with nothing staged git refuses, as it does with nothing to commit. A merge in progress concludes.
+  { name: 'commit', pattern: /^commit --no-gpg-sign -F -$/, answer: c => {
+    const head = c.resolve('HEAD')
+    const theirs = c.checkout.merging
+    const files = { ...theirs && head ? mergeFiles(c, head, theirs).files : c.filesAt('HEAD'), ...c.checkout.staged }
+    if (!head || (!theirs && !diffFiles(c.filesAt('HEAD') ?? {}, files).length)) return { exitCode: 1, stdout: '' }
+    delete c.checkout.merging
+    c.moveBranch(`commit-${head}`, { parents: theirs ? [head, theirs] : [head], files })
+    return ok('')
+  } },
+  { name: 'merge-abort', pattern: /^merge --abort$/, answer: c => {
+    if (!c.checkout.merging) return fatal
+    delete c.checkout.merging
+    return ok('')
+  } },
   { name: 'parents', pattern: /^log -1 --format=%P (\S+)$/, answer: (c, m) => {
     const id = c.resolve(m[1] ?? '')
     return id ? ok(c.graph.commits[id]?.parents.join(' ') ?? '') : fatal
@@ -321,12 +351,33 @@ const gitAnswers: GitEntry[] = [
   { name: 'remotes', pattern: /^remote$/, answer: c => ok([...new Set(Object.keys(c.graph.refs)
     .flatMap(ref => ref.startsWith('origin/') ? ['origin'] : ref.startsWith('refs/remotes/') ? [ref.split('/')[2] ?? ''] : []))].sort().join('\n')) },
   // An empty old value makes the update create-only: an existing branch is left alone.
-  { name: 'update-ref', pattern: /^update-ref refs\/heads\/(\S+) (\S+) $/, answer: (c, m) => {
+  { name: 'update-ref', pattern: /^update-ref (?:-m branch: Created from (\S+) )?refs\/heads\/(\S+) (\S+) $/, answer: (c, m) => {
+    const id = c.resolve(m[3] ?? '')
+    if (!id || c.resolve(m[2] ?? '')) return fatal
+    c.createBranch(m[2] ?? '', id, m[1])
+    return ok('')
+  } },
+  // A ref outside refs/heads, written create-only, as a retirement archives a branch tip.
+  { name: 'archive-ref', pattern: /^update-ref (refs\/(?!heads\/)\S+) (\S+) $/, answer: (c, m) => {
     const id = c.resolve(m[2] ?? '')
-    if (!id || c.resolve(m[1] ?? '')) return fatal
+    if (!id || c.graph.refs[m[1] ?? '']) return fatal
     c.createBranch(m[1] ?? '', id)
     return ok('')
   } },
+  { name: 'branch-force-delete', pattern: /^branch -D (\S+)$/, answer: (c, m) => {
+    const tip = isLocalBranch(c.graph, m[1] ?? '') ? c.resolve(m[1] ?? '') : undefined
+    if (!tip) return { exitCode: 1, stdout: '' }
+    c.deleteRef(m[1] ?? '')
+    return ok(`Deleted branch ${m[1]} (was ${tip}).`)
+  } },
+  { name: 'worktree-remove', pattern: /^worktree remove --force (\S+)$/, answer: (c, m) => {
+    if (!c.worktrees[m[1] ?? ''] || m[1] === root) return fatal
+    c.removeWorktree(m[1] ?? '')
+    return ok('')
+  } },
+  // The model stages nothing, so the index is the working files `add -A` would stage; each changed path prints as one file header.
+  { name: 'diff-cached', pattern: /^diff --cached --binary HEAD$/, answer: c => ok(diffFiles(c.filesAt('HEAD') ?? {}, c.working).filter(path => !isIgnored(c, path))
+    .map(path => `diff --git a/${path} b/${path}\n`).join('')) },
   { name: 'worktrees', pattern: /^worktree list --porcelain$/, answer: c => ok(Object.entries(c.worktrees)
     .sort(([a], [b]) => a === root ? -1 : b === root ? 1 : a.localeCompare(b))
     .map(([path, wt]) => `worktree ${path}\nHEAD ${wt.head ?? c.graph.refs[wt.branch]}\n`
@@ -345,6 +396,19 @@ export const common = '/repo.git'
 /** The mod's record directory under the git common directory. */
 export const records = `${common}/working-agreement`
 
+/** The pid namespace the world's processes share, unless a test sets `pidNamespace`. */
+const hostNamespace = 'pid:[1]'
+
+/** The running coordinator process a scope names by default, whose stat line the world's /proc holds. */
+export const coordinatorHost = { pidns: hostNamespace, pid: 200, pidStart: '7000', bootId: 'boot' }
+
+/**
+ * Names a unit's declaration file.
+ * @param identity - The unit identity.
+ * @returns The declaration's path.
+ */
+export const declarationFile = async (identity: Identity): Promise<string> => `${records}/u/${await hashIdentity(identity.branch, identity.issues)}.json`
+
 /**
  * Names a coordinator's delegation scope file.
  * @param sessionId - The coordinator session.
@@ -356,9 +420,19 @@ export const scopeFile = (sessionId: string): string => `${records}/delegation/$
  * Writes a coordinator's delegation scope as `/flow delegate` leaves it.
  * @param sessionId - The coordinator session.
  * @param issues - The delegated issues.
+ * @param host - The coordinator's process; the world's running coordinator by default, none when null.
  * @returns The scope's JSON.
  */
-export const buildScope = (sessionId: string, issues: number[]): string => JSON.stringify({ v: 1, sessionId, issues, coversCreated: false })
+export const buildScope = (sessionId: string, issues: number[], host: unknown = coordinatorHost): string =>
+  JSON.stringify({ v: 1, sessionId, issues, coversCreated: false, ...host === null ? {} : { host } })
+
+/**
+ * Builds a /proc stat line, whose twenty-second field is the process's start time.
+ * @param pid - The process.
+ * @param start - Its start time in clock ticks.
+ * @returns The stat line.
+ */
+export const buildStat = (pid: number, start: string): string => `${pid} (claude code) S ${Array.from({ length: 18 }, (_, index) => index + 1).join(' ')} ${start} 0`
 
 /**
  * Names a delegated-commit record.
@@ -366,6 +440,14 @@ export const buildScope = (sessionId: string, issues: number[]): string => JSON.
  * @returns The record's path.
  */
 export const delegatedFile = (key: string): string => `${records}/delegated/${key}.json`
+
+/**
+ * Names the record of a branch tip the mod itself placed for another unit, as spawn and merge_child write it.
+ * @param branch - The branch.
+ * @param sha - The tip the mod set it to.
+ * @returns The record's path.
+ */
+export const placedFile = (branch: string, sha: string): string => `${records}/placed/${encodeURIComponent(branch)}@${sha}.json`
 
 /**
  * Finds the best common ancestor of two commits: a common ancestor that is no ancestor of another one.
@@ -378,6 +460,21 @@ function findMergeBase(graph: Graph, from: string, to: string): string | undefin
   const ancestors = new Set(listAncestors(graph, to))
   const common = listAncestors(graph, from).filter(id => ancestors.has(id))
   return common.find(id => !common.some(other => other !== id && listAncestors(graph, other).includes(id)))
+}
+
+/**
+ * Merges two commits' files three ways, a path both sides changed differently keeping ours and counting as conflicted.
+ * @param c - The git context.
+ * @param head - Our commit.
+ * @param theirs - Their commit.
+ * @returns The merged files and the sorted conflicted paths.
+ */
+function mergeFiles(c: GitContext, head: string, theirs: string): MergedFiles {
+  const [base, ours, other] = [c.filesAt(findMergeBase(c.graph, head, theirs) ?? '') ?? {}, c.filesAt(head) ?? {}, c.filesAt(theirs) ?? {}]
+  const paths = [...new Set([...Object.keys(ours), ...Object.keys(other)])].sort()
+  const conflicts = paths.filter(path => ours[path] !== base[path] && other[path] !== base[path] && ours[path] !== other[path])
+  const files = Object.fromEntries(paths.map(path => [path, ours[path] === base[path] ? other[path] : ours[path]]).filter(([, hash]) => hash))
+  return { files: files as Record<string, string>, conflicts }
 }
 
 /**
@@ -576,7 +673,7 @@ export function linearGraph(tips: Record<string, number>, config?: string, highe
  * @param on - The test's hook registrar.
  * @param checkout - The checkout, read on every git call so a test can change it mid-way.
  * @param options - Session records and external responses that replace the defaults.
- * @returns The world's command log and clock.
+ * @returns The world: its logs, files, sessions, views and clock.
  */
 export function createWorld(on: On, checkout: Checkout, options: Options = {}): World {
   mock.env(on, options.herdrEnv ?? {})
@@ -600,9 +697,11 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
    * Seeds approval without exposing the approval record to scenarios.
    * @param text - The approved config content.
    */
-  const approveConfig = (text: string): void => { files.set(`${common}/working-agreement/ok/${configBlob(text)}.json`, '{"v":1}') }
+  const approveConfig = (text: string): void => { files.set(`${records}/ok/${configBlob(text)}.json`, '{"v":1}') }
   if (options.approvedConfig !== undefined) approveConfig(options.approvedConfig)
   files.set('/plugin/.claude-plugin/plugin.json', JSON.stringify({ version: '1.2.3' }))
+  files.set(`/proc/${coordinatorHost.pid}/stat`, buildStat(coordinatorHost.pid, coordinatorHost.pidStart))
+  files.set('/proc/sys/kernel/random/boot_id', `${coordinatorHost.bootId}\n`)
   const engineChat = chat.id
   const sessions = new Map<string, SessionRecord>()
   const held = new Map<string, HeldSession>()
@@ -617,8 +716,8 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   const seed = options.isStateAbsent ? undefined : initial
   if (seed) sessions.set(chat.id, seed)
   const flow = options.session?.flow ?? (options.session?.flow === null ? null : 'small-feature')
-  const ready = flow ? Promise.resolve(configBlob(JSON.stringify(identity))).then(hash => {
-    files.set(`${common}/working-agreement/u/${hash}.json`, JSON.stringify({ v: 1, identity, flow }))
+  const ready = flow ? declarationFile(identity).then(path => {
+    files.set(path, JSON.stringify({ v: 1, identity, flow }))
   }) : Promise.resolve()
   const views: (FlowView | null)[] = []
   const liveRuns: (RunView | null)[] = []
@@ -631,7 +730,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   const initialConfig = options.verifyFile
   const graphCache: GraphCache = { highest: 0 }
   // Branches the mod created, laid over whichever graph the checkout holds without changing a shared fixture.
-  const createdRefs: { refs: Record<string, string>; base?: Graph; graph?: Graph } = { refs: {} }
+  const createdRefs: { refs: Record<string, string>; created: Record<string, string>; base?: Graph; graph?: Graph } = { refs: {}, created: {} }
   const commitDates = new Map<string, number>()
   const treeFiles = new Map<string, Record<string, string>>()
   const treeNames = new Map<string, string>()
@@ -714,12 +813,15 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       herdrActivity.active += 1
       herdrActivity.maximum = Math.max(herdrActivity.maximum, herdrActivity.active)
       try { options.beforeHerdr?.(); if (herdrActivity.calls === 1) await options.herdrGate
-        return buildResult(options.herdrReply?.(e.argv.slice(1)) ?? '', options.herdrResult?.exitCode ?? 0, options.herdrResult?.stderr ?? '')
+        const reply = options.herdrReply?.(e.argv.slice(1)) ?? ''
+        const answer = typeof reply === 'string' ? { stdout: reply } : reply
+        return buildResult(answer.stdout ?? '', answer.exitCode ?? options.herdrResult?.exitCode ?? 0, answer.stderr ?? options.herdrResult?.stderr ?? '')
       } finally { herdrActivity.active -= 1 }
     }
     if (command === 'uname -s') return buildResult(options.platform ?? 'Linux')
     if (e.argv[0] === 'tail') return buildResult((options.spawnOutput ?? '').replace(/\n$/, '').split('\n').slice(-4).join('\n'))
     if (e.argv[0] === 'sh') return buildResult(options.spawnOutput ?? '')
+    if (e.argv[0] === 'sleep') { await clock.sleep(Number(e.argv[1]) * 1000); return buildResult('') }
     if (e.argv[0] === 'cp' || e.argv[0] === 'mkdir' && e.argv[1] === '-p') return buildResult('')
     const isPresent = (path: string) => created.has(path) || files.has(path) || [...files.keys()].some(file => file.startsWith(`${path}/`))
     if (e.argv[0] === 'mkdir') {
@@ -733,7 +835,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       for (const path of e.argv.slice(2)) if (isPresent(path)) modified.set(path, clock.now())
       return buildResult('')
     }
-    if (e.argv[0] === 'readlink') return options.pidNamespace ? buildResult(`${options.pidNamespace}\n`) : buildResult('', 1)
+    if (e.argv[0] === 'readlink') return (options.pidNamespace ?? hostNamespace) ? buildResult(`${options.pidNamespace ?? hostNamespace}\n`) : buildResult('', 1)
     if (e.argv[0] === 'mv' && e.argv[1] === '--') {
       const [source, target] = [e.argv[2] ?? '', e.argv[3] ?? '']
       if (files.has(source) || !isPresent(source)) return buildResult('', 1, `mv: cannot stat '${source}': No such file or directory`)
@@ -785,7 +887,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     }
     const base = checkout.graph ?? graphCache.linear ?? linearGraph(Object.fromEntries(tips), initialConfig)
     if (createdRefs.base !== base) Object.assign(createdRefs, { base, graph: undefined })
-    const graph = !Object.keys(createdRefs.refs).length ? base : createdRefs.graph ?? (createdRefs.graph = { ...base, refs: { ...base.refs, ...createdRefs.refs } })
+    const graph = !Object.keys(createdRefs.refs).length ? base : createdRefs.graph ?? (createdRefs.graph = { ...base, refs: { ...base.refs, ...createdRefs.refs }, created: { ...base.created, ...createdRefs.created } })
     const isInitialGraph = commitDates.size === 0
     for (const [ordinal, [id, commit]] of Object.entries(graph.commits).entries()) {
       // Seeded history matches the real conformance repo; later commits default to the live clock.
@@ -826,11 +928,17 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       const directory = normalized[1] === '-C' ? localRoot : e.init?.cwd ?? session.cwd
       const prefix = owner && directory.startsWith(`${owner[0]}/`) ? `${directory.slice(owner[0].length + 1)}/` : ''
       const answer = owner ? await entry.answer({ graph, commitDates, checkout: git, working, worktrees, localRoot, owner, prefix, resolve, filesAt,
-        treeName, createBranch: (name, id) => { createdRefs.refs[name] = id; createdRefs.graph = undefined }, moveBranch: (sha, commit) => {
+        treeName, createBranch: (name, id, from) => { createdRefs.refs[name] = id; if (from) createdRefs.created[name] = from; createdRefs.graph = undefined }, moveBranch: (sha, commit) => {
           if (!checkout.graph) throw new Error('A merge needs a seeded graph')
           checkout.graph = { ...checkout.graph, commits: commit ? { ...checkout.graph.commits, [sha]: commit } : checkout.graph.commits,
             refs: { ...checkout.graph.refs, [git.branch]: sha } }
         },
+        deleteRef: name => {
+          delete createdRefs.refs[name]
+          createdRefs.graph = undefined
+          if (checkout.graph?.refs[name]) checkout.graph = { ...checkout.graph, refs: Object.fromEntries(Object.entries(checkout.graph.refs).filter(([ref]) => ref !== name)) }
+        },
+        removeWorktree: path => { checkout.worktrees = Object.fromEntries(Object.entries(checkout.worktrees ?? {}).filter(([other]) => other !== path)) },
         blobText: id => id === blob ? config ?? '' : graph.blobs?.[id] ?? `${id}\n`, stdin: e.init?.stdin ?? '',
       }, local.match(entry.pattern) ?? []) : fatal
       answeredEntries.add(entry.name)
@@ -871,15 +979,13 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       return rest(githubSamples.compare[0].status, { ...githubSamples.compare[0].body,
         status: from === to ? 'identical' : !behind ? 'ahead' : !ahead ? 'behind' : 'diverged', ahead_by: ahead, behind_by: behind, total_commits: ahead })
     }
-    const checkRuns = command.match(/^gh api --paginate repos\/\{owner\}\/\{repo\}\/commits\/(\S+)\/check-runs --jq /)
-    if (checkRuns) return buildResult((options.checkRuns?.[checkRuns[1] ?? ''] ?? [])
-      .map(row => JSON.stringify(row)).join('\n'))
-    const statuses = command.match(/^gh api --paginate repos\/\{owner\}\/\{repo\}\/commits\/(\S+)\/status --jq /)
-    if (statuses) return buildResult((options.statuses?.[statuses[1] ?? ''] ?? [])
-      .map(row => JSON.stringify(row)).join('\n'))
-    const workflowRuns = command.match(/^gh api --paginate repos\/\{owner\}\/\{repo\}\/actions\/runs\?head_sha=(\S+) --jq /)
-    if (workflowRuns) return buildResult((options.workflowRuns?.[workflowRuns[1] ?? ''] ?? [])
-      .map(row => JSON.stringify(row)).join('\n'))
+    // Each per-commit CI listing answers its rows for the commit, one JSON object per line.
+    for (const [pattern, rows] of [[/^gh api --paginate repos\/\{owner\}\/\{repo\}\/commits\/(\S+)\/check-runs --jq /, options.checkRuns],
+      [/^gh api --paginate repos\/\{owner\}\/\{repo\}\/commits\/(\S+)\/status --jq /, options.statuses],
+      [/^gh api --paginate repos\/\{owner\}\/\{repo\}\/actions\/runs\?head_sha=(\S+) --jq /, options.workflowRuns]] as const) {
+      const sha = command.match(pattern)?.[1]
+      if (sha !== undefined) return buildResult((rows?.[sha] ?? []).map(row => JSON.stringify(row)).join('\n'))
+    }
     const activeRuns = command.match(/^gh api --paginate repos\/\{owner\}\/\{repo\}\/actions\/runs\?status=(\w+) --jq /)
     const runJobs = command.match(/^gh api --paginate repos\/\{owner\}\/\{repo\}\/actions\/runs\/(\d+)\/jobs --jq /)
     if ((activeRuns || runJobs) && typeof options.actionsJobs === 'string') return buildResult('', 1, options.actionsJobs)
@@ -997,6 +1103,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     },
     readHerdrEnv: async () => ({ environment: options.herdrEnv?.HERDR_ENV, paneId: options.herdrEnv?.HERDR_PANE_ID }),
     readCwd: async () => session.cwd,
+    readClaudeDir: async () => options.herdrEnv?.CLAUDE_CONFIG_DIR,
     readSessionId: async () => { options.beforeSessionId?.(); return chat.id },
   } satisfies World['boundaries']
   on('fs.stat', async (_$, e) => ({ value: await boundaries.files.stat(e.path) }))

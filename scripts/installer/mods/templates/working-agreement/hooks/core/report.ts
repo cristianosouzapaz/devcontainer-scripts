@@ -5,18 +5,21 @@ import { isUnitFinished } from '../domain/step-states'
 import { isAncestor } from '../lib/git'
 import { keyedLine } from '../ui/status-text'
 import { bestEffort } from './best-effort'
+import { readNotices } from './coordinator-notice'
 import { composeSigningReturn, readDelegatedCommits } from './delegated-commits'
 import { readOwnScope } from './delegation'
 import type { EnginePort } from './engine-port'
 import { readMarkedComments } from '../lib/github'
 import { locatePosition } from './position'
 import { readDeclaration, readSessionMirrors } from './record-store'
+import { readArchives } from './retire'
 import type { SessionMirror } from './record-store'
 
 const unknown = 'unknown'
 
 /**
- * Lists one issue's facts: its unit's step and Verify result, the unit's delegated commits and merge, and the issue's decisions.
+ * Lists one issue's facts: its unit's step and Verify result, the unit's delegated commits and merge, the issue's decisions, the notices its unit sent,
+ * and each retired unit with its restore command.
  * @param port - The engine calls.
  * @param issue - The issue.
  * @param commits - Every delegated-commit record, or null when they are unreadable.
@@ -37,15 +40,30 @@ async function reportIssue(port: EnginePort, issue: number, commits: DelegatedCo
     : await isAncestor(port.processes, `refs/heads/${unit.branch}`, `refs/heads/${parent}`) ? `into ${parent}` : 'none'
   const comments = await readMarkedComments(port.processes, issue)
   const decisions = comments.isOk ? listDecisions(comments.value) : null
+  const notices = unit ? await bestEffort(port, 'report notices', async () => (await readNotices(port, unit.branch))?.sent ?? [], null) : []
+  const archives = await bestEffort(port, 'report retirements', () => readArchives(port, issue), null)
   return [
     `#${issue}${unit ? ` · ${unit.branch}` : ''}`,
     keyedLine('Step', step),
     keyedLine('Verify', position ? position.verify.fact || unknown : !unit && mirrors ? 'none' : unknown),
     keyedLine('Commits', !unit ? 'none' : !shas ? unknown : shas.join(' ') || 'none'),
     keyedLine('Merge', merge),
-    ...decisions ? decisions.length ? decisions.map(entry => keyedLine('Decision', `${entry.cost} · ${entry.question} · ${entry.url}`)) : [keyedLine('Decision', 'none')]
-      : [keyedLine('Decision', unknown)],
+    ...listRows('Decision', decisions, entry => `${entry.cost} · ${entry.question} · ${entry.url}`),
+    ...listRows('Notice', notices, text => text),
+    ...archives ? archives.map(archive => keyedLine('Retired', `${archive.ref} · restore: ${archive.restore}`)) : [keyedLine('Retired', unknown)],
   ]
+}
+
+/**
+ * Words a list of facts as one keyed row each, `none` for an empty list and unknown for an unreadable one.
+ * @param key - The rows' key.
+ * @param values - The facts, or null when they could not be read.
+ * @param render - Words one fact.
+ * @returns The rows.
+ */
+function listRows<T>(key: string, values: T[] | null, render: (value: T) => string): string[] {
+  if (!values) return [keyedLine(key, unknown)]
+  return values.length ? values.map(value => keyedLine(key, render(value))) : [keyedLine(key, 'none')]
 }
 
 /**

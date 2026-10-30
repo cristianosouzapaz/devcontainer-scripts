@@ -14,8 +14,8 @@ export const labelColor: Record<FlowStepState, ThemeKey> = {
   done: 'text', current: 'text', pending: 'inactive', skipped: 'inactive',
 }
 
-/** The width of a row's key column, in characters. */
-export const keyWidth = 10
+/** The width of a row's key column, in characters: the longest key, `Delegating` or `Issue #410`, and one space. */
+export const keyWidth = 11
 
 /** The pane's padding: columns on each side, rows above. */
 export const panePadding = { x: 2, top: 1 }

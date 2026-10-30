@@ -1,6 +1,5 @@
 import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
-import type { Mounted } from 'claude-code/testing'
 import type { ThemeKey } from 'claude-code'
 import type { FlowView, IssueComment, ReadFailure } from '../../types'
 import { flowDefinitions } from '../../hooks/domain/flow-definitions'
@@ -11,7 +10,7 @@ import type { Position } from '../../hooks/domain/step-states'
 import { buildView } from '../../hooks/ui/view-model'
 import { renderStatusText } from '../../hooks/ui/status-text'
 import { pushedCloseOut, diagnoseRuns, diagnosisComment } from '../support/builders'
-import { checkTheme, mountPane, readFlowStatus, readPromptContext, textOf } from '../support/helpers'
+import { checkTheme, expectText, mountPane, readFlowStatus, readPromptContext, serveDisplayed, textOf } from '../support/helpers'
 import type { DrawnNode } from '../support/helpers'
 import { createWorld } from '../support/world'
 
@@ -28,11 +27,6 @@ function position(current = 'diagnose', overrides: Partial<Position> = {}): Posi
   return { flow, unit: createEmptyUnit(), git: null, slice: null, states, current: states[index] ?? null, verify: { fact: 'no pass', isVerified: false, isReached: false }, checks: 'off', isConcluded: false, ...overrides }
 }
 
-async function expectText(ui: Mounted<'terminal', 'Pane'>, text: string, props: Record<string, unknown>): Promise<void> {
-  const nodes = await ui.findAll({ type: 'Text' })
-  expect(nodes.find(node => node.text === text && Object.entries(props).every(([key, value]) => node.props[key] === value))).toBeDefined()
-}
-
 for (const columns of [30, 60]) {
   test(`Flow redraw at ${columns} columns preserves fixed parts and yields context`, async ($, on) => {
     createWorld(on, { branch: 'feat' })
@@ -43,7 +37,7 @@ for (const columns of [30, 60]) {
       notes: [...base.notes, { key: 'Checkout', value: "other, not this unit's branch", tone: 'warn' }],
       violations: [{ factId: 'v', text: '✗ a commit appeared', tone: 'error' }, { factId: 'u', text: 'could not check', tone: 'warn' }],
       steps: [...base.steps, { isError: false, isMerged: false, isRewritten: false, id: 'tickets', symbol: '↷', label: 'Tickets', state: 'skipped', detail: 'optional for this unit' }] } }
-    on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: displayed.value, version: 0 } }))
+    serveDisplayed(on, displayed)
     const ui = await mountPane($, { columns: 60 })
     await ui.redraw({ title: 'Flow', isFocused: true, bodyColumns: columns, placement: 'dock', scroll: { offset: 0, bodyRows: 50 }, view: {} })
     checkTheme(await ui.drawn(), themeKeys)
@@ -57,10 +51,11 @@ for (const columns of [30, 60]) {
     await expectText(ui, columns === 30 ? 'optional for…' : 'optional for this unit', { color: 'inactive', wrap: 'truncate-end' })
     await expectText(ui, 'feature/a-long-branch-name', { color: 'text', wrap: 'truncate-middle' })
     await expectText(ui, 'frozen', { color: 'inactive' })
-    await expectText(ui, 'read failed (unreachable)', { color: 'warning', wrap: 'wrap' })
-    await expectText(ui, columns === 30 ? ' ready-for-age… ' : ' ready-for-agent ', { color: 'text', backgroundColor: 'subtle', wrap: 'truncate-end' })
+    // The GitHub row wraps under the value column, so its first line starts the failure.
+    expect((await ui.findAll({ type: 'Text' })).find(node => node.text.startsWith('read failed') && node.props['color'] === 'warning' && node.props['wrap'] === 'wrap')).toBeDefined()
+    await expectText(ui, columns === 30 ? ' ready-for-ag… ' : ' ready-for-agent ', { color: 'text', backgroundColor: 'subtle', wrap: 'truncate-end' })
     for (const [key, color] of [['Checkout', 'warning'], ['Violation', 'error'], ['Unchecked', 'warning'], ['Blocked', 'error'], ['Handoff', 'error']]) await expectText(ui, key!, { color, weight: 'semibold' })
-    await expectText(ui, '✗ a commit appeared', { color: 'text', wrap: 'wrap' })
+    await expectText(ui, columns === 30 ? '✗ a commit' : '✗ a commit appeared', { color: 'text', wrap: 'wrap' })
     await expectText(ui, 'could not check', { color: 'text', wrap: 'wrap' })
     const boxes = await ui.findAll({ type: 'Box' })
     for (const text of ['✓ ', 'Diagnose', ' · ', 'Branch', base.progress, ' · frozen']) {
@@ -69,7 +64,7 @@ for (const columns of [30, 60]) {
     const pillRows = boxes.filter(box => box.props['gap'] === 2 && box.children.some(child => (child as DrawnNode).props?.['backgroundColor'] === 'subtle'))
     expect(pillRows).toHaveLength(columns === 30 ? 3 : 2)
     expect(renderStatusText(displayed.value)).toContain('↷ Tickets · optional for this unit')
-    expect(boxes.find(box => textOf(box).includes('dismiss') && box.props['marginTop'] === 1 && box.props['paddingLeft'] === 10)).toBeDefined()
+    expect(boxes.find(box => textOf(box).includes('dismiss') && box.props['marginTop'] === 1 && box.props['paddingLeft'] === 11)).toBeDefined()
     expect(boxes.find(box => textOf(box).includes('Run log') && box.props['alignItems'] === 'flex-end')?.props['flexDirection']).toBe(columns < 44 ? 'column' : 'row')
     expect(textOf(await ui.drawn())).not.toContain('History')
     expect(textOf(await ui.drawn())).not.toContain('run /')
@@ -79,7 +74,7 @@ for (const columns of [30, 60]) {
     await expectText(ui, '? ', { color: 'inactive' })
     expect(textOf(await ui.drawn())).not.toContain('History')
     expect(renderStatusText(displayed.value)).not.toContain('History')
-    await expectText(ui, 'read failed (not authenticated — run gh auth login)', { color: 'warning', wrap: 'wrap' })
+    await expectText(ui, columns === 30 ? 'read failed' : 'read failed (not authenticated — run gh auth', { color: 'warning', wrap: 'wrap' })
     checkTheme(await ui.drawn(), themeKeys)
     await ui.unmount()
   })
@@ -89,7 +84,7 @@ test('merged PR and failing CI draw their own symbols, facts and theme keys', as
   createWorld(on, { branch: 'feat' })
   const concluded = position('pr', { isConcluded: true, pullRequest: { number: 318, state: 'MERGED' } })
   const displayed = { value: buildView(declared, concluded, null, false) }
-  on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: displayed.value, version: 0 } }))
+  serveDisplayed(on, displayed)
   const ui = await mountPane($, { columns: 60 })
   expect(textOf(await ui.drawn())).toContain('✓ PR #318 · merged')
   expect(renderStatusText(displayed.value)).toContain('✓ PR #318 · merged')
@@ -121,7 +116,7 @@ for (const [name, unit, info, fact, full = fact] of [
     const session: Session = { ...declared, issues: name === 'issue' ? [] : [1], info: { 1: { title: 'bug', labels: [], ...info } } }
     const located = position('diagnose', { unit: { ...createEmptyUnit(), skips: [{ step: 'triage', reason: 'the fixture starts at Diagnose' }], ...unit } })
     const view = buildView(session, withStates(located, session), null, false)
-    on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: view, version: 0 } }))
+    serveDisplayed(on, { value: view })
     const ui = await mountPane($, { columns: 60 })
     await expectText(ui, fact, { color: 'text', wrap: 'truncate-end' })
     expect(renderStatusText(view)).toContain(`${name === 'approval' ? '●' : '▸'} Diagnose · ${full}`)
@@ -154,7 +149,7 @@ for (const current of ['triage', 'diagnose']) {
     createWorld(on, { branch: 'feat' })
     const state = position(current)
     const view = buildView(declared, { ...state, states: state.states.map(entry => ({ ...entry, isError: true })) }, null, false)
-    on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: view, version: 0 } }))
+    serveDisplayed(on, { value: view })
     const ui = await mountPane($, { columns: 60 })
     await expectText(ui, '▸ ', { color: 'suggestion' })
     expect(await ui.findAll({ type: 'Text', text: '✗ ' })).toHaveLength(0)
@@ -185,7 +180,7 @@ for (const action of ['start', 'continue'] as const) {
       expect(sessions.get('next')?.unit ?? null).toBeNull()
       expect(prompts).toEqual([])
       expect(views.at(-1)).toBeNull()
-      expect((await readFlowStatus($))).toContain('No flow declared')
+      expect(await readFlowStatus($)).toContain('No flow declared')
     }
     await ui.unmount()
   })

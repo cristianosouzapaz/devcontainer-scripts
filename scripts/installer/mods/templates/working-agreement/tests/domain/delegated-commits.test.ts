@@ -5,15 +5,18 @@ import { findDeniedWord } from '../../hooks/domain/bash-guards'
 import { composeSigningCommands } from '../../hooks/domain/delegated-commits'
 import { hashObject } from '../../hooks/lib/git'
 import type { SigningBranch } from '../../hooks/domain/delegated-commits'
-import { coordinator, noFlow } from '../support/builders'
-import { declareFlow, runFlowCommand } from '../support/helpers'
+import { coordinator, guarded, noFlow } from '../support/builders'
+import { callModTool, declareFlow, runFlowCommand } from '../support/helpers'
 import { test } from '../support/kit'
 import { readDelegated } from '../support/parallel-worktrees'
 import { buildScope, createTestPort, createWorld, delegatedFile, scopeFile } from '../support/world'
-import type { Checkout, Graph, Options } from '../support/world'
+import type { Checkout, Graph, Options, World } from '../support/world'
 
 /** Holds the history change the next opaque Bash call makes. */
 interface PendingChange { change?: (git: Graph) => Graph }
+
+/** A delegation test's world, its live checkout and the change slot the next Bash call applies. */
+interface Arranged { world: World; checkout: Checkout; pending: PendingChange }
 
 
 /**
@@ -42,7 +45,7 @@ const commitOn = (git: Graph, branch: string, isSigned = false): Graph => ({
  * @param options - Further world options.
  * @returns The world, the live checkout and the change slot the next Bash call applies.
  */
-function arrange(on: Parameters<typeof createWorld>[0], isDelegated = true, options: Options = {}): { world: ReturnType<typeof createWorld>; checkout: Checkout; pending: PendingChange } {
+function arrange(on: Parameters<typeof createWorld>[0], isDelegated = true, options: Options = {}): Arranged {
   const checkout: Checkout = { branch: 'feat', graph: graph() }
   const pending: PendingChange = {}
   const world = createWorld(on, checkout, { session: noFlow, ...options, afterTool: () => {
@@ -57,7 +60,7 @@ test('a delegated unit\'s unsigned commit on its own branch is recorded as deleg
   const { world, pending } = arrange(on)
   await declareFlow($, 'fix', [3])
   pending.change = git => commitOn(git, 'feat')
-  const result = await $.tool.call({ tool: 'Bash', command: 'git commit -m change' })
+  const result = await $.tool.call({ tool: 'Bash', command: 'opaque' })
   expect(result.context?.join('') ?? '').not.toContain('a commit appeared')
   expect(world.sessions.get('sid')?.violations ?? []).toEqual([])
   expect(readDelegated(world)).toEqual([expect.objectContaining({ v: 1, sha: 'b', branch: 'feat' })])
@@ -84,6 +87,37 @@ for (const command of ['git push origin feat', 'git rebase main', 'git branch -D
     arrange(on)
     await declareFlow($, 'fix', [3])
     expect((await $.tool.call({ tool: 'Bash', command })).deny).toContain('Under delegation this command is refused')
+  })
+}
+
+for (const command of ['git commit -F msg', 'git -c commit.gpgsign=false commit -F msg', 'git -C . commit -m x']) {
+  test(`a delegated unit's ${command} is refused for the commit tool`, async ($, on) => {
+    arrange(on)
+    await declareFlow($, 'fix', [3])
+    expect((await $.tool.call({ tool: 'Bash', command })).deny).toContain('commit tool')
+  })
+}
+
+test('a delegated unit\'s commit tool commits its staged work unsigned on its own branch and records it as delegated', async ($, on) => {
+  const { world, checkout } = arrange(on)
+  await declareFlow($, 'fix', [3])
+  checkout.staged = { f: 'b' }
+  const result = await callModTool($, 'commit', { message: 'fix: change' })
+  expect(result.isError).toBe(false)
+  expect(checkout.graph?.refs.feat).toBe('commit-a')
+  expect(readDelegated(world)).toEqual([expect.objectContaining({ v: 1, sha: 'commit-a', branch: 'feat' })])
+  expect(world.sessions.get('sid')?.violations ?? []).toEqual([])
+})
+
+for (const [name, isDelegated, branch] of [['without delegation', false, 'feat'], ['on another branch', true, 'other']] as const) {
+  test(`the commit tool is refused ${name}`, async ($, on) => {
+    const { world, checkout } = arrange(on, isDelegated)
+    await declareFlow($, 'fix', [3])
+    checkout.branch = branch
+    checkout.staged = { f: 'b' }
+    expect((await callModTool($, 'commit', { message: 'fix: change' })).isError).toBe(true)
+    expect(checkout.graph?.refs[branch]).toBe('a')
+    expect(readDelegated(world)).toEqual([])
   })
 }
 
@@ -138,13 +172,13 @@ test('/flow delegate stop gives the signing rebase and push commands per branch 
 
 for (const [name, options, isUnguarded] of [
   ['without', {}, true],
-  ['with', { rules: [{ ruleset_id: 7, type: 'required_signatures' }], rulesets: [{ id: 7, current_user_can_bypass: 'never' }] }, false],
+  ['with', guarded(), false],
 ] as [string, Options, boolean][]) {
-  test(`/flow delegate ${name} a signed-commit ruleset ${isUnguarded ? 'shows' : 'does not show'} push unguarded`, async ($, on) => {
+  test(`/flow delegate ${name} a signed-commit ruleset ${isUnguarded ? 'shows' : 'does not show'} its absence`, async ($, on) => {
     const world = createWorld(on, { branch: 'feat' }, { session: coordinator, ...options })
     await runFlowCommand($, 'delegate #3')
     const row = world.views.at(-1)?.meta.find(entry => entry.key === 'Delegating')
-    expect(row?.value).toBe(isUnguarded ? '#3 · push unguarded' : '#3')
+    expect(row?.value).toBe(isUnguarded ? '#3 · no signed-commit ruleset' : '#3')
   })
 }
 

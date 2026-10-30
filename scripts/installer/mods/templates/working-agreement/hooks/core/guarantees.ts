@@ -15,6 +15,7 @@ import { withRecordLock } from './session-memory'
 import { drawTerritory } from './territory'
 import type { RefSnapshot } from './territory'
 import { readCandidates, selectBasePullRequest } from './unit-github'
+import { pluralize } from '../domain/messages'
 
 /** Keeps independent snapshots so a GitHub failure cannot suppress git verdicts. */
 export interface GuaranteeSnapshot {
@@ -215,7 +216,7 @@ export async function judgeGuarantees(engine: EnginePort, before: GuaranteeSnaps
 export function describeViolation(fact: Violation, reader: ViolationReader, root?: string): string {
   if (fact.kind === 'unchecked') {
     const count = fact.count ?? 1
-    return `unchecked: guarantee snapshots unavailable for ${count} call${count === 1 ? '' : 's'}, latest ${fact.fact.toolUseId}`
+    return `unchecked: guarantee snapshots unavailable for ${pluralize(count, 'call')}, latest ${fact.fact.toolUseId}`
   }
   const outside = fact.kind === 'commit' ? fact.checkouts?.find(wt => wt.root !== root) : undefined
   const subject = fact.kind === 'commit' ? `a commit appeared${outside ? ` on ${outside.branch ?? 'a detached HEAD'}, checked out in another worktree,` : ''}`

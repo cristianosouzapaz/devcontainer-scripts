@@ -3,7 +3,7 @@ import { expect } from 'claude-code/testing'
 import { test } from '../../support/kit'
 import { buildPullRequest, buildWriteCall, noFlow, fixed, diagnosisComment } from '../../support/builders'
 import { declareFlow, readFlowStatus, readPromptContext, runFlowCommand } from '../../support/helpers'
-import { common, createWorld, linearGraph } from '../../support/world'
+import { createWorld, linearGraph, records } from '../../support/world'
 
 test('a commit made after the declaration ticks Commit, even unseen by the session', async ($, on) => {
   const git = { branch: 'feat', ahead: 8 }
@@ -39,7 +39,7 @@ test('Commit requires a merge only when another unit shares the branch', async (
   expect(await readPromptContext($)).not.toContain('bring the default branch in with a merge')
   const session = sessions.get('sid')!
   const second = { identity: { branch: 'feat', issues: [2] }, skills: [], verifyRuns: [], runs: [] }
-  files.set(`${common}/working-agreement/s/other.json`, JSON.stringify({ ...session, sessionId: 'other', unit: second.identity, units: [second] }))
+  files.set(`${records}/s/other.json`, JSON.stringify({ ...session, sessionId: 'other', unit: second.identity, units: [second] }))
   expect(await readPromptContext($)).toContain('bring the default branch in with a merge, never a rebase')
 })
 
@@ -51,7 +51,7 @@ test('on a shared branch whose PR targets a non-default base, Commit asks to mer
   await runFlowCommand($, 'skip verify covered separately')
   const session = sessions.get('sid')!
   const second = { identity: { branch: 'feat', issues: [2] }, skills: [], verifyRuns: [], runs: [] }
-  files.set(`${common}/working-agreement/s/other.json`, JSON.stringify({ ...session, sessionId: 'other', unit: second.identity, units: [second] }))
+  files.set(`${records}/s/other.json`, JSON.stringify({ ...session, sessionId: 'other', unit: second.identity, units: [second] }))
   expect(await readPromptContext($)).toContain('bring next in with a merge, never a rebase')
 })
 

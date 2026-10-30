@@ -3,7 +3,7 @@ import { expect } from 'claude-code/testing'
 import { test } from '../../support/kit'
 import { buildWriteCall, noFlow } from '../../support/builders'
 import { readFlowStatus, readPromptContext } from '../../support/helpers'
-import { common, createWorld, root } from '../../support/world'
+import { common, createWorld, records, root } from '../../support/world'
 
 for (const tool of ['Write', 'Edit', 'NotebookEdit']) {
   test(`${tool} on the default branch is denied before the tool runs`, async ($, on) => {
@@ -91,8 +91,8 @@ test('git metadata outside the records directory is not judged', async ($, on) =
 
 for (const branch of ['main', 'feature', 'HEAD']) {
   test(`the records directory is denied with ${branch} checked out`, async ($, on) => {
-    createWorld(on, { branch }, { symlinks: { '/tmp/records': common }, ignored: [`${common}/working-agreement/x`] })
-    for (const path of [`${common}/working-agreement/x`, '/tmp/records/working-agreement/new/x']) {
+    createWorld(on, { branch }, { symlinks: { '/tmp/records': common }, ignored: [`${records}/x`] })
+    for (const path of [`${records}/x`, `${records}/v/x.json`, '/tmp/records/working-agreement/new/x']) {
       const result = await $.tool.call(buildWriteCall(path))
       expect(result.deny).toContain("cannot write the mod's records")
       expect(result.deny).toContain('/flow approve')

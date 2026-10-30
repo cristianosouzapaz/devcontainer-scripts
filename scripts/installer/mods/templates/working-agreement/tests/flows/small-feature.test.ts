@@ -2,9 +2,9 @@ import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
 import { buildParentGraph, buildPullRequest, noFlow, verifyFile } from '../support/builders'
-import { declareFlow, readCurrentStep, readFlowStatus, runFlowCommand, startSkill } from '../support/helpers'
+import { approveVerify, declareFlow, readCurrentStep, readFlowStatus, runFlowCommand, startSkill } from '../support/helpers'
 import { completeDelivery } from '../support/delivery'
-import { configBlob, createWorld, linearGraph } from '../support/world'
+import { createWorld, linearGraph } from '../support/world'
 import type { Checkout, Options } from '../support/world'
 
 test('a Small feature keeps Grill current until GitHub marks its issue ready', async ($, on) => {
@@ -25,7 +25,7 @@ test('new work after a green PR shows the PR step pending until Code, Verify, Co
   const options: Options = { session: noFlow, verifyFile, issueLabels: { 1: ['ready-for-agent'] } }
   const { clock } = createWorld(on, git, options)
   await declareFlow($, 'small-feature', [1])
-  await runFlowCommand($, `approve verify ${configBlob(verifyFile).slice(0, 12)}`)
+  await approveVerify($)
   await $.tool.call({ tool: 'mcp__working-agreement__verify' })
   Object.assign(git, { graph: { ...graph, refs: { ...graph.refs, feat: 'c1' } }, isDirty: false, changed: [], tree: undefined })
   Object.assign(options, { prs: [buildPullRequest()], statuses: { c1: [{ context: 'test', state: 'success' }] } })

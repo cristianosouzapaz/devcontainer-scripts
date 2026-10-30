@@ -1,27 +1,53 @@
 import type { On } from 'claude-code'
 import { expect } from 'claude-code/testing'
+import { coveredSkips, seedUnit } from '../support/parallel-worktrees'
 
+import { createEmptySession } from '../../hooks/domain/records'
 import { coordinator, noFlow } from '../support/builders'
-import { callModTool, inside } from '../support/helpers'
+import { callModTool, declareFlow, inside, readRevision } from '../support/helpers'
 import { test } from '../support/kit'
-import { createTestPort, createWorld, records } from '../support/world'
+import { buildScope, createWorld, placedFile, records, scopeFile } from '../support/world'
 import type { Checkout, Options, World } from '../support/world'
 
 /** A herdr workspace the fake server holds: its label, checkout and whether an agent runs in its pane. */
 interface Workspace { id: string; label: string; path: string; hasAgent?: boolean }
 
 /** An issue as the spawn's GitHub read returns it. */
-interface Issue { state?: string; title?: string; blockedBy?: { number: number; state: string }[] }
+interface Issue { state?: string; title?: string; labels?: string[]; blockedBy?: { number: number; state: string }[] }
 
+
+/** The unit agent's input box: the submits it misses before it takes one, the text typed and unsent, the prompts it took and whether it works. */
+interface Agent { misses: number; typed: string; received: string[]; isWorking: boolean }
 
 /**
  * Answers herdr like a live server that keeps the workspaces it opens.
  * @param workspaces - The open workspaces, changed as the server opens worktrees and starts agents.
+ * @param agent - The unit agent, whose submits miss while it is not ready.
  * @returns The world's herdr reply.
  */
-const herdrServer = (workspaces: Workspace[]): Options['herdrReply'] => args => {
+const herdrServer = (workspaces: Workspace[], agent: Agent = { misses: 0, typed: '', received: [], isWorking: false }): Options['herdrReply'] => args => {
   const [noun, verb] = args
   const option = (name: string) => args[args.indexOf(name) + 1] ?? ''
+  const submit = (): boolean => {
+    if (agent.misses > 0) {
+      agent.misses -= 1
+      return false
+    }
+    agent.received.push(agent.typed)
+    agent.typed = ''
+    agent.isWorking = true
+    return true
+  }
+  // why: herdr 0.9.5 fails a waited prompt that saw no working or blocked state within 5s with agent_prompt_stalled, leaving the text typed.
+  if (noun === 'agent' && verb === 'prompt') {
+    agent.typed += args[3] ?? ''
+    return submit() || !args.includes('--wait') ? '{}' : { exitCode: 1, stderr: 'agent_prompt_stalled' }
+  }
+  if (noun === 'agent' && verb === 'send-keys') {
+    if (args.includes('Enter') && agent.typed) submit()
+    return '{}'
+  }
+  if (noun === 'agent' && verb === 'wait') return agent.isWorking ? '{}' : { exitCode: 1, stderr: 'timeout' }
   if (noun === 'workspace' && verb === 'list') {
     return JSON.stringify({ result: { workspaces: workspaces.map(each => ({ workspace_id: each.id, label: each.label, worktree: { checkout_path: each.path } })) } })
   }
@@ -53,18 +79,18 @@ const github = (issues: Record<number, Issue>): Options['gh'] => args => {
   const issue = issues[number]
   if (!query || !issue) return undefined
   return { stdout: JSON.stringify({ data: { repository: { issue: { state: issue.state ?? 'OPEN', title: issue.title ?? 'feat(mod): spawn a unit',
-    blockedBy: { nodes: issue.blockedBy ?? [] } } } } }) }
+    labels: { nodes: (issue.labels ?? ['ready-for-agent']).map(name => ({ name })) }, blockedBy: { nodes: issue.blockedBy ?? [] } } } } }) }
 }
 
 /**
- * Builds main and origin/main on m0, with #7's branch one commit past it and #8's branch level with it.
+ * Builds main and origin/main on m0, with #7's typed branch one commit past it and #8's untyped branch level with it.
  * @param worktrees - Extra checkouts git lists.
  * @returns The checkout of the coordinator on main.
  */
 const repository = (worktrees: Checkout['worktrees'] = {}): Checkout => ({
   branch: 'main',
   graph: { commits: { m0: { parents: [], files: {} }, p1: { parents: ['m0'], files: { a: '1' } } },
-    refs: { main: 'm0', 'origin/main': 'm0', '7-parent-work': 'p1', '8-idle-parent': 'm0', ...Object.fromEntries(Object.values(worktrees).map(each => [each.branch, 'm0'])) } },
+    refs: { main: 'm0', 'origin/main': 'm0', 'feat/7-parent-work': 'p1', '8-idle-parent': 'm0', ...Object.fromEntries(Object.values(worktrees).map(each => [each.branch, 'm0'])) } },
   worktrees: { '/repo': { branch: 'main' }, ...worktrees },
 })
 
@@ -89,13 +115,16 @@ const createSpawnWorld = (on: On, workspaces: Workspace[], issues: Record<number
 const herdrRuns = (world: World, prefix: string): string[] => world.herdrCalls.map(call => call.argv.join(' ')).filter(line => line.startsWith(`herdr ${prefix}`))
 
 /**
- * Reads where a branch points in the world's repository.
+ * Seeds the unit session of an issue's branch as finished: every step before Commit covered, its worktree clean.
  * @param world - The world.
- * @param branch - The branch.
- * @returns The commit, empty when it does not exist.
+ * @param checkout - The repository, given the branch's worktree.
+ * @param branch - The unit branch.
+ * @param issue - The issue number.
  */
-async function readBranch(world: World, branch: string): Promise<string> {
-  return (await createTestPort(world).processes.run(['git', 'rev-parse', '--verify', '--quiet', branch], { timeoutMs: 5000 })).stdout
+async function seedFinishedUnit(world: World, checkout: Checkout, branch: string, issue: number): Promise<void> {
+  await world.ready
+  checkout.worktrees = { ...checkout.worktrees, [`/wt/${branch}`]: { branch } }
+  await seedUnit(world, `unit-${issue}`, { branch, issues: [issue] }, { skips: coveredSkips(), base: 'm0', baseBranch: 'main' })
 }
 
 test('spawn is refused outside a coordinator session and outside herdr', async ($, on) => {
@@ -113,12 +142,45 @@ test('a fresh issue gets its branch from the default branch, a labelled worktree
   const world = createSpawnWorld(on, [], { 12: { title: 'feat(mod): Spawn a unit!' } })
   const outcome = await callModTool($, 'spawn', { number: 12 })
   expect(outcome).toEqual({ text: expect.stringContaining('started'), isError: false })
-  expect(await readBranch(world, '12-spawn-a-unit')).toBe('m0')
-  expect(herdrRuns(world, 'worktree create')[0]).toContain('--branch 12-spawn-a-unit')
+  expect(await readRevision(world, 'feat/12-spawn-a-unit')).toBe('m0')
+  expect(world.files.has(placedFile('feat/12-spawn-a-unit', 'm0'))).toBe(true)
+  expect(herdrRuns(world, 'worktree create')[0]).toContain('--branch feat/12-spawn-a-unit')
   expect(herdrRuns(world, 'worktree create')[0]).toContain('--label wa-spawn:12')
-  expect(herdrRuns(world, 'agent start')[0]).toMatch(/^herdr agent start issue-12 .* -- --session-id [0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  expect(herdrRuns(world, 'agent start')[0]).toMatch(/^herdr agent start issue-12 .* -- --permission-mode default --session-id [0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
   expect(herdrRuns(world, 'agent prompt issue-12')[0]).toContain('#12')
 })
+
+test('the coordinator\'s instructions end the start prompt verbatim under their heading, and only text is taken', async ($, on) => {
+  const agent: Agent = { misses: 0, typed: '', received: [], isWorking: false }
+  createSpawnWorld(on, [], { 12: {} }, { herdrReply: herdrServer([], agent) })
+  expect(await callModTool($, 'spawn', { number: 12, instructions: 42 })).toEqual({ text: expect.stringContaining('instructions must be text'), isError: true })
+  expect((await callModTool($, 'spawn', { number: 12, instructions: 'ask before a suite run:\n  verify waits for my go' })).isError).toBe(false)
+  expect(agent.received).toEqual([expect.stringMatching(/ worktree\. The coordinator is herdr pane [^\n]+\.\n\nUser's instructions:\nask before a suite run:\n {2}verify waits for my go$/)])
+})
+
+test('instructions for a unit already prompted are not sent, and the result says to send them with unit_prompt', async ($, on) => {
+  const world = createSpawnWorld(on, [], { 12: {} })
+  await callModTool($, 'spawn', { number: 12 })
+  expect(await callModTool($, 'spawn', { number: 12, instructions: 'no verify' })).toEqual({ text: expect.stringContaining('send them with unit_prompt'), isError: false })
+  expect(herdrRuns(world, 'agent prompt')).toHaveLength(1)
+  expect(herdrRuns(world, 'agent prompt')[0]).not.toContain("User's instructions")
+})
+
+test('a title without a Conventional prefix gives an untyped branch, and another issue\'s branch is never taken for it', async ($, on) => {
+  const world = createSpawnWorld(on, [], { 2: { title: 'Spawn a unit' } }, {},
+    repository({ '/wt/12-spawn-a-unit': { branch: '12-spawn-a-unit' }, '/wt/fix/12-other': { branch: 'fix/12-other' } }))
+  expect((await callModTool($, 'spawn', { number: 2 })).isError).toBe(false)
+  expect(await readRevision(world, '2-spawn-a-unit')).toBe('m0')
+})
+
+for (const labels of [['needs-triage'], ['needs-info'], ['ready-for-human'], []]) {
+  test(`an issue labelled ${labels[0] ?? 'with no triage label'} is refused by name and gets no unit`, async ($, on) => {
+    const world = createSpawnWorld(on, [], { 12: { labels } })
+    expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining(`#12 is ${labels[0] ?? 'not triaged'}`), isError: true })
+    expect(await readRevision(world, 'feat/12-spawn-a-unit')).toBe('')
+    expect(herdrRuns(world, 'worktree')).toEqual([])
+  })
+}
 
 test('a live spawn lock is waited on, never broken, and a stale one is broken', async ($, on) => {
   const world = createSpawnWorld(on, [], { 12: {} })
@@ -134,20 +196,85 @@ test('a live spawn lock is waited on, never broken, and a stale one is broken', 
   expect((await breaking).text).toContain('started')
 })
 
-test('a blocked issue starts from its dependency\'s branch once that branch has a commit', async ($, on) => {
-  const world = createSpawnWorld(on, [], { 12: { blockedBy: [{ number: 7, state: 'OPEN' }, { number: 3, state: 'CLOSED' }] } })
+test('a blocked issue starts from its dependency\'s branch once its dependency\'s unit is finished', async ($, on) => {
+  const checkout = repository()
+  const world = createSpawnWorld(on, [], { 12: { blockedBy: [{ number: 7, state: 'OPEN' }, { number: 3, state: 'CLOSED' }] } }, {}, checkout)
+  await seedFinishedUnit(world, checkout, 'feat/7-parent-work', 7)
   expect((await callModTool($, 'spawn', { number: 12 })).isError).toBe(false)
-  expect(await readBranch(world, '12-spawn-a-unit')).toBe('p1')
+  expect(await readRevision(world, 'feat/12-spawn-a-unit')).toBe('p1')
 })
 
-for (const [name, blocker, waitsFor] of [['has no commit past the default branch', 8, '8-idle-parent'], ['has no branch', 9, '#9']] as const) {
-  test(`a blocked issue whose dependency ${name} says what it waits for and starts nothing`, async ($, on) => {
-    const world = createSpawnWorld(on, [], { 12: { blockedBy: [{ number: blocker, state: 'OPEN' }] } })
-    expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining(waitsFor), isError: true })
-    expect(await readBranch(world, '12-spawn-a-unit')).toBe('')
-    expect(herdrRuns(world, 'worktree')).toEqual([])
+test('a blocked issue whose dependency\'s unit has no commit of its own waits for it, however far its steps went', async ($, on) => {
+  const checkout = repository()
+  const world = createSpawnWorld(on, [], { 12: { blockedBy: [{ number: 8, state: 'OPEN' }] } }, {}, checkout)
+  await seedFinishedUnit(world, checkout, '8-idle-parent', 8)
+  expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining('#12 waits: #8\'s unit is working'), isError: true })
+  expect(await readRevision(world, 'feat/12-spawn-a-unit')).toBe('')
+})
+
+for (const [name, blockedBy, parent, base] of [
+  ['a child spawned from its dependency\'s branch declares that branch as its parent', [{ number: 7, state: 'OPEN' }], 'feat/7-parent-work', 'p1'],
+  ['a unit spawned with no dependency declares the default branch as its parent', [], 'main', 'm0'],
+] as const) {
+  test(name, async ($, on) => {
+    const checkout = repository()
+    const world = createSpawnWorld(on, [], { 12: { blockedBy: [...blockedBy] } }, {}, checkout)
+    if (blockedBy.length) await seedFinishedUnit(world, checkout, parent, 7)
+    expect((await callModTool($, 'spawn', { number: 12 })).isError).toBe(false)
+    // The unit's own session starts in the new worktree, on the spawned branch.
+    checkout.branch = 'feat/12-spawn-a-unit'
+    checkout.worktrees = { ...checkout.worktrees, '/repo': { branch: checkout.branch } }
+    world.chat.id = 'unit'
+    world.seedChat('unit', { ...createEmptySession('unit'), info: { 12: { title: 'feat(mod): spawn a unit', labels: ['ready-for-agent'] } } })
+    await declareFlow($, 'small-feature', [12])
+    expect(world.sessions.get('unit')?.units[0]).toMatchObject({ baseBranch: parent, base })
   })
 }
+
+for (const [name, refs, base, parent] of [
+  ['a child of a dependency its parent was just fast-forwarded to starts from that parent and declares it as its parent',
+    { 'feat/7-parent-work': 'p1', 'feat/5-collect': 'p1' }, 'p1', 'feat/5-collect'],
+  ['a child of a dependency fast-forwarded into its parent starts from that parent\'s tip and declares it as its parent',
+    { 'feat/7-parent-work': 'p1', 'feat/5-collect': 'c2' }, 'c2', 'feat/5-collect'],
+  ['a child of a dependency merged into its parent with a merge commit starts from that parent\'s tip and declares it as its parent',
+    { 'feat/7-parent-work': 'p1', 'feat/5-collect': 'c4' }, 'c4', 'feat/5-collect'],
+  ['a child of a dependency not yet integrated into its parent starts from the dependency\'s branch',
+    { 'feat/7-parent-work': 'p2', 'feat/5-collect': 'c2' }, 'p2', 'feat/7-parent-work'],
+] as const) {
+  test(name, async ($, on) => {
+    const { graph } = repository()
+    const checkout = repository()
+    // #7 was cut from the collecting branch #5 and worked on; #5 took it by fast-forward (c2 follows p1) or by a merge
+    // commit after moving on (c3 merges c1 and p1), then moved on past it.
+    checkout.graph = { ...graph, commits: { ...graph?.commits, c2: { parents: ['p1'], files: { a: '1', c: '1' } }, p2: { parents: ['p1'], files: { a: '2' } },
+      c1: { parents: ['m0'], files: { b: '1' } }, c3: { parents: ['c1', 'p1'], files: { a: '1', b: '1' } }, c4: { parents: ['c3'], files: { a: '1', b: '1', c: '1' } } },
+      refs: { ...graph?.refs, ...refs }, created: { 'feat/7-parent-work': 'feat/5-collect' }, moved: ['feat/7-parent-work'] }
+    const world = createSpawnWorld(on, [], { 12: { blockedBy: [{ number: 7, state: 'OPEN' }] } }, {}, checkout)
+    if (parent === 'feat/7-parent-work') await seedFinishedUnit(world, checkout, parent, 7)
+    expect((await callModTool($, 'spawn', { number: 12 })).isError).toBe(false)
+    expect(await readRevision(world, 'feat/12-spawn-a-unit')).toBe(base)
+    checkout.branch = 'feat/12-spawn-a-unit'
+    checkout.worktrees = { ...checkout.worktrees, '/repo': { branch: checkout.branch } }
+    world.chat.id = 'unit'
+    world.seedChat('unit', { ...createEmptySession('unit'), info: { 12: { title: 'feat(mod): spawn a unit', labels: ['ready-for-agent'] } } })
+    await declareFlow($, 'small-feature', [12])
+    expect(world.sessions.get('unit')?.units[0]).toMatchObject({ baseBranch: parent, base })
+  })
+}
+
+test('a blocked issue whose dependency\'s unit is still working says what it waits for and starts nothing', async ($, on) => {
+  const world = createSpawnWorld(on, [], { 12: { blockedBy: [{ number: 7, state: 'OPEN' }] } })
+  expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining('#12 waits: #7\'s unit is working'), isError: true })
+  expect(await readRevision(world, 'feat/12-spawn-a-unit')).toBe('')
+  expect(herdrRuns(world, 'worktree')).toEqual([])
+})
+
+test('a blocked issue whose dependency has no branch says what it waits for and starts nothing', async ($, on) => {
+  const world = createSpawnWorld(on, [], { 12: { blockedBy: [{ number: 9, state: 'OPEN' }] } })
+  expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining('#9'), isError: true })
+  expect(await readRevision(world, 'feat/12-spawn-a-unit')).toBe('')
+  expect(herdrRuns(world, 'worktree')).toEqual([])
+})
 
 test('spawn again reuses the live session and starts nothing', async ($, on) => {
   const world = createSpawnWorld(on, [], { 12: {} })
@@ -158,6 +285,40 @@ test('spawn again reuses the live session and starts nothing', async ($, on) => 
   expect(herdrRuns(world, 'agent prompt')).toHaveLength(1)
 })
 
+test('spawn of a live unit whose start prompt was never sent sends it now', async ($, on) => {
+  const world = createSpawnWorld(on, [{ id: 'w5', label: 'wa-spawn:12', path: '/wt/12-spawn-a-unit', hasAgent: true }], {}, {},
+    repository({ '/wt/12-spawn-a-unit': { branch: '12-spawn-a-unit' } }))
+  await world.ready
+  world.files.set(`${records}/spawn/12.json`, JSON.stringify({ isStarted: true, isPrompted: false }))
+  expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining('start prompt is sent now'), isError: false })
+  expect(herdrRuns(world, 'agent start')).toEqual([])
+  expect(herdrRuns(world, 'agent prompt issue-12 Work on issue #12')).toHaveLength(1)
+  expect((await callModTool($, 'spawn', { number: 12 })).text).toMatch(/already runs .* in \/wt\/12-spawn-a-unit\.$/)
+  expect(herdrRuns(world, 'agent prompt')).toHaveLength(1)
+})
+
+test('a unit that misses its start prompt\'s submit gets one more Enter and takes the prompt once', async ($, on) => {
+  const agent: Agent = { misses: 1, typed: '', received: [], isWorking: false }
+  createSpawnWorld(on, [], { 12: {} }, { herdrReply: herdrServer([], agent) })
+  expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining('started as herdr agent issue-12'), isError: false })
+  expect(agent).toMatchObject({ isWorking: true, typed: '', received: [expect.stringMatching(/^Work on issue #12 /)] })
+})
+
+test('a unit that never takes its start prompt is reported, and a later spawn submits the typed prompt without typing it again', async ($, on) => {
+  const agent: Agent = { misses: 5, typed: '', received: [], isWorking: false }
+  createSpawnWorld(on, [], { 12: {} }, { herdrReply: herdrServer([], agent) })
+  expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining('did not take its start prompt'), isError: true })
+  agent.misses = 0
+  expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining('start prompt is sent now'), isError: false })
+  expect(agent).toMatchObject({ isWorking: true, typed: '', received: [expect.stringMatching(/^Work on issue #12 /)] })
+  expect(agent.received[0]?.match(/Work on issue/g)).toHaveLength(1)
+})
+
+test('a failing herdr call reports herdr\'s own error', async ($, on) => {
+  createSpawnWorld(on, [], {}, { herdrResult: { exitCode: 2, stderr: 'agent_not_found' } })
+  expect(await callModTool($, 'unit_prompt', { number: 12, text: '-x text' })).toEqual({ text: expect.stringContaining('exit 2: agent_not_found'), isError: true })
+})
+
 test('a worktree without a session is reopened and resumes the session it started, without a new start prompt', async ($, on) => {
   const workspaces: Workspace[] = []
   const checkout = repository()
@@ -166,11 +327,27 @@ test('a worktree without a session is reopened and resumes the session it starte
   const sessionId = herdrRuns(world, 'agent start')[0]?.split(' ').at(-1)
   // The user closed the workspace; git still lists the checkout.
   workspaces.length = 0
-  checkout.worktrees = { ...checkout.worktrees, '/wt/12-spawn-a-unit': { branch: '12-spawn-a-unit' } }
+  checkout.worktrees = { ...checkout.worktrees, '/wt/feat/12-spawn-a-unit': { branch: 'feat/12-spawn-a-unit' } }
   expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining('resumed'), isError: false })
-  expect(herdrRuns(world, 'worktree open')[0]).toContain('--path /wt/12-spawn-a-unit')
-  expect(herdrRuns(world, 'agent start')[1]).toContain(`-- --resume ${sessionId}`)
+  expect(herdrRuns(world, 'worktree open')[0]).toContain('--path /wt/feat/12-spawn-a-unit')
+  expect(herdrRuns(world, 'agent start')[1]).toContain(`--resume ${sessionId}`)
   expect(herdrRuns(world, 'agent prompt')).toHaveLength(1)
+})
+
+test('a resumed unit\'s result says how far its branch is behind its parent\'s tip and that its worktree holds uncommitted changes', async ($, on) => {
+  const workspaces: Workspace[] = []
+  const checkout = repository()
+  const world = createSpawnWorld(on, workspaces, { 12: { blockedBy: [{ number: 7, state: 'OPEN' }] } }, {}, checkout)
+  await seedFinishedUnit(world, checkout, 'feat/7-parent-work', 7)
+  expect((await callModTool($, 'spawn', { number: 12 })).text).not.toContain('behind')
+  workspaces.length = 0
+  checkout.graph = { ...checkout.graph!, commits: { ...checkout.graph!.commits, p2: { parents: ['p1'], files: { a: '2' } } },
+    refs: { ...checkout.graph!.refs, 'feat/7-parent-work': 'p2' } }
+  checkout.worktrees = { ...checkout.worktrees, '/wt/feat/12-spawn-a-unit': { branch: 'feat/12-spawn-a-unit', isDirty: true } }
+  const resumed = (await callModTool($, 'spawn', { number: 12 })).text
+  expect(resumed).toContain('resumed')
+  expect(resumed).toContain('feat/12-spawn-a-unit is 1 commit(s) behind feat/7-parent-work\'s tip')
+  expect(resumed).toContain('/wt/feat/12-spawn-a-unit has uncommitted changes')
 })
 
 test('a unit workspace whose session ended gets its session back in its own pane', async ($, on) => {
@@ -183,18 +360,74 @@ test('a unit workspace whose session ended gets its session back in its own pane
 
 test('beyond the cap spawn refuses and names the running units, while a running one is still reused', async ($, on) => {
   const running = [1, 2, 3, 4].map(issue => ({ id: `w${issue}`, label: `wa-spawn:${issue}`, path: `/wt/${issue}`, hasAgent: true }))
-  const world = createSpawnWorld(on, running, { 12: {} })
+  const world = createSpawnWorld(on, running, { 12: {}, 3: {} })
   const outcome = await callModTool($, 'spawn', { number: 12 })
   expect(outcome.isError).toBe(true)
   for (const issue of [1, 2, 3, 4]) expect(outcome.text).toContain(`#${issue}`)
-  expect(await readBranch(world, '12-spawn-a-unit')).toBe('')
+  expect(await readRevision(world, 'feat/12-spawn-a-unit')).toBe('')
   expect(await callModTool($, 'spawn', { number: 3 })).toEqual({ text: expect.stringContaining('already runs'), isError: false })
+})
+
+test('the cap counts only live units still working: an integrated unit and a workspace whose session is gone free their slots', async ($, on) => {
+  const { graph } = repository()
+  const checkout = repository()
+  checkout.graph = { ...graph, commits: { ...graph?.commits, c2: { parents: ['p1'], files: { a: '1', c: '1' } } },
+    refs: { ...graph?.refs, 'feat/5-collect': 'c2' }, created: { 'feat/7-parent-work': 'feat/5-collect' }, moved: ['feat/7-parent-work'] }
+  const gone = [1, 2, 3].map(issue => ({ id: `w${issue}`, label: `wa-spawn:${issue}`, path: `/wt/${issue}` }))
+  const world = createSpawnWorld(on, [...gone, { id: 'w7', label: 'wa-spawn:7', path: '/wt/7', hasAgent: true }], { 12: {} }, {}, checkout)
+  expect((await callModTool($, 'spawn', { number: 12 })).isError).toBe(false)
+  expect(await readRevision(world, 'feat/12-spawn-a-unit')).not.toBe('')
+})
+
+test('a unit workspace closed while spawn counts the cap holds no slot, and spawn goes on', async ($, on) => {
+  const live = [1, 2, 3, 4].map(issue => ({ id: `w${issue}`, label: `wa-spawn:${issue}`, path: `/wt/${issue}`, hasAgent: true }))
+  const server = herdrServer(live) as NonNullable<Options['herdrReply']>
+  const closed = { exitCode: 1, stdout: JSON.stringify({ error: { code: 'workspace_not_found', message: 'workspace w4 not found' } }) }
+  // The user closes #4's workspace after spawn listed the workspaces, before it lists w4's panes.
+  const close = (): typeof closed => {
+    live.splice(live.findIndex(each => each.id === 'w4'), 1)
+    return closed
+  }
+  const world = createSpawnWorld(on, live, { 12: {} }, { herdrReply: args => args.join(' ') === 'pane list --workspace w4' ? close() : server(args) })
+  expect((await callModTool($, 'spawn', { number: 12 })).isError).toBe(false)
+  expect(await readRevision(world, 'feat/12-spawn-a-unit')).not.toBe('')
+})
+
+test('the cap counts a live unit reopened on a branch its parent already holds, until its new work lands', async ($, on) => {
+  const { graph } = repository()
+  const checkout = repository()
+  checkout.graph = { ...graph, commits: { ...graph?.commits, c2: { parents: ['p1'], files: { a: '1', c: '1' } } },
+    refs: { ...graph?.refs, 'feat/5-collect': 'c2' }, created: { 'feat/7-parent-work': 'feat/5-collect' }, moved: ['feat/7-parent-work'] }
+  checkout.worktrees = { ...checkout.worktrees, '/wt/7': { branch: 'feat/7-parent-work' } }
+  const live = [1, 2, 3, 7].map(issue => ({ id: `w${issue}`, label: `wa-spawn:${issue}`, path: `/wt/${issue}`, hasAgent: true }))
+  const world = createSpawnWorld(on, live, { 12: {} }, {}, checkout)
+  await seedUnit(world, 'unit-7', { branch: 'feat/7-parent-work', issues: [7] }, { skips: [], base: 'p1', baseBranch: 'feat/5-collect' }, 'fix')
+  const outcome = await callModTool($, 'spawn', { number: 12 })
+  expect(outcome).toEqual({ text: expect.stringContaining('#7 (/wt/7)'), isError: true })
+  expect(await readRevision(world, 'feat/12-spawn-a-unit')).toBe('')
+})
+
+test('the cap leaves out live units that finished:a child awaiting Integrate and a unit awaiting its PR', async ($, on) => {
+  const { graph } = repository()
+  const checkout = repository()
+  checkout.graph = { ...graph, commits: { ...graph?.commits, e1: { parents: ['m0'], files: { e: '1' } } },
+    refs: { ...graph?.refs, 'feat/5-collect': 'm0', '8-idle-parent': 'e1' }, created: { 'feat/7-parent-work': 'feat/5-collect', '8-idle-parent': 'main' } }
+  checkout.worktrees = { ...checkout.worktrees, '/wt/7': { branch: 'feat/7-parent-work' }, '/wt/8': { branch: '8-idle-parent' } }
+  const live = [1, 2, 7, 8].map(issue => ({ id: `w${issue}`, label: `wa-spawn:${issue}`, path: `/wt/${issue}`, hasAgent: true }))
+  const world = createSpawnWorld(on, live, { 12: {}, 7: {}, 8: {} }, {}, checkout)
+  for (const [issue, branch, entry] of [[7, 'feat/7-parent-work', { base: 'm0', baseBranch: 'feat/5-collect' }], [8, '8-idle-parent', { base: 'm0' }]] as const) {
+    await seedUnit(world, `unit-${issue}`, { branch, issues: [issue] }, { skips: coveredSkips(), ...entry })
+  }
+  world.files.set(scopeFile('sid'), buildScope('sid', [7, 8]))
+  expect((await callModTool($, 'plan')).text).toMatch(/^#7 .* · unit finished · .*\n#8 .* · unit finished · /)
+  expect((await callModTool($, 'spawn', { number: 12 })).isError).toBe(false)
+  expect(await readRevision(world, 'feat/12-spawn-a-unit')).not.toBe('')
 })
 
 test('the coordinator messages and reads a unit through the mod, and no other session can', async ($, on) => {
   const world = createSpawnWorld(on, [], {})
   expect((await callModTool($, 'unit_prompt', { number: 12, text: 'Take option A.' })).isError).toBe(false)
-  expect(herdrRuns(world, 'agent prompt')).toEqual(['herdr agent prompt issue-12 -- Take option A.'])
+  expect(herdrRuns(world, 'agent prompt')).toEqual(['herdr agent prompt issue-12 Take option A.'])
   expect(await callModTool($, 'unit_read', { number: 12 })).toEqual({ text: 'unit output', isError: false })
 })
 
@@ -207,4 +440,59 @@ test('a session without the coordinator role cannot message a unit', async ($, o
 test('unit_read refuses a line count that is not a whole number from 1 to 500', async ($, on) => {
   createSpawnWorld(on, [], { 12: {} })
   for (const lines of [1.5, 0, 501]) expect((await callModTool($, 'unit_read', { number: 12, lines })).text).toContain('lines must be a whole number')
+})
+
+test('a coordinator in auto mode spawns and resumes its unit in auto mode, and the result names it', async ($, on) => {
+  const workspaces: Workspace[] = []
+  const checkout = repository()
+  const world = createSpawnWorld(on, workspaces, { 12: {} }, {}, checkout)
+  await $.classic.UserPromptSubmit({ prompt: 'spawn #12', permission_mode: 'auto' } as never)
+  expect((await callModTool($, 'spawn', { number: 12 })).text).toContain('in auto mode')
+  workspaces.length = 0
+  checkout.worktrees = { ...checkout.worktrees, '/wt/feat/12-spawn-a-unit': { branch: 'feat/12-spawn-a-unit' } }
+  expect((await callModTool($, 'spawn', { number: 12 })).text).toContain('resumed')
+  expect(herdrRuns(world, 'agent start').map(line => line.split(' -- ')[1]?.split(' ').slice(0, 2).join(' '))).toEqual(['--permission-mode auto', '--permission-mode auto'])
+})
+
+for (const mode of ['bypassPermissions', 'plan', undefined]) {
+  test(`a coordinator in ${mode ?? 'an unreported'} mode spawns its unit in default mode`, async ($, on) => {
+    const world = createSpawnWorld(on, [], { 12: {} })
+    if (mode) await $.classic.UserPromptSubmit({ prompt: 'spawn #12', permission_mode: mode } as never)
+    expect((await callModTool($, 'spawn', { number: 12 })).text).toContain('in default mode')
+    expect(herdrRuns(world, 'agent start')[0]).toContain('-- --permission-mode default ')
+  })
+}
+
+test('plan lists each delegated issue with its blockers\' unit states, the issues spawn would start now first with their base', async ($, on) => {
+  const world = createSpawnWorld(on, [], { 7: {}, 12: { blockedBy: [{ number: 7, state: 'OPEN' }] }, 13: { blockedBy: [{ number: 9, state: 'OPEN' }] }, 14: { labels: ['needs-triage'] } })
+  await world.ready
+  world.files.set(scopeFile('sid'), buildScope('sid', [14, 13, 12, 7]))
+  const plan = await callModTool($, 'plan')
+  expect(plan.isError).toBe(false)
+  expect(plan.text.split('\n')).toEqual([
+    '#7 feat(mod): spawn a unit · unit working · blocked by none · has its unit: spawn reuses it',
+    '#12 feat(mod): spawn a unit · unit none · blocked by #7 (working) · #12 waits: #7\'s unit is working',
+    '#13 feat(mod): spawn a unit · unit none · blocked by #9 (none) · #13 waits: its dependency #9 has no unit branch yet',
+    expect.stringMatching(/^#14 feat\(mod\): spawn a unit · unit none · blocked by none · #14 is needs-triage, and only a ready-for-agent issue gets a unit/),
+  ])
+  expect((await callModTool($, 'plan')).text).toBe(plan.text)
+  expect(herdrRuns(world, '')).toEqual([])
+})
+
+test('plan bases a child of an integrated blocker on the branch that integrated it, as spawn does', async ($, on) => {
+  const { graph } = repository()
+  const checkout = repository()
+  checkout.graph = { ...graph, commits: { ...graph?.commits, c2: { parents: ['p1'], files: { a: '1', c: '1' } } },
+    refs: { ...graph?.refs, 'feat/5-collect': 'c2' }, created: { 'feat/7-parent-work': 'feat/5-collect' }, moved: ['feat/7-parent-work'] }
+  const world = createSpawnWorld(on, [], { 12: { blockedBy: [{ number: 7, state: 'OPEN' }] } }, {}, checkout)
+  await world.ready
+  world.files.set(scopeFile('sid'), buildScope('sid', [12]))
+  expect((await callModTool($, 'plan')).text).toBe('#12 feat(mod): spawn a unit · unit none · blocked by #7 (integrated) · can start now from feat/5-collect')
+  expect((await callModTool($, 'spawn', { number: 12 })).isError).toBe(false)
+  expect(await readRevision(world, 'feat/12-spawn-a-unit')).toBe('c2')
+})
+
+test('plan is refused outside a coordinator session', async ($, on) => {
+  createSpawnWorld(on, [], {}, { session: noFlow })
+  expect(await callModTool($, 'plan')).toEqual({ text: expect.stringContaining('only a coordinator'), isError: true })
 })

@@ -10,8 +10,9 @@ import { resolveStepStates } from '../../hooks/domain/step-states'
 import type { Evidence, Position } from '../../hooks/domain/step-states'
 import { buildParentGraph, buildParentPullRequest, diagnoseRuns, diagnosisComment, noFlow, verifyFile } from '../support/builders'
 import { endTurn, inside, readFlowStatus } from '../support/helpers'
-import { common, configBlob, createTestPort, createWorld, root } from '../support/world'
+import { common, configBlob, createTestPort, createWorld, records, root } from '../support/world'
 import type { Gate, World } from '../support/world'
+import { parChild } from '../support/parallel-worktrees'
 
 /** An assertion the world runs just before its next herdr call, once a test sets it. */
 interface HerdrCheck { run?: () => void }
@@ -22,7 +23,7 @@ interface HerdrCheck { run?: () => void }
  * @returns The declarations' paths.
  */
 function listDeclarations(world: World): string[] {
-  return [...world.files.keys()].filter(path => path.startsWith(`${common}/working-agreement/u/`))
+  return [...world.files.keys()].filter(path => path.startsWith(`${records}/u/`))
 }
 
 for (const env of [{}, { HERDR_ENV: '0', HERDR_PANE_ID: 'p' }, { HERDR_ENV: '1' }, { HERDR_ENV: '1', HERDR_PANE_ID: '' }] as Record<string, string>[]) {
@@ -137,7 +138,7 @@ test('/flow status shows the current sidebar error and removes its row after rec
   const options = { herdrEnv: inside, herdrResult: { exitCode: 9, stderr: 'unavailable\nmore detail' } }
   createWorld(on, { branch: 'feat' }, options)
   const status = await readFlowStatus($)
-  expect(status).toContain('herdr     report-metadata · ')
+  expect(status).toContain('herdr      report-metadata · ')
   expect(status).toContain(' · ×1 · exit 9: unavailable')
   options.herdrResult = { exitCode: 0, stderr: '' }
   expect(await readFlowStatus($)).not.toContain('herdr')
@@ -229,7 +230,7 @@ for (const [name, tip, expected] of [['before its merge', 'p1', '▸ Integrate']
   test(`a child's sidebar step ${name} reads ${expected}, as on the pane`, async ($, on) => {
     const graph = buildParentGraph()
     const world = createWorld(on, { branch: 'a', graph: { ...graph, refs: { ...graph.refs, par: tip } } },
-      { herdrEnv: inside, unit: { base: 'p1', baseBranch: 'par', skips: [{ step: 'code', reason: 'covered' }, { step: 'verify', reason: 'covered' }] } })
+      { ...parChild(), herdrEnv: inside })
     await readFlowStatus($)
     await endTurn($)
     expect(world.herdrCalls.at(-1)?.argv).toContain(`flow_step=${expected}`)
@@ -251,7 +252,7 @@ for (const [name, head, expected] of [['stranded', 'p2', '✗ Integrate'], ['con
     const graph = buildParentGraph()
     const commits = { ...graph.commits, a3: { parents: ['a2'], files: { 'src/a.ts': 'a3' } }, ma3: { parents: ['p2', 'a3'], files: { 'src/a.ts': 'a3' } } }
     const world = createWorld(on, { branch: 'a', graph: { ...graph, commits, refs: { ...graph.refs, a: 'a3', par: 'ma3' } } }, { herdrEnv: inside,
-      prs: [buildParentPullRequest({ number: 9, headRefOid: head })], unit: { base: 'p1', baseBranch: 'par', skips: [{ step: 'code', reason: 'covered' }, { step: 'verify', reason: 'covered' }] } })
+      prs: [buildParentPullRequest({ number: 9, headRefOid: head })], ...parChild() })
     await readFlowStatus($)
     await endTurn($)
     expect(world.herdrCalls.at(-1)?.argv).toContain(`flow_step=${expected}`)

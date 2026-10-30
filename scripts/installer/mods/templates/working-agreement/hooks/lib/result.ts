@@ -47,3 +47,11 @@ export const settle = <T>(work: Promise<T>): Promise<Result<T>> => work.then(suc
  * @returns Its message, or its text when it is not an Error.
  */
 export const formatError = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+
+/**
+ * Words a thrown value as the first line of its error message, for a reply that must stay on one line.
+ *
+ * @param error - What was thrown.
+ * @returns The message's first line.
+ */
+export const formatErrorLine = (error: unknown): string => formatError(error).split(/\r?\n/)[0] ?? ''

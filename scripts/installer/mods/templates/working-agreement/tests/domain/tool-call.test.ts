@@ -36,3 +36,10 @@ for (const [name, input, output, appears] of [
     else expect(context).not.toContain("does not see the unit's uncommitted changes")
   })
 }
+
+test('a tool call whose check fails is denied with the error that failed it', async ($, on) => {
+  createWorld(on, { branch: 'feature' }, { failing: 'git rev-parse --path-format=absolute --git-common-dir' })
+  const deny = (await $.tool.call(buildWriteCall('src/a.ts'))).deny ?? ''
+  expect(deny).toContain('The check failed')
+  expect(deny).toContain('process.run')
+})

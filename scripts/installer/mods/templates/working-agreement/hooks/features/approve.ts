@@ -1,6 +1,6 @@
 import type { IssueComment } from '../../types'
 import { findFlow, hasDiagnoseStep } from '../domain/flow-definitions'
-import { findEarliestRed } from '../domain/records'
+import { findEarliestRed, findLatestRedBefore } from '../domain/records'
 import type { Identity, Session, Unit } from '../domain/records'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
@@ -21,7 +21,7 @@ export interface ApprovePort {
 }
 
 /**
- * Approves a live diagnosis comment posted after the unit's earliest red run.
+ * Approves a live diagnosis comment posted after a red run, pinning the latest red before it: the one the diagnosis was written on.
  *
  * @param port - The engine and core calls.
  * @param args - The words after `approve`.
@@ -36,7 +36,7 @@ export async function applyApproval(port: ApprovePort, args: string): Promise<Re
 }
 
 /**
- * Accepts diagnosis approval only from a declared issue comment posted after the earliest red run.
+ * Accepts diagnosis approval only from a declared issue comment posted after a red run, and pins the latest such red.
  * @param port - The approval's persistence and GitHub calls.
  * @param url - The user-supplied diagnosis comment URL.
  * @returns The approval confirmation, or the first unmet approval requirement.
@@ -45,8 +45,8 @@ async function storeApproval(port: ApprovePort, url: string): Promise<Result<str
   const session = await port.readSession()
   const flow = findFlow(session.flow)
   if (!session.unit || !hasDiagnoseStep(flow)) return fail('The declared flow has no Diagnose step, so there is nothing to approve.')
-  const red = findEarliestRed((await port.readUnit(session.unit)).runs)
-  if (!red) return fail('There is no red run yet: reproduce the bug through the run tool first.')
+  const runs = (await port.readUnit(session.unit)).runs
+  if (!findEarliestRed(runs)) return fail('There is no red run yet: reproduce the bug through the run tool first.')
   const comments = new Map<number, IssueComment[]>()
   for (const issue of session.issues) {
     const read = await port.readComments(issue)
@@ -55,7 +55,8 @@ async function storeApproval(port: ApprovePort, url: string): Promise<Result<str
   }
   const comment = [...comments.values()].flat().find(comment => comment.url === url)
   if (!comment) return fail('That URL is not a comment of the declared issue.')
-  if (Date.parse(comment.createdAt) <= red.at) return fail('That comment was created before the red run; post a diagnosis comment after it.')
+  const red = findLatestRedBefore(runs, Date.parse(comment.createdAt))
+  if (!red) return fail('That comment was created before the red run; post a diagnosis comment after it.')
   const approvedRed = { argv: red.argv, tree: red.tree, at: red.at, runId: red.runId }
   await port.updateUnits(session, unit => ({ ...unit, approval: url, approvedRed }))
   port.log(session, 'approve', { comment: url })

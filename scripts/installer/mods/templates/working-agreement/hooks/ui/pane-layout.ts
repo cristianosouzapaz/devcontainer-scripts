@@ -12,8 +12,9 @@ interface LabelLayout {
  */
 const defaultDockColumns = Math.min(Math.floor(144 * 0.45), 90, 144 - 70) - 1
 
-/** The columns a step's mark and its space take, and the ` · ` between its label and its fact. */
+/** The columns a step's mark and its space take. */
 const factMarkColumns = 2
+/** The columns of the ` · ` between a step's label and its fact. */
 const factSeparatorColumns = 3
 
 /** The longest step label, `Integrate` or a five-digit `PR #12345`. */
@@ -63,13 +64,26 @@ export function layoutLabelRows(labels: string[], width: number): string[][] {
 }
 
 /**
- * Measures the columns the pills of a label row may span.
+ * Measures the columns the pills of a label row, or a keyed row's value, may span beside the key column.
  *
  * @param bodyColumns - The width of the pane's body.
  * @returns The width left of the body after its padding and the key column, at least 1.
  */
 export function measureLabelWidth(bodyColumns: number): number {
   return Math.max(bodyColumns - 2 * panePadding.x - keyWidth, 1)
+}
+
+/**
+ * Wraps a value into lines of whole words, since the engine does not wrap a value drawn beside the key column.
+ * @param value - The value.
+ * @param width - The columns a line may span.
+ * @returns The lines; a word wider than the width takes a line of its own, which the engine may still break.
+ */
+export function wrapWords(value: string, width: number): string[] {
+  return value.split(' ').filter(Boolean).reduce<string[]>((lines, word) => {
+    const last = lines.at(-1)
+    return last !== undefined && last.length + 1 + word.length <= width ? [...lines.slice(0, -1), `${last} ${word}`] : [...lines, word]
+  }, [])
 }
 
 /**

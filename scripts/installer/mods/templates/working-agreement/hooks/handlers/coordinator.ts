@@ -1,11 +1,13 @@
 import type { Args, EventResult, Frozen, Next } from 'claude-code'
 
 import { mergeChild } from '../core/child-merge'
+import { composePlan } from '../core/plan'
 import type { EnginePort } from '../core/engine-port'
 import { readSession } from '../core/record-store'
-import { coordinatorDeny, isAllowedForCoordinator, isCoordinatorSession, judgeCoordinatorCall } from '../domain/coordinator'
-import { markForAgent } from '../domain/messages'
+import { coordinatorDeny, explainCoordinatorDeny, isAllowedForCoordinator, isCoordinatorSession, judgeCoordinatorCall } from '../domain/coordinator'
+import { answerTool, markForAgent } from '../domain/messages'
 import { isIssueNumber } from '../lib/guards'
+import { fail, formatErrorLine } from '../lib/result'
 
 /**
  * Tells whether this session holds the coordinator role; a read that fails rejects, which every caller turns into a deny.
@@ -25,7 +27,7 @@ async function isCoordinator(port: EnginePort): Promise<boolean> {
  */
 export async function handleToolCheck(port: EnginePort, event: Frozen<Args<'tool.check'>>, next: Next<'tool.check'>): Promise<EventResult<'tool.check'>> {
   if (event.isReadOnly || !await isCoordinator(port) || isAllowedForCoordinator(event.tool, event.input)) return next(event)
-  return { decision: 'deny', reason: coordinatorDeny }
+  return { decision: 'deny', reason: explainCoordinatorDeny(event.tool, event.input) }
 }
 
 /**
@@ -96,5 +98,15 @@ export async function handleMergeChildCall(port: EnginePort, event: Frozen<Args<
   // why: A name starting with a dash would reach git as an option.
   if (typeof child !== 'string' || !/^[\w.][\w./-]*$/.test(child)) return { result: markForAgent('child must be a branch name.'), isError: true }
   const merged = await mergeChild(port, child)
-  return merged.isOk ? { result: markForAgent(merged.value) } : { result: markForAgent(`merge_child refused: ${merged.error}`), isError: true }
+  return answerTool('merge_child', merged)
+}
+
+/**
+ * Answers the coordinator's plan: each delegated issue's blockers and unit states, and which ones spawn would start now.
+ * @param port - The engine calls.
+ * @returns The plan, or the refusal.
+ */
+export async function handlePlanCall(port: EnginePort): Promise<EventResult<'tool.call'>> {
+  const plan = await composePlan(port).catch((error: unknown) => fail(formatErrorLine(error)))
+  return plan.isOk ? { result: plan.value } : { result: markForAgent(`plan refused: ${plan.error}`), isError: true }
 }

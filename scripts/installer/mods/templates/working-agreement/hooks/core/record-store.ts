@@ -20,7 +20,7 @@ interface IdentityHash { common: string; hash: string }
 export interface VersionedSession { session: Session; version: number }
 
 /** Maps the fresh session to the next one, or to null for no write; it may run more than once, so it has no side effects. */
-export type SessionChange = (session: Session) => Session | null | Promise<Session | null>
+type SessionChange = (session: Session) => Session | null | Promise<Session | null>
 
 // A miss means another dispatch wrote in between; this many in a row means a writer that never settles.
 const sessionWriteAttempts = 5
@@ -77,7 +77,7 @@ export async function atomicReplace(port: EnginePort, path: string, text: string
       sessionMemory.recordError = null
       return
     } catch (error) {
-      // pruneFiles sweeps leftover .tmp- files.
+      // pruneFiles sweeps leftover .tmp- files in the buckets it lists.
       await removeFile(port.processes, temporary)
       if (attempt === 1) {
         // The engine cuts a cancelled call's `$` calls, so their rejection is not a record failure.
@@ -103,7 +103,7 @@ export async function initializeSession(port: EnginePort): Promise<void> {
 }
 
 /**
- * Hashes the canonical identity using the repository's object format.
+ * Names a unit's file in a record bucket by its identity's hash.
  * @param port - The engine calls.
  * @param identity - The branch and sorted issue set.
  * @param bucket - The record bucket holding the unit's file.
@@ -392,7 +392,7 @@ export async function readDeclarations(port: EnginePort): Promise<UnitRecord[]> 
  * @returns The names in the bucket.
  * @throws When an existing bucket cannot be listed: a failed listing must not read as no records.
  */
-async function listRecordNames(port: EnginePort, directory: string): Promise<string[]> {
+export async function listRecordNames(port: EnginePort, directory: string): Promise<string[]> {
   const entries = await port.files.list(directory).catch(async (error: unknown) => {
     // The bucket is created by its first record.
     if (await port.files.stat(directory).then(() => true, () => false)) throw error
@@ -419,7 +419,7 @@ async function readEntriesStrictly(port: EnginePort): Promise<UnitEntry[]> {
   const declarations = await readDeclarations(port)
   return [session, ...others].flatMap(record => record.units).filter(entry => {
     const declaration = declarations.find(record => sameIdentity(record.identity, entry.identity))
-    return declaration ? declaration.generation === entry.generation : entry.generation === undefined
+    return isActiveEntry(entry, declaration)
   })
 }
 
@@ -432,10 +432,19 @@ async function readEntries(port: EnginePort): Promise<UnitEntry[]> {
   const entries = (await readSessionMirrors(port)).flatMap(mirror => mirror.session.units)
   const active = await Promise.all(entries.map(async entry => {
     const declaration = await readDeclaration(port, entry.identity)
-    if (declaration ? declaration.generation !== entry.generation : entry.generation !== undefined) return null
-    return entry
+    return isActiveEntry(entry, declaration) ? entry : null
   }))
   return active.filter((entry): entry is UnitEntry => entry !== null)
+}
+
+/**
+ * Tells whether a unit entry belongs to its identity's active declaration: an entry without a declaration counts only when it has no generation.
+ * @param entry - The unit entry.
+ * @param declaration - Its identity's declaration, if any.
+ * @returns Whether the entry is evidence of the active lifetime.
+ */
+function isActiveEntry(entry: UnitEntry, declaration: UnitRecord | null | undefined): boolean {
+  return declaration ? declaration.generation === entry.generation : entry.generation === undefined
 }
 
 /**
@@ -455,6 +464,17 @@ export async function nextGeneration(port: EnginePort): Promise<string> {
 export async function deleteDeclaration(port: EnginePort, identity: Identity): Promise<void> {
   const removed = await removeFile(port.processes, await unitPath(port, identity))
   if (!removed.isOk) throw removed.cause
+}
+
+/**
+ * Names the records a unit identity owns apart from its transition log: its declaration and its observed slice end directory.
+ * @param port - The engine calls.
+ * @param identity - The unit identity.
+ * @returns The paths, whether or not they exist.
+ */
+export async function listIdentityRecords(port: EnginePort, identity: Identity): Promise<string[]> {
+  const { common, hash } = await readIdentityHash(port, identity)
+  return [recordsPath(common, 'u', `${hash}.json`), recordsPath(common, 'end', hash)]
 }
 
 /**

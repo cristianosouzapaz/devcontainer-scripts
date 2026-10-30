@@ -3,10 +3,10 @@ import { readJson } from '../lib/json'
 import { isRecord, isSafeInteger } from '../lib/guards'
 import { executeProcess } from '../lib/process'
 import type { EnginePort } from './engine-port'
+import { readHost, readStartTime } from './host'
+import type { Host } from './host'
 import { atomicReplace, readCommonDir, recordsPath } from './record-store'
 
-/** Holds what tells a live process from a dead one or a reused pid: each field is null where the host does not expose it. */
-interface Host { pidns: string | null; pid: number | null; pidStart: string | null; bootId: string | null }
 /** Holds the lock owner's record, which a holder rereads before it records a result. */
 interface Owner extends Host { sid: string; ticket: string; token: string }
 /** The queue's tickets split by whether their lease is fresh, each in arrival order. */
@@ -20,7 +20,7 @@ interface Unserved { kind: 'timeout' | 'cancelled' }
 /** Names how a wait for the lock ended. */
 export type QueueWait = Acquired | Unserved
 /** Names how a holder's wait for the CI runner ended: no labelled job, an unreadable CI state, the queue timeout, or a cancel. */
-export type CiWait = 'idle' | 'unknown' | 'timeout' | 'cancelled'
+type CiWait = 'idle' | 'unknown' | 'timeout' | 'cancelled'
 
 /** How often a holder or a waiter renews its lease. */
 const renewMs = 5000
@@ -35,25 +35,19 @@ const ticketPattern = /^\d{15}-.+$/
 const sequence = { value: 0 }
 
 /**
- * Reads this process's pid namespace, pid, start time and boot id; a host without /proc yields nulls, so only leases count.
+ * Idles in a host `sleep`: a process call in flight stops the hook's budget clock, which a `$.clock` wait runs down,
+ * so a queued wait outlasts the engine's ten-second hook budget; steps of one poll let an abort end it within one.
  * @param port - The engine calls.
- * @returns The host identity.
+ * @param ms - How long to idle.
+ * @param signal - Ends the idle at the next step.
  */
-async function readHost(port: EnginePort): Promise<Host> {
-  const stat = await port.files.read('/proc/self/stat').catch(() => '')
-  const ns = await executeProcess(port.processes, ['readlink', '/proc/self/ns/pid']).catch(() => null)
-  const boot = await port.files.read('/proc/sys/kernel/random/boot_id').catch(() => '')
-  return { pidns: ns?.exitCode === 0 && ns.stdout.trim() ? ns.stdout.trim() : null, pid: Number(stat.split(' ')[0]) || null,
-    pidStart: readStartTime(stat), bootId: boot.trim() || null }
-}
-
-/**
- * Reads a process's start time from its /proc stat line, whose second field may hold spaces inside parentheses.
- * @param stat - The stat line, empty when the process is gone.
- * @returns The start time in clock ticks, or null.
- */
-function readStartTime(stat: string): string | null {
-  return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] || null
+async function idle(port: EnginePort, ms: number, signal: AbortSignal): Promise<void> {
+  const until = await port.now() + ms
+  while (!signal.aborted) {
+    const left = until - await port.now()
+    if (left <= 0) return
+    await executeProcess(port.processes, ['sleep', String(Math.min(pollMs, left) / 1000)])
+  }
 }
 
 /**
@@ -196,8 +190,7 @@ export async function waitVerifyTurn(port: EnginePort, common: string, sid: stri
         await executeProcess(port.processes, ['rm', '-rf', '--', `${dir}/q/${live[0]}`])
         continue
       }
-      // An abort ends the wait.
-      await port.clock.sleep(pollMs, signal).catch(() => {})
+      await idle(port, pollMs, signal)
     }
     return { kind: 'cancelled' }
   })().catch(async (error: unknown) => {
@@ -254,8 +247,7 @@ export async function waitCiIdle(port: EnginePort, turn: VerifyTurn, labels: str
         state.isMarked = true
         await onMove()
       }
-      // An abort ends the wait.
-      await port.clock.sleep(Math.min(ciPollMs, deadline - now), signal).catch(() => {})
+      await idle(port, Math.min(ciPollMs, deadline - now), signal)
     }
     return 'cancelled'
   } finally {

@@ -18,15 +18,14 @@ export interface IssueInput {
   state?: string; reason?: string; duplicateOf?: number; comment?: string; body?: string
 }
 
-/** A label family of which an issue carries exactly one, and the label the call asks for. */
 /** A label family an issue carries exactly one of. */
-export interface LabelFamily { family: 'triage' | 'type' | 'priority'; allowed: string[] }
+interface LabelFamily { family: 'triage' | 'type' | 'priority'; allowed: string[] }
 
 /** The labels an issue write applies and the body it writes, once the fields passed. */
-export interface CheckedFields { labels: string[]; body?: string }
+interface CheckedFields { labels: string[]; body?: string }
 
 /** The triage labels; every issue carries exactly one. */
-const triageLabels = ['needs-triage', 'needs-info', 'ready-for-agent', 'ready-for-human', 'wontfix']
+export const triageLabels = ['needs-triage', 'needs-info', 'ready-for-agent', 'ready-for-human', 'wontfix']
 
 /** The label an issue carries while one of its delegated decisions is unreviewed. */
 export const reviewLabel = 'delegated-review'
@@ -65,7 +64,8 @@ const defaultSections: Record<string, string[]> = {
 }
 
 const defaultTitle = '^[a-z]+(\\([^()\\s]+\\))?!?: \\S.*$'
-const closeReasons = ['completed', 'not planned', 'duplicate']
+/** The state reasons an issue may close with. */
+export const closeReasons = ['completed', 'not planned', 'duplicate']
 /** Where a refusal over a missing label sends the agent. */
 export const setupHint = 'the user runs /flow setup-labels to create the configured labels'
 

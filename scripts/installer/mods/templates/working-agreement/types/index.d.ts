@@ -106,7 +106,7 @@ export interface ViolationAttribution {
   end: number
   sessionId: string
 }
-/** Attributes one fact to every observing call in this session. */
+/** An observed guarantee fact together with its attribution to the session's observing calls. */
 export type Violation = ViolationFact & ViolationAttribution
 /** Names how strongly the pane shows a violation note. */
 export type ViolationTone = 'error' | 'warn'
@@ -144,7 +144,7 @@ export interface SessionRecord {
 }
 /**
  * Holds one coordinator's delegation scope, shared with every worktree's sessions: only the coordinator that owns it writes it,
- * and only its `/flow delegate stop` removes it.
+ * and only a `/flow delegate stop` removes it: the coordinator's own, or one from any session once the coordinator is gone.
  */
 export interface DelegationScope {
   v: 1
@@ -156,7 +156,17 @@ export interface DelegationScope {
   coversCreated: boolean
   /** Set when `/flow delegate` found no GitHub ruleset requiring signed commits, so an unsigned push would not be refused. */
   isPushUnguarded?: true
+  /** The issues whose triage `/flow delegate triage` handed over, ascending; absent while none is. */
+  triage?: number[]
+  /** The free text each `/flow delegate` carried after its numbers, verbatim, in the order given; absent while none did. */
+  instructions?: string[]
+  /** The herdr pane the coordinator ran `/flow delegate` in, which a delegated unit's notices are sent to; absent outside herdr. */
+  paneId?: string
+  /** The coordinator's process, which tells a unit whether the coordinator still runs; absent where the host does not expose it. */
+  host?: ScopeHost
 }
+/** Holds a coordinator process's identity: a pid means nothing outside its pid namespace and boot, and its start time tells a reused pid. */
+export interface ScopeHost { pidns: string; pid: number; pidStart: string; bootId: string }
 /** Holds the declaration shared by chats with the same identity. */
 export interface UnitRecord { v: 1; identity: Identity; flow: string; generation?: string }
 /** Holds the slice end of one lifetime of a child unit that one session last observed while its branch was readable. */
@@ -180,6 +190,8 @@ export interface VerifyRecord {
   runId: string
   at: number
 }
+/** Holds the latest Verify run on one content key (tree, config blob, commands), repository-wide, and the unit it ran in. */
+export interface VerifyEvidence { v: 1; run: VerifyRecord; origin: Identity }
 /** Names how a recorded command run ended. */
 export type VerifyOutcome = VerifyPass | VerifyFailure | VerifyTimeout
 /** Marks a run whose every command exited zero. */
@@ -201,7 +213,7 @@ export type ApprovedRed = Pick<RunRecord, 'argv' | 'tree' | 'at' | 'runId'>
 /** Holds evidence contributed by a chat to a unit. */
 export interface Unit {
   base?: string
-  /** The branch whose merge-base gave `base`; absent when the base is a declaration tip or was recorded before it existed. */
+  /** The branch whose merge-base gave `base`; absent when the base is a declaration tip or no base branch is recorded. */
   baseBranch?: string
   skips?: StepSkip[]
   skills: string[]
@@ -210,8 +222,10 @@ export interface Unit {
   verifyRuns: VerifyRecord[]
   runs: RunRecord[]
   approval?: string
-  /** The red the approval was granted on, judged instead of the retained runs; absent on approvals recorded before it existed. */
+  /** The red the approval was granted on, judged instead of the retained runs; absent when the approval pinned no red. */
   approvedRed?: ApprovedRed
+  /** The slice whose Verify waited on the config when the user approved it: Code stays ended on it, as after a verify run. */
+  verifyApproved?: Pick<VerifyRecord, 'tree' | 'base'>
   /** Separates a new lifetime from earlier chats sharing the same identity. */
   generation?: string
 }
@@ -224,8 +238,9 @@ export type FlowStepState = 'done' | 'current' | 'pending' | 'skipped'
 export interface RowSuffix { text: string; tone: FlowTone }
 /** A labelled line of the Flow pane, such as the branch or a blocked-write count. */
 export interface FlowRow { key: string; value: string; tone: FlowTone; suffix?: RowSuffix }
-/** One step of the declared flow with its inline status and symbol styling. */
-/** `detail` is the pane's fact, at most `maxFactLength` characters; `fullDetail` is its full wording for `/flow status`, when that is longer. */
+/**
+ * One step of the declared flow with its inline status and symbol styling; `detail` is the pane's fact, at most `maxFactLength` characters; `fullDetail` is its full wording for `/flow status`, when that is longer.
+ */
 export interface FlowStep { id: string; symbol: string; label: string; state: FlowStepState; detail?: string; fullDetail?: string; isError: boolean; isMerged: boolean; isRewritten: boolean }
 /** An issue the session's unit of work resolves. */
 export interface FlowIssue { number: number; title: string }

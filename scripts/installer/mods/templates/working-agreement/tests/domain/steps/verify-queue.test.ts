@@ -1,30 +1,22 @@
 import { expect } from 'claude-code/testing'
+import { buildChangedCheckout } from '../../support/builders'
 
 import type { EnginePort } from '../../../hooks/core/engine-port'
 import { breakStaleLock, leaveVerifyQueue, readVerifyQueue, waitVerifyTurn } from '../../../hooks/core/verify-queue'
 import type { QueueWait } from '../../../hooks/core/verify-queue'
-import { inside, readFlowStatus } from '../../support/helpers'
+import { inside, readFlowStatus, seedVerifyHolder } from '../../support/helpers'
 import { test } from '../../support/kit'
-import { common, createTestPort, createWorld, records } from '../../support/world'
-import type { Options, World } from '../../support/world'
+import { buildStat, common, createTestPort, createWorld, records } from '../../support/world'
+import type { Gate, Options, World } from '../../support/world'
 
-const changed = { branch: 'feat', ahead: 8, isDirty: true, tree: 'one' }
+// why: the engine types leave out the timer globals, yet only a real-time wait outlasts a hook's budget.
+declare function setTimeout(handler: () => void, delayMs: number): unknown
+
+const changed = buildChangedCheckout()
 const file = JSON.stringify({ always: [['check']] })
 const approved: Options = { verifyFile: file, approvedConfig: file }
 const dir = `${records}/verify`
 const verify = { tool: 'mcp__working-agreement__verify' } as const
-
-/**
- * Makes another session hold the lock, its ticket first in the queue.
- * @param world - The test world.
- * @param owner - Owner fields replacing a holder with no host identity.
- * @param root - The common directory whose queue it holds.
- */
-function seedHolder(world: World, owner: Record<string, unknown> = {}, root = common): void {
-  world.files.set(`${root}/working-agreement/verify/lock/owner.json`, JSON.stringify({ sid: 'holder', ticket: '000000000000000-holder', token: 'held',
-    pidns: null, pid: null, pidStart: null, bootId: null, ...owner }))
-  world.files.set(`${root}/working-agreement/verify/q/000000000000000-holder/lease`, '')
-}
 
 /**
  * Lets the seeded holder finish and release the lock.
@@ -59,7 +51,7 @@ const listTickets = async (world: World): Promise<string[]> => (await world.boun
 
 test('a queued Verify shows its place everywhere and runs when the holder finishes', async ($, on) => {
   const world = createWorld(on, { ...changed }, { ...approved, herdrEnv: inside })
-  seedHolder(world)
+  seedVerifyHolder(world)
   const run = $.tool.call(verify)
   await world.clock.settle()
   expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Verify', value: 'queued, 2nd of 2', tone: 'warn' })
@@ -76,7 +68,7 @@ test('a queued Verify shows its place everywhere and runs when the holder finish
 
 test('waiters are served first come, first served', async (_$, on) => {
   const world = createWorld(on, { ...changed }, approved)
-  seedHolder(world)
+  seedVerifyHolder(world)
   const served: string[] = []
   const turns = new Map<string, QueueWait>()
   const waits: Promise<void>[] = []
@@ -103,7 +95,7 @@ test('waiters are served first come, first served', async (_$, on) => {
 
 test('a killed holder and a dead waiter stop blocking the queue once their leases expire', async ($, on) => {
   const world = createWorld(on, { ...changed }, approved)
-  seedHolder(world)
+  seedVerifyHolder(world)
   world.files.set(`${dir}/q/000000000000001-dead/lease`, '')
   world.modified.set(`${dir}/q/000000000000001-dead`, world.clock.now() - 31000)
   const run = $.tool.call(verify)
@@ -118,11 +110,11 @@ test('a killed holder and a dead waiter stop blocking the queue once their lease
 
 for (const [label, pidns, isBroken] of [['the same', 'pid:[1]', true], ['another', 'pid:[2]', false]] as const) {
   test(`a dead holder pid on ${label} pid namespace ${isBroken ? 'is broken before its lease expires' : 'waits for its lease'}`, async ($, on) => {
-    const world = createWorld(on, { ...changed }, { ...approved, verifyFile: JSON.stringify({ always: [['check']], timeoutMinutes: 0.05 }),
-      approvedConfig: JSON.stringify({ always: [['check']], timeoutMinutes: 0.05 }), pidNamespace: 'pid:[1]' })
-    world.files.set('/proc/self/stat', `100 (claude code) S ${Array.from({ length: 19 }, (_, index) => index + 4).join(' ')} 5000 0`)
+    const config = JSON.stringify({ always: [['check']], timeoutMinutes: 0.05 })
+    const world = createWorld(on, { ...changed }, { verifyFile: config, approvedConfig: config, pidNamespace: 'pid:[1]' })
+    world.files.set('/proc/self/stat', buildStat(100, '5000'))
     world.files.set('/proc/sys/kernel/random/boot_id', 'boot\n')
-    seedHolder(world, { pidns, bootId: 'boot', pid: 4242, pidStart: '77' })
+    seedVerifyHolder(world, { pidns, bootId: 'boot', pid: 4242, pidStart: '77' })
     const run = $.tool.call(verify)
     await world.clock.settle()
     await world.clock.advance(isBroken ? 0 : 4000)
@@ -132,12 +124,12 @@ for (const [label, pidns, isBroken] of [['the same', 'pid:[1]', true], ['another
 
 test('a stale lock broken by two waiters at once has a single winner', async (_$, on) => {
   const world = createWorld(on, { ...changed }, approved)
-  seedHolder(world)
+  seedVerifyHolder(world)
   expireHolder(world)
   const broken = await Promise.all(['a', 'b'].map(sid => breakStaleLock(sessionPort(world, sid), dir, sid)))
   expect(broken.filter(Boolean)).toHaveLength(1)
   expect([...world.files.keys()].some(path => path.startsWith(`${dir}/lock`))).toBe(false)
-  seedHolder(world)
+  seedVerifyHolder(world)
   expireHolder(world)
   const served: string[] = []
   const control = new AbortController()
@@ -157,7 +149,7 @@ test('a stale lock broken by two waiters at once has a single winner', async (_$
 })
 
 test('a lock lost while running records no Verify result', async ($, on) => {
-  const gate: { open?: () => void } = {}
+  const gate: Gate = {}
   const world = createWorld(on, { ...changed }, { ...approved, spawnGate: new Promise(resolve => { gate.open = resolve }) })
   const run = $.tool.call(verify)
   await world.clock.settle()
@@ -173,7 +165,7 @@ test('a lock lost while running records no Verify result', async ($, on) => {
 test('a queued Verify times out without a record or a ticket', async ($, on) => {
   const config = JSON.stringify({ always: [['check']], timeoutMinutes: 0.01 })
   const world = createWorld(on, { ...changed }, { verifyFile: config, approvedConfig: config })
-  seedHolder(world)
+  seedVerifyHolder(world)
   const run = $.tool.call(verify)
   await world.clock.advance(1000)
   expect((await run).result).toContain('Verify queued, timed out after 0.01 min')
@@ -183,7 +175,7 @@ test('a queued Verify times out without a record or a ticket', async ($, on) => 
 
 test('sessions on different repositories do not wait for each other', async ($, on) => {
   const world = createWorld(on, { ...changed }, approved)
-  seedHolder(world, {}, '/other.git')
+  seedVerifyHolder(world, {}, '/other.git')
   expect((await $.tool.call(verify)).result).toContain('Verify passed')
 })
 
@@ -244,4 +236,20 @@ test('a CI wait past the timeout runs Verify anyway', async ($, on) => {
   const result = (await run).result
   expect(result).toContain('CI still running after 0.01 min, ran anyway')
   expect(result).toContain('Verify passed')
+})
+
+test('a Verify queued past the hook budget behind another session still runs', { timeoutMs: 30000 }, async ($, on) => {
+  const world = createWorld(on, { ...changed }, approved)
+  seedVerifyHolder(world)
+  const run = $.tool.call(verify)
+  // The engine counts a hook's clock waits against its ten-second budget in real time, so the queue moves for longer than that.
+  for (const _second of Array.from({ length: 22 })) {
+    await world.clock.advance(1000)
+    await new Promise<void>(resolve => setTimeout(resolve, 500))
+  }
+  releaseHolder(world)
+  await world.clock.advance(1000)
+  const answer = await run
+  expect(answer.deny).toBeUndefined()
+  expect(answer.result).toContain('Verify passed')
 })

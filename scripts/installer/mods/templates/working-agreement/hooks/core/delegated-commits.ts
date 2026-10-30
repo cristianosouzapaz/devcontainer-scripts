@@ -1,4 +1,4 @@
-import { findDeniedWord } from '../domain/bash-guards'
+import { findDeniedWord, isGitCommit } from '../domain/bash-guards'
 import { composeSigningCommands, parseDelegatedCommit } from '../domain/delegated-commits'
 import type { DelegatedCommit, SigningBranch } from '../domain/delegated-commits'
 import { markForAgent } from '../domain/messages'
@@ -6,10 +6,12 @@ import type { Identity } from '../domain/records'
 import { hashObject, isAncestor, readDefaultRef, readGitOutput, readParentBranch, readWorktrees, runGit } from '../lib/git'
 import { readBranchRulesets } from '../lib/github'
 import { readJson } from '../lib/json'
-import { findDelegation } from './delegation'
+import { fail, succeed } from '../lib/result'
+import type { Result } from '../lib/result'
+import { findDelegation, findLiveDelegation } from './delegation'
 import type { EnginePort } from './engine-port'
 import { logEvent } from './flow-log'
-import { atomicReplace, readCommonDir, readSession, recordsPath } from './record-store'
+import { atomicReplace, listRecordNames, readCommonDir, readSession, recordsPath } from './record-store'
 import { readGit } from './repository'
 import type { RefSnapshot } from './territory'
 
@@ -20,12 +22,14 @@ const bucket = 'delegated'
 /**
  * Reads the unit of this session when a coordinator delegates it.
  * @param port - The engine calls.
+ * @param isLiveOnly - Whether a scope whose coordinator is gone or cannot be judged delegates nothing, as for what delegation grants;
+ * a guard passes false, so it holds until the scope is stopped.
  * @returns The unit, or null for a coordinator, a session without a unit or one no scope delegates.
  */
-async function readDelegatedUnit(port: EnginePort): Promise<Identity | null> {
+export async function readDelegatedUnit(port: EnginePort, isLiveOnly = true): Promise<Identity | null> {
   const session = await readSession(port)
   if (!session.unit || session.role) return null
-  return await findDelegation(port, session.unit.issues, true) ? session.unit : null
+  return await (isLiveOnly ? findLiveDelegation : findDelegation)(port, session.unit.issues, true) ? session.unit : null
 }
 
 /**
@@ -64,11 +68,10 @@ export async function readDelegatedCommits(port: EnginePort): Promise<DelegatedC
   const common = await readCommonDir(port)
   if (!common) return []
   const directory = recordsPath(common, bucket)
-  // The directory is created by the first delegated commit.
-  const entries = await port.files.list(directory).catch(async () => await port.files.stat(directory).then(() => null, () => []))
-  if (!entries) return null
-  const records = await Promise.all(entries.filter(entry => entry.name.endsWith('.json'))
-    .map(async entry => parseDelegatedCommit(await readJson(port.files, recordsPath(common, bucket, entry.name)).catch(() => undefined))))
+  const names = await listRecordNames(port, directory).catch(() => null)
+  if (!names) return null
+  const records = await Promise.all(names.filter(name => name.endsWith('.json'))
+    .map(async name => parseDelegatedCommit(await readJson(port.files, recordsPath(common, bucket, name)).catch(() => undefined))))
   return records.filter((record): record is DelegatedCommit => record !== null)
 }
 
@@ -80,7 +83,9 @@ export async function readDelegatedCommits(port: EnginePort): Promise<DelegatedC
  */
 export async function denyDelegatedCommand(port: EnginePort, command: string): Promise<string | undefined> {
   // why: an unreadable session or scope could hide a delegated unit, so the word guard then applies as if it were one.
-  if (!await readDelegatedUnit(port).catch(() => true)) return undefined
+  if (!await readDelegatedUnit(port, false).catch(() => true)) return undefined
+  if (isGitCommit(command)) return markForAgent('Under delegation a Bash git commit is refused before it runs: stage the work with git add, then commit it with the commit tool, '
+    + 'which commits unsigned on this unit\'s branch and records it as delegated.')
   const aliases = await runGit(port.processes, ['config', '--get-regexp', '^alias\\.'])
   // git config exits 1 when no alias is set.
   const names = aliases.exitCode === 0 ? aliases.stdout.split('\n').filter(Boolean).map(line => line.split(' ')[0]?.slice('alias.'.length) ?? '')
@@ -88,7 +93,50 @@ export async function denyDelegatedCommand(port: EnginePort, command: string): P
   const word = findDeniedWord(command, names)
   return word === undefined ? undefined : markForAgent(`Under delegation this command is refused before it runs (it names ${word}): `
     + 'a delegated unit only commits on its own branch; pushes, merges, rebases, ref rewrites and PR writes are the user\'s on their return. '
-    + 'Write a commit message that names one of these words with git commit -F <file>.')
+    + 'A commit message that names one of these words goes through the commit tool.')
+}
+
+/**
+ * Commits the staged work of a delegated unit, unsigned, on its own branch checked out in this session's worktree, and records it as delegated.
+ * It runs in the hook process, so no Bash permission rule decides whether it runs.
+ * @param port - The engine calls.
+ * @param message - The commit message.
+ * @returns What was committed, or the refusal.
+ */
+export async function commitDelegated(port: EnginePort, message: string): Promise<Result<string>> {
+  const unit = await readDelegatedUnit(port).catch(() => null)
+  if (!unit) return fail('only a delegated unit commits through this tool; elsewhere commits are the user\'s.')
+  const elsewhere = await refuseOtherCheckout(port, unit.branch)
+  if (elsewhere) return fail(elsewhere)
+  // why: A delegated commit stays unsigned whatever commit.gpgsign says; the user's signing step signs it on their return.
+  const run = await runGit(port.processes, ['commit', '--no-gpg-sign', '-F', '-'], message)
+  if (run.exitCode !== 0) return fail(`git commit failed — stage the work with git add first: ${`${run.stdout}\n${run.stderr}`.trim()}`)
+  const sha = await recordHead(port, unit.branch, 'a commit')
+  if (!sha.isOk) return sha
+  logEvent(port, await readSession(port), 'delegated-commit', { shas: sha.value })
+  return succeed(`Committed ${sha.value} on ${unit.branch}, unsigned and recorded as delegated; the user signs and pushes it on their return.`)
+}
+
+/**
+ * Refuses a delegated unit's write unless its own branch is checked out in this session's worktree.
+ * @param port - The engine calls.
+ * @param branch - The unit's branch.
+ * @returns The refusal, or null when the branch is checked out here.
+ */
+export async function refuseOtherCheckout(port: EnginePort, branch: string): Promise<string | null> {
+  return await readGitOutput(port.processes, ['symbolic-ref', '-q', 'HEAD']) === `refs/heads/${branch}` ? null : `this worktree does not have the unit's branch ${branch} checked out.`
+}
+
+/**
+ * Records the commit a delegated unit's write just made at HEAD as delegated.
+ * @param port - The engine calls.
+ * @param branch - The unit's branch.
+ * @param made - The commit as the refusal names it, such as `a commit`.
+ * @returns The commit's id, or the refusal when it cannot be read or recorded.
+ */
+export async function recordHead(port: EnginePort, branch: string, made: string): Promise<Result<string>> {
+  const sha = await readGitOutput(port.processes, ['rev-parse', 'HEAD'])
+  return sha && await recordDelegated(port, [sha], branch) ? succeed(sha) : fail(`${made} was made on ${branch} but is not recorded as delegated — tell the user.`)
 }
 
 /**
@@ -103,7 +151,7 @@ export async function denyDelegatedCommand(port: EnginePort, command: string): P
 export async function claimDelegatedCommits(port: EnginePort, before: RefSnapshot, after: RefSnapshot, shas: string[]): Promise<string[]> {
   if (!shas.length) return []
   // why: an unread scope claims nothing, so the commits stay judged as any session's.
-  const unit = await readDelegatedUnit(port).catch(() => null)
+  const unit = await readDelegatedUnit(port, true).catch(() => null)
   if (!unit) return []
   const ref = `refs/heads/${unit.branch}`
   const moved = [...new Set([...Object.keys(before.refs), ...Object.keys(after.refs)])].filter(name => before.refs[name] !== after.refs[name])

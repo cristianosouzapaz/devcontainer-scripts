@@ -3,7 +3,6 @@ import type { Engine } from 'claude-code/testing'
 
 import { coordinator } from '../support/builders'
 import { callModTool, endTurn, readFlowStatus, runFlowCommand } from '../support/helpers'
-import type { ToolOutcome } from '../support/helpers'
 import { createIssueGithub, defaultIssueLabels, ticket, triageLabels, values } from '../support/issue-github'
 import type { IssueGithub } from '../support/issue-github'
 import { test } from '../support/kit'
@@ -29,14 +28,13 @@ function createIssueWorld(on: Parameters<typeof createWorld>[0], github: IssueGi
 }
 
 /**
- * Runs a Bash command and reads what the model sees of it.
+ * Runs a Bash command and reads its deny.
  * @param $ - The test's engine.
  * @param command - The command.
  * @returns Its deny, if any.
  */
-async function runBash($: Engine, command: string): Promise<ToolOutcome> {
-  const result = await $.tool.call({ tool: 'Bash', command })
-  return { text: result.text ?? '', isError: result.isError === true, ...(result.deny ? { deny: result.deny } : {}) }
+async function readBashDeny($: Engine, command: string): Promise<string | undefined> {
+  return (await $.tool.call({ tool: 'Bash', command })).deny
 }
 
 /**
@@ -185,7 +183,15 @@ test('issue_close records the state reason and issue_comment returns the comment
   expect((await callModTool($, 'issue_comment', { number: 7, body: 'Resolved.' })).text).toContain('#issuecomment-1')
 })
 
-test('a coordinator comments through issue_comment', async ($, on) => {
+test('issue_close reports an issue that never had an assignee as closed', async ($, on) => {
+  const github = createIssueGithub({ issues: { 7: { labels: ['needs-triage'], assignees: [] } } })
+  createIssueWorld(on, github)
+  const outcome = await callModTool($, 'issue_close', { number: 7, reason: 'not planned', comment: 'Obsolete.' })
+  expect(outcome.isError).toBe(false)
+  expect(outcome.text).toContain('Closed #7 as not planned')
+})
+
+test('a coordinator comments through issue_comment',async ($, on) => {
   const github = createIssueGithub()
   createWorld(on, { branch: 'feat' }, { gh: github.gh, session: coordinator })
   expect((await callModTool($, 'issue_comment', { number: 7, body: 'Decision.' })).isError).toBe(false)
@@ -200,16 +206,24 @@ for (const command of [
 ]) {
   test(`a raw Bash issue write is denied with the tool to use: ${command}`, async ($, on) => {
     createIssueWorld(on, createIssueGithub())
-    const outcome = await runBash($, command)
-    expect(outcome.deny).toContain('issue_create (to-spec')
-    expect(outcome.deny).toContain('wayfinder')
+    const deny = await readBashDeny($, command)
+    expect(deny).toContain('issue_create (to-spec')
+    expect(deny).toContain('wayfinder')
   })
 }
 
-for (const command of ['gh issue view 3 --comments', 'gh api repos/{owner}/{repo}/issues/3/comments --paginate', 'gh api graphql -f query=\'query{viewer{login}}\'', 'gh api -X GET repos/{owner}/{repo}/labels -f per_page=100']) {
+test('a raw issue write quoted inside an argument is denied naming the matched words and a file for the text', async ($, on) => {
+  createIssueWorld(on, createIssueGithub())
+  const deny = await readBashDeny($, 'herdr agent prompt manager "the unit ran gh label edit x --color 000000"')
+  expect(deny).toContain('"gh label edit"')
+  expect(deny).toContain('from a file')
+  expect(deny).not.toContain('writes are denied')
+})
+
+for (const command of ['gh issue view 3 --comments','gh api repos/{owner}/{repo}/issues/3/comments --paginate', 'gh api graphql -f query=\'query{viewer{login}}\'', 'gh api -X GET repos/{owner}/{repo}/labels -f per_page=100']) {
   test(`a GitHub read in Bash is not denied: ${command}`, async ($, on) => {
     createIssueWorld(on, createIssueGithub())
-    expect((await runBash($, command)).deny ?? '').not.toContain('issue_create')
+    expect(await readBashDeny($, command) ?? '').not.toContain('issue_create')
   })
 }
 

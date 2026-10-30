@@ -120,6 +120,9 @@ export const gitChecks: GitCheck[] = [
   { command: '-C /repo merge --no-gpg-sign --no-edit --no-ff m1', label: 'already merged', exitCode: 0, stdout: 'Already up to date.' },
   { command: '-C /repo merge --no-gpg-sign --no-edit --ff-only feat', label: 'diverged', exitCode: 128, stdout: '' },
   { command: '-C /repo merge --abort', label: 'no merge in progress', exitCode: 128, stdout: '' },
+  { command: 'merge-tree --write-tree --name-only --no-messages f1 s1', label: 'same change on both sides', exitCode: 0, stdout: 'tree:src/a.ts=a1' },
+  { command: 'merge-tree --write-tree --name-only --no-messages f2 s1', label: 'conflict', exitCode: 1, stdout: '' },
+  { command: 'commit --no-gpg-sign -F -', stdin: 'change', label: 'nothing staged', exitCode: 1, stdout: '' },
   { command: 'write-tree', exitCode: 0, stdout: 'tree:src/a.ts=a0,src/m.ts=m2' },
   { command: '-C /config write-tree', exitCode: 0, stdout: 'config-tree' },
   { command: '-C /linked rev-parse --path-format=absolute --git-path index --show-object-format', exitCode: 0, stdout: '/repo.git/worktrees/linked/index\nsha1' },
@@ -131,9 +134,13 @@ export const gitChecks: GitCheck[] = [
   { command: '-C /repo status --porcelain=v2 -z --untracked-files=all', staged: { 'src/a.ts': 'staged' },
     dirty: { 'src/a.ts': 'a0' }, label: 'index changed and working tree restored', exitCode: 0,
     stdout: '1 MM N... 100644 100644 100644 a0 staged src/a.ts\0' },
+  { command: '-C /repo diff --cached --binary HEAD', exitCode: 0, stdout: '' },
+  { command: 'branch -D missing', exitCode: 1, stdout: '' },
+  { command: 'worktree remove --force /missing', exitCode: 128, stdout: '' },
   { command: 'update-ref refs/heads/feat m1 ', label: 'existing branch', exitCode: 128, stdout: '' },
   // Last: the created branch outlives the row in the real repository.
   { command: 'update-ref refs/heads/spawned m1 ', exitCode: 0, stdout: '' },
+  { command: 'update-ref refs/retired/1/20000101T000000Z m1 ', exitCode: 0, stdout: '' },
 
 ]
 

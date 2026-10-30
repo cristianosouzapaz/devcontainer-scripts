@@ -1,17 +1,19 @@
 import type { Args, EventResult, Frozen } from 'claude-code'
 
 import { bestEffort } from '../core/best-effort'
-import { addCreatedIssue, findDelegation } from '../core/delegation'
+import { addCreatedIssue, findDelegation, readOwnScope } from '../core/delegation'
 import type { EnginePort } from '../core/engine-port'
 import { trackIssue } from '../core/issue-audit'
 import { closeIssue, commentIssue, createIssue, editIssue, readIssuesConfig } from '../core/issue-write'
-import type { IssueWrite } from '../core/issue-write'
+import type { EditGuard, IssueWrite } from '../core/issue-write'
 import { readSession } from '../core/record-store'
-import { decisionsSection, readRecordKind } from '../domain/delegated-decision'
-import { readIssueInput } from '../domain/issue-fields'
+import { decisionsSection, listUnreviewed, readRecordKind } from '../domain/delegated-decision'
+import { judgeTriageChange } from '../domain/delegation'
+import { readIssueInput, triageLabels } from '../domain/issue-fields'
 import type { IssueInput } from '../domain/issue-fields'
 import { isCoordinatorSession, issueTools } from '../domain/coordinator'
-import { markForAgent } from '../domain/messages'
+import { answerTool, markForAgent } from '../domain/messages'
+import { readMarkedComments } from '../lib/github'
 import { fail, formatError, settle } from '../lib/result'
 import type { Result } from '../lib/result'
 
@@ -42,7 +44,7 @@ export async function handleIssueCall(port: EnginePort, tool: IssueTool, event: 
     if (!added.isOk) return { result: markForAgent(`${text}, but #${created} could not join the delegation scope: ${added.error} — tell the user.`), isError: true }
     if (added.value) return { result: markForAgent(`${text} — #${created} is delegated.`), ...(result.isOk ? {} : { isError: true }) }
   }
-  return result.isOk ? { result: markForAgent(result.value) } : { result: markForAgent(`${tool} refused: ${result.error}`), isError: true }
+  return answerTool(tool, result)
 }
 
 /**
@@ -62,7 +64,42 @@ async function writeFields(port: EnginePort, tool: IssueTool, input: IssueInput)
     if (!delegation.isOk) return refuse(`The delegation scope cannot be read (${delegation.error}), so a spec without a ${decisionsSection} section is refused.`)
     if (delegation.value) return refuse(`A delegated unit's spec needs a ${decisionsSection} section: one line per decision, question → choice → reason → cost of going back.`)
   }
-  return tool === 'issue_create' ? createIssue(port, config.value, input) : editIssue(port, config.value, input)
+  const triage = await settle(judgeTriage(port, tool, input))
+  if (!triage.isOk) return refuse(`The session's role or delegation scope cannot be read (${triage.error}), so a triage change is refused.`)
+  if (typeof triage.value === 'string') return refuse(triage.value)
+  return tool === 'issue_create' ? createIssue(port, config.value, input) : editIssue(port, config.value, input, triage.value)
+}
+
+/**
+ * Keeps triage the user's in the coordinator and in delegated units: a new issue's label is judged now, an edit's once its labels
+ * are read; a change `/flow delegate triage` allows must follow an unreviewed delegated decision on the issue.
+ * @param port - The engine calls.
+ * @param tool - issue_create or issue_edit.
+ * @param input - The call's fields.
+ * @returns The refusal of a create, the guard of an edit, or undefined in the user's own sessions and for writes that leave triage alone.
+ * @throws When the session or a delegation scope cannot be read: a write the mod cannot attribute must not change triage.
+ */
+async function judgeTriage(port: EnginePort, tool: IssueTool, input: IssueInput): Promise<string | EditGuard | undefined> {
+  const to = input.triage
+  if (to === undefined) return undefined
+  const session = await readSession(port)
+  const isCoordinator = isCoordinatorSession(session)
+  if (!isCoordinator && !await findDelegation(port, session.issues, true)) return undefined
+  // why: only the coordinator takes a handed-over triage; a delegated unit stays strict.
+  const handedOver = isCoordinator ? (await readOwnScope(port))?.triage ?? [] : []
+  // why: a delegated unit's spec issue is created ready-for-agent by its own Spec step; only the coordinator's creates stay untriaged.
+  if (tool === 'issue_create') return isCoordinator ? judgeTriageChange(undefined, to, handedOver.length > 0) : undefined
+  const issue = input.number
+  return async current => {
+    const from = current.find(label => triageLabels.includes(label))
+    const isHandedOver = issue !== undefined && handedOver.includes(issue)
+    const refusal = judgeTriageChange(from, to, isHandedOver)
+    if (refusal || !isHandedOver || judgeTriageChange(from, to, false) === undefined) return refusal
+    const comments = await readMarkedComments(port.processes, issue)
+    if (!comments.isOk) return comments.error
+    return listUnreviewed(comments.value).length ? undefined
+      : `a triage you take for the user is a delegated decision: comment it on #${issue} first (## Delegated decision, listing the assumptions made for any missing information), then set ${to}.`
+  }
 }
 
 /**

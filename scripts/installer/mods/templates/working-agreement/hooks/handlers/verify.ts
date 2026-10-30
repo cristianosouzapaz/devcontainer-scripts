@@ -5,14 +5,16 @@ import { minuteMs } from '../core/timing'
 import { hasCodeChange } from '../domain/step-states'
 import { readCommonDir, readSession, readUnit } from '../core/record-store'
 import { bestEffort } from '../core/best-effort'
+import { describeParentConflicts } from '../core/parent-merge'
 import { refreshView } from '../core/pane-view'
 import { readGit, readWorkingTreeKey } from '../core/repository'
 import { finishRunView, runStatus, updateRunCommand, withRunView } from '../core/run-view'
 import { readUnitSlice } from '../core/unit-slice'
-import { isVerifyApproved, verifyOutcome } from '../core/verify'
+import { isVerifyApproved, verifyOutcome, writeVerifyEvidence } from '../core/verify'
 import { changedPaths, readVerifyConfig, selectVerify } from '../core/verify-config'
 import { holdVerifyTurn, isTurnHeld, leaveVerifyQueue, waitCiIdle, waitVerifyTurn } from '../core/verify-queue'
-import { executeCommand, prepareRunLog, readUnitWorktree, recordToolRun, withToolRun } from '../core/tool-run'
+import { findWorktreeRoot } from '../lib/git'
+import { executeCommand, prepareRunLog, recordToolRun, withToolRun } from '../core/tool-run'
 
 interface VerifyOutcomeState { value: VerifyRecord['outcome']; failure: string | null }
 
@@ -42,8 +44,10 @@ async function verify(port: EnginePort, signal: AbortSignal, sid: string): Promi
   const git = await readGit(port)
   const unit = await readUnit(port, identity)
   const slice = git ? await readUnitSlice(port, identity, unit, git) : null
-  const root = await readUnitWorktree(port, identity.branch)
+  const root = await findWorktreeRoot(port.processes, identity.branch)
   if (!root) return "The unit's branch is checked out nowhere."
+  const conflicts = await describeParentConflicts(port)
+  if (conflicts) return conflicts
   if (!hasCodeChange(slice)) return 'Code is not done (empty change set or unavailable slice).'
   const tree = slice.tree
   const loaded = await readVerifyConfig(port, tree)
@@ -100,6 +104,7 @@ async function verify(port: EnginePort, signal: AbortSignal, sid: string): Promi
       const record: VerifyRecord = { tree, base: slice.base, configBlob: loaded.blob, commands: selection.commands, outcome: outcome.value, runId, at: await port.now() }
       const recorded = await recordToolRun(port, identity, unit, signal, () => ({ verifyRuns: [record] }))
       if (!recorded) return cancelled
+      await bestEffort(port, 'verify evidence write', () => writeVerifyEvidence(port, record, identity), undefined)
       await finishRunView(port, sid, { status: runStatus(outcome.value) }, signal)
       return outcome.failure ?? `Verify passed on tree ${tree.slice(0, 12)}: ${summaries.join(', ') || 'no command run'}. Selection: ${selection.description}.`
     })

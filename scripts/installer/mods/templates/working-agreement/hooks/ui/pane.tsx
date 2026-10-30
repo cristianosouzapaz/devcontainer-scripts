@@ -42,11 +42,11 @@ export function renderFlowPane(elements: PaneElements, view: FlowView | null, ru
     drawHeader(elements, { flow: view.flow, progress: view.progress, columns: layout.columns }),
     (view.pending || view.issues.length > 0) && drawIssueList(elements, { pending: view.pending, issues: view.issues, openIssue: actions.openIssue }),
     labelRows.length > 0 && drawLabelRows(elements, { rows: labelRows }),
-    view.meta.length > 0 && drawMetaRows(elements, { rows: view.meta }),
+    view.meta.length > 0 && drawMetaRows(elements, { rows: view.meta, columns: layout.columns }),
     drawStepList(elements, { steps: view.steps, columns: layout.columns }),
     run && drawLiveRun(elements, run),
     notes.length > 0 && <Box flexDirection="column">
-      {drawNotes(elements, { rows: notes })}
+      {drawNotes(elements, { rows: notes, columns: layout.columns })}
       {(view.violations?.length ?? 0) > 0 && <Box marginTop={1} paddingLeft={keyWidth}><Box flexShrink={0}><Button key="dismiss" label="dismiss" hotkey="d" onPress={actions.dismissViolations} /></Box></Box>}
     </Box>,
     (view.footer || view.hasRunLog) && drawFooter(elements, { footer: view.footer, hasRunLog: view.hasRunLog, openRunLog: actions.openRunLog, columns: layout.columns, startHandoff: actions.startHandoff, startNewSession: actions.startNewSession }),

@@ -1,6 +1,7 @@
 import type { Args, EventResult, Frozen, Next } from 'claude-code'
 
 import { bestEffort } from '../core/best-effort'
+import { refreshScopeHost } from '../core/delegation'
 import type { EnginePort } from '../core/engine-port'
 import { createFeaturePort } from '../core/feature-port'
 import { reread } from '../core/pane-view'
@@ -26,6 +27,7 @@ export async function handleSessionStart(port: EnginePort, event: Frozen<Args<'s
   port.repeat(tickMs, async () => {
     // atomicReplace holds the error in sessionMemory.recordError.
     try { await mirrorSession(port) } catch {}
+    await bestEffort(port, 'scope host', () => refreshScopeHost(port), undefined)
     await reread({ ...port, cause: 'tick' }, true)
   })
   // why: A seed whose mirror read failed must not stop the chain before the surface registers; every later read retries it.

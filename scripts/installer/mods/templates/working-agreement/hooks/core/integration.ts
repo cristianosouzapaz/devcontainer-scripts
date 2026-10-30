@@ -1,7 +1,7 @@
 import type { Identity, PullRequest, Unit, UnitEntry } from '../domain/records'
 import { isIntegrationBranch } from '../domain/requirements'
 import type { ChildIntegration, ChildUnit, Integration, UnitSlice } from '../domain/step-states'
-import { readLocalBranches, readWorktrees } from '../lib/git'
+import { findWorktreeRoot, readLocalBranches } from '../lib/git'
 import type { GitState } from '../lib/git'
 import type { PullRequestCandidate } from '../lib/github'
 import { fail, succeed } from '../lib/result'
@@ -94,7 +94,7 @@ export async function guideMerge(port: EnginePort, integration: ChildIntegration
  * or a branch cut when no worktree holds the parent.
  */
 export async function composeCutCommand(port: EnginePort, parent: string): Promise<string> {
-  const root = await readWorktreeRoot(port, parent)
+  const root = await findWorktreeRoot(port.processes, parent)
   if (await isInsideHerdr(port)) return `${spawnGuide}, its branch cut from ${quoteArgument(parent)} when its issue is blocked by this unit's issue`
   return root ? `git -C ${quoteArgument(root)} worktree add -b <child-branch> <path> ${quoteArgument(parent)}` : `git branch <child-branch> ${quoteArgument(parent)}`
 }
@@ -223,18 +223,8 @@ async function readParentDelivery(port: EnginePort, base: string | undefined, en
  * @returns A `git -C` merge in the parent's worktree, or a command naming both branches when no worktree holds the parent.
  */
 export async function composeMergeCommand(port: EnginePort, parent: string, child: string): Promise<string> {
-  const root = await readWorktreeRoot(port, parent)
+  const root = await findWorktreeRoot(port.processes, parent)
   return root ? `git -C ${quoteArgument(root)} merge --no-ff ${quoteArgument(child)}` : `git switch ${quoteArgument(parent)} && git merge --no-ff ${quoteArgument(child)}`
-}
-
-/**
- * Finds the worktree that holds a branch, as `git worktree list` reports it.
- * @param port - The engine calls.
- * @param branch - The branch.
- * @returns The worktree's root, or undefined when no worktree holds the branch or the list is unreadable.
- */
-async function readWorktreeRoot(port: EnginePort, branch: string): Promise<string | undefined> {
-  return (await readWorktrees(port.processes))?.find(worktree => worktree.branch === `refs/heads/${branch}`)?.root
 }
 
 /**

@@ -4,7 +4,7 @@ import type { Session } from '../domain/records'
 import { isDeliveryStep } from '../domain/flow-definitions'
 import { formatStepLabel, markStep } from '../domain/step-states'
 import type { Position } from '../domain/step-states'
-import { formatError } from '../lib/result'
+import { formatErrorLine } from '../lib/result'
 import { symbol } from '../ui/symbols'
 import type { EnginePort } from './engine-port'
 import { sessionMemory, holdError } from './session-memory'
@@ -54,7 +54,7 @@ export function reportHerdr(port: EnginePort, session: Session, position: Positi
       }
       sessionMemory.herdrError = null
     } catch (error) {
-      const message = `could not run: ${formatError(error).split(/\r?\n/)[0]}`
+      const message = `could not run: ${formatErrorLine(error)}`
       const now = await port.now()
       sessionMemory.herdrError = holdError(sessionMemory.herdrError, message, now)
     }

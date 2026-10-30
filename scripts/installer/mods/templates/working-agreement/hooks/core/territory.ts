@@ -2,6 +2,7 @@ import { isUnitOnBase } from '../domain/step-states'
 import { listNewCommits, readGitOutput, runGit } from '../lib/git'
 import type { Worktree } from '../lib/git'
 import type { EnginePort } from './engine-port'
+import { isPlaced } from './placed-refs'
 import { readSession, readUnit } from './record-store'
 import { readGit } from './repository'
 import { readUnitSlice } from './unit-slice'
@@ -13,7 +14,7 @@ export interface RefSnapshot { refs: Record<string, string>; worktrees: Worktree
 interface CommitVerdict { shas: string[]; isUnplaced: boolean }
 
 /** Judges which of a window's facts are this session's. */
-export interface Territory {
+interface Territory {
   /**
    * Keeps the candidates reached by at least one in-territory ref.
    * @param candidates - The commits newly reachable during the window.
@@ -48,7 +49,7 @@ interface Cache<T> { value?: Promise<T> }
 interface Scope { unitBranch: string | null; defaultBranch: string; slice: SliceRead }
 
 /** Names a local branch, or a detached worktree HEAD (null branch), that moved during the window. */
-interface MovedTip { branch: string | null; before?: string; after: string }
+interface MovedTip { branch: string | null; before: string | undefined; after: string }
 
 /**
  * Shares one lazy read between every question a window asks.
@@ -125,28 +126,34 @@ export function drawTerritory(port: EnginePort, before: RefSnapshot, after: RefS
     return branch === unitBranch || branch === defaultBranch
   }
   /**
-   * Tells whether a moved ref newly reaches a commit of the unit's slice.
+   * Tells whether a moved ref newly reaches a commit of the unit's slice that the mod did not bring into it.
    * @param tip - The moved ref.
+   * @param brought - The commits the mod's own placed tips newly reach.
    * @returns Whether it does, or null when the slice cannot be read.
    */
-  const carriesSlice = async (tip: MovedTip): Promise<boolean | null> => {
+  const carriesSlice = async (tip: MovedTip, brought: Set<string>): Promise<boolean | null> => {
     const { slice } = await scope()
     if (slice.kind !== 'read') return slice.kind === 'none' ? false : null
     if (!slice.commits.size) return false
     const entered = await listNewCommits(port.processes, [tip.after], [slice.base, ...(tip.before ? [tip.before] : [])])
-    return entered.some(sha => slice.commits.has(sha))
+    return entered.some(sha => slice.commits.has(sha) && !brought.has(sha))
   }
   return {
     judgeCommits: async (candidates, beforeTips) => {
       const tips = listMovedTips(before, after)
+      // why: a tip spawn or merge_child set for another unit is the mod's own move, whichever session's window it falls in.
+      const byMod = await Promise.all(tips.map(tip => tip.branch !== null && isPlaced(port, tip.branch, tip.after)))
       // An unreadable scope costs only the tips that needed it, never the verdicts of the others.
-      const placed = await Promise.all(tips.map(tip => tip.branch === null ? true : ownsBranch(tip.branch).catch(() => null)))
+      const placed = await Promise.all(tips.map((tip, index) => byMod[index] ? false : tip.branch === null ? true : ownsBranch(tip.branch).catch(() => null)))
       if (placed.every(verdict => verdict === true)) return { shas: candidates, isUnplaced: false }
+      // why: a placed unit branch takes the merged child's commits into the slice, which must not make the child's own branch carry it.
+      const brought = new Set((await Promise.all(tips.filter((_tip, index) => byMod[index])
+        .map(async tip => await listNewCommits(port.processes, [tip.after], beforeTips)))).flat())
       const judged = new Set<string>()
       const unplaced = new Set<string>()
       for (const [index, tip] of tips.entries()) {
         const reached = (await listNewCommits(port.processes, [tip.after], beforeTips)).filter(sha => candidates.includes(sha))
-        const verdict = !reached.length || placed[index] ? true : placed[index] === null ? null : await carriesSlice(tip).catch(() => null)
+        const verdict = byMod[index] ? false : !reached.length || placed[index] ? true : placed[index] === null ? null : await carriesSlice(tip, brought).catch(() => null)
         for (const sha of verdict === false ? [] : reached) (verdict ? judged : unplaced).add(sha)
       }
       return { shas: candidates.filter(sha => judged.has(sha)), isUnplaced: [...unplaced].some(sha => !judged.has(sha)) }

@@ -20,6 +20,29 @@ const issueBashDeny = markForAgent('Raw GitHub issue, label, milestone and depen
 const splitWords = (command: string): string[] => command.split(/[\s;&|()`'"<>]+/).filter(Boolean)
 
 /**
+ * Tells whether a position of a command falls inside a quoted string; escaped quotes are not read, as befits an accident guard.
+ * @param command - The raw command.
+ * @param index - The position.
+ * @returns Whether an opened quote is still unclosed at that position.
+ */
+function isQuoted(command: string, index: number): boolean {
+  const open = [...command.slice(0, index)].reduce<string | undefined>((quote, char) => {
+    if (quote) return char === quote ? undefined : quote
+    return char === '"' || char === '\'' ? char : undefined
+  }, undefined)
+  return open !== undefined
+}
+
+/**
+ * Explains a deny caused by issue-write words inside a quoted argument, which may be only text such as a message.
+ * @param words - The matched words.
+ * @returns The deny reason.
+ */
+const quotedIssueBashDeny = (words: string): string => markForAgent(`"${words.replace(/\s+/g, ' ')}" inside a quoted argument matched the raw GitHub issue write guard, ` +
+  'which reads the whole command line. If it is only text (a message, a body), pass that text from a file so the command line does not carry the words; ' +
+  'a real issue write goes through the mod\'s issue_create, issue_edit, issue_comment and issue_close tools.')
+
+/**
  * Tells a `gh api` call that writes: an explicit method other than GET, or, since gh then sends POST, any field or input.
  * @param command - The raw command.
  * @returns Whether the call writes.
@@ -36,12 +59,22 @@ function isGhApiWrite(command: string): boolean {
  * @returns The deny reason, or undefined when it writes none of them.
  */
 export function judgeIssueBash(command: string): string | undefined {
-  if (/\bgh\s+issue\s+(create|edit|close|reopen|comment|develop|transfer|delete)\b/.test(command)) return issueBashDeny
-  if (/\bgh\s+label\s+(create|edit|delete|clone)\b/.test(command)) return issueBashDeny
+  const write = /\bgh\s+issue\s+(create|edit|close|reopen|comment|develop|transfer|delete)\b/.exec(command) ?? /\bgh\s+label\s+(create|edit|delete|clone)\b/.exec(command)
+  if (write) return isQuoted(command, write.index) ? quotedIssueBashDeny(write[0]) : issueBashDeny
   if (!/\bgh\s+api\b/.test(command)) return undefined
   if (/\bgraphql\b/.test(command)) return /\bmutation\b/.test(command) && /issue|label|milestone/i.test(command) ? issueBashDeny : undefined
   if (!/\b(issues|labels|milestones|sub_issues?|dependencies)\b/.test(command)) return undefined
   return isGhApiWrite(command) ? issueBashDeny : undefined
+}
+
+/**
+ * Tells a git command that commits, however its options are spelled.
+ * @param command - The raw Bash command.
+ * @returns Whether it names both git and commit.
+ */
+export function isGitCommit(command: string): boolean {
+  const words = splitWords(command)
+  return words.includes('git') && words.includes('commit')
 }
 
 /**

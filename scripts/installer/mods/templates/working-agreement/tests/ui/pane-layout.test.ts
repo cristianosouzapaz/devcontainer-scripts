@@ -31,6 +31,6 @@ test('no labels make no rows', () => {
 })
 
 test('the label column is the body less its padding and the key column, at least one', () => {
-  expect(measureLabelWidth(40)).toBe(26)
+  expect(measureLabelWidth(40)).toBe(25)
   expect(measureLabelWidth(5)).toBe(1)
 })

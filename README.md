@@ -182,8 +182,8 @@ first.
 
 If a tool suddenly behaves as if it were logged out, run `devcontainer-data status --health`
 before logging in again. It is a read-only diagnostic that checks the persistent layout and
-coding-agent dependencies, and gives every problem either a safe command or an explicit manual
-action. Add `--json` for automation. A missing managed symlink puts credentials out of reach
+coding-agent dependencies, and suggests a safe command or an explicit manual action wherever one
+exists. Add `--json` for automation. A missing managed symlink puts credentials out of reach
 without touching them; `devcontainer-data repair` restores it when that is safe.
 
 ## Authentication

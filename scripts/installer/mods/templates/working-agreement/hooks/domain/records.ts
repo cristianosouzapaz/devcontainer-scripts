@@ -1,4 +1,4 @@
-import type { ApprovedRed, GithubStatus, IssueAudit, IssueInfo, Identity, ObservedEndRecord, SessionRecord, Unit, UnitEntry, UnitRecord, VerifyRecord, RunRecord, Violation } from '../../types'
+import type { ApprovedRed, GithubStatus, IssueAudit, IssueInfo, Identity, ObservedEndRecord, SessionRecord, Unit, UnitEntry, UnitRecord, VerifyEvidence, VerifyRecord, RunRecord, Violation } from '../../types'
 import { hasOnlyKeys, isStringArray, isFiniteNumber, isNonEmptyString, isSafeInteger, isRecord } from '../lib/guards'
 import { isPrFields } from '../lib/github-rows'
 import { flowDefinitions } from './flow-definitions'
@@ -47,9 +47,8 @@ function isIdentity(value: unknown): value is Identity {
  */
 function isVerifyRecord(value: unknown): value is VerifyRecord {
   if (!isRecord(value) || !hasOnlyKeys(value, ['tree', 'base', 'configBlob', 'commands', 'outcome', 'runId', 'at'])
-    || typeof value.tree !== 'string' || !value.tree || !(value.base === null || (typeof value.base === 'string' && !!value.base))
-    || typeof value.configBlob !== 'string' || !value.configBlob || typeof value.runId !== 'string' || !/^[a-zA-Z0-9-]+$/.test(value.runId)
-    || !isFiniteNumber(value.at) || !Array.isArray(value.commands)
+    || !hasRunStamp(value) || !(value.base === null || (typeof value.base === 'string' && !!value.base))
+    || typeof value.configBlob !== 'string' || !value.configBlob || !Array.isArray(value.commands)
     || !value.commands.every(command => isStringArray(command) && command.length > 0 && command.every(arg => !!arg.length)) || !isRecord(value.outcome)) return false
   return isOutcome(value.outcome)
 }
@@ -92,8 +91,16 @@ function isApprovedRed(value: unknown): value is ApprovedRed {
  */
 function hasRunIdentity(value: Record<string, unknown>): boolean {
   return isStringArray(value.argv) && value.argv.length > 0 && value.argv.every(arg => !!arg.length)
-    && typeof value.tree === 'string' && !!value.tree && typeof value.runId === 'string' && /^[a-zA-Z0-9-]+$/.test(value.runId)
-    && isFiniteNumber(value.at)
+    && hasRunStamp(value)
+}
+
+/**
+ * Identifies the stamp every run carries: the content it ran on, its id and its time.
+ * @param value - The decoded record.
+ * @returns Whether the tree, run id and time are valid.
+ */
+function hasRunStamp(value: Record<string, unknown>): boolean {
+  return typeof value.tree === 'string' && !!value.tree && typeof value.runId === 'string' && /^[a-zA-Z0-9-]+$/.test(value.runId) && isFiniteNumber(value.at)
 }
 
 /**
@@ -102,12 +109,14 @@ function hasRunIdentity(value: Record<string, unknown>): boolean {
  * @returns Whether the unit entry is valid.
  */
 function isUnit(value: unknown): value is UnitEntry {
-  return isRecord(value) && hasOnlyKeys(value, ['identity', 'skills', 'verifyRuns', 'runs', 'approval', 'approvedRed', 'generation', 'base', 'baseBranch', 'skips', 'delegated']) && isIdentity(value.identity) && isStringArray(value.skills)
+  return isRecord(value) && hasOnlyKeys(value, ['identity', 'skills', 'verifyRuns', 'runs', 'approval', 'approvedRed', 'generation', 'base', 'baseBranch', 'skips', 'delegated', 'verifyApproved']) && isIdentity(value.identity) && isStringArray(value.skills)
     && (value.delegated === undefined || isStringArray(value.delegated))
     && Array.isArray(value.verifyRuns) && value.verifyRuns.every(isVerifyRecord)
     && Array.isArray(value.runs) && value.runs.every(isRunRecord)
     && ['approval', 'generation', 'base', 'baseBranch'].every(key => value[key] === undefined || typeof value[key] === 'string')
     && (value.approvedRed === undefined || (value.approval !== undefined && isApprovedRed(value.approvedRed)))
+    && (value.verifyApproved === undefined || (isRecord(value.verifyApproved) && hasOnlyKeys(value.verifyApproved, ['tree', 'base'])
+      && isNonEmptyString(value.verifyApproved.tree) && (value.verifyApproved.base === null || isNonEmptyString(value.verifyApproved.base))))
     && (value.base === undefined || !!value.base) && (value.baseBranch === undefined || (!!value.base && !!value.baseBranch))
     && (value.skips === undefined || (Array.isArray(value.skips) && value.skips.every(skip => isRecord(skip) && hasOnlyKeys(skip, ['step', 'reason'])
       && typeof skip.step === 'string' && !!skip.step.trim() && typeof skip.reason === 'string' && !!skip.reason.trim())))
@@ -222,6 +231,16 @@ export function parseObservedEnd(value: unknown): ObservedEndRecord | null {
 }
 
 /**
+ * Validates a repository-wide Verify evidence record with exactly its keys.
+ * @param value - The decoded JSON.
+ * @returns The valid record, or null.
+ */
+export function parseVerifyEvidence(value: unknown): VerifyEvidence | null {
+  return isRecord(value) && hasOnlyKeys(value, ['v', 'run', 'origin']) && value.v === 1 && isVerifyRecord(value.run) && isIdentity(value.origin)
+    ? { v: 1, run: value.run, origin: value.origin } : null
+}
+
+/**
  * Builds a chat record before its first declaration.
  * @param sessionId - The engine session id.
  * @returns An empty session with derived flow fields.
@@ -261,6 +280,15 @@ const newestFirst = (a: RunRecord, b: RunRecord): number => b.at - a.at || (a.ru
  */
 export const findEarliestRed = (runs: RunRecord[]): RunRecord | undefined =>
   runs.filter(run => run.outcome.kind !== 'pass').sort(newestFirst).at(-1)
+
+/**
+ * Finds the latest failing run strictly before a time, the red a diagnosis posted at that time was written on.
+ * @param runs - The unit's command history.
+ * @param before - The time the red must come strictly before.
+ * @returns That run, if any.
+ */
+export const findLatestRedBefore = (runs: RunRecord[], before: number): RunRecord | undefined =>
+  runs.filter(run => run.outcome.kind !== 'pass' && run.at < before).sort(newestFirst)[0]
 
 /**
  * Keeps, newest first across chat contributions, each argv's newest runs and its earliest red, newest argvs first up to a

@@ -1,15 +1,21 @@
 import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
-import { noFlow, verifyFile } from '../support/builders'
-import { declareFlow, endTurn, readFlowStatus, runFlowCommand, startSkill } from '../support/helpers'
+import { buildChangedCheckout, noFlow, verifyFile } from '../support/builders'
+import { approveVerify, declareFlow, endTurn, readFlowStatus, runFlowCommand, startSkill } from '../support/helpers'
 import { childUnit, parallelCheckout, withCommit } from '../support/parallel-worktrees'
-import { common, configBlob, createWorld } from '../support/world'
+import { configBlob, createWorld, records } from '../support/world'
 import type { Checkout, Gate, Graph, Options } from '../support/world'
 
 interface LogLine { at: number; session: string; generation?: string; branch: string; issues: number[]; event: string; [field: string]: unknown }
 
-const logs = `${common}/working-agreement/log/`
+const logs = `${records}/log/`
+
+/**
+ * Builds the options of a session with no flow on a repository whose #1 awaits triage, fresh for each test since tests change them.
+ * @returns The world options.
+ */
+const untriaged = (): Options => ({ session: noFlow, issueLabels: { 1: ['needs-triage'] } })
 
 /**
  * Reads every logged line, grouped by log file.
@@ -33,7 +39,7 @@ function readLog(files: Map<string, string>): LogLine[] {
 }
 
 test('a declaration logs who declared it, then a snapshot, then only the steps that changed with their cause', async ($, on) => {
-  const options: Options = { session: noFlow, issueLabels: { 1: ['needs-triage'] } }
+  const options: Options = untriaged()
   const { files, clock } = createWorld(on, { branch: 'feat' }, options)
   await declareFlow($, 'small-feature', [1])
   await clock.settle()
@@ -92,7 +98,7 @@ test('two chats on one unit append to the same log, each line naming its chat', 
 })
 
 test('a failing append never fails the call and shows in /flow status until an append succeeds', async ($, on) => {
-  const options: Options = { session: noFlow, issueLabels: { 1: ['needs-triage'] }, appendExitCode: 1 }
+  const options: Options = { ...untriaged(), appendExitCode: 1 }
   const { files, clock } = createWorld(on, { branch: 'feat' }, options)
   expect((await declareFlow($, 'small-feature', [1])).deny).toBeUndefined()
   await clock.settle()
@@ -108,11 +114,11 @@ test('a failing append never fails the call and shows in /flow status until an a
 })
 
 test('/flow status names the unit log', async ($, on) => {
-  const { files, clock } = createWorld(on, { branch: 'feat' }, { session: noFlow, issueLabels: { 1: ['needs-triage'] } })
+  const { files, clock } = createWorld(on, { branch: 'feat' }, untriaged())
   await declareFlow($, 'small-feature', [1])
   await clock.settle()
   const path = [...files.keys()].find(file => file.startsWith(logs))
-  expect(await readFlowStatus($)).toContain(`Log       ${path}`)
+  expect(await readFlowStatus($)).toContain(`Log        ${path}`)
 })
 
 test('the declaration sweep removes a log whose declaration is gone', async ($, on) => {
@@ -181,7 +187,7 @@ test('a deny whose record write loses every compare-and-set logs no line', async
 
 test('an older observation overtaken by a newer painted one logs no step', async ($, on) => {
   const gate: Gate = {}
-  const options: Options = { session: noFlow, issueLabels: { 1: ['needs-triage'] } }
+  const options: Options = untriaged()
   const { files, clock } = createWorld(on, { branch: 'feat' }, options)
   await declareFlow($, 'small-feature', [1])
   await clock.settle()
@@ -199,21 +205,21 @@ test('an older observation overtaken by a newer painted one logs no step', async
 })
 
 test('a Verify done → current logs the fact it shows and the slice it was judged on', async ($, on) => {
-  const { files, clock } = createWorld(on, { branch: 'feat', ahead: 8, isDirty: true, tree: 'one' }, { verifyFile })
-  await runFlowCommand($, `approve verify ${configBlob(verifyFile).slice(0, 12)}`)
+  const { files, clock } = createWorld(on, buildChangedCheckout(), { verifyFile })
+  await approveVerify($)
   await $.tool.call({ tool: 'mcp__working-agreement__verify' })
   await clock.settle()
-  for (const path of [...files.keys()].filter(file => file.startsWith(`${common}/working-agreement/ok/`))) files.delete(path)
+  for (const path of [...files.keys()].filter(file => file.startsWith(`${records}/ok/`))) files.delete(path)
   await endTurn($)
   await clock.settle()
   const [done, current] = readLog(files).filter(line => line.event === 'step' && line.step === 'verify')
-  expect(done).toMatchObject({ from: 'pending', to: 'done', base: 'c0', tree: expect.any(String) })
+  expect(done).toMatchObject({ from: 'current', to: 'done', base: 'c0', tree: expect.any(String) })
   expect(done?.fact).toBeUndefined()
   expect(current).toMatchObject({ from: 'done', to: 'current', fact: '/flow approve verify', base: 'c0', tree: done?.tree, cause: ['turn end'] })
 })
 
 test('steps judged on an unreadable slice log no base and no tree', async ($, on) => {
-  const { files, clock } = createWorld(on, { branch: 'feat' }, { session: noFlow, issueLabels: { 1: ['needs-triage'] }, failing: 'git rev-parse --verify --quiet refs/heads/feat' })
+  const { files, clock } = createWorld(on, { branch: 'feat' }, { ...untriaged(), failing: 'git rev-parse --verify --quiet refs/heads/feat' })
   await declareFlow($, 'small-feature', [1])
   await clock.settle()
   const snapshot = readLog(files).find(line => line.event === 'snapshot')
@@ -223,7 +229,7 @@ test('steps judged on an unreadable slice log no base and no tree', async ($, on
 })
 
 test('a step that shows no fact, such as a skipped one, logs no fact', async ($, on) => {
-  const { files, clock } = createWorld(on, { branch: 'feat' }, { session: noFlow, issueLabels: { 1: ['needs-triage'] } })
+  const { files, clock } = createWorld(on, { branch: 'feat' }, untriaged())
   await declareFlow($, 'small-feature', [1])
   await runFlowCommand($, 'skip verify covered separately')
   await clock.settle()
@@ -233,7 +239,7 @@ test('a step that shows no fact, such as a skipped one, logs no fact', async ($,
 })
 
 test('a log holding lines from before the fact and slice fields keeps them unchanged and appends after them', async ($, on) => {
-  const { files, clock } = createWorld(on, { branch: 'feat' }, { session: noFlow, issueLabels: { 1: ['needs-triage'] } })
+  const { files, clock } = createWorld(on, { branch: 'feat' }, untriaged())
   await declareFlow($, 'small-feature', [1])
   await clock.settle()
   const [path] = [...files.keys()].filter(file => file.startsWith(logs))

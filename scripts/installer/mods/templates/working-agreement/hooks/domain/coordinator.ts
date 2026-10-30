@@ -1,18 +1,19 @@
 import { suggestDelegateTool } from './delegation'
-import { markForAgent, modToolPrefix } from './messages'
+import { appendInstructions, markForAgent, modToolPrefix } from './messages'
 
 /** The mod tool that proposes `/flow coordinate` in the prompt box. */
 export const suggestCoordinateTool = `${modToolPrefix}suggest_coordinate`
 /** The issue tools, by the name after the mod's prefix. */
 export const issueTools = ['issue_create', 'issue_edit', 'issue_close', 'issue_comment'] as const
-/** The coordinator's tools that start and message unit sessions, by the name after the mod's prefix. */
-export const unitTools = ['spawn', 'unit_prompt', 'unit_read'] as const
+/** The coordinator's tools that start, message and retire unit sessions, by the name after the mod's prefix. */
+export const unitTools = ['spawn', 'unit_prompt', 'unit_read', 'retire_unit'] as const
 
 // why: These tools write nothing in the repository but the engine does not mark them read-only; Agent is safe here
 // because every call of the subagent it starts is checked again under its agentId. The issue tools are the coordinator's
-// only GitHub write channel, spawn starts the unit sessions that do write, unit_prompt is its only channel to them, and
-// merge_child is its one repository write, which the mod itself runs only for a delegated child/parent pair it knows.
-const modTools = [suggestCoordinateTool, suggestDelegateTool, ...[...issueTools, ...unitTools, 'merge_child'].map(name => `${modToolPrefix}${name}`)]
+// only GitHub write channel, spawn starts the unit sessions that do write, unit_prompt is its only channel to them, retire_unit
+// removes a delegated unit only after the mod archived its work and posted the decision, and
+// merge_child is its one repository write, which the mod itself runs only for a delegated child/parent pair it knows; plan only reads.
+const modTools = [suggestCoordinateTool, suggestDelegateTool, ...[...issueTools, ...unitTools, 'merge_child', 'plan'].map(name => `${modToolPrefix}${name}`)]
 const allowedTools = ['Agent', 'Skill', 'ToolSearch', 'AskUserQuestion', 'TodoWrite', ...modTools]
 
 // why: Reads the engine cannot recognize as read-only; each is matched as an exact argv prefix, so a write subcommand never matches.
@@ -27,6 +28,19 @@ const shellMetacharacters = /[;|&><$`\n]/
 /** Where a denied coordinator call is told the writing happens instead. */
 export const coordinatorDeny = markForAgent('This session is the coordinator, which never writes in the repository — ' +
   'reads, analysis and read-only subagents are allowed; any write belongs to a unit session in its own herdr worktree (spawn one), never to the coordinator or its subagents.')
+// why: The allowlist cannot tell a chain of reads from a chain hiding a write, so it is refused without being called a write.
+const compoundDeny = markForAgent('This command was not recognized as read-only: the coordinator\'s read allowlist accepts only a simple command, ' +
+  'without ; | & > < $ backticks or newlines. If every part is a read, run each part on its own; a write belongs to a unit session in its own herdr worktree (spawn one).')
+
+/**
+ * Writes the prompt `/flow coordinate` submits; the same text always writes the same bytes.
+ * @param instructions - The user's free text, appended verbatim; empty appends nothing.
+ * @returns The prompt, which asks the user before anything starts.
+ */
+export function composeCoordinatePrompt(instructions: string): string {
+  return appendInstructions('Show the open ready-for-agent issues, the running unit sessions (herdr agent list) and the delegated decisions awaiting review ' +
+    '(open issues labelled delegated-review), then ask the user what to coordinate. Start nothing: spawn no unit and prompt none until the user answers.', instructions)
+}
 
 /**
  * Refuses a coordinator or a delegation while hooks modules run ahead of the mod: the engine takes the outermost hook's
@@ -79,8 +93,28 @@ function isAllowedCommand(command: string): boolean {
  */
 export function isAllowedForCoordinator(tool: string, input: unknown): boolean {
   if (allowedTools.includes(tool)) return true
-  if (tool !== 'Bash' || typeof input !== 'object' || input === null || !('command' in input)) return false
-  return typeof input.command === 'string' && isAllowedCommand(input.command)
+  const command = tool === 'Bash' ? readCommand(input) : undefined
+  return command !== undefined && isAllowedCommand(command)
+}
+
+/**
+ * Names why the coordinator's permission check refuses a call it does not allow.
+ * @param tool - The called tool.
+ * @param input - The call's arguments.
+ * @returns The compound-command reason for a Bash command with a shell metacharacter, else the coordinator's deny.
+ */
+export function explainCoordinatorDeny(tool: string, input: unknown): string {
+  const command = readCommand(input)
+  return tool === 'Bash' && command !== undefined && shellMetacharacters.test(command) ? compoundDeny : coordinatorDeny
+}
+
+/**
+ * Reads a Bash call's command from its untyped arguments.
+ * @param input - The call's arguments.
+ * @returns The command, or undefined when the arguments carry no string command.
+ */
+function readCommand(input: unknown): string | undefined {
+  return typeof input === 'object' && input !== null && 'command' in input && typeof input.command === 'string' ? input.command : undefined
 }
 
 /**

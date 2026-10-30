@@ -22,7 +22,7 @@ interface GithubProbeRun { at: number; status: Promise<GithubStatus> }
 interface Cached<T> { at: number; result: Result<T> }
 
 /** Holds this chat's display for one declared unit generation. */
-export interface RunDisplay {
+interface RunDisplay {
   identity: Identity
   generation: string | undefined
   live: RunView | null
@@ -72,6 +72,8 @@ interface SessionMemory {
   /** The hooks modules the engine nests outside this one, outermost first: any of them has the last word over its guards; null after a refresh that
    * did not list this mod, which leaves the order unknown. */
   modulesAhead: readonly string[] | null
+  /** The permission mode the engine last reported for this session; null before any report. */
+  permissionMode: string | null
 }
 
 /** The hooks' shared in-memory state; a reload evaluates the module again, so it starts over. */
@@ -99,6 +101,7 @@ export const sessionMemory: SessionMemory = {
   painted: null,
   shownSuggestion: null,
   modulesAhead: [],
+  permissionMode: null,
 }
 
 /**

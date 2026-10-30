@@ -2,18 +2,17 @@ import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
 import { tickMs } from '../../hooks/core/timing'
-import { createEmptySession } from '../../hooks/domain/records'
 import { readJson } from '../../hooks/lib/json'
-import { noFlow, verifyFile } from '../support/builders'
+import { buildChangedCheckout, buildSavedSession, buildVerifyRun, modToolNames, noFlow, verifyFile } from '../support/builders'
 import { readCurrentStep, readPromptContext } from '../support/helpers'
-import { common, configBlob, createTestPort, createWorld, root } from '../support/world'
+import { createTestPort, createWorld, records, root } from '../support/world'
 import type { Options } from '../support/world'
 
-const records = `${common}/working-agreement`
 const unreadable = 'could not be read'
-const pass = { tree: 'one', base: 'c0', configBlob: configBlob(verifyFile), commands: [['./test/run.sh']], outcome: { kind: 'pass' }, runId: 'r', at: 1 }
+const pass = buildVerifyRun()
+const checkout = buildChangedCheckout()
+
 const verified = (): Options => ({ approvedConfig: verifyFile, verifyFile, unit: { verifyRuns: [pass] } })
-const checkout = { branch: 'feat', ahead: 8, isDirty: true, tree: 'one' }
 
 test('a present file whose read rejects, or that is not JSON, is a failed read; a missing file is absent', async (_$, on) => {
   const options: Options = {}
@@ -64,12 +63,12 @@ for (const [failure, text, options] of [
   test(`a startup mirror whose read ${failure} still registers the surface, seeds no empty record, and a tick seeds it once it reads`, async ($, on) => {
     const start: Options = { session: noFlow, isStateAbsent: true, ...options }
     const world = createWorld(on, { branch: 'feature' }, start)
-    const { flow: _flow, issues: _issues, ...saved } = createEmptySession('sid')
+    const saved = buildSavedSession()
     const mirror = JSON.stringify({ ...saved, blocked: { edits: 4 } })
     world.files.set(`${records}/s/sid.json`, text === 'mirror' ? mirror : text)
     await $.session.start({ cwd: root, surface: null, isInteractive: false })
     expect(world.registeredCommands.map(command => command.name)).toContain('flow')
-    expect(world.registeredTools.map(tool => tool.name).sort()).toEqual(['declare_flow', 'issue_close', 'issue_comment', 'issue_create', 'issue_edit', 'merge_child', 'run', 'spawn', 'suggest_coordinate', 'suggest_delegate', 'unit_prompt', 'unit_read', 'verify'])
+    expect(world.registeredTools.map(tool => tool.name).sort()).toEqual([...modToolNames].sort())
     expect(world.sessions.get('sid')).toBeUndefined()
     world.files.set(`${records}/s/sid.json`, mirror)
     delete start.readFailurePrefix

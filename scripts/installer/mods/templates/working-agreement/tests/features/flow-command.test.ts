@@ -1,8 +1,8 @@
 import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
-import { diagnoseRuns, diagnosisComment, noFlow, verifyFile } from '../support/builders'
+import { diagnoseRuns, diagnosisComment, noFlow, trivialFlow, verifyFile, verifyId } from '../support/builders'
 import { readCurrentStep, runFlowCommand } from '../support/helpers'
-import { configBlob, createWorld, root } from '../support/world'
+import { createWorld, root } from '../support/world'
 
 const userOnly = ['trivial', 'follow-up #1', 'handoff', 'skip code reviewed']
 test('the user-only /flow subcommands are refused unless typed at the prompt', async ($, on) => {
@@ -68,7 +68,7 @@ for (const args of ['follow-up #1', 'follow-up', '', 'status', 'skip code review
 
 for (const args of ['skip absent why', 'skip code', 'approve verify', 'approve verify 0000000', 'approve diagnose', `approve ${diagnosisComment.url}`, '', 'status']) {
   test(`/flow ${args || '(bare)'} on a declared unit, refused or only informative, submits no prompt`, async ($, on) => {
-    const { clock, prompts } = createWorld(on, { branch: 'feat' }, { session: { flow: 'trivial', issues: [], info: {} }, verifyFile })
+    const { clock, prompts } = createWorld(on, { branch: 'feat' }, { session: trivialFlow(), verifyFile })
     await runFlowCommand($, args)
     await clock.settle()
     expect(prompts).toEqual([])
@@ -76,7 +76,7 @@ for (const args of ['skip absent why', 'skip code', 'approve verify', 'approve v
 }
 
 test('a successful /flow skip starts the new current step after its reply', async ($, on) => {
-  const { clock, prompts } = createWorld(on, { branch: 'feat' }, { session: { flow: 'trivial', issues: [], info: {} }, verifyFile })
+  const { clock, prompts } = createWorld(on, { branch: 'feat' }, { session: trivialFlow(), verifyFile })
   expect((await runFlowCommand($, 'skip code reviewed elsewhere')).text).toBe('Skipped Code: reviewed elsewhere')
   expect(prompts).toEqual([])
   await clock.settle()
@@ -98,12 +98,14 @@ test('a successful /flow approve starts the new current step after its reply', a
   expect(prompts[0]).toContain('current step: Code')
 })
 
-test('a successful /flow approve verify <id> starts the current step after its reply', async ($, on) => {
-  const id = configBlob(verifyFile).slice(0, 12)
-  const { clock, prompts } = createWorld(on, { branch: 'feat', isDirty: true, changed: ['src/a.ts'], tree: 'tree' }, { session: { flow: 'trivial', issues: [], info: {} }, verifyFile })
+test('a successful /flow approve verify <id> starts Verify, the step its approval unblocked, after its reply', async ($, on) => {
+  const id = verifyId()
+  const { clock, prompts } = createWorld(on, { branch: 'feat', isDirty: true, changed: ['src/a.ts'], tree: 'tree' }, { session: trivialFlow(), verifyFile })
   expect((await runFlowCommand($, `approve verify ${id}`)).text).toBe(`Verify config ${id} approved.`)
   expect(prompts).toEqual([])
   await clock.settle()
   expect(prompts).toHaveLength(1)
-  expect(prompts[0]).toStartWith(`Verify config ${id} approved. Start the current step (Code). [working-agreement] `)
+  expect(prompts[0]).toStartWith(`Verify config ${id} approved. Start the current step (Verify). [working-agreement] `)
+  expect(prompts[0]).toContain('Next action: call the verify tool')
+  expect(await readCurrentStep($)).toBe('Verify')
 })

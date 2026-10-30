@@ -1,3 +1,5 @@
+import { pluralize } from './messages'
+
 /**
  * Every fact a step shows after its dot, in one vocabulary: lowercase, no trailing period, the state only: the step's
  * label names the subject and its mark says whose turn it is. A template takes only bounded values, such as a PR or issue number; a branch, path, command or GitHub error
@@ -15,7 +17,7 @@ export const facts = {
   wontfix: 'wontfix',
   noMapLabel: 'no wayfinder:map label',
   noMappedSubIssue: 'no wayfinder:* sub-issue',
-  openMappedSubIssues: (count: number): string => `${count} wayfinder:* sub-issue${count === 1 ? '' : 's'} open`,
+  openMappedSubIssues: (count: number): string => `${pluralize(count, 'wayfinder:* sub-issue')} open`,
   noReadySubIssue: 'no ready-for-agent sub-issue',
   // Diagnose
   noRedRun: 'no red run yet',
@@ -31,6 +33,7 @@ export const facts = {
   verifyNoRun: 'no run yet',
   verifyBaseMoved: 'base moved',
   verifyTreeChanged: 'tree changed',
+  verifyChangedAfterPass: 'changed after Verify',
   verifyTreeChangedInRun: 'tree changed in the run',
   nothingCommitted: 'nothing yet',
   uncommitted: 'uncommitted changes',
@@ -41,6 +44,8 @@ export const facts = {
   verifyConfigApproval: '/flow approve verify',
   verifyNotRun: 'not run on this tree',
   verifyPassed: 'passed',
+  verifyPassedElsewhere: 'passed (run in another unit)',
+  verifyPassedIn: (issue: number): string => `passed (run in #${issue})`,
   leftToCi: 'no local check selected — left to CI',
   verifyTimedOut: (minutes: number): string => `timed out after ${minutes} min`,
   verifyFailedExit: (code: number): string => `failed, exit ${code}`,
@@ -63,7 +68,7 @@ export const facts = {
   ciPending: 'CI pending',
   ciRequiredMissing: 'CI pending: required check missing',
   ciNoChecks: 'CI: no checks reported',
-  fixIssues: (count: number): string => `fix ${count} issue${count === 1 ? '' : 's'} with issue_edit`,
+  fixIssues: (count: number): string => `fix ${pluralize(count, 'issue')} with issue_edit`,
   auditPending: 'issue audit pending',
   // Integrate
   integrationUnreadable: 'integration unreadable',
@@ -75,6 +80,9 @@ export const facts = {
   strandedPr: (pr: number): string => `open a PR: #${pr} merged without it`,
   mergeChildPr: (pr: number): string => `merge PR #${pr} into the parent`,
   mergeIntoParent: 'merge into the parent branch',
+  // Delegation
+  coordinatorGone: 'coordinator session gone',
+  coordinatorUnknown: 'coordinator liveness unknown',
   // Skipped
   optional: 'optional',
   branchDeleted: 'branch deleted',

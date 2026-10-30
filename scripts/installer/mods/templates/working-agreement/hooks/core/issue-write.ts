@@ -21,8 +21,11 @@ interface IssueState { state: string; stateReason: string; labels: string[]; ass
 /** A create or edit's outcome, with the issue it wrote, which stands even when its read-back failed. */
 export interface IssueWrite { result: Result<string>; written: number | null }
 
+/** Refuses an edit from the issue's labels before it, or lets it through with undefined. */
+export type EditGuard = (current: string[]) => Promise<string | undefined>
+
 /** What a write must have left on the issue; every field left out is not checked. */
-interface Expected { labels?: string[]; parent?: number; blockedBy?: number[]; state?: string; stateReason?: string }
+interface Expected { assignee?: boolean; labels?: string[]; parent?: number; blockedBy?: number[]; state?: string; stateReason?: string }
 
 /**
  * Reads the `issues` section from the working tree's config when the user approved that exact blob, as for Verify, so an agent
@@ -42,12 +45,33 @@ export async function readIssuesConfig(port: EnginePort): Promise<Result<IssuesC
  * @returns The facts, or the read failure.
  */
 async function readRepoFacts(processes: ProcessPort): Promise<Result<RepoFacts>> {
-  const labels = await runGh(processes, ['api', 'repos/{owner}/{repo}/labels', '--paginate', '--jq', '.[].name'])
-  if (!labels.isOk) return fail(`cannot read the repository labels: ${labels.error}`)
+  const labels = await readLabelNames(processes)
+  if (!labels.isOk) return labels
   const types = await readGraphql(processes, 'query($owner:String!,$name:String!){repository(owner:$owner,name:$name){issueTypes(first:50){nodes{name}}}}')
   if (!types.isOk) return fail(`cannot read the repository issue types: ${types.error}`)
   const issueTypes = filterRecords(isRecord(types.value.issueTypes) ? types.value.issueTypes.nodes : null).map(node => toStringOrEmpty(node.name))
-  return succeed({ labels: new Set(labels.value.split('\n').filter(Boolean)), issueTypes })
+  return succeed({ labels: new Set(labels.value), issueTypes })
+}
+
+/**
+ * Reads the names of the repository's labels.
+ * @param processes - The engine's process runner.
+ * @returns The names, or the read failure.
+ */
+async function readLabelNames(processes: ProcessPort): Promise<Result<string[]>> {
+  const labels = await runGh(processes, ['api', 'repos/{owner}/{repo}/labels', '--paginate', '--jq', '.[].name'])
+  return labels.isOk ? succeed(labels.value.split('\n').filter(Boolean)) : fail(`cannot read the repository labels: ${labels.error}`)
+}
+
+/**
+ * Checks that the repository carries the delegated-review label a decision needs.
+ * @param processes - The engine's process runner.
+ * @returns Why a decision cannot be posted, or undefined when the label exists.
+ */
+export async function findMissingReviewLabel(processes: ProcessPort): Promise<string | undefined> {
+  const labels = await readLabelNames(processes)
+  if (!labels.isOk) return labels.error
+  return labels.value.includes(reviewLabel) ? undefined : `The repository lacks the label ${reviewLabel} — ${setupHint}.`
 }
 
 /**
@@ -85,7 +109,7 @@ async function confirm(processes: ProcessPort, issue: number, expected: Expected
   const actual = read.value
   const mismatches = [
     ...(expected.labels ?? []).filter(label => !actual.labels.includes(label)).map(label => `label ${label} missing`),
-    ...(actual.assignees.length ? [] : ['no assignee']),
+    ...(expected.assignee && !actual.assignees.length ? ['no assignee'] : []),
     ...(expected.parent === undefined || actual.parent === expected.parent ? [] : [`parent is ${actual.parent === null ? 'unset' : `#${actual.parent}`}, not #${expected.parent}`]),
     ...(expected.blockedBy ?? []).filter(number => !actual.blockedBy.includes(number)).map(number => `not blocked by #${number}`),
     ...(expected.state === undefined || actual.state === expected.state ? [] : [`state is ${actual.state}, not ${expected.state}`]),
@@ -116,6 +140,15 @@ function nativeType(config: IssuesConfig, facts: RepoFacts, type: string | undef
 const repeat = (flag: string, values: readonly (string | number)[]): string[] => values.flatMap(value => [flag, String(value)])
 
 /**
+ * Words a refused issue write, which wrote no issue.
+ * @param error - Why the write was refused.
+ * @returns The refusal.
+ */
+function refuse(error: string): IssueWrite {
+  return { result: fail(error), written: null }
+}
+
+/**
  * Creates an issue after checking every field, then reads it back.
  * @param port - The engine calls.
  * @param config - The issues config.
@@ -123,7 +156,6 @@ const repeat = (flag: string, values: readonly (string | number)[]): string[] =>
  * @returns The new issue's URL, or the refusal or failure, with the issue once it exists.
  */
 export async function createIssue(port: EnginePort, config: IssuesConfig, input: IssueInput): Promise<IssueWrite> {
-  const refuse = (error: string): IssueWrite => ({ result: fail(error), written: null })
   if (input.title === undefined || input.sections === undefined || input.triage === undefined) return refuse('title, kind, sections and triage are required.')
   const assignees = input.assignees ?? ['@me']
   if (!assignees.length) return refuse('At least one assignee is required (default @me).')
@@ -142,7 +174,7 @@ export async function createIssue(port: EnginePort, config: IssuesConfig, input:
   const url = created.value.trim().split('\n').pop() ?? ''
   const number = Number(/\/issues\/(\d+)$/.exec(url)?.[1])
   if (!number) return refuse(`gh issue create printed no issue URL: ${created.value.trim()}`)
-  const confirmed = await confirm(port.processes, number, { labels: checked.value.labels, ...(input.parent ? { parent: input.parent } : {}), ...(input.blockedBy ? { blockedBy: input.blockedBy } : {}) })
+  const confirmed = await confirm(port.processes, number, { assignee: true, labels: checked.value.labels, ...(input.parent ? { parent: input.parent } : {}), ...(input.blockedBy ? { blockedBy: input.blockedBy } : {}) })
   return { result: confirmed.isOk ? succeed(`Created ${url}`) : fail(`Created ${url}, but ${confirmed.error}`), written: number }
 }
 
@@ -151,13 +183,15 @@ export async function createIssue(port: EnginePort, config: IssuesConfig, input:
  * @param port - The engine calls.
  * @param config - The issues config.
  * @param input - The call's fields.
+ * @param guard - What may refuse the edit once the issue's labels are read.
  * @returns The confirmation, or the refusal or failure.
  */
-export async function editIssue(port: EnginePort, config: IssuesConfig, input: IssueInput): Promise<IssueWrite> {
-  const refuse = (error: string): IssueWrite => ({ result: fail(error), written: null })
+export async function editIssue(port: EnginePort, config: IssuesConfig, input: IssueInput, guard?: EditGuard): Promise<IssueWrite> {
   if (input.number === undefined) return refuse('number is required.')
   const current = await readIssueState(port.processes, input.number)
   if (!current.isOk) return refuse(current.error)
+  const refusal = await guard?.(current.value.labels)
+  if (refusal) return refuse(refusal)
   if (!current.value.assignees.length && !input.assignees?.length) return refuse(`#${input.number} has no assignee: pass assignees (e.g. @me).`)
   const facts = await readRepoFacts(port.processes)
   if (!facts.isOk) return refuse(facts.error)
@@ -176,7 +210,7 @@ export async function editIssue(port: EnginePort, config: IssuesConfig, input: I
     const reopened = await runGh(port.processes, ['issue', 'reopen', String(input.number)])
     if (!reopened.isOk) return { result: fail(`Edited #${input.number}, but gh issue reopen failed: ${reopened.error}`), written: input.number }
   }
-  const confirmed = await confirm(port.processes, input.number, { labels: checked.value.labels, ...(input.parent ? { parent: input.parent } : {}),
+  const confirmed = await confirm(port.processes, input.number, { assignee: true, labels: checked.value.labels, ...(input.parent ? { parent: input.parent } : {}),
     ...(input.blockedBy ? { blockedBy: input.blockedBy } : {}), ...(input.state === 'open' ? { state: 'OPEN' } : {}) })
   return { result: confirmed.isOk ? succeed(`Edited #${input.number}`) : fail(`Edited #${input.number}, but ${confirmed.error}`), written: input.number }
 }
@@ -214,6 +248,11 @@ export async function commentIssue(port: EnginePort, input: IssueInput): Promise
   if (!before.isOk) return before
   if (kind === 'review' && !listUnreviewed(before.value).includes(readReviewedDecision(input.body))) {
     return fail(`${readReviewedDecision(input.body)} is not an unreviewed delegated decision on #${input.number}.`)
+  }
+  // A decision is all or nothing: one posted without its label stays out of the review queue, and a retry duplicates it.
+  if (kind === 'decision') {
+    const missing = await findMissingReviewLabel(port.processes)
+    if (missing) return fail(missing)
   }
   const posted = await runGh(port.processes, ['issue', 'comment', String(input.number), '--body', input.body])
   if (!posted.isOk) return fail(`gh issue comment failed: ${posted.error}`)

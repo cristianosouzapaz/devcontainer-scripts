@@ -1,10 +1,11 @@
-import type { CommandRunResult, PromptOrigin, SkillPromptArgs, ToolCallResult } from 'claude-code'
+import type { CommandRunResult, On, PromptOrigin, SkillPromptArgs, ToolCallResult } from 'claude-code'
 import { expect } from 'claude-code/testing'
 import type { Engine, Mounted } from 'claude-code/testing'
-import type { FlowStepState } from '../../types'
+import type { FlowStepState, FlowView } from '../../types'
 import { locatePosition } from '../../hooks/core/position'
 import { readSession } from '../../hooks/core/record-store'
-import { createTestPort } from './world'
+import { verifyFile, verifyId } from './builders'
+import { common, createTestPort } from './world'
 import type { World } from './world'
 
 interface PaneOptions { columns?: number; rows?: number; requestId?: string; title?: string }
@@ -102,10 +103,11 @@ export async function callModTool($: Engine, tool: string, args: object = {}): P
  * Ends the main agent's turn with an answer.
  *
  * @param $ - The test's engine.
+ * @param answer - The turn's final text.
  * @returns Once the turn hooks ran.
  */
-export const endTurn = async ($: Engine): Promise<void> => {
-  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: 't' })
+export const endTurn = async ($: Engine, answer = ''): Promise<void> => {
+  await $.turn.complete({ reason: 'answer', answer, durationMs: 0, isAborted: false, turnId: 't' })
 }
 
 /**
@@ -158,4 +160,62 @@ export function checkTheme(node: unknown, keys: readonly string[]): void {
     if (props?.[key] !== undefined) expect(keys).toContain(props[key])
   }
   for (const child of children ?? []) checkTheme(child, keys)
+}
+
+/**
+ * Approves a Verify config as the user does, by the id the preview names.
+ * @param $ - The test's engine.
+ * @param file - The config's text.
+ * @returns The command's reply.
+ */
+export const approveVerify = ($: Engine, file = verifyFile): Promise<CommandRunResult> => runFlowCommand($, `approve verify ${verifyId(file)}`)
+
+/**
+ * Asserts that a mounted pane draws a text node with the given text and props.
+ * @param pane - The mounted pane.
+ * @param text - The node's whole text.
+ * @param props - Props the node must carry, such as its color.
+ */
+export async function expectText(pane: Mounted<'terminal', 'Pane'>, text: string, props: Record<string, unknown>): Promise<void> {
+  const found = (await pane.findAll({ type: 'Text' })).find(node => node.text === text && Object.entries(props).every(([key, value]) => node.props[key] === value))
+  expect(found).toBeDefined()
+}
+
+/**
+ * Serves the view the pane draws as the one the mod stored last, read from the holder at every draw so a test can swap it.
+ * @param on - The test's engine hooks.
+ * @param displayed - The holder of the view.
+ */
+export function serveDisplayed(on: On, displayed: { value: FlowView }): void {
+  on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: displayed.value, version: 0 } }))
+}
+
+/**
+ * Reads one keyed row of `/flow status`.
+ * @param status - The status text.
+ * @param key - The row's key.
+ * @returns The row, or empty when the status has none.
+ */
+export const readStatusRow = (status: string | undefined, key: string): string => (status ?? '').split('\n').find(line => line.startsWith(key)) ?? ''
+
+/**
+ * Makes another session hold the Verify lock, its ticket first in the queue.
+ * @param world - The test world.
+ * @param owner - Owner fields replacing a holder with no host identity.
+ * @param root - The common directory whose queue it holds.
+ */
+export function seedVerifyHolder(world: World, owner: Record<string, unknown> = {}, root = common): void {
+  world.files.set(`${root}/working-agreement/verify/lock/owner.json`, JSON.stringify({ sid: 'holder', ticket: '000000000000000-holder', token: 'held',
+    pidns: null, pid: null, pidStart: null, bootId: null, ...owner }))
+  world.files.set(`${root}/working-agreement/verify/q/000000000000000-holder/lease`, '')
+}
+
+/**
+ * Resolves a revision in the world's repository.
+ * @param world - The world.
+ * @param revision - The revision.
+ * @returns The commit, empty when it does not resolve.
+ */
+export async function readRevision(world: World, revision: string): Promise<string> {
+  return (await createTestPort(world).processes.run(['git', 'rev-parse', '--verify', '--quiet', revision], { timeoutMs: 5000 })).stdout
 }

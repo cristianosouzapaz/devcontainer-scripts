@@ -7,7 +7,6 @@ import { closeCommandLog, runCommand } from './run-command'
 import { formatExit, updateRunCommand } from './run-view'
 import { withRecordLock } from './session-memory'
 import { createEmptyUnit, sameIdentity } from '../domain/records'
-import { readWorktrees } from '../lib/git'
 
 interface RunLog { runId: string; log: string }
 interface RunRefusal { error: string }
@@ -33,17 +32,6 @@ export async function withToolRun(port: EnginePort, label: string, work: (sid: s
   try { return { result: await work(sid) } }
   catch (error) { return { result: `${label} could not run: ${error instanceof Error ? error.message : String(error)}` } }
   finally { running.delete(sid) }
-}
-
-/**
- * Locates the worktree holding a unit's branch.
- * @param port - The engine calls.
- * @param branch - The declared branch.
- * @returns Its root or undefined when it is checked out nowhere.
- */
-export async function readUnitWorktree(port: EnginePort, branch: string): Promise<string | undefined> {
-  const worktrees = await readWorktrees(port.processes)
-  return worktrees?.find(worktree => worktree.branch === `refs/heads/${branch}`)?.root
 }
 
 /**

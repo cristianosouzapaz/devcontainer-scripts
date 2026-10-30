@@ -1,16 +1,13 @@
 import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
-import { createEmptySession, createEmptyUnit, parseObservedEnd, parseSession, parseUnitRecord, retainRuns } from '../../hooks/domain/records'
+import { createEmptyUnit, parseObservedEnd, parseSession, parseUnitRecord, retainRuns } from '../../hooks/domain/records'
 import { conformanceGraph } from '../support/graph-fixture'
-import { buildParentGraph, noFlow, verifyFile, diagnoseRuns, diagnosed, diagnosisComment } from '../support/builders'
+import { buildParentGraph, buildSavedSession, buildVerifyRun, diagnosed, diagnoseRuns, diagnosisComment, noFlow, verifyFile } from '../support/builders'
 import { declareFlow, endTurn, readCurrentStep, readFlowStatus, readStepStates } from '../support/helpers'
-import { common, configBlob, createWorld, root } from '../support/world'
-import type { Options } from '../support/world'
+import { common, createWorld, records, root } from '../support/world'
+import type { Gate, Options } from '../support/world'
 
-interface Gate { release?: () => void }
-
-const records = `${common}/working-agreement`
 
 function recordPaths(files: Map<string, string>, kind: string): string[] {
   return [...files.keys()].filter(path => path.startsWith(`${records}/${kind}/`) && path.endsWith('.json'))
@@ -30,7 +27,7 @@ test('declaration writes canonical identities and complete records in the common
 
 test('the exact identity continues across chats, inherits evidence, and a different issue set creates another unit', async ($, on) => {
   const checkout = { branch: 'feature', isDirty: true, tree: 'tree', ahead: 0 }
-  const { chat, files, sessions } = createWorld(on, checkout, { approvedConfig: verifyFile, verifyFile, unit: { skills: ['grilling', 'to-spec'], verifyRuns: [{ tree: 'tree', base: 'c0', configBlob: configBlob(verifyFile), commands: [['./test/run.sh']], outcome: { kind: 'pass' }, runId: 'r', at: 1 }], approval: 'd' } })
+  const { chat, files, sessions } = createWorld(on, checkout, { approvedConfig: verifyFile, verifyFile, unit: { skills: ['grilling', 'to-spec'], verifyRuns: [buildVerifyRun({ tree: 'tree' })], approval: 'd' } })
   await declareFlow($, 'small-feature', [1])
   chat.id = 'second'
   await declareFlow($, 'close-out', [1])
@@ -69,7 +66,7 @@ test('torn session mirrors are skipped when continuing another chat', async ($, 
 })
 
 test('strict parsers reject a malformed field anywhere without filling defaults', () => {
-  const { flow: _flow, issues: _issues, ...session } = createEmptySession('sid')
+  const session = buildSavedSession()
   expect(parseSession(session)).toEqual(session)
   for (const broken of [{ v: 2 }, { isLong: undefined }, { gh: 'bad' }, { info: { 1: { title: 'x', labels: [2] } } },
     { unit: { branch: 'feat', issues: [2, 1] } }, { units: [{ identity: { branch: 'feat', issues: [] }, skills: [], verify: 3 }] },
@@ -87,7 +84,7 @@ test('an observed end record parses only with exactly its keys', () => {
 })
 
 test('strict unit entries validate bases and whole-step skips without changing the record version', () => {
-  const { flow: _flow, issues: _issues, ...session } = createEmptySession('sid')
+  const session = buildSavedSession()
   const entry = { identity: { branch: 'feat', issues: [1] }, skills: [], verifyRuns: [], runs: [], base: 'f1', skips: [{ step: 'code', reason: 'reviewed' }] }
   expect(parseSession({ ...session, units: [entry] })?.units[0]).toEqual(entry)
   for (const broken of [{ base: 1 }, { base: '' }, { skips: 'code' }, { skips: [{ step: 'code' }] },
@@ -98,7 +95,7 @@ test('strict unit entries validate bases and whole-step skips without changing t
 })
 
 test('a skip on a step id of the other delivery step parses, so a unit that becomes or stops being a child needs no migration', () => {
-  const { flow: _flow, issues: _issues, ...session } = createEmptySession('sid')
+  const session = buildSavedSession()
   const entry = { identity: { branch: 'a', issues: [1] }, skills: [], verifyRuns: [], runs: [], base: 'p1', baseBranch: 'main',
     skips: [{ step: 'integrate', reason: 'was a child' }, { step: 'pr', reason: 'not a child yet' }] }
   expect(parseSession({ ...session, units: [entry] })?.units[0]).toEqual(entry)
@@ -130,7 +127,7 @@ test('startup repairs a deleted mirror on the 60 second tick', async ($, on) => 
 
 test('startup seeds an undefined state only from a valid same-session mirror', async ($, on) => {
   const { files, sessions } = createWorld(on, { branch: 'feature' }, { session: noFlow, isStateAbsent: true })
-  const { flow: _flow, issues: _issues, ...saved } = createEmptySession('sid')
+  const saved = buildSavedSession()
   files.set(`${records}/s/sid.json`, JSON.stringify({ ...saved, blocked: { edits: 4 } }))
   await $.session.start({ cwd: root, surface: null, isInteractive: false })
   expect(sessions.get('sid')?.blocked.edits).toBe(4)
@@ -160,7 +157,7 @@ test('overlapping signals coalesce into one queued read and a full signal upgrad
   const { clock, runs } = world
   await declareFlow($, 'small-feature')
   await clock.advance(61000)
-  options.statusGate = new Promise<void>(resolve => { gate.release = resolve })
+  options.statusGate = new Promise<void>(resolve => { gate.open = resolve })
   const before = runs.length
   checkout.ahead = 1
   const first = $.classic.FileChanged({ file_path: `${common}/HEAD`, event: 'change' })
@@ -169,7 +166,7 @@ test('overlapping signals coalesce into one queued read and a full signal upgrad
   const third = endTurn($)
   await clock.settle()
   expect(runs.slice(before).some(command => command.includes('status --porcelain=v2'))).toBe(true)
-  gate.release?.()
+  gate.open?.()
   await Promise.all([first, second, third])
   expect((await readStepStates(world)).Commit).toBe('done')
   expect(runs.slice(before).some(command => command.startsWith('gh '))).toBe(true)
@@ -236,7 +233,7 @@ test('classic startup merges the four git watch paths with the existing chain re
 })
 
 test('strict run and comment records reject malformed boundary facts and retired diagnosis state', () => {
-  const { flow: _flow, issues: _issues, ...session } = createEmptySession('sid')
+  const session = buildSavedSession()
   const entry = { ...createEmptyUnit(), identity: { branch: 'fix', issues: [1] }, ...diagnosed }
   expect(parseSession({ ...session, units: [entry] })?.units[0]).toEqual(entry)
   for (const broken of [
@@ -281,7 +278,7 @@ test("run history bounds each argv and the total, keeping each argv's earliest r
 })
 
 test('a pinned red needs its approval and the run identity fields, and a record without it still parses', () => {
-  const { flow: _flow, issues: _issues, ...session } = createEmptySession('sid')
+  const session = buildSavedSession()
   const { outcome: _outcome, ...approvedRed } = diagnoseRuns[0]!
   const entry = { ...createEmptyUnit(), identity: { branch: 'fix', issues: [1] }, ...diagnosed }
   expect(parseSession({ ...session, units: [entry] })?.units[0]).toEqual(entry)
@@ -329,18 +326,18 @@ test("merged sessions take the approval and its pinned red from one entry, never
 
 test('a unit recorded on the default branch before parent branches existed stays on it, even after re-declaring', async ($, on) => {
   const { sessions } = createWorld(on, { branch: 'b', graph: buildParentGraph() }, { unit: { base: 'c0', baseBranch: 'main' } })
-  expect(await readFlowStatus($)).toContain('Slice     c0..b1\n')
+  expect(await readFlowStatus($)).toContain('Slice      c0..b1\n')
   expect((await declareFlow($, 'small-feature', [1])).result).toContain('base from main.')
   expect(sessions.get('sid')?.units[0]).toMatchObject({ base: 'c0', baseBranch: 'main' })
-  expect(await readFlowStatus($)).toContain('Slice     c0..b1\n')
+  expect(await readFlowStatus($)).toContain('Slice      c0..b1\n')
 })
 
 test('a unit recorded with no base branch keeps its fixed base when its parent branch is merged in', async ($, on) => {
   const graph = buildParentGraph()
   createWorld(on, { branch: 'b', graph }, { unit: { base: 'p1' } })
-  expect(await readFlowStatus($)).toContain('Slice     p1..b1\n')
+  expect(await readFlowStatus($)).toContain('Slice      p1..b1\n')
   graph.refs = { ...graph.refs, par: 'p2', b: 'b2' }
-  expect(await readFlowStatus($)).toContain('Slice     p1..b2\n')
+  expect(await readFlowStatus($)).toContain('Slice      p1..b2\n')
 })
 
 test('re-declaring a unit whose recorded base left its history recomputes the base from its recorded base branch, not the reflog', async ($, on) => {
@@ -354,7 +351,7 @@ test('a unit recorded on the default branch with a base off its first-parent cha
   graph.commits.mm = { parents: ['c0', 'p2'], files: { 'src/par.ts': 'p2', 'src/a.ts': 'a2' } }
   graph.refs = { ...graph.refs, main: 'mm', 'origin/main': 'mm' }
   createWorld(on, { branch: 'b', graph }, { unit: { base: 'p1', baseBranch: 'main' } })
-  expect(await readFlowStatus($)).toContain('Slice     p1..b1\n')
+  expect(await readFlowStatus($)).toContain('Slice      p1..b1\n')
 })
 
 test('re-declaring a unit recorded with a base and no base branch keeps both and says the base was kept', async ($, on) => {

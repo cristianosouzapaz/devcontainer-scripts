@@ -1,13 +1,18 @@
 import { expect } from 'claude-code/testing'
 import { test } from '../../support/kit'
-import { buildPullRequest, diagnosed, diagnosisComment, fixed, verifyFile } from '../../support/builders'
+import { buildChangedCheckout, buildPullRequest, buildVerifyRun, diagnosed, diagnosisComment, fixed, verifyFile, verifyId } from '../../support/builders'
 import { endTurn, inside, readCurrentStep, readFlowStatus, readPaneCurrentStep, readPromptContext } from '../../support/helpers'
-import { configBlob, createWorld } from '../../support/world'
+import { createWorld } from '../../support/world'
 import type { Checkout, Options } from '../../support/world'
 
 function buildChanged(): Checkout {
   return { branch: 'feat', changed: ['src/a.ts'], isDirty: true, tree: 'one' }
 }
+
+const fixOptions = (unit: Options['unit']): Options => ({
+  session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'], comments: [diagnosisComment] } } },
+  unit, comments: { 1: [diagnosisComment] }, issueLabels: { 1: ['ready-for-agent'] }, verifyFile, approvedConfig: verifyFile,
+})
 
 test('a change with no Verify run on its tree leaves Code current in every display and Verify pending', async ($, on) => {
   const world = createWorld(on, buildChanged(), { verifyFile, approvedConfig: verifyFile, herdrEnv: inside })
@@ -50,15 +55,24 @@ for (const [outcome, overrides, fact] of [
     expect(status).toContain(fact)
     expect(await readCurrentStep($)).toBe(outcome === 'a pass' ? 'Commit' : 'Verify')
     checkout.tree = 'two'
-    expect(await readFlowStatus($)).toContain('▸ Code · tree changed')
+    // The fact names what the tree changed after, so a commit right after a pass explains why Commit is empty.
+    expect(await readFlowStatus($)).toContain(outcome === 'a pass' ? '▸ Code · changed after Verify' : '▸ Code · tree changed')
     expect(await readPromptContext($)).toContain('Next action: call the verify tool on this tree')
   })
 }
 
-test('a Verify run on the tree under another base leaves Code current with the base move as its fact', async ($, on) => {
-  const run = { tree: 'one', base: 'c0', configBlob: configBlob(verifyFile), commands: [['./test/run.sh']], outcome: { kind: 'pass' }, runId: 'r', at: 1 }
-  createWorld(on, { branch: 'feat', ahead: 8, isDirty: true, tree: 'one' }, { verifyFile, approvedConfig: verifyFile, unit: { verifyRuns: [run], base: 'c1' } })
+test('a Verify run on the tree under another base leaves Code current with the base move as its fact when its commands miss the selection', async ($, on) => {
+  const run = buildVerifyRun({ commands: [['partial']] })
+  createWorld(on, buildChangedCheckout(), { verifyFile, approvedConfig: verifyFile, unit: { verifyRuns: [run], base: 'c1' } })
   expect(await readFlowStatus($)).toContain('▸ Code · base moved')
+})
+
+test('a passing Verify run on the tree under another base still verifies when its commands cover the selection', async ($, on) => {
+  const run = buildVerifyRun()
+  createWorld(on, buildChangedCheckout(), { verifyFile, approvedConfig: verifyFile, unit: { verifyRuns: [run], base: 'c1' } })
+  const status = await readFlowStatus($)
+  expect(status).toContain('✓ Code')
+  expect(status).toContain('✓ Verify')
 })
 
 test('a timed-out Verify completes Code', async ($, on) => {
@@ -74,8 +88,8 @@ test('a timed-out Verify completes Code', async ($, on) => {
 })
 
 test('a Verify run on the tree and base completes Code whatever its config', async ($, on) => {
-  const run = { tree: 'one', base: 'c0', configBlob: 'other', commands: [['partial']], outcome: { kind: 'pass' }, runId: 'r', at: 1 }
-  createWorld(on, { branch: 'feat', ahead: 8, isDirty: true, tree: 'one' }, { verifyFile, approvedConfig: verifyFile, unit: { verifyRuns: [run] } })
+  const run = buildVerifyRun({ configBlob: 'other', commands: [['partial']] })
+  createWorld(on, buildChangedCheckout(), { verifyFile, approvedConfig: verifyFile, unit: { verifyRuns: [run] } })
   expect(await readFlowStatus($)).toContain('✓ Code')
   expect(await readCurrentStep($)).toBe('Verify')
 })
@@ -103,12 +117,7 @@ test('an unapproved verify config completes Code and Verify waits on its approva
   expect(status).toContain('/flow approve verify')
   expect(await readCurrentStep($)).toBe('Verify')
   await endTurn($)
-  expect(world.suggestions.at(-1)).toBe(`/flow approve verify ${configBlob(verifyFile).slice(0, 12)}`)
-})
-
-const fixOptions = (unit: Options['unit']): Options => ({
-  session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'], comments: [diagnosisComment] } } },
-  unit, comments: { 1: [diagnosisComment] }, issueLabels: { 1: ['ready-for-agent'] }, verifyFile, approvedConfig: verifyFile,
+  expect(world.suggestions.at(-1)).toBe(`/flow approve verify ${verifyId()}`)
 })
 
 test('in a Fix a change without a green after the approval leaves Code current', async ($, on) => {

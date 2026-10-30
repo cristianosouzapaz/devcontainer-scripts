@@ -1,7 +1,7 @@
 import type { Args, EventResult, Frozen, Next } from 'claude-code'
 
 import { bestEffort } from '../core/best-effort'
-import { findDelegation } from '../core/delegation'
+import { findLiveDelegation } from '../core/delegation'
 import type { EnginePort } from '../core/engine-port'
 import { createReadPort } from '../core/read-port'
 import { readWorkingTreeConfig } from '../core/verify-config'
@@ -23,7 +23,9 @@ const coordinatorLine = markForAgent('This session is the coordinator: it and it
   'If the user says they delegate, call suggest_delegate with the issues they named; delegation is set only when they submit /flow delegate. ' +
   'A delegated unit session ends its turn on each decision it meets: answer it with unit_prompt (read its question with unit_read) with the choice, the reason and the cost of going back (low/medium/high).')
 const delegatedLine = markForAgent('This unit is delegated: the user\'s steps /to-spec, /to-tickets, /flow approve <comment URL>, /flow skip and /flow follow-up are the coordinator\'s — ' +
-  'where the flow says to ask the user for one, ask the coordinator through herdr agent prompt to type it here. The Verify config approval (/flow approve verify) stays the user\'s.')
+  'where the flow says to ask the user for one, ask the coordinator through herdr agent prompt to type it here. The Verify config approval (/flow approve verify) stays the user\'s. ' +
+  'At Commit, once Verify passes on the tip tree, stage the finished work with git add and commit it with the commit tool, without stopping; never push. ' +
+  'This overrides the Commit step\'s and AGENTS.md\'s rule that commits are the user\'s.')
 
 /**
  * Words the notice of a repository config the installed mod rejects, so the agent tells the user.
@@ -47,7 +49,7 @@ export async function handlePromptSubmit(engine: EnginePort, event: Frozen<Args<
   armHandoff(event.origin, event.text)
   const config = await readWorkingTreeConfig(port)
   const configLines = config?.kind === 'invalid' ? [composeConfigLine(config.fact)] : []
-  /** Hands the prompt on with the lines its text does not already carry. */
+  // Hands the prompt on with the lines its text does not already carry: the mod's start prompt already carries the flow line.
   const pass = (added: string[]): ReturnType<typeof next> => {
     const lines = added.filter(text => !event.text.includes(text))
     return lines.length ? next({ ...event, context: [...(event.context ?? []), ...lines] }) : next(event)
@@ -60,7 +62,6 @@ export async function handlePromptSubmit(engine: EnginePort, event: Frozen<Args<
   const position = located ? withStates(located, session) : null
   if (isUnitFinished(position) && !position?.slice?.isRewritten) return pass(configLines)
   const line = position ? composeFlowLine(position, session) : isCoordinatorSession(session) ? coordinatorLine : noFlowLine
-  // The mod's start prompt already carries the line.
-  const isDelegated = position ? !!await bestEffort(port, 'delegation read', () => findDelegation(port, session.issues), null) : false
+  const isDelegated = position ? !!await bestEffort(port, 'delegation read', () => findLiveDelegation(port, session.issues), null) : false
   return pass([line, ...(isDelegated ? [delegatedLine, composeDelegatedLine(session.issues)] : []), ...configLines])
 }

@@ -1,4 +1,4 @@
-import { formatIssueReferences } from './instruction'
+import { formatIssueReferences } from './messages'
 import type { MarkedComment } from '../lib/github'
 import { markForAgent } from './messages'
 

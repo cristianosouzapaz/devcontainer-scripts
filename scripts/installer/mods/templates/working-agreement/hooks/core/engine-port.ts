@@ -31,6 +31,8 @@ export interface EnginePort {
   defer: (work: () => void) => void
   readHerdrEnv: () => Promise<HerdrEnv>
   readCwd: () => Promise<string>
+  /** Claude Code's configuration directory, which holds every session transcript; undefined when the environment names none. */
+  readClaudeDir: () => Promise<string | undefined>
   readPluginRoot: () => Promise<string>
   readSessionId: () => Promise<string>
   readContext: () => Promise<SessionContextUsage>

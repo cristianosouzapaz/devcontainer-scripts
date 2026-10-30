@@ -1,9 +1,8 @@
 import { expect } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
 
-import { buildPullRequest, verifyFile } from './builders'
-import { readCurrentStep, readFlowStatus, readPaneCurrentStep, runFlowCommand } from './helpers'
-import { configBlob } from './world'
+import { buildPullRequest } from './builders'
+import { approveVerify, readCurrentStep, readFlowStatus, readPaneCurrentStep } from './helpers'
 import type { Checkout, Options, World } from './world'
 
 interface DeliveryFixture {
@@ -21,7 +20,7 @@ interface DeliveryFixture {
  * @returns Once every delivery transition and the merged conclusion are asserted.
  */
 export async function completeDelivery($: Engine, fixture: DeliveryFixture, prFields: Parameters<typeof buildPullRequest>[0] = {}): Promise<void> {
-  await runFlowCommand($, `approve verify ${configBlob(verifyFile).slice(0, 12)}`)
+  await approveVerify($)
   expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('Verify passed')
   expect(readPaneCurrentStep(fixture.views)).toBe('Commit')
   const committed = { ...fixture.git.graph!, refs: { ...fixture.git.graph!.refs, feat: 'c1' } }

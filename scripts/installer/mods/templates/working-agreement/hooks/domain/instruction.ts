@@ -1,5 +1,5 @@
 import { describeCiBlocker } from './ci-blocker'
-import { markForAgent } from './messages'
+import { formatIssueReferences, markForAgent } from './messages'
 import type { Session } from './records'
 import { describeRequirement } from './requirements'
 import { describeUnknownEnd, formatStepLabel, isCiWait } from './step-states'
@@ -7,15 +7,6 @@ import type { DiagnoseNeed, Position } from './step-states'
 
 /** A successful declaration: the reply that lists its steps, and the prompt that starts its current step, null when none is current. */
 export interface DeclaredFlow { reply: string; start: string | null }
-
-/**
- * Formats issue numbers as references.
- *
- * @param issues - The issue numbers.
- * @param separator - What goes between two references.
- * @returns The `#n` references, joined.
- */
-export const formatIssueReferences = (issues: number[], separator: string): string => issues.map(number => `#${number}`).join(separator)
 
 /**
  * Names the agent's next Diagnose requirement independently of the pane wording.

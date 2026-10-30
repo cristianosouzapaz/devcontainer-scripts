@@ -1,12 +1,17 @@
-import type { RunRecord } from '../../types'
+import type { Identity, RunRecord, Unit } from '../../types'
 import type { ToolRunResult } from '../core/tool-run'
+import type { VerifyTurn } from '../core/verify-queue'
 import type { EnginePort } from '../core/engine-port'
 import { minuteMs } from '../core/timing'
-import { readSession, readUnit } from '../core/record-store'
+import { bestEffort } from '../core/best-effort'
+import { refreshView } from '../core/pane-view'
+import { readCommonDir, readSession, readUnit } from '../core/record-store'
 import { readWorkingTreeKey } from '../core/repository'
 import { finishRunView, runStatus, withRunView } from '../core/run-view'
-import { executeCommand, prepareRunLog, readUnitWorktree, recordToolRun, withToolRun } from '../core/tool-run'
+import { findWorktreeRoot } from '../lib/git'
+import { executeCommand, prepareRunLog, recordToolRun, withToolRun } from '../core/tool-run'
 import { verifyOutcome } from '../core/verify'
+import { holdVerifyTurn, isTurnHeld, leaveVerifyQueue, waitVerifyTurn } from '../core/verify-queue'
 import { changedPaths, defaultVerifyTimeoutMinutes, readVerifyConfig } from '../core/verify-config'
 import { findFlow, hasDiagnoseStep } from '../domain/flow-definitions'
 import { retainRuns } from '../domain/records'
@@ -15,6 +20,8 @@ import { findFixGreen, judgeDiagnose } from '../domain/step-states'
 import { hasOnlyKeys, isNonEmptyString, isRecord, isStringArray } from '../lib/guards'
 
 interface RunInput { argv: string[] }
+
+interface RunJob { argv: string[]; sid: string; identity: Identity; inherited: Unit; root: string; tree: string; log: string; runId: string; minutes: number; turn: VerifyTurn }
 
 const cancelled = 'Run cancelled; no record written.'
 
@@ -55,7 +62,7 @@ async function run(port: EnginePort, argv: string[], signal: AbortSignal, sid: s
   if (!hasDiagnoseStep(flow)) return 'The declared flow has no Diagnose step; run is unavailable.'
   const identity = session.unit
   const inherited = await readUnit(port, identity)
-  const root = await readUnitWorktree(port, identity.branch)
+  const root = await findWorktreeRoot(port.processes, identity.branch)
   if (!root) return "The unit's branch is checked out nowhere."
   const prepared = await prepareRunLog(port, sid)
   if ('error' in prepared) return prepared.error
@@ -65,6 +72,32 @@ async function run(port: EnginePort, argv: string[], signal: AbortSignal, sid: s
   const loaded = await readVerifyConfig(port, tree)
   const minutes = loaded.kind === 'valid' ? loaded.config.timeoutMinutes : defaultVerifyTimeoutMinutes
   if (signal.aborted) return cancelled
+  const common = await readCommonDir(port)
+  if (!common) return 'Cannot locate the repository metadata.'
+  // A Diagnose run waits in the Verify queue, so no two heavy runs share the machine and a red never reflects a neighbour's load.
+  const onMove = () => bestEffort(port, 'queue view refresh', () => refreshView(port, { isQuiet: true, isSynced: true }), undefined)
+  const wait = await waitVerifyTurn(port, common, sid, await port.now() + minutes * minuteMs, signal, onMove)
+  if (wait.kind !== 'acquired') return wait.kind === 'cancelled' ? cancelled
+    : `Run queued, timed out after ${minutes} min behind another session's Verify or run; no record written.`
+  const { turn } = wait
+  const stop = holdVerifyTurn(port, turn)
+  try {
+    return await execute(port, { argv, sid, identity, inherited, root, tree, log, runId, minutes, turn }, signal)
+  } finally {
+    await stop()
+    await leaveVerifyQueue(port, turn)
+  }
+}
+
+/**
+ * Runs the Diagnose argv under a held queue turn and records its outcome.
+ * @param port - The engine calls.
+ * @param job - The run's command, unit, worktree, log and turn.
+ * @param signal - The dispatch's cancellation signal.
+ * @returns The cancellation, refusal or recorded run summary.
+ */
+async function execute(port: EnginePort, job: RunJob, signal: AbortSignal): Promise<string> {
+  const { argv, sid, identity, inherited, root, tree, log, runId, minutes, turn } = job
   return withRunView(port, sid, identity, inherited.generation, {
     runId, kind: 'Run', status: 'running', selection: '', tree, cwd: root, log, duration: 0, at: await port.now(),
     commands: [{ argv, status: 'running', duration: 0, outcome: '', output: '' }],
@@ -77,6 +110,7 @@ async function run(port: EnginePort, argv: string[], signal: AbortSignal, sid: s
       await finishRunView(port, sid, { kind: result.kind === 'ended' && result.code === 0 && !result.signal ? 'green' : 'red', status: 'tree changed', changed }, signal)
       return `The command changes the tree; no record written. Changed paths: ${changed.map(path => JSON.stringify(path)).join(', ') || 'tree unavailable'}. Log: ${log}`
     }
+    if (!await isTurnHeld(port, turn)) return `Verify lock lost: another session broke it as stale while this command ran; no record written. Log: ${log}`
     const record: RunRecord = { argv, tree, outcome: verifyOutcome(result, minutes), runId, at: await port.now() }
     const recorded = await recordToolRun(port, identity, inherited, signal, own => ({ runs: retainRuns([record, ...own.runs]) }))
     if (!recorded) return cancelled

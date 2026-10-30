@@ -1,20 +1,34 @@
-import type { FlowRow, FlowView, GithubFailure } from '../../types'
+import type { DelegationScope, FlowRow, FlowView, GithubFailure } from '../../types'
 import type { Session } from '../domain/records'
 import { formatLocalTime } from '../lib/time'
 import { formatStepLabel, isUnitFinished, listDeclaredLabels, markStep, projectDisplayStates } from '../domain/step-states'
 import type { Position } from '../domain/step-states'
 import { facts } from '../domain/facts'
 import { symbol } from './symbols'
+import { pluralize } from '../domain/messages'
 
 /**
- * Counts a noun in English.
- *
- * @param count - The count.
- * @param word - The singular noun.
- * @returns The count and the noun, plural unless the count is one.
+ * Lists issue numbers, a run of three or more consecutive ones as a range, so a wide scope stays a few pane lines.
+ * @param issues - The issue numbers, ascending.
+ * @returns The numbers, `#3–#9` for a run.
  */
-function pluralize(count: number, word: string): string {
-  return `${count} ${word}${count === 1 ? '' : 's'}`
+function formatIssueRanges(issues: number[]): string {
+  const runs = issues.reduce<number[][]>((found, issue) => {
+    const last = found.at(-1)
+    return last && last.at(-1) === issue - 1 ? [...found.slice(0, -1), [...last, issue]] : [...found, [issue]]
+  }, [])
+  return runs.flatMap(run => run.length >= 3 ? [`#${run[0]}–#${run.at(-1)}`] : run.map(issue => `#${issue}`)).join(' ')
+}
+
+/**
+ * Words a coordinator's scope as its pane rows: what it delegates, then the issues whose triage it handed over.
+ * @param scope - The coordinator's scope.
+ * @returns The Delegating row, and a Triage row while triage is handed over.
+ */
+export function scopeRows(scope: DelegationScope): FlowRow[] {
+  const value = [formatIssueRanges(scope.issues), scope.coversCreated ? 'issues it creates' : '', scope.isPushUnguarded ? 'no signed-commit ruleset' : ''].filter(Boolean).join(' · ')
+  return [{ key: 'Delegating', value, tone: 'text' },
+    ...scope.triage?.length ? [{ key: 'Triage', value: formatIssueRanges(scope.triage), tone: 'text' as const }] : []]
 }
 
 /**

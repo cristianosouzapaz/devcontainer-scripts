@@ -5,12 +5,13 @@ import type { Engine } from 'claude-code/testing'
 import { test } from '../support/kit'
 import { noFlow } from '../support/builders'
 import { readFlowStatus } from '../support/helpers'
-import { childUnit, parallelCheckout, withCommit } from '../support/parallel-worktrees'
-import { common, createWorld } from '../support/world'
+import { childUnit, parallelCheckout, withCommit, withoutBranch } from '../support/parallel-worktrees'
+import { createWorld, placedFile, records } from '../support/world'
 import type { Checkout, Options, World } from '../support/world'
 
 interface Scenario { name: string; isJudged: boolean; checkout: Checkout; change: (checkout: Checkout) => void; options?: Options }
 interface Arranged extends World { call: () => Promise<string> }
+interface Placement { name: string; isJudged: boolean; checkout: Checkout; change: (checkout: Checkout) => void; placed: [string, string][] }
 
 const scenarios: Scenario[] = [
   { name: "the user's sibling commit and its merge into parent, both held by other worktrees (the live example)", isJudged: false,
@@ -91,6 +92,33 @@ const pushes: Scenario[] = [
   })(), change: checkout => { checkout.graph!.refs['origin/sibling'] = 'sm' } },
 ]
 
+// Each placed pair is a branch tip the mod's own spawn or merge_child set during another session's call; the held child commits in that call too.
+const placements: Placement[] = [
+  { name: "spawn's new branch on merge_child's merge of the user's sibling commit (the live example)", isJudged: false,
+    checkout: parallelCheckout(), placed: [['parent', 'pm'], ['spawned', 'pm']], change: checkout => {
+      checkout.graph = withCommit(checkout.graph!, 's1', ['p0'], 'sibling')
+      checkout.graph = withCommit(checkout.graph!, 'pm', ['p0', 's1'], 'parent')
+      checkout.graph = { ...checkout.graph, refs: { ...checkout.graph.refs, spawned: 'pm' } }
+      checkout.worktrees!['/spawned'] = { branch: 'spawned' }
+    } },
+  { name: "merge_child's fast-forward of the session's own branch onto a held child's new commit", isJudged: false,
+    checkout: parallelCheckout({ '/grand': { branch: 'grand' } }, { grand: 'c1' }), placed: [['child', 'g1']], change: checkout => {
+      checkout.graph = withCommit(checkout.graph!, 'g1', ['c1'], 'grand')
+      checkout.graph = { ...checkout.graph, refs: { ...checkout.graph.refs, child: 'g1' } }
+    } },
+  { name: "merge_child's --no-ff merge of a held child's new commit into the session's own branch", isJudged: false,
+    checkout: parallelCheckout({ '/grand': { branch: 'grand' } }, { grand: 'c1' }), placed: [['child', 'cm']], change: checkout => {
+      checkout.graph = withCommit(checkout.graph!, 'g1', ['c1'], 'grand')
+      checkout.graph = withCommit(checkout.graph!, 'cm', ['c1', 'g1'], 'child')
+    } },
+  { name: 'a commit on top of a tip merge_child placed on the own branch', isJudged: true,
+    checkout: parallelCheckout({ '/grand': { branch: 'grand' } }, { grand: 'c1' }), placed: [['child', 'cm']], change: checkout => {
+      checkout.graph = withCommit(checkout.graph!, 'g1', ['c1'], 'grand')
+      checkout.graph = withCommit(checkout.graph!, 'cm', ['c1', 'g1'], 'child')
+      checkout.graph = withCommit(checkout.graph!, 'c3', ['cm'], 'child')
+    } },
+]
+
 /**
  * Builds a child session's world whose next Bash call applies the scenario's change.
  * @param $ - The engine.
@@ -108,7 +136,7 @@ function arrange($: Engine, on: On, scenario: Scenario): Arranged {
  * @param files - The world's files.
  * @returns The recorded-violation lines.
  */
-const violationLines = (files: Map<string, string>): string[] => [...files.entries()].filter(([path]) => path.startsWith(`${common}/working-agreement/log/`))
+const violationLines = (files: Map<string, string>): string[] => [...files.entries()].filter(([path]) => path.startsWith(`${records}/log/`))
   .flatMap(([, text]) => text.split('\n').filter(line => line.includes('"event":"violation"')))
 
 for (const scenario of scenarios) {
@@ -116,20 +144,33 @@ for (const scenario of scenarios) {
     const world = arrange($, on, scenario)
     const context = await world.call()
     await world.clock.settle()
-    const records = world.sessions.get('sid')?.violations ?? []
+    const violations = world.sessions.get('sid')?.violations ?? []
     if (scenario.isJudged) {
       // Moving a default-branch checkout also changes its tree, a separate fact.
-      expect(records.filter(record => record.kind === 'commit')).toHaveLength(1)
+      expect(violations.filter(record => record.kind === 'commit')).toHaveLength(1)
       expect(context).toContain('a commit appeared')
       // The transition log is the unit's, so a session without one logs nowhere.
       if (scenario.options?.session !== noFlow) expect(violationLines(world.files).filter(line => line.includes('"kind":"commit"'))).toHaveLength(1)
       return
     }
-    expect(records).toEqual([])
+    expect(violations).toEqual([])
     expect(context).toBe('')
     expect(world.views.at(-1)?.violations ?? []).toEqual([])
     expect((await readFlowStatus($))?.split('\n').filter(line => line.startsWith('Violation')) ?? []).toEqual([])
     expect(violationLines(world.files)).toEqual([])
+  })
+}
+
+for (const placement of placements) {
+  test(`territory: ${placement.name} is ${placement.isJudged ? 'a violation' : 'not observed'}`, async ($, on) => {
+    const options: Options = { ...childUnit, afterTool: () => {
+      placement.change(placement.checkout)
+      for (const [branch, sha] of placement.placed) world.files.set(placedFile(branch, sha), '{}')
+    } }
+    const world = createWorld(on, placement.checkout, options)
+    await $.tool.call({ tool: 'Bash', command: 'opaque' })
+    await world.clock.settle()
+    expect((world.sessions.get('sid')?.violations ?? []).filter(record => record.kind === 'commit')).toHaveLength(placement.isJudged ? 1 : 0)
   })
 }
 
@@ -181,7 +222,7 @@ test('territory: a unit branch deleted during the call has no slice, so a merge 
   const world = arrange($, on, { name: 'deleted', isJudged: false, checkout, change: next => {
     next.graph = withCommit(next.graph!, 'pm', ['p0', 'c1'], 'parent')
     next.graph = withCommit(next.graph!, 'l1', ['p0'], 'loose')
-    next.graph = { ...next.graph, refs: Object.fromEntries(Object.entries(next.graph.refs).filter(([ref]) => ref !== 'child')) }
+    next.graph = withoutBranch(next.graph, 'child')
   } })
   expect((await world.call()).split('\n').filter(Boolean)).toHaveLength(1)
   expect(world.sessions.get('sid')?.violations?.map(({ kind, fact }) => ({ kind, fact }))).toEqual([{ kind: 'commit', fact: { shas: ['l1'] } }])

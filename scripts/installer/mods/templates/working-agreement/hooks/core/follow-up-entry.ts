@@ -1,4 +1,4 @@
-import { formatIssueReferences } from '../domain/instruction'
+import { formatIssueReferences } from '../domain/messages'
 import type { Identity, UnitEntry } from '../domain/records'
 import { isIntegratedChild, isIntegrationBranch } from '../domain/requirements'
 import { isUnitOnBase } from '../domain/step-states'

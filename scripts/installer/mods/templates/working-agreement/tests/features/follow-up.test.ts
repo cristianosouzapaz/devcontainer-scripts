@@ -5,7 +5,7 @@ import { test } from '../support/kit'
 import { buildParentGraph, buildParentPullRequest, noFlow } from '../support/builders'
 import { declareFlow, readFlowStatus, readPromptContext, runFlowCommand } from '../support/helpers'
 import { buildChildEntry, buildRoundPullRequest, parentCheckout, roundCloseOut, seedChildren, withCommit } from '../support/parallel-worktrees'
-import { common, createWorld } from '../support/world'
+import { createWorld, records } from '../support/world'
 import type { Checkout, Options } from '../support/world'
 
 const closing = { number: 5, state: 'OPEN', headRefName: 'feature', isCrossRepository: false, baseRepository: { nameWithOwner: 'owner/repo' } }
@@ -245,7 +245,7 @@ test("a second Follow-up on a Follow-up child's branch is refused and sent to a 
 test('an unreadable session mirror refuses the Follow-up instead of dropping the units it holds', async ($, on) => {
   const world = createWorld(on, { branch: 'feature', ahead: 2 }, { session: noFlow, closingPrs: { 1: [closing] } })
   await world.ready
-  world.files.set(`${common}/working-agreement/s/broken.json`, '{')
+  world.files.set(`${records}/s/broken.json`, '{')
   expect((await runFlowCommand($, 'follow-up #1')).text).toContain('Cannot read the units of feature: unreadable session mirror broken.json — retry.')
 })
 

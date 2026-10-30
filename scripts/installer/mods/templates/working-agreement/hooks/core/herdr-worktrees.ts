@@ -1,7 +1,7 @@
-import { isAncestor, readGitOutput } from '../lib/git'
+import { isAncestor, readGitOutput, readWorktreeStatus } from '../lib/git'
 import { parseJson } from '../lib/json'
 import { executeProcess } from '../lib/process'
-import { formatError } from '../lib/result'
+import { formatErrorLine } from '../lib/result'
 import type { EnginePort } from './engine-port'
 import { readRepositoryRoot } from './repository'
 import { holdError, sessionMemory } from './session-memory'
@@ -41,7 +41,7 @@ export async function createHerdrWorktree(port: EnginePort, name: string, cwd: s
     sessionMemory.worktreeError = null
     return path
   } catch (error) {
-    sessionMemory.worktreeError = holdError(sessionMemory.worktreeError, formatError(error).split(/\r?\n/)[0] ?? '', await port.now())
+    sessionMemory.worktreeError = holdError(sessionMemory.worktreeError, formatErrorLine(error), await port.now())
     return undefined
   }
 }
@@ -70,7 +70,7 @@ export async function sweepHerdrWorktrees(port: EnginePort): Promise<void> {
   if (!await isInsideHerdr(port)) return
   const root = await readRepositoryRoot(port)
   for (const worktree of await listHerdrWorktrees(port, await ownLabelPrefix(port))) {
-    if (worktree.path === root || await readGitOutput(port.processes, ['-C', worktree.path, 'status', '--porcelain=v2', '-z', '--untracked-files=all']) !== '') continue
+    if (worktree.path === root || await readWorktreeStatus(port.processes, worktree.path) !== '') continue
     const head = await readGitOutput(port.processes, ['-C', worktree.path, 'rev-parse', 'HEAD'])
     if (!head || !await isAncestor(port.processes, head, 'HEAD')) continue
     await runHerdr(port, ['worktree', 'remove', '--workspace', worktree.workspaceId])

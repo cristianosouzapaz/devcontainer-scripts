@@ -4,12 +4,10 @@ import type { UnitEntry } from '../../hooks/domain/records'
 import { test } from '../support/kit'
 import { buildParentGraph, buildParentPullRequest, buildPullRequest, noFlow } from '../support/builders'
 import { declareFlow, readFlowStatus, readPromptContext } from '../support/helpers'
-import { buildChildEntry, readObservedEndFile, seedChildren, seedObservedEnd, withCommit, withoutBranch } from '../support/parallel-worktrees'
+import { buildChildEntry, parChild, readObservedEndFile, seedChildren, seedObservedEnd, withCommit, withoutBranch } from '../support/parallel-worktrees'
 import { createWorld, root } from '../support/world'
-import type { Checkout, Options } from '../support/world'
+import type { Checkout } from '../support/world'
 
-/** Child `a`, cut from `par` and integrated into it: its base and base branch as the declaration caches them, with Code and Verify skipped. */
-const child: Options = { unit: { base: 'p1', baseBranch: 'par', skips: [{ step: 'code', reason: 'covered' }, { step: 'verify', reason: 'covered' }] } }
 
 /**
  * Checks out child `a` after its `--no-ff` merge into `par` (`ma`), with `par` held by `/par`.
@@ -25,7 +23,7 @@ for (const [method, commit] of [['merge', { parents: ['c0', 'ma'] }], ['squash',
   test(`a parent PR merged by ${method} with the slice end in its head concludes the child`, async ($, on) => {
     const checkout = integratedCheckout()
     checkout.graph = withCommit(checkout.graph!, 'delivered', [...commit.parents], 'main')
-    createWorld(on, checkout, { ...child, prs: [buildParentPullRequest({ number: 9, headRefOid: 'ma' })] })
+    createWorld(on, checkout, { ...parChild(), prs: [buildParentPullRequest({ number: 9, headRefOid: 'ma' })] })
     const status = await readFlowStatus($)
     expect(status).toContain('✓ Integrate · merged #9')
     expect(status).toContain('Start new session: /clear')
@@ -33,22 +31,22 @@ for (const [method, commit] of [['merge', { parents: ['c0', 'ma'] }], ['squash',
 }
 
 test("a merged child PR into its parent alone never concludes the child, even once fetched", async ($, on) => {
-  createWorld(on, integratedCheckout({ par: 'p1', 'origin/par': 'ma' }), { ...child, prs: [buildPullRequest({ number: 7, state: 'MERGED', headRefName: 'a', baseRefName: 'par', headRefOid: 'a2' })] })
+  createWorld(on, integratedCheckout({ par: 'p1', 'origin/par': 'ma' }), { ...parChild(), prs: [buildPullRequest({ number: 7, state: 'MERGED', headRefName: 'a', baseRefName: 'par', headRefOid: 'a2' })] })
   expect(await readFlowStatus($)).toContain("✓ Integrate · awaiting par's PR")
 })
 
 test("a merged child PR into the default branch whose head contains the slice end concludes the child", async ($, on) => {
-  createWorld(on, integratedCheckout(), { ...child, prs: [buildPullRequest({ number: 7, state: 'MERGED', headRefName: 'a', baseRefName: 'main', headRefOid: 'a2' })] })
+  createWorld(on, integratedCheckout(), { ...parChild(), prs: [buildPullRequest({ number: 7, state: 'MERGED', headRefName: 'a', baseRefName: 'main', headRefOid: 'a2' })] })
   expect(await readFlowStatus($)).toContain('✓ Integrate · merged #7')
 })
 
 test('a parent PR into another branch than the default never concludes the child', async ($, on) => {
-  createWorld(on, integratedCheckout(), { ...child, prs: [buildParentPullRequest({ number: 9, baseRefName: 'release', headRefOid: 'ma' })] })
+  createWorld(on, integratedCheckout(), { ...parChild(), prs: [buildParentPullRequest({ number: 9, baseRefName: 'release', headRefOid: 'ma' })] })
   expect(await readFlowStatus($)).toContain("✓ Integrate · awaiting par's PR")
 })
 
 test("an unreadable list of the parent's PRs never reads as done: Integrate is unreadable and the agent retries", async ($, on) => {
-  createWorld(on, integratedCheckout(), { ...child, prs: [buildParentPullRequest({ number: 9, headRefOid: 'ma' })], failing: 'gh api graphql -F owner={owner} -F name={repo} -f head=par ' })
+  createWorld(on, integratedCheckout(), { ...parChild(), prs: [buildParentPullRequest({ number: 9, headRefOid: 'ma' })], failing: 'gh api graphql -F owner={owner} -F name={repo} -f head=par ' })
   const status = await readFlowStatus($)
   expect(status).toContain('▸ Integrate · integration unreadable')
   expect(status).not.toContain('Start new session')
@@ -56,12 +54,12 @@ test("an unreadable list of the parent's PRs never reads as done: Integrate is u
 })
 
 test("a failed comparison against the parent's PRs never reads as done", async ($, on) => {
-  createWorld(on, integratedCheckout(), { ...child, prs: [buildParentPullRequest({ number: 9, headRefOid: 'p2' })], failing: 'gh api repos/{owner}/{repo}/compare/a2...p2' })
+  createWorld(on, integratedCheckout(), { ...parChild(), prs: [buildParentPullRequest({ number: 9, headRefOid: 'p2' })], failing: 'gh api repos/{owner}/{repo}/compare/a2...p2' })
   expect(await readFlowStatus($)).toContain('▸ Integrate · integration unreadable')
 })
 
 test('a re-declaration of a child concluded through its parent starts a new lifetime from GitHub alone', async ($, on) => {
-  const { sessions } = createWorld(on, integratedCheckout(), { ...child, unit: { ...child.unit, approval: 'old' }, issueLabels: { 1: ['ready-for-agent'] },
+  const { sessions } = createWorld(on, integratedCheckout(), { ...parChild(), unit: { ...parChild().unit, approval: 'old' }, issueLabels: { 1: ['ready-for-agent'] },
     prs: [buildParentPullRequest({ number: 9, headRefOid: 'ma' })] })
   const generation = sessions.get('sid')?.units[0]?.generation
   expect((await declareFlow($, 'small-feature', [1])).deny).toBeUndefined()
@@ -146,7 +144,7 @@ test("a failed read of the parent's PRs prunes nothing, not even a concluded uni
 })
 
 test("with the child's own PRs unreadable, a merged parent PR that carries its slice end shows it delivered, never stranded", async ($, on) => {
-  createWorld(on, integratedCheckout(), { ...child, prs: [buildParentPullRequest({ number: 9, headRefOid: 'ma' })], failing: 'gh api graphql -F owner={owner} -F name={repo} -f head=a ' })
+  createWorld(on, integratedCheckout(), { ...parChild(), prs: [buildParentPullRequest({ number: 9, headRefOid: 'ma' })], failing: 'gh api graphql -F owner={owner} -F name={repo} -f head=a ' })
   const status = await readFlowStatus($)
   expect(status).toContain('✓ Integrate · merged #9')
   expect(status).toContain('Start new session: /clear')

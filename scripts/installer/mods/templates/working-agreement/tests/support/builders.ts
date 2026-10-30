@@ -1,13 +1,18 @@
-import type { RunRecord, Unit } from '../../types'
+import type { RunRecord, Unit, VerifyRecord } from '../../types'
+import { createEmptySession } from '../../hooks/domain/records'
+import type { Session } from '../../hooks/domain/records'
 import { githubSamples } from './github-samples'
-import { root } from './world'
-import type { Graph, Options } from './world'
+import { configBlob, root } from './world'
+import type { Checkout, Graph, Options } from './world'
 
 /** A Write call's input. */
 interface WriteCall { tool: 'Write'; file_path: string; content: string }
 
 /** The session record of a session with no flow declared. */
 export const noFlow = { flow: null, issues: [], info: {} }
+
+/** Every tool the mod registers, in registration order. */
+export const modToolNames = ['run', 'verify', 'declare_flow', 'suggest_coordinate', 'suggest_delegate', 'merge_child', 'commit', 'merge_parent', 'issue_create', 'issue_edit', 'issue_close', 'issue_comment', 'spawn', 'plan', 'unit_prompt', 'unit_read', 'retire_unit'] as const
 
 /** A coordinator session with no flow. */
 export const coordinator = { ...noFlow, role: 'coordinator' }
@@ -93,4 +98,52 @@ export function buildParentGraph(): Graph {
     refs: { main: 'c0', 'origin/main': 'c0', par: 'p1', a: 'a2', b: 'b1' },
     created: { a: 'par', b: 'par' },
   }
+}
+
+/**
+ * Builds a passing Verify run of the shipped config on tree `one` over base `c0`.
+ * @param changes - Fields that replace the run's.
+ * @returns The run record.
+ */
+export const buildVerifyRun = (changes: Partial<VerifyRecord> = {}): VerifyRecord => ({
+  tree: 'one', base: 'c0', configBlob: configBlob(verifyFile), commands: [['./test/run.sh']], outcome: { kind: 'pass' }, runId: 'r', at: 1, ...changes,
+})
+
+/**
+ * Builds a dirty checkout of `feat` eight commits ahead on tree `one`, the change a Verify run is judged on; a fresh copy, since tests move it.
+ * @returns The checkout.
+ */
+export const buildChangedCheckout = (): Checkout => ({ branch: 'feat', ahead: 8, isDirty: true, tree: 'one' })
+
+/**
+ * Names a Verify config by the id `/flow approve verify` previews and takes.
+ * @param file - The config's text.
+ * @returns The first twelve characters of its blob id.
+ */
+export const verifyId = (file = verifyFile): string => configBlob(file).slice(0, 12)
+
+/**
+ * Builds a fresh session as its mirror file saves it, without the flow and issues the engine's session state holds.
+ * @param sessionId - The session's id.
+ * @returns The saved session.
+ */
+export function buildSavedSession(sessionId = 'sid'): Omit<Session, 'flow' | 'issues'> {
+  const { flow: _flow, issues: _issues, ...saved } = createEmptySession(sessionId)
+  return saved
+}
+
+/**
+ * Builds the options of a repository with a ruleset requiring signed commits, which keeps `no signed-commit ruleset` out of a delegation scope.
+ * @returns The world options, fresh for each test.
+ */
+export function guarded(): Options {
+  return { rules: [{ ruleset_id: 7, type: 'required_signatures' }], rulesets: [{ id: 7, current_user_can_bypass: 'never' }] }
+}
+
+/**
+ * Builds the session record of a session in the Trivial change flow, which declares no issue.
+ * @returns The session record, fresh for each test.
+ */
+export function trivialFlow(): Options['session'] {
+  return { flow: 'trivial', issues: [], info: {} }
 }

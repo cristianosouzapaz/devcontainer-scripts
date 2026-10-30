@@ -7,7 +7,7 @@ import { readContentTree } from '../../hooks/lib/git'
 import { parseSession } from '../../hooks/domain/records'
 import { mountPane, endTurn, readFlowStatus } from '../support/helpers'
 import { buildPullRequest } from '../support/builders'
-import { common, createTestPort, createWorld, root } from '../support/world'
+import { createTestPort, createWorld, records, root } from '../support/world'
 import type { Checkout, Gate, Graph, Options } from '../support/world'
 
 interface EntryGate extends Gate { entered: number }
@@ -399,7 +399,7 @@ test('each session tells the same fact; dismissing the displayed fact clears bot
   const ui = await mountPane($, { columns: 120, rows: 80 })
   await ui.press({ key: 'dismiss' })
   await ui.unmount()
-  expect(JSON.parse(files.get(`${common}/working-agreement/d/${factId}.json`)!)).toEqual({ v: 1, factId })
+  expect(JSON.parse(files.get(`${records}/d/${factId}.json`)!)).toEqual({ v: 1, factId })
   expect(views.at(-1)?.violations).toEqual([])
   chat.id = 'sid'
   await endTurn($)
@@ -614,6 +614,6 @@ for (const { label, format, listed, isFailed } of [
       const stdout = [...answers].find(([argument]) => argv.includes(argument))?.[1]
       return stdout === undefined ? processes.run(argv, options) : { exitCode: 0, stdout, stderr: '' }
     }
-    expect(await readContentTree({ run }, root, `${common}/working-agreement/s/.tmp-sid-1`)).toBe(isFailed ? null : emptyTrees[format])
+    expect(await readContentTree({ run }, root, `${records}/s/.tmp-sid-1`)).toBe(isFailed ? null : emptyTrees[format])
   })
 }

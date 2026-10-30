@@ -1,34 +1,42 @@
-import { readDefaultRef, readGitOutput, readLocalBranches, readWorktrees } from '../lib/git'
-import { readGraphql } from '../lib/github'
+import { findWorktreeRoot, readDefaultRef, readGitOutput, readParentBranch, readWorktreeStatus } from '../lib/git'
+import { appendInstructions } from '../domain/messages'
 import { isIssueNumber, isRecord, isSafeInteger } from '../lib/guards'
-import { filterRecords, readJson, toStringOrEmpty } from '../lib/json'
+import { readJson } from '../lib/json'
 import { executeProcess } from '../lib/process'
 import { createQueue } from '../lib/queue'
-import { fail, formatError, succeed } from '../lib/result'
+import { fail, formatErrorLine, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
 import type { EnginePort } from './engine-port'
 import { isInsideHerdr, listHerdrWorktrees, readField, runHerdr, runHerdrText } from './herdr-worktrees'
-import { atomicReplace, readCommonDir, recordsPath } from './record-store'
+import { recordPlaced } from './placed-refs'
+import { atomicReplace, readCommonDir, readSessionMirrors, recordsPath } from './record-store'
 import { readGit, readRepositoryRoot } from './repository'
+import { sessionMemory } from './session-memory'
+import { findUnitBranch, readIssueStart, readUnitState } from './unit-state'
 import { breakStaleLock } from './verify-queue'
 
 /** A spawned unit's herdr workspace. */
-interface UnitWorkspace { issue: number; workspaceId: string; path: string }
+export interface UnitWorkspace { issue: number; workspaceId: string; path: string }
 
-/** What a unit's session has been through, so a re-run resumes it instead of starting it twice. */
-interface Progress { isStarted: boolean; isPrompted: boolean }
-
-/** Where a new unit branch starts, or what it waits for. */
-type Base = { isReady: true; ref: string } | { isReady: false; reason: string }
+/** What a unit's session has been through, so a re-run resumes it instead of starting it twice, and the permission mode it last started in. */
+interface Progress { isStarted: boolean; isPrompted: boolean; isTyped?: boolean; mode?: string }
 
 /** Every spawned workspace's label is this followed by the issue number; the cap counts them. */
 const labelPrefix = 'wa-spawn:'
+/** A Conventional Commit title prefix, its type captured. */
+const conventionalPrefix = /^([a-z]+)(\([^)]*\))?!?:\s*/i
 // why: The RFC 4122 URL namespace, so the same repository and issue always give the same session id.
 const namespace = '6ba7b8119dad11d180b400c04fd430c8'
 const lockWaitMs = 30000
 // why: A spawn waits up to a minute for the agent; a lock this much older belongs to a process that died holding it.
 const staleLockMs = 120000
 const agentStartTimeoutMs = 60000
+// why: herdr fails a waited prompt that saw no working or blocked state within 5s; the retry's wait gets as long.
+const promptWaitMs = 10000
+/** The states that show the agent took its prompt: blocked is a permission question inside the turn. */
+const taken = ['--until', 'working', '--until', 'blocked']
+// why: bypassPermissions would lift every engine check in a session nobody watches; plan would stall it; anything unknown fails closed.
+const inheritedModes = ['default', 'acceptEdits', 'auto']
 const queueSpawn = createQueue()
 const spawnConfig = { limit: 4 }
 
@@ -54,14 +62,25 @@ export function unitAgent(issue: number): string {
  * so a re-run after a crash completes a half-created unit.
  * @param port - The engine calls.
  * @param issue - The issue number.
+ * @param instructions - The coordinator's text for this unit, appended verbatim to its start prompt; empty appends nothing.
  * @returns What the unit is now, or why it is not started.
  */
-export async function spawnUnit(port: EnginePort, issue: number): Promise<Result<string>> {
+export async function spawnUnit(port: EnginePort, issue: number, instructions = ''): Promise<Result<string>> {
   if (!await isInsideHerdr(port)) return fail('this session does not run inside herdr, which hosts every unit session')
+  return withSpawnLock(port, (common, root) => spawnLocked(port, common, root, issue, instructions))
+}
+
+/**
+ * Runs work that creates or removes units while this process holds the repository's spawn lock, so it never races a spawn.
+ * @param port - The engine calls.
+ * @param work - What runs under the lock, given the git common directory and this session's checkout.
+ * @returns What the work returns, or why it did not run.
+ */
+export async function withSpawnLock<T>(port: EnginePort, work: (common: string, root: string) => Promise<Result<T>>): Promise<Result<T>> {
   const common = await readCommonDir(port)
   const root = await readRepositoryRoot(port)
   if (!common || !root) return fail('this session is not in a git repository')
-  return queueSpawn(() => holdLock(port, common, () => spawnLocked(port, common, root, issue)))
+  return queueSpawn(() => holdLock(port, common, () => work(common, root)))
 }
 
 /**
@@ -70,31 +89,80 @@ export async function spawnUnit(port: EnginePort, issue: number): Promise<Result
  * @param common - The git common directory.
  * @param root - The coordinator's checkout, which herdr creates worktrees from.
  * @param issue - The issue number.
+ * @param instructions - The coordinator's text for the start prompt.
  * @returns What the unit is now, or why it is not started.
  */
-async function spawnLocked(port: EnginePort, common: string, root: string, issue: number): Promise<Result<string>> {
+async function spawnLocked(port: EnginePort, common: string, root: string, issue: number, instructions: string): Promise<Result<string>> {
   const workspaces = await listUnitWorkspaces(port)
   const own = workspaces.find(workspace => workspace.issue === issue)
-  if (!own && workspaces.length >= spawnConfig.limit) {
-    return fail(`${workspaces.length} units already run, the cap is ${spawnConfig.limit}: ${workspaces.map(workspace => `#${workspace.issue} (${workspace.path})`).join(', ')}`)
+  const running = own ? [] : await filterRunning(port, workspaces)
+  if (running.length >= spawnConfig.limit) {
+    return fail(`${running.length} units already run, the cap is ${spawnConfig.limit}: ${running.map(workspace => `#${workspace.issue} (${workspace.path})`).join(', ')}`)
   }
   const branch = await findUnitBranch(port, issue) ?? await createUnitBranch(port, issue)
   if (!branch.isOk) return branch
   const pane = own ? await findIdlePane(port, own.workspaceId) : await openWorktree(port, root, issue, branch.value)
-  if (pane === null) return succeed(`#${issue} already runs as herdr agent ${unitAgent(issue)} on ${branch.value}${own ? ` in ${own.path}` : ''}.`)
-  const progressPath = recordsPath(common, 'spawn', `${issue}.json`)
-  const progress = readProgress(await readJson(port.files, progressPath))
+  const progressFile = progressPath(common, issue)
+  const progress = readProgress(await readJson(port.files, progressFile))
   const session = await deriveSessionId(common, issue)
-  await runHerdrText(port, ['agent', 'start', unitAgent(issue), '--kind', 'claude', '--pane', pane, '--timeout', String(agentStartTimeoutMs),
-    '--', progress.isStarted ? '--resume' : '--session-id', session], agentStartTimeoutMs + 15000)
-  if (!progress.isStarted) await atomicReplace(port, progressPath, JSON.stringify({ isStarted: true, isPrompted: false }))
+  const mode = pane === null ? progress.mode : inheritMode(sessionMemory.permissionMode)
+  if (pane !== null) {
+    await runHerdrText(port, ['agent', 'start', unitAgent(issue), '--kind', 'claude', '--pane', pane, '--timeout', String(agentStartTimeoutMs),
+      '--', '--permission-mode', inheritMode(mode), progress.isStarted ? '--resume' : '--session-id', session], agentStartTimeoutMs + 15000)
+    await atomicReplace(port, progressFile, JSON.stringify({ ...progress, isStarted: true, mode }))
+  }
+  // why: a live unit whose start prompt failed would otherwise wait forever on an empty prompt.
   if (!progress.isPrompted) {
     const { paneId } = await port.readHerdrEnv()
-    await runHerdrText(port, ['agent', 'prompt', unitAgent(issue), '--', `Work on issue #${issue} on branch ${branch.value}: read it with its comments `
-      + `(\`gh issue view ${issue} --comments\`), declare its flow, and work only in this worktree. The coordinator is herdr pane ${paneId}.`])
-    await atomicReplace(port, progressPath, JSON.stringify({ isStarted: true, isPrompted: true }))
+    const text = appendInstructions(`Work on issue #${issue} on branch ${branch.value}: read it with its comments `
+      + `(\`gh issue view ${issue} --comments\`), declare its flow, and work only in this worktree. The coordinator is herdr pane ${paneId}.`, instructions)
+    if (!await submitPrompt(port, unitAgent(issue), text, progress.isTyped === true)) {
+      await atomicReplace(port, progressFile, JSON.stringify({ isStarted: true, isPrompted: false, isTyped: true, mode }))
+      return fail(`#${issue} did not take its start prompt: herdr agent ${unitAgent(issue)} stays idle with it typed and unsent in its input box. `
+        + 'Read it with unit_read; spawn again submits it without typing it twice')
+    }
+    await atomicReplace(port, progressFile, JSON.stringify({ isStarted: true, isPrompted: true, mode }))
   }
-  return succeed(`#${issue} ${progress.isStarted ? 'resumed' : 'started'} as herdr agent ${unitAgent(issue)} on ${branch.value} (session ${session}).`)
+  // why: a unit already past its start prompt is mid-turn; text sent now would queue behind that turn, so the coordinator decides how to send it.
+  const unsent = progress.isPrompted && instructions ? '; its start prompt went earlier, so the instructions are not sent: send them with unit_prompt' : ''
+  if (pane === null) {
+    return succeed(`#${issue} already runs as herdr agent ${unitAgent(issue)} on ${branch.value}${own ? ` in ${own.path}` : ''}${progress.isPrompted ? '' : '; its start prompt is sent now'}${unsent}.`)
+  }
+  const standing = progress.isStarted ? await describeStanding(port, branch.value) : ''
+  return succeed(`#${issue} ${progress.isStarted ? 'resumed' : 'started'} as herdr agent ${unitAgent(issue)} on ${branch.value} in ${mode} mode (session ${session})${unsent}${standing}.`)
+}
+
+/**
+ * Describes how a resumed unit stands: how far its branch is behind its parent's current tip and whether its worktree holds
+ * uncommitted changes, so the coordinator decides up front instead of finding out at merge_child.
+ * @param port - The engine calls.
+ * @param branch - The unit branch.
+ * @returns The clauses to append, empty when the branch holds its parent's tip and its worktree is clean.
+ */
+async function describeStanding(port: EnginePort, branch: string): Promise<string> {
+  const git = await readGit(port)
+  const parent = git ? await readParentBranch(port.processes, branch, git.base) : null
+  const behind = parent ? await readGitOutput(port.processes, ['rev-list', '--count', `${branch}..${parent}`]) : null
+  const root = await findWorktreeRoot(port.processes, branch)
+  const status = root ? await readWorktreeStatus(port.processes, root) : null
+  return `${behind && behind !== '0' ? `; ${branch} is ${behind} commit(s) behind ${parent}'s tip` : ''}${status ? `; ${root} has uncommitted changes` : ''}`
+}
+
+/**
+ * Submits a unit's start prompt and confirms the agent took it; a submit the agent missed, right after its start, gets one more Enter.
+ * @param port - The engine calls.
+ * @param agent - The unit's herdr agent.
+ * @param text - The start prompt.
+ * @param isTyped - Whether an earlier spawn already typed it, so only the submit is left.
+ * @returns Whether the agent left idle for it.
+ */
+async function submitPrompt(port: EnginePort, agent: string, text: string, isTyped: boolean): Promise<boolean> {
+  const isTaken = (args: string[]) => runHerdrText(port, args, promptWaitMs + 5000).then(() => true, () => false)
+  // herdr 0.9.5 takes the text as a positional argument and rejects `--` before it, even for text starting with a dash.
+  if (!isTyped && await isTaken(['agent', 'prompt', agent, text, '--wait', ...taken, '--timeout', String(promptWaitMs)])) return true
+  // why: the missed text stays typed in the input box; typing it again would submit it twice.
+  await runHerdrText(port, ['agent', 'send-keys', agent, 'Enter'])
+  return isTaken(['agent', 'wait', agent, ...taken, '--timeout', String(promptWaitMs)])
 }
 
 /**
@@ -103,64 +171,66 @@ async function spawnLocked(port: EnginePort, common: string, root: string, issue
  * @returns Each workspace with its issue.
  * @throws When herdr fails.
  */
-async function listUnitWorkspaces(port: EnginePort): Promise<UnitWorkspace[]> {
+export async function listUnitWorkspaces(port: EnginePort): Promise<UnitWorkspace[]> {
   return (await listHerdrWorktrees(port, labelPrefix)).flatMap(({ name, workspaceId, path }) =>
     isIssueNumber(Number(name)) ? [{ issue: Number(name), workspaceId, path }] : [])
 }
 
 /**
- * Finds the branch an issue's unit already has, whatever slug it was given.
+ * Keeps the workspaces that hold a machine slot: a live session whose unit is still working toward its result.
  * @param port - The engine calls.
- * @param issue - The issue number.
- * @returns The branch, as a success, or undefined when the issue has none.
+ * @param workspaces - The spawned workspaces.
+ * @returns The workspaces the cap counts; all of them when the repository state is unreadable.
+ * @throws When herdr fails or the branches cannot be listed.
  */
-async function findUnitBranch(port: EnginePort, issue: number): Promise<Result<string> | undefined> {
-  const branches = await readLocalBranches(port.processes)
-  if (branches === null) return fail('cannot list the branches')
-  const branch = [...branches].find(name => name.startsWith(`${issue}-`))
-  return branch ? succeed(branch) : undefined
+async function filterRunning(port: EnginePort, workspaces: UnitWorkspace[]): Promise<UnitWorkspace[]> {
+  const git = await readGit(port)
+  if (!git) return workspaces
+  const base = { name: git.base, ref: await readDefaultRef(port.processes, git.base) }
+  const mirrors = await readSessionMirrors(port)
+  const counted = await Promise.all(workspaces.map(async workspace => (await listLivePanes(port, workspace.workspaceId)).some(hasAgent)
+    && !['finished', 'integrated'].includes(await readUnitState(port, workspace.issue, base, mirrors))))
+  return workspaces.filter((_, index) => counted[index])
 }
 
 /**
- * Creates an issue's unit branch, create-only, from the default branch or from its open dependency's branch.
+ * Lists a unit workspace's panes; a workspace closed since spawn listed it has none.
+ * @param port - The engine calls.
+ * @param workspaceId - The workspace.
+ * @returns The panes, empty when the workspace is gone.
+ * @throws When herdr fails while the workspace still exists.
+ */
+async function listLivePanes(port: EnginePort, workspaceId: string): Promise<unknown[]> {
+  try {
+    return await listPanes(port, workspaceId)
+  } catch (error) {
+    if ((await listUnitWorkspaces(port)).some(workspace => workspace.workspaceId === workspaceId)) throw error
+    return []
+  }
+}
+
+/**
+ * Creates the unit branch of a ready-for-agent issue, `<type>/<n>-<slug>`, typed by the title's Conventional Commit prefix (`<n>-<slug>` without one),
+ * create-only, from the default branch or from its open dependency's branch.
  * @param port - The engine calls.
  * @param issue - The issue number.
  * @returns The branch, or what it waits for.
  */
 async function createUnitBranch(port: EnginePort, issue: number): Promise<Result<string>> {
-  const read = await readGraphql(port.processes, `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){issue(number:${issue}){`
-    + 'state title blockedBy(first:50){nodes{number state}}}}}', [], { fallback: 'not found' })
-  if (!read.isOk) return fail(`cannot read #${issue}: ${read.error}`)
-  const fields = isRecord(read.value.issue) ? read.value.issue : null
-  if (!fields) return fail(`cannot read #${issue}: unreadable gh output`)
-  if (fields.state !== 'OPEN') return fail(`#${issue} is closed`)
-  const blockers = filterRecords(isRecord(fields.blockedBy) ? fields.blockedBy.nodes : null).filter(node => node.state === 'OPEN').map(node => Number(node.number))
-  const base = await resolveBase(port, blockers)
-  if (!base.isReady) return fail(`#${issue} waits: ${base.reason}`)
+  const start = await readIssueStart(port, issue)
+  if (!start.isOk) return start
+  const { title, base } = start.value
+  if (!base.isReady) return fail(base.reason)
   const sha = await readGitOutput(port.processes, ['rev-parse', '--verify', '--quiet', base.ref])
   if (!sha) return fail(`cannot resolve ${base.ref}`)
-  const branch = `${issue}-${slugify(toStringOrEmpty(fields.title))}`
-  if (await readGitOutput(port.processes, ['update-ref', `refs/heads/${branch}`, sha, '']) !== null) return succeed(branch)
+  const type = title.match(conventionalPrefix)?.[1]?.toLowerCase()
+  const branch = `${type ? `${type}/` : ''}${issue}-${slugify(title)}`
+  // why: recorded before the ref exists, so a window that sees the branch already finds the record.
+  await recordPlaced(port, branch, sha)
+  // why: the unit's declaration reads its parent from this first reflog entry; without it a child counts the parent's commits as its own.
+  const created = await readGitOutput(port.processes, ['update-ref', '-m', `branch: Created from ${base.parent}`, `refs/heads/${branch}`, sha, ''])
+  if (created !== null) return succeed(branch)
   return await findUnitBranch(port, issue) ?? fail(`cannot create ${branch}`)
-}
-
-/**
- * Picks where a new unit branch starts: the dependency's branch once it has a commit past the default branch, else the default branch.
- * @param port - The engine calls.
- * @param blockers - The issue's open blocked-by dependencies.
- * @returns The base ref, or what the unit waits for.
- */
-async function resolveBase(port: EnginePort, blockers: number[]): Promise<Base> {
-  const git = await readGit(port)
-  if (!git) return { isReady: false, reason: 'the repository state is unreadable' }
-  const defaultRef = await readDefaultRef(port.processes, git.base)
-  const [blocker, ...others] = blockers
-  if (blocker === undefined) return { isReady: true, ref: defaultRef }
-  if (others.length) return { isReady: false, reason: `it is blocked by #${blockers.join(', #')}, and a child unit has one parent` }
-  const parent = await findUnitBranch(port, blocker)
-  if (!parent?.isOk) return { isReady: false, reason: `its dependency #${blocker} has no unit branch yet` }
-  const ahead = await readGitOutput(port.processes, ['rev-list', '--count', `${defaultRef}..${parent.value}`])
-  return ahead && ahead !== '0' ? { isReady: true, ref: parent.value } : { isReady: false, reason: `${parent.value}, the branch of #${blocker}, has no commit past ${defaultRef} yet` }
 }
 
 /**
@@ -173,7 +243,7 @@ async function resolveBase(port: EnginePort, blockers: number[]): Promise<Base> 
  * @throws When herdr fails or names no pane.
  */
 async function openWorktree(port: EnginePort, root: string, issue: number, branch: string): Promise<string> {
-  const path = (await readWorktrees(port.processes))?.find(worktree => worktree.branch === `refs/heads/${branch}`)?.root
+  const path = await findWorktreeRoot(port.processes, branch)
   const label = ['--label', `${labelPrefix}${issue}`, '--no-focus']
   const reply = await runHerdr(port, path
     ? ['worktree', 'open', '--cwd', root, '--path', path, ...label]
@@ -191,12 +261,32 @@ async function openWorktree(port: EnginePort, root: string, issue: number, branc
  * @throws When herdr fails or lists no pane.
  */
 async function findIdlePane(port: EnginePort, workspaceId: string): Promise<string | null> {
-  const panes = readField(await runHerdr(port, ['pane', 'list', '--workspace', workspaceId]), 'result', 'panes')
-  const list = Array.isArray(panes) ? panes : []
-  if (list.some(pane => typeof readField(pane, 'agent') === 'string')) return null
+  const list = await listPanes(port, workspaceId)
+  if (list.some(hasAgent)) return null
   const pane = readField(list[0], 'pane_id')
   if (typeof pane !== 'string') throw new Error(`herdr lists no pane in workspace ${workspaceId}`)
   return pane
+}
+
+/**
+ * Lists a workspace's panes as herdr reports them.
+ * @param port - The engine calls.
+ * @param workspaceId - The workspace.
+ * @returns The panes, empty when herdr names none.
+ * @throws When herdr fails.
+ */
+async function listPanes(port: EnginePort, workspaceId: string): Promise<unknown[]> {
+  const panes = readField(await runHerdr(port, ['pane', 'list', '--workspace', workspaceId]), 'result', 'panes')
+  return Array.isArray(panes) ? panes : []
+}
+
+/**
+ * Tells whether an agent runs in a pane.
+ * @param pane - The pane as herdr reports it.
+ * @returns Whether herdr names its agent.
+ */
+function hasAgent(pane: unknown): boolean {
+  return typeof readField(pane, 'agent') === 'string'
 }
 
 /**
@@ -225,10 +315,20 @@ async function holdLock<T>(port: EnginePort, common: string, work: () => Promise
   try {
     return await work()
   } catch (error) {
-    return fail(formatError(error).split(/\r?\n/)[0] ?? '')
+    return fail(formatErrorLine(error))
   } finally {
     await executeProcess(port.processes, ['rmdir', '--', lock])
   }
+}
+
+/**
+ * Names an issue's spawn progress record.
+ * @param common - The git common directory.
+ * @param issue - The issue number.
+ * @returns The file path.
+ */
+export function progressPath(common: string, issue: number): string {
+  return recordsPath(common, 'spawn', `${issue}.json`)
 }
 
 /**
@@ -237,7 +337,34 @@ async function holdLock<T>(port: EnginePort, common: string, work: () => Promise
  * @returns The progress.
  */
 function readProgress(value: unknown): Progress {
-  return { isStarted: isRecord(value) && value.isStarted === true, isPrompted: isRecord(value) && value.isPrompted === true }
+  const mode = isRecord(value) && typeof value.mode === 'string' ? value.mode : undefined
+  return { isStarted: isRecord(value) && value.isStarted === true, isPrompted: isRecord(value) && value.isPrompted === true,
+    ...(isRecord(value) && value.isTyped === true ? { isTyped: true } : {}), ...(mode ? { mode } : {}) }
+}
+
+/**
+ * Picks the permission mode a unit starts in from the coordinator's.
+ * @param mode - The coordinator's mode, if the engine reported one.
+ * @returns The same mode when a unit may run in it, else default.
+ */
+function inheritMode(mode: string | null | undefined): string {
+  return mode && inheritedModes.includes(mode) ? mode : 'default'
+}
+
+/**
+ * Names the permission mode spawn last started a unit of these issues in.
+ * @param port - The engine calls.
+ * @param issues - The unit's issues.
+ * @returns The mode, or undefined when spawn never started one.
+ */
+export async function readSpawnMode(port: EnginePort, issues: number[]): Promise<string | undefined> {
+  const common = await readCommonDir(port)
+  if (!common) return undefined
+  for (const issue of issues) {
+    const { mode } = readProgress(await readJson(port.files, progressPath(common, issue)).catch(() => undefined))
+    if (mode) return mode
+  }
+  return undefined
 }
 
 /**
@@ -246,7 +373,7 @@ function readProgress(value: unknown): Progress {
  * @returns Lowercase words joined by hyphens, at most 40 characters.
  */
 function slugify(title: string): string {
-  const words = title.replace(/^[a-z]+(\([^)]*\))?!?:\s*/i, '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+  const words = title.replace(conventionalPrefix, '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
   const slug = words.reduce((kept, word) => !kept ? word : `${kept}-${word}`.length <= 40 ? `${kept}-${word}` : kept, '')
   return slug.slice(0, 40) || 'unit'
 }
@@ -257,7 +384,7 @@ function slugify(title: string): string {
  * @param issue - The issue number.
  * @returns The session id.
  */
-async function deriveSessionId(common: string, issue: number): Promise<string> {
+export async function deriveSessionId(common: string, issue: number): Promise<string> {
   const name = new TextEncoder().encode(`${common}#${issue}`)
   const bytes = new Uint8Array(16 + name.length)
   bytes.set(namespace.match(/../g)?.map(pair => parseInt(pair, 16)) ?? [])

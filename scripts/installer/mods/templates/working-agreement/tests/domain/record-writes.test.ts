@@ -10,7 +10,7 @@ import type { UnitSlice } from '../../hooks/domain/step-states'
 import { noFlow } from '../support/builders'
 import { declareFlow, endTurn, readPaneCurrentStep, runFlowCommand, startSkill } from '../support/helpers'
 import { buildChildEntry, observedEndFile, parentCheckout, readObservedEndFile, seedChildren, seedObservedEnd, withCommit } from '../support/parallel-worktrees'
-import { common, createTestPort, createWorld, root } from '../support/world'
+import { createTestPort, createWorld, records, root } from '../support/world'
 import type { Checkout, Gate, Options, World } from '../support/world'
 import { parseSession } from '../../hooks/domain/records'
 import type { SessionRecord, UnitEntry } from '../../hooks/domain/records'
@@ -21,7 +21,7 @@ import type { SessionRecord, UnitEntry } from '../../hooks/domain/records'
  * @returns The mirrored record; a missing or invalid mirror fails the test.
  */
 function readRecord(world: World): SessionRecord {
-  const record = parseSession(JSON.parse(world.files.get(`${common}/working-agreement/s/sid.json`) ?? 'null'))
+  const record = parseSession(JSON.parse(world.files.get(`${records}/s/sid.json`) ?? 'null'))
   if (!record) throw new Error('the session mirror holds no valid record')
   return record
 }

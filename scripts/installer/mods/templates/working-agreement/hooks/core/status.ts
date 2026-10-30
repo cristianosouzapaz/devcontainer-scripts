@@ -12,10 +12,11 @@ import { locatePosition } from './position'
 import { readGit, readRepositoryRoot } from './repository'
 import { readSession, unitLogPath } from './record-store'
 import { sessionMemory } from './session-memory'
+import { readSpawnMode } from './spawn'
 import { isVerifyApproved } from './verify'
 import { configPath, readRepositoryConfig, readVerifyConfig, selectVerify } from './verify-config'
 import { readBranchProtection, readBranchRulesets } from '../lib/github'
-import { readWorktrees } from '../lib/git'
+import { findWorktreeRoot } from '../lib/git'
 import { describeBaseMismatch, readCandidates, selectBasePullRequest } from './unit-github'
 import { readDismissals } from './violation-store'
 import { fail } from '../lib/result'
@@ -44,17 +45,6 @@ const time = (at: number | null): string => at === null ? 'never' : formatLocalT
  */
 function formatErrorWindow(label: string, operation: string, window: ErrorWindow | null): string | null {
   return window ? keyedLine(label, `${operation} · ${time(window.lastSeen)} · since ${time(window.firstSeen)} · ×${window.failures} · ${window.error}`) : null
-}
-
-/**
- * Locates the checkout that owns a declared branch for status inspection.
- * @param port - The engine calls.
- * @param branch - The branch name.
- * @returns The worktree root, or null when no checkout is available.
- */
-async function worktree(port: EnginePort, branch: string): Promise<string | null> {
-  const worktrees = await readWorktrees(port.processes)
-  return worktrees?.find(entry => entry.branch === `refs/heads/${branch}`)?.root ?? null
 }
 
 /**
@@ -112,10 +102,13 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
     const mismatch = describeBaseMismatch(position.unit, candidate) ? ` · base from ${position.unit.baseBranch}, PR into ${candidate?.baseRefName}` : ''
     const sliceText = !slice ? 'none' : `${slice.base ? short(slice.base) : 'none'}..${short(slice.end)}${slice.base && slice.isRewritten ? ' · base not in history' : slice.commits === 0 ? ' · empty' : ''}${mismatch}`
     const rows = [...(issues ? [keyedLine('Issue', issues)] : []), keyedLine('Slice', sliceText)]
-    const root = await worktree(statusPort, session.unit.branch)
+    const root = await findWorktreeRoot(statusPort.processes, session.unit.branch) ?? null
     if (root) rows.push(keyedLine('Worktree', root))
     if (candidate) rows.push(keyedLine('PR', candidate.url))
     if (position.verify.queued) rows.push(keyedLine('Verify', position.verify.queued))
+    if (position.verify.run) rows.push(keyedLine('Run', position.verify.run))
+    const mode = await readSpawnMode(statusPort, session.issues)
+    if (mode) rows.push(keyedLine('Spawned', `in ${mode} mode`))
     rows.push(keyedLine('Log', await unitLogPath(statusPort, session.unit)))
     const checks = slice ? sessionMemory.checks.get(slice.end)?.result : undefined
     if (slice && checks?.isOk && checks.value.length) rows.push(keyedLine('CI', `${short(slice.end)} · ${checks.value.map(check => `${check.name}: ${check.state}`).join(' · ')}`))
@@ -124,7 +117,9 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
     if (config.kind === 'valid') {
       const approved = await isVerifyApproved(port, config.blob)
       const selection = await selectVerify(statusPort, config.config, slice?.baseTree ?? null, slice?.tree ?? '')
-      groups.push([keyedLine('Config', `${configPath} @ blob ${short(config.blob)} · ${approved ? 'approved' : 'needs /flow approve verify'}`), keyedLine('Selection', selection.commands.length ? `${selection.commands.map(command => command.join(' ')).join(' · ')} · ${selection.description}` : `none: ${selection.description}`)])
+      // Code spans keep a glob's `**` from reading as markdown bold.
+      const reason = selection.paths.length ? `rules ${selection.paths.map(path => `\`${path}\``).join(', ')}` : selection.description
+      groups.push([keyedLine('Config', `${configPath} @ blob ${short(config.blob)} · ${approved ? 'approved' : 'needs /flow approve verify'}`), keyedLine('Selection', selection.commands.length ? `${selection.commands.map(command => command.join(' ')).join(' · ')} · ${reason}` : `none: ${reason}`)])
     } else groups.push([keyedLine('Config', `${configPath} · ${config.kind === 'missing' ? 'not found in the unit tree' : `invalid: ${config.fact}`}`), keyedLine('Selection', 'none: verify refuses until a config exists')])
   }
   const root = await readRepositoryRoot(statusPort)

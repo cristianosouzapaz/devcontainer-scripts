@@ -46,7 +46,10 @@ export async function readUnitSlice(port: EnginePort, identity: Identity, unit: 
   const forkPoint = !wholeBranch && unit.baseBranch ? await readForkPoint(port.processes, unit.baseBranch, end) : null
   // why: Below the recorded base lie commits the base branch already delivered from another branch, which are never the unit's.
   const isBelow = !!forkPoint && !!recorded && forkPoint !== recorded && await isAncestor(port.processes, forkPoint, recorded)
-  const base = forkPoint && !isBelow ? forkPoint : anchor
+  // why: A base branch fast-forwarded onto the unit puts its end on that branch's first-parent chain, so the fork point
+  // is the end itself: the branch already contains the whole slice, which the recorded base still bounds.
+  const isContained = !!recorded && forkPoint === end
+  const base = forkPoint && !isBelow && !isContained ? forkPoint : anchor
   const worktrees = await readWorktrees(port.processes)
   if (worktrees === null) return null
   const root = worktrees.find(worktree => worktree.branch === `refs/heads/${identity.branch}`)?.root

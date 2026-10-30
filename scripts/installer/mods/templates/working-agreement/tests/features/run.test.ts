@@ -1,8 +1,8 @@
 import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
 import { noFlow, diagnosed, diagnosisComment } from '../support/builders'
-import { declareFlow, readFlowStatus, readStepStates } from '../support/helpers'
-import { createWorld } from '../support/world'
+import { declareFlow, readFlowStatus, readStepStates, seedVerifyHolder } from '../support/helpers'
+import { createWorld, records } from '../support/world'
 import type { Checkout, Options } from '../support/world'
 
 const argv = ['./check']
@@ -116,6 +116,20 @@ test('run discards evidence when the command changes worktree content and names 
   const result = await $.tool.call({ tool: 'mcp__working-agreement__run', argv })
   expect(result.result).toContain('no record written. Changed paths: "src/a.ts"')
   expect(sessions.get('sid')?.units[0]?.runs).toEqual([])
+})
+
+test("run waits behind another session's Verify and runs once it finishes", async ($, on) => {
+  const world = createWorld(on, { branch: 'fix', isDirty: true, tree: 'red' }, { session: { flow: 'fix' }, spawnCode: 7 })
+  const { sessions, files, clock } = world
+  seedVerifyHolder(world)
+  const pending = $.tool.call({ tool: 'mcp__working-agreement__run', argv })
+  await clock.settle()
+  expect(sessions.get('sid')?.units[0]?.runs).toEqual([])
+  files.delete(`${records}/verify/lock/owner.json`)
+  files.delete(`${records}/verify/q/000000000000000-holder/lease`)
+  await clock.advance(1000)
+  expect((await pending).result).toContain('red recorded')
+  expect([...files.keys()].filter(path => path.startsWith(`${records}/verify/`))).toEqual([])
 })
 
 for (const first of ['run', 'verify']) {

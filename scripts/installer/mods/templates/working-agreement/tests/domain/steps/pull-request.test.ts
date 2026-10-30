@@ -7,10 +7,10 @@ import { expect } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { test } from '../../support/kit'
-import { buildParentPullRequest, buildPullRequest, fixed, diagnosisComment, noFlow, pushedCloseOut } from '../../support/builders'
+import { buildParentPullRequest, buildPullRequest, diagnosisComment, fixed, noFlow, pushedCloseOut, trivialFlow } from '../../support/builders'
 import { declareFlow, endTurn, readFlowStatus, readPromptContext, readStepStates, startSkill } from '../../support/helpers'
 import { buildChildEntry, buildRoundPullRequest, parentCheckout, readObservedEndFile, roundCloseOut, seedChildren, seedObservedEnd, withCommit, withoutBranch } from '../../support/parallel-worktrees'
-import { common, createWorld, linearGraph } from '../../support/world'
+import { createWorld, linearGraph, records } from '../../support/world'
 import type { Checkout, Options, World } from '../../support/world'
 
 test('a pushed slice with an open PR closing every issue and green CI completes PR without running a skill', async ($, on) => {
@@ -118,17 +118,17 @@ test('a complete hundred-candidate connection can select a PR', async ($, on) =>
 })
 
 test('Trivial needs no closing issue and a draft PR is accepted', async ($, on) => {
-  createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, session: { flow: 'trivial', issues: [], info: {} }, prs: [buildPullRequest({ closingIssuesReferences: [], isDraft: true })] })
+  createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, session: trivialFlow(), prs: [buildPullRequest({ closingIssuesReferences: [], isDraft: true })] })
   expect(await readFlowStatus($)).toContain('✓ PR #5')
 })
 
 test('a current PR step without a skill names its PR', async ($, on) => {
-  createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, session: { flow: 'trivial', issues: [], info: {} }, prs: [buildPullRequest({ closingIssuesReferences: [], headRefOid: 'c0' })], unpublished: [] })
+  createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, session: trivialFlow(), prs: [buildPullRequest({ closingIssuesReferences: [], headRefOid: 'c0' })], unpublished: [] })
   expect(await readFlowStatus($)).toContain('▸ PR #5')
 })
 
 test('an empty slice never selects a merged PR', async ($, on) => {
-  createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, session: { flow: 'trivial', issues: [], info: {} }, unit: { base: 'c1', skips: [{ step: 'code', reason: 'covered' }, { step: 'verify', reason: 'covered' }, { step: 'commit', reason: 'covered' }] }, prs: [buildPullRequest({ state: 'MERGED' })] })
+  createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, session: trivialFlow(), unit: { base: 'c1', skips: [{ step: 'code', reason: 'covered' }, { step: 'verify', reason: 'covered' }, { step: 'commit', reason: 'covered' }] }, prs: [buildPullRequest({ state: 'MERGED' })] })
   expect(await readFlowStatus($)).toContain('PR · no PR')
   expect(await readFlowStatus($)).not.toContain('PR #5 · merged')
 })
@@ -341,12 +341,12 @@ test("an unparsable session mirror holds a Close out's PR step instead of droppi
   const world = createWorld(on, checkout, { ...roundCloseOut, prs: [buildRoundPullRequest('mpar', [1, 2, 3])] })
   await world.ready
   await seedChildren(world, children)
-  world.files.set(`${common}/working-agreement/s/broken.json`, '{')
+  world.files.set(`${records}/s/broken.json`, '{')
   expect(await readFlowStatus($)).toContain('▸ PR · children unreadable: unreadable session mirror broken.json')
 })
 
 test("a session mirror listing that fails holds a Close out's PR step instead of reading as no children", async ($, on) => {
   const [checkout, children] = integrated()
-  await createRound(on, checkout, [buildRoundPullRequest('mpar', [1, 2, 3])], children, { listFailurePrefix: `${common}/working-agreement/s` })
+  await createRound(on, checkout, [buildRoundPullRequest('mpar', [1, 2, 3])], children, { listFailurePrefix: `${records}/s` })
   expect(await readFlowStatus($)).toContain('▸ PR · children unreadable: ')
 })

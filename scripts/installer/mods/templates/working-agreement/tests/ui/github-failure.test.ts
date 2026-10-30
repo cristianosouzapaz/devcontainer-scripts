@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
-import { declareFlow, endTurn, readCurrentStep, readFlowStatus, readPromptContext } from '../support/helpers'
+import { declareFlow, endTurn, readCurrentStep, readFlowStatus, readPromptContext, readStatusRow } from '../support/helpers'
 import { diagnosed, diagnosisComment, noFlow } from '../support/builders'
 import { refreshView } from '../../hooks/core/pane-view'
 import { runWithDeadline } from '../../hooks/lib/process'
@@ -34,7 +34,14 @@ const paneGithub = (world: World): string | undefined => world.views.at(-1)?.met
  * @param status - The status text.
  * @returns The row.
  */
-const statusGithub = (status: string | undefined): string => (status ?? '').split('\n').find(line => line.startsWith('GitHub')) ?? ''
+const statusGithub = (status: string | undefined): string => readStatusRow(status, 'GitHub')
+
+/**
+ * Counts the reachability probes the mod has run.
+ * @param world - The world.
+ * @returns The number of `gh api user` runs.
+ */
+const countProbes = (world: World): number => world.runs.filter(run => run.startsWith('gh api user')).length
 
 for (const [failure, fail, reason] of [
   ['the reachability probe', (options: Options) => { options.failing = 'gh api user' }, 'gh could not run: '],
@@ -75,14 +82,14 @@ for (const [failure, fail, reason] of [
     await world.clock.advance(2000)
     const recovered = await readFlowStatus($)
     expect(paneGithub(world)).toBeUndefined()
-    expect(statusGithub(recovered)).toMatch(/^GitHub {4}last ok \d{4}-\d{2}-\d{2} \d{2}:\d{2} [+-]\d{2}:\d{2}$/)
+    expect(statusGithub(recovered)).toMatch(/^GitHub {5}last ok \d{4}-\d{2}-\d{2} \d{2}:\d{2} [+-]\d{2}:\d{2}$/)
   })
 }
 
 test('unforced syncs during an outage do not probe GitHub again within the TTL, and a forced one does', async ($, on) => {
   const options: Options = { ...specDone }
   const world = createWorld(on, { branch: 'feat' }, options)
-  const probes = (): number => world.runs.filter(run => run.startsWith('gh api user')).length
+  const probes = (): number => countProbes(world)
   await world.clock.advance(pastTtl)
   await readPromptContext($)
   const connected = probes()
@@ -102,7 +109,7 @@ test('unforced syncs during an outage do not probe GitHub again within the TTL, 
 test('a tick during an outage does not probe GitHub again within the TTL, and an explicit signal does', async (_$, on) => {
   const world = createWorld(on, { branch: 'feat' }, { ...specDone, failing: 'gh api user' })
   const port = createTestPort(world)
-  const probes = (): number => world.runs.filter(run => run.startsWith('gh api user')).length
+  const probes = (): number => countProbes(world)
   await refreshView(port, { isForced: true, causes: ['turn'] })
   const failed = probes()
   await world.clock.advance(2000)
@@ -143,9 +150,9 @@ test('/flow status probes GitHub once during an outage', async ($, on) => {
   await readFlowStatus($)
   options.failing = 'gh api user'
   await world.clock.advance(pastTtl)
-  const before = world.runs.filter(run => run.startsWith('gh api user')).length
+  const before = countProbes(world)
   await readFlowStatus($)
-  expect(world.runs.filter(run => run.startsWith('gh api user')).length - before).toBe(1)
+  expect(countProbes(world) - before).toBe(1)
 })
 
 test('a re-declaration whose comments read fails keeps Diagnose done and shows the failure', async ($, on) => {

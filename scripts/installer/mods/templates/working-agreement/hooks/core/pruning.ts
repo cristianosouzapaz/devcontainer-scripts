@@ -153,7 +153,7 @@ async function pruneFiles(port: EnginePort): Promise<void> {
   const held = new Set([memory?.live?.runId, memory?.published.runId, memory?.last?.runId])
   // why: A session writes its mirror only on its first record change, so owner liveness cannot keep a temporary file.
   const expiry = await port.now() - temporaryExpiryMs
-  for (const bucket of ['s', 'u', 'd', 'ok', 'runs', 'delegation', 'delegated', 'spawn']) {
+  for (const bucket of ['s', 'u', 'd', 'ok', 'runs', 'delegation', 'delegated', 'spawn', 'placed']) {
     // The bucket directory may not exist yet.
     const entries = await port.files.list(recordsPath(common, bucket)).catch(() => [])
     // why: a content capture's copy and stamp carry the index's own mtime, so only its fresh .live marker shows the capture is running.

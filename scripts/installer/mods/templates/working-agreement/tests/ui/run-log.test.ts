@@ -11,9 +11,9 @@ import { handlePaneClose, handlePaneRender } from '../../hooks/handlers/pane-ren
 import type { PaneElements } from '../../hooks/ui/pane-sections'
 import { summarizeCommand } from '../../hooks/ui/run-log'
 import { diagnosed, diagnosisComment } from '../support/builders'
-import { checkTheme, mountPane, readFlowStatus, readPromptContext, textOf } from '../support/helpers'
+import { checkTheme, expectText, mountPane, readFlowStatus, readPromptContext, serveDisplayed, textOf } from '../support/helpers'
 import type { DrawnNode } from '../support/helpers'
-import { common, configBlob, createTestPort, createWorld } from '../support/world'
+import { configBlob, createTestPort, createWorld, records } from '../support/world'
 import type { World, Gate, Options } from '../support/world'
 
 interface RenderTable { elements?: PaneElements }
@@ -33,16 +33,23 @@ function hasColumnBox(node: unknown): boolean {
   return (tree.type === 'Box' && tree.props?.['flexDirection'] === 'column') || (tree.children ?? []).some(hasColumnBox)
 }
 
+/**
+ * Asserts that a row's text is drawn on one row: its innermost box is no column and holds none.
+ * @param pane - The mounted pane.
+ * @param text - The row's whole text.
+ */
+async function expectOneRow(pane: Mounted<'terminal', 'Pane'>, text: string): Promise<void> {
+  const row = findInnermostBox(await pane.drawn(), text)
+  expect(row).toBeDefined()
+  expect(row?.props?.['flexDirection']).not.toBe('column')
+  expect((row?.children ?? []).some(hasColumnBox)).toBe(false)
+}
+
 async function expectTheme(pane: Mounted<'terminal', 'Pane'>): Promise<void> {
   checkTheme(await pane.drawn(), ['text', 'inactive', 'suggestion', 'success', 'warning', 'error', 'merged', 'subtle'])
   expect((await pane.find({ type: 'Box' }))?.props['backgroundColor']).toBeUndefined()
 }
 
-
-async function expectText(pane: Mounted<'terminal', 'Pane'>, text: string, props: Record<string, unknown>): Promise<void> {
-  const found = (await pane.findAll({ type: 'Text' })).find(node => node.text === text && Object.entries(props).every(([key, value]) => node.props[key] === value))
-  expect(found).toBeDefined()
-}
 
 async function mountRunLog($: Parameters<typeof readFlowStatus>[0], columns = 80): Promise<Mounted<'terminal', 'Pane'>> {
   await readFlowStatus($)
@@ -69,7 +76,7 @@ function seedRun(on: On, run: RunView, options: Options = {}): World {
     ? { verifyRuns: [{ ...record, base: 'c0', configBlob: configBlob(config), commands: run.commands.map(entry => entry.argv) }] }
     : { runs: [{ ...record, argv: run.commands[0]!.argv }] }
   const world = createWorld(on, { branch: 'feat', isDirty: true, tree: run.tree }, { ...options, approvedConfig: config, unit, verifyFile: config })
-  world.files.set(`${common}/working-agreement/runs/${run.runId}.json`, JSON.stringify(run))
+  world.files.set(`${records}/runs/${run.runId}.json`, JSON.stringify(run))
   return world
 }
 
@@ -84,22 +91,16 @@ for (const columns of [30, 60]) {
     await readFlowStatus($)
     const before = await mountPane($, { columns })
     expect(textOf(await before.drawn())).toContain('✓ Verify')
-    // At 30 columns the fact is cut at a word boundary, still on the step's row.
-    const commitRow = `▸ Commit · ${columns === 30 ? 'nothing yet' : 'nothing yet'}`
+    // At both widths the fact stays on the step's row.
+    const commitRow = '▸ Commit · nothing yet'
     expect(textOf(await before.drawn())).toContain(commitRow)
-    const beforeRow = findInnermostBox(await before.drawn(), commitRow)
-    expect(beforeRow).toBeDefined()
-    expect(beforeRow?.props?.['flexDirection']).not.toBe('column')
-    expect((beforeRow?.children ?? []).some(hasColumnBox)).toBe(false)
+    await expectOneRow(before, commitRow)
     await before.unmount()
 
     const pending = $.tool.call({ tool: 'mcp__working-agreement__verify' })
     await clock.settle()
     const pane = await mountPane($, { columns })
-    const liveRow = findInnermostBox(await pane.drawn(), commitRow)
-    expect(liveRow).toBeDefined()
-    expect(liveRow?.props?.['flexDirection']).not.toBe('column')
-    expect((liveRow?.children ?? []).some(hasColumnBox)).toBe(false)
+    await expectOneRow(pane, commitRow)
     const liveText = textOf(await pane.drawn())
     expect(liveText).toContain('✓ Verify')
     expect(liveText).not.toContain('▸ Verify')
@@ -112,10 +113,7 @@ for (const columns of [30, 60]) {
     expect(ended).toContain('✗ Verify · failed, exit 1')
     expect(ended).toContain('○ Commit')
     expect(ended).not.toContain('nothing yet')
-    const failedRow = findInnermostBox(await pane.drawn(), '✗ Verify · failed, exit 1')
-    expect(failedRow).toBeDefined()
-    expect(failedRow?.props?.['flexDirection']).not.toBe('column')
-    expect((failedRow?.children ?? []).some(hasColumnBox)).toBe(false)
+    await expectOneRow(pane, '✗ Verify · failed, exit 1')
     await pane.unmount()
   })
 }
@@ -506,7 +504,7 @@ test('Run log summary, keyed rows and command blocks match variant D spacing, co
   await expectText(log, run.log, { color: 'inactive', wrap: 'wrap' })
   for (const key of ['Selection', 'Tree', 'Cwd', 'File']) {
     await expectText(log, key, { color: 'inactive' })
-    expect((await log.findAll({ type: 'Box' })).some(box => box.props['width'] === 10 && box.props['flexShrink'] === 0 && textOf(box) === key)).toBe(true)
+    expect((await log.findAll({ type: 'Box' })).some(box => box.props['width'] === 11 && box.props['flexShrink'] === 0 && textOf(box) === key)).toBe(true)
   }
   await expectText(log, '✓ ', { color: 'success' })
   await expectText(log, '✗ ', { color: 'error' })
@@ -587,7 +585,7 @@ test('step rows keep fixed names and symbols, and fit current facts and skipped 
       { isError: false, isMerged: false, isRewritten: false, id: 'tickets', symbol: '↷', label: 'Tickets', state: 'skipped', detail: 'optional for this unit' },
     ] }
   const displayed = { value, run: null as RunView | null }
-  on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: displayed.value, version: 0 } }))
+  serveDisplayed(on, displayed)
   on('state.get', { plugin: 'working-agreement', key: 'liveRun' }, () => ({ value: { value: displayed.run, version: 0 } }))
   const flow = await mountPane($, { columns: 47 })
   await expectText(flow, '✓ ', { color: 'success' })
@@ -631,7 +629,7 @@ test('a live red or green run leaves every row as judged, the current step with 
       { isError: false, isMerged: false, isRewritten: false, id: 'verify', symbol: '○', label: 'Verify', state: 'pending' },
     ] }
   const displayed = { value, run: null as RunView | null }
-  on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: displayed.value, version: 0 } }))
+  serveDisplayed(on, displayed)
   on('state.get', { plugin: 'working-agreement', key: 'liveRun' }, () => ({ value: { value: displayed.run, version: 0 } }))
   const flow = await mountPane($, { columns: 47 })
   for (const kind of ['green', 'red'] as const) {

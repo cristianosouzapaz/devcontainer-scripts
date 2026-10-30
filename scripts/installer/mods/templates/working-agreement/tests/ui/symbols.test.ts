@@ -4,6 +4,7 @@ import { buildParentGraph, diagnoseRuns, diagnosisComment, noFlow, verifyFile } 
 import { endTurn, inside, mountPane, readFlowStatus, runFlowCommand, textOf } from '../support/helpers'
 import { createWorld } from '../support/world'
 import type { Checkout, Gate, Options } from '../support/world'
+import { parChild } from '../support/parallel-worktrees'
 
 const changed: Checkout = { branch: 'feat', changed: ['src/a.ts'], isDirty: true, tree: 'one' }
 
@@ -63,7 +64,7 @@ test('the declaration reply marks a step waiting on a user approval ●', async 
 test('an integrated child awaiting its parent reads ✓ Integrate on the pane, in the status and on the sidebar', async ($, on) => {
   const graph = buildParentGraph()
   const world = createWorld(on, { branch: 'a', graph: { ...graph, refs: { ...graph.refs, par: 'ma' } }, worktrees: { '/repo': { branch: 'a' }, '/par': { branch: 'par' } } },
-    { unit: { base: 'p1', baseBranch: 'par', skips: [{ step: 'code', reason: 'covered' }, { step: 'verify', reason: 'covered' }] }, herdrEnv: inside })
+    { ...parChild(), herdrEnv: inside })
   expect(await readFlowStatus($)).toContain("✓ Integrate · awaiting par's PR")
   await endTurn($)
   expect(world.runs.at(-1)).toContain('--token flow_step=✓ Integrate --token')

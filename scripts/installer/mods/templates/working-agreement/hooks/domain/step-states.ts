@@ -46,6 +46,8 @@ interface VerifyState {
   isReached: boolean
   /** This session's place in the repository's Verify queue, such as `queued, 2nd of 3`, while it waits for another session's Verify. */
   queued?: string
+  /** The run that decides Verify, as `<run id> in <unit>`, named by /flow status. */
+  run?: string
 }
 
 /** Holds whether a GitHub-judged step is done and the first fact that prevents it. */
@@ -66,7 +68,7 @@ export type DiagnoseNeed = 'red' | 'issue' | 'comments' | 'comment' | 'approval'
 interface DiagnoseDone extends IssueDone { approvedAt?: number }
 
 /** Keeps agent requirements separate from the pane's short facts. */
-export type DiagnoseJudgement = DiagnoseDone | DiagnosePending
+type DiagnoseJudgement = DiagnoseDone | DiagnosePending
 
 /** Names the steps whose state comes entirely from declared issue facts. */
 type IssueStepId = 'grill' | 'spec' | 'triage' | 'map' | 'tickets'
@@ -207,7 +209,7 @@ export type DeliveryFact = Pick<Evidence, 'prFact' | 'prDetail' | 'prFactCode'>
 export type StepMarkKind = FlowStepState | 'failed' | 'rewritten' | 'waitingApproval'
 
 /** How a step reads on every surface: its legend entry, and the marks that decide its color and fact. */
-export interface StepMark {
+interface StepMark {
   mark: StepMarkKind
   isMerged: boolean
   isFailed: boolean
@@ -410,7 +412,7 @@ const isIssueStep = (step: Step): step is IssueStep => ['grill', 'spec', 'triage
  * @returns Completion or the first fact preventing the step from completing.
  */
 const judgeIssueStep = (id: IssueStepId, declared: (IssueInfo | undefined)[]): IssueJudgement => {
-  /** Judges readiness labels for Spec and Grill. */
+  // Spec and Grill both wait on the readiness label.
   const spec = (): IssueJudgement => judgeIssues(declared, info => info.labels.includes('ready-for-agent') ? undefined : { fact: facts.noReadyLabel })
   if (id === 'grill' || id === 'spec') return spec()
   if (id === 'triage') return judgeIssues(declared, info => {
@@ -527,7 +529,7 @@ export const isCodeJudgedByFix = (flow: FlowDefinition, unit: Pick<Unit, 'skips'
 
 /**
  * Finds the latest pass after a time of a red's argv on different content: the approval's pinned red when given, otherwise
- * any earlier failing run, the rule for approvals recorded before the pin existed.
+ * any earlier failing run, for an approval with no pinned red.
  * @param runs - The unit's command history.
  * @param after - The time the pass must come strictly after.
  * @param pinned - The red the approval was granted on, if recorded.
@@ -584,5 +586,5 @@ export const hasCodeChange = (slice: UnitSlice | null): slice is CodeSlice => !!
 function describeMissingVerify(unit: Pick<Unit, 'verifyRuns'>, slice: UnitSlice): string {
   const latest = unit.verifyRuns[0]
   if (!latest) return facts.verifyNoRun
-  return latest.tree === slice.tree ? facts.verifyBaseMoved : facts.verifyTreeChanged
+  return latest.tree === slice.tree ? facts.verifyBaseMoved : latest.outcome.kind === 'pass' ? facts.verifyChangedAfterPass : facts.verifyTreeChanged
 }

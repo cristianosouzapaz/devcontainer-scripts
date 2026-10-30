@@ -2,7 +2,7 @@ import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
 import { renderStatusText } from '../../hooks/ui/status-text'
-import { buildPullRequest, buildWriteCall, noFlow, verifyFile } from '../support/builders'
+import { buildPullRequest, buildWriteCall, noFlow, trivialFlow, verifyFile } from '../support/builders'
 import { endTurn, readCurrentStep, runFlowCommand } from '../support/helpers'
 import { completeDelivery } from '../support/delivery'
 import { conformanceGraph } from '../support/graph-fixture'
@@ -35,7 +35,7 @@ test('a Trivial change unit runs from Code to a merged PR', async ($, on) => {
 test('a tick with a fresh candidate cache and no slice does not reread pull requests', async ($, on) => {
   const checkout: Checkout = { branch: 'feat', graph: structuredClone(conformanceGraph) }
   const world = createWorld(on, checkout, {
-    session: { flow: 'trivial', issues: [], info: {} },
+    session: trivialFlow(),
     unit: { base: 'm1' },
     prs: [buildPullRequest({ closingIssuesReferences: [], headRefName: 'feat', headRefOid: 'f1' })],
   })
@@ -55,7 +55,7 @@ test('a tick with a fresh candidate cache and no slice does not reread pull requ
 test('a squash merge ref change publishes only the fresh conclusion after deleting the unit branch', async ($, on) => {
   const checkout: Checkout = { branch: 'feat', graph: structuredClone(conformanceGraph) }
   const options: Options = {
-    session: { flow: 'trivial', issues: [], info: {} },
+    session: trivialFlow(),
     unit: { base: 'm1' },
     prs: [buildPullRequest({ closingIssuesReferences: [], headRefName: 'feat', headRefOid: 'f1' })],
   }
@@ -82,7 +82,7 @@ test('a merge ref change queues a fresh conclusion behind an older read without 
   const gate: Gate = {}
   const checkout: Checkout = { branch: 'feat', graph: structuredClone(conformanceGraph) }
   const options: Options = {
-    session: { flow: 'trivial', issues: [], info: {} },
+    session: trivialFlow(),
     unit: { base: 'm1' },
     prs: [buildPullRequest({ closingIssuesReferences: [], headRefName: 'feat', headRefOid: 'f1' })],
   }
@@ -111,7 +111,7 @@ test('a merge ref change queues a fresh conclusion behind an older read without 
 test('a pushed commit ref change never publishes GitHub unreachable for an uncached comparison', async ($, on) => {
   const checkout: Checkout = { branch: 'feat', graph: linearGraph({ feat: 0 }) }
   const options: Options = {
-    session: { flow: 'trivial', issues: [], info: {} },
+    session: trivialFlow(),
     unit: { base: 'c0', skips: [{ step: 'verify', reason: 'covered separately' }] },
     prs: [buildPullRequest({ closingIssuesReferences: [], headRefName: 'feat', headRefOid: 'c0' })],
   }
@@ -132,7 +132,7 @@ test('a pushed commit ref change never publishes GitHub unreachable for an uncac
 
 test('a ref change reports GitHub unreachable when the fresh candidate read really fails', async ($, on) => {
   const options: Options = {
-    session: { flow: 'trivial', issues: [], info: {} },
+    session: trivialFlow(),
     unit: { base: 'c0', skips: [{ step: 'verify', reason: 'covered separately' }] },
     prs: [buildPullRequest({ closingIssuesReferences: [], headRefName: 'feat', headRefOid: 'c1' })],
     prsHasNextPage: true,

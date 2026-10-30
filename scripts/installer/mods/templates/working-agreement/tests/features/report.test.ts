@@ -18,16 +18,16 @@ const decision = (question: string, cost: string, id: number): { url: string; bo
   body: `## Delegated decision\n\n### Question\n${question}\n\n### Alternatives considered\nA; B.\n\n### Choice\nA.\n\n### Reason\nSimpler.\n\n### Cost of going back\n${cost}`,
 })
 
-test('/flow report is the rendered report itself: each issue\'s step, commits, merge and decisions high-cost first, then the signing commands', async ($, on) => {
+test('/flow report is the rendered report itself: each issue\'s step, commits, merge, decisions high-cost first and notices, then the signing commands', async ($, on) => {
   const world = createWorld(on, delegationCheckout(), { session: coordinator, comments: { 2: [decision('Which store?', 'low', 1), decision('Which branch?', 'high', 2)] } as never })
   await seedDelegatedChild(world)
   await callModTool($, 'merge_child', { child: 'a' })
   const result = await runFlowCommand($, 'report')
   expect(result.text).toBe([
-    '#1 · par', 'Step      PR', 'Verify    no verify command configured', 'Commits   none', 'Merge     none', 'Decision  none', '',
-    '#2 · a', 'Step      Commit', 'Verify    no verify command configured', 'Commits   a1 a2', 'Merge     into par',
-    'Decision  high · Which branch? · https://github.com/o/r/issues/2#issuecomment-2',
-    'Decision  low · Which store? · https://github.com/o/r/issues/2#issuecomment-1', '',
+    '#1 · par', 'Step       PR', 'Verify     no verify command configured', 'Commits    none', 'Merge      none', 'Decision   none', 'Notice     none', '',
+    '#2 · a', 'Step       finished', 'Verify     no verify command configured', 'Commits    a1 a2', 'Merge      into par',
+    'Decision   high · Which branch? · https://github.com/o/r/issues/2#issuecomment-2',
+    'Decision   low · Which store? · https://github.com/o/r/issues/2#issuecomment-1', 'Notice     none', '',
     'Delegated commits are unsigned and local — sign and push them, in this order (every log line must start with G):',
     '  git -C /a switch --detach',
     '  git -C /par rebase --keep-base --rebase-merges --update-refs --force-rebase --gpg-sign origin/main par',
