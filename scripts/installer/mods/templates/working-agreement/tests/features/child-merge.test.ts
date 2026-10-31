@@ -6,7 +6,7 @@ import { coordinator, noFlow } from '../support/builders'
 import { callModTool, declareFlow, runFlowCommand } from '../support/helpers'
 import { test } from '../support/kit'
 import { childCheckout, delegationCheckout, readDelegated, seedDelegatedChild } from '../support/parallel-worktrees'
-import { buildScope, createWorld, placedFile, scopeFile } from '../support/world'
+import { createWorld, placedFile, seedDelegation } from '../support/world'
 import type { Checkout, Graph, World } from '../support/world'
 
 /**
@@ -26,7 +26,7 @@ const advancePar = (files: Record<string, string>) => (git: Graph): Graph =>
  */
 async function arrangeChild($: Engine, on: On, live: Checkout): Promise<World> {
   const world = createWorld(on, live, { session: noFlow })
-  world.files.set(scopeFile('coord'), buildScope('coord', [2]))
+  seedDelegation(world, 'coord', [2])
   await declareFlow($, 'fix', [2])
   return world
 }
@@ -41,10 +41,8 @@ test('a finished child fast-forwards its unmoved parent, and the signing command
   expect(world.files.has(placedFile('par', 'a2'))).toBe(true)
   expect(world.sessions.get('sid')?.violations ?? []).toEqual([])
   const status = (await runFlowCommand($, 'status')).text ?? ''
-  expect(status.split('\n').filter(line => line.startsWith('  git')).map(line => line.trim())).toEqual([
-    'git -C /a switch --detach',
-    'git -C /par rebase --keep-base --rebase-merges --update-refs --force-rebase --gpg-sign origin/main par',
-    'git -C /par log --format=\'%G? %h %s\' origin/main..par',
+  expect(status.split('\n').filter(line => /^ {2}(git|bash) /.test(line)).map(line => line.trim().replace(/'[^']*'/, '<re-sign>'))).toEqual([
+    'bash -c <re-sign> resign /par origin/main par a',
     'git -C /par push -u origin par',
   ])
 })

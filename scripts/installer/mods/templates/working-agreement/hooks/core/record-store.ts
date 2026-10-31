@@ -22,6 +22,12 @@ export interface VersionedSession { session: Session; version: number }
 /** Maps the fresh session to the next one, or to null for no write; it may run more than once, so it has no side effects. */
 type SessionChange = (session: Session) => Session | null | Promise<Session | null>
 
+/** A record bucket: a swept one, or one whose temporary files, if any, live in subdirectories the sweep does not reach. */
+export type RecordBucket = typeof recordBuckets[number] | 'log' | 'end' | 'verify'
+
+/** Every bucket atomicReplace writes to: pruneFiles sweeps each one's leftover temporary files. */
+export const recordBuckets = ['s', 'u', 'd', 'ok', 'runs', 'delegation', 'delegated', 'spawn', 'placed', 'host', 'notices', 'retired', 'v'] as const
+
 // A miss means another dispatch wrote in between; this many in a row means a writer that never settles.
 const sessionWriteAttempts = 5
 
@@ -77,7 +83,7 @@ export async function atomicReplace(port: EnginePort, path: string, text: string
       sessionMemory.recordError = null
       return
     } catch (error) {
-      // pruneFiles sweeps leftover .tmp- files in the buckets it lists.
+      // pruneFiles sweeps leftover .tmp- files in every bucket of recordBuckets.
       await removeFile(port.processes, temporary)
       if (attempt === 1) {
         // The engine cuts a cancelled call's `$` calls, so their rejection is not a record failure.
@@ -110,7 +116,7 @@ export async function initializeSession(port: EnginePort): Promise<void> {
  * @param extension - The file's extension.
  * @returns The unit's file in that bucket.
  */
-async function unitPath(port: EnginePort, identity: Identity, bucket = 'u', extension = 'json'): Promise<string> {
+async function unitPath(port: EnginePort, identity: Identity, bucket: RecordBucket = 'u', extension = 'json'): Promise<string> {
   const { common, hash } = await readIdentityHash(port, identity)
   return recordsPath(common, bucket, `${hash}.${extension}`)
 }
@@ -402,6 +408,19 @@ export async function listRecordNames(port: EnginePort, directory: string): Prom
 }
 
 /**
+ * Sweeps every file of a record bucket in listing order.
+ * @param port - The engine calls.
+ * @param common - The git common directory.
+ * @param bucket - The bucket.
+ * @param sweep - Judges one file by its name and removes it when it is stale.
+ * @returns Once every file was swept.
+ */
+export async function sweepBucket(port: EnginePort, common: string, bucket: RecordBucket, sweep: (name: string) => Promise<void>): Promise<void> {
+  // The bucket may not exist yet.
+  for (const { name } of await port.files.list(recordsPath(common, bucket)).catch(() => [])) await sweep(name)
+}
+
+/**
  * Reads the unit entries of every chat that belong to active declarations, refusing to read any record as absent.
  * @param port - The engine calls.
  * @returns The active entries.
@@ -559,6 +578,6 @@ export function replaceUnitEntry(session: Session, identity: Identity, entry: Un
  * @param name - The optional filename within the bucket.
  * @returns The unchanged record location.
  */
-export function recordsPath(common: string | null, bucket?: string, name?: string): string {
+export function recordsPath(common: string | null, bucket?: RecordBucket, name?: string): string {
   return `${common}/working-agreement${bucket === undefined ? '' : `/${bucket}`}${name === undefined ? '' : `/${name}`}`
 }

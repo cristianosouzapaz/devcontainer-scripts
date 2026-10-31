@@ -9,6 +9,7 @@ import { describeParentConflicts } from '../core/parent-merge'
 import { refreshView } from '../core/pane-view'
 import { readGit, readWorkingTreeKey } from '../core/repository'
 import { finishRunView, runStatus, updateRunCommand, withRunView } from '../core/run-view'
+import { describeTail } from '../core/run-command'
 import { readUnitSlice } from '../core/unit-slice'
 import { isVerifyApproved, verifyOutcome, writeVerifyEvidence } from '../core/verify'
 import { changedPaths, readVerifyConfig, selectVerify } from '../core/verify-config'
@@ -88,7 +89,7 @@ async function verify(port: EnginePort, signal: AbortSignal, sid: string): Promi
         summaries.push(`${JSON.stringify(command)} (${duration})`)
         outcome.value = verifyOutcome(run, loaded.config.timeoutMinutes)
         if (outcome.value.kind !== 'pass') {
-          outcome.failure = `Verify failed: ${JSON.stringify(command)}, ${status}, ${duration}.\n${tail}\nthe first error may be earlier — see ${log}\nNot run: ${selection.commands.slice(index + 1).map(argv => JSON.stringify(argv)).join(', ') || 'none'}`
+          outcome.failure = `Verify failed: ${JSON.stringify(command)}, ${status}, ${duration}.\n${describeTail(tail, log)}\nNot run: ${selection.commands.slice(index + 1).map(argv => JSON.stringify(argv)).join(', ') || 'none'}`
           break
         }
       }

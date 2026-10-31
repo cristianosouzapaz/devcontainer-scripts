@@ -23,15 +23,13 @@ test('/flow report is the rendered report itself: each issue\'s step, commits, m
   await seedDelegatedChild(world)
   await callModTool($, 'merge_child', { child: 'a' })
   const result = await runFlowCommand($, 'report')
-  expect(result.text).toBe([
+  expect(result.text?.replace(/'[^']*'/, '<re-sign>')).toBe([
     '#1 · par', 'Step       PR', 'Verify     no verify command configured', 'Commits    none', 'Merge      none', 'Decision   none', 'Notice     none', '',
     '#2 · a', 'Step       finished', 'Verify     no verify command configured', 'Commits    a1 a2', 'Merge      into par',
     'Decision   high · Which branch? · https://github.com/o/r/issues/2#issuecomment-2',
     'Decision   low · Which store? · https://github.com/o/r/issues/2#issuecomment-1', 'Notice     none', '',
-    'Delegated commits are unsigned and local — sign and push them, in this order (every log line must start with G):',
-    '  git -C /a switch --detach',
-    '  git -C /par rebase --keep-base --rebase-merges --update-refs --force-rebase --gpg-sign origin/main par',
-    '  git -C /par log --format=\'%G? %h %s\' origin/main..par',
+    'Delegated commits are unsigned and local — sign and push them, in this order (each re-sign moves no ref unless the tree is unchanged and every commit carries a signature):',
+    '  bash -c <re-sign> resign /par origin/main par a',
     '  git -C /par push -u origin par',
   ].join('\n'))
   expect(world.prompts).toEqual([])

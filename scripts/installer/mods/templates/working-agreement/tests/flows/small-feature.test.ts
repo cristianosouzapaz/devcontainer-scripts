@@ -55,13 +55,13 @@ test('a Small feature unit runs from Grill to a merged PR', async ($, on) => {
   const specified = await readFlowStatus($)
   expect(specified).toContain('✓ Grill')
   expect(specified).toContain('✓ Spec')
-  expect(specified).toContain('↷ Tickets · optional')
+  expect(specified).toContain('↷ Tickets\n')
   expect(await readCurrentStep($)).toBe('Code')
   git.isDirty = true
   git.changed = ['src/a.ts']
   git.tree = 'tree'
   expect(await readCurrentStep($)).toBe('Code')
-  expect(await readFlowStatus($)).toContain('▸ Code · no run yet')
+  expect(await readFlowStatus($)).toContain('▸ Code\n')
   await completeDelivery($, { git, options, clock, views })
 })
 
@@ -80,7 +80,7 @@ test('a child Small feature cut from a parent branch runs from Grill to integrat
   await clock.advance(61000)
   await runFlowCommand($, 'skip verify covered by the parent\'s Close out')
   expect(await readCurrentStep($)).toBe('Integrate')
-  expect(await readFlowStatus($)).toContain('▸ Integrate · not merged into par')
+  expect(await readFlowStatus($)).toContain('▸ Integrate\n')
   git.graph = { ...graph, refs: { ...graph.refs, par: 'ma' } }
   expect(await readCurrentStep($)).toBeUndefined()
   const integrated = await readFlowStatus($)

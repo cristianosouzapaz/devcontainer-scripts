@@ -1,9 +1,9 @@
 import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
-import { diagnosed, diagnoseRuns, diagnosisComment } from '../support/builders'
-import { readCurrentStep, readFlowStatus, runFlowCommand } from '../support/helpers'
-import { createWorld } from '../support/world'
-import type { Options } from '../support/world'
+import { diagnosed, diagnoseRuns, diagnosisComment, noFlow, verifyFile } from '../support/builders'
+import { declareFlow, readCurrentStep, readFlowStatus, runFlowCommand } from '../support/helpers'
+import { createWorld, linearGraph } from '../support/world'
+import type { Checkout, Options } from '../support/world'
 
 const url = diagnosisComment.url
 const options = (): Options => ({
@@ -16,7 +16,7 @@ test('composer approval reads comments fresh and completes the unit Diagnose row
   setup.comments = { 1: [] }
   const { clock, sessions } = createWorld(on, { branch: 'fix' }, setup)
   await clock.advance(61000)
-  expect(await readFlowStatus($)).toContain('no comment after the red')
+  expect(await readFlowStatus($)).toContain('▸ Diagnose\n')
   setup.comments = { 1: [diagnosisComment] }
   expect((await runFlowCommand($, `approve ${url}`, { kind: 'composer' })).text).toContain('Diagnosis approved')
   expect(sessions.get('sid')?.units[0]?.approval).toBe(url)
@@ -66,6 +66,13 @@ test('approval measures the comment against the earliest red, not a later failed
   expect(sessions.get('sid')?.units[0]?.approval).toBe(url)
 })
 
+test('a repeated approval of the approved comment changes no record', async ($, on) => {
+  const pinned = { argv: ['./check'], tree: 'pinned', at: 1, runId: 'pinned' }
+  const { sessions } = createWorld(on, { branch: 'fix' }, { ...options(), unit: { ...diagnosed, approvedRed: pinned } })
+  expect((await runFlowCommand($, `approve ${url}`)).text).toContain(`Already approved: ${url}`)
+  expect(sessions.get('sid')?.units[0]?.approvedRed).toEqual(pinned)
+})
+
 test('live comment deletion reopens Diagnose and a newer comment preserves the named approval', async ($, on) => {
   const setup = { ...options(), unit: diagnosed }
   const { clock } = createWorld(on, { branch: 'fix' }, setup)
@@ -77,4 +84,30 @@ test('live comment deletion reopens Diagnose and a newer comment preserves the n
   setup.comments = { 1: [] }
   await clock.advance(61000)
   expect(await readFlowStatus($)).toContain('▸ Diagnose · approved comment deleted')
+})
+
+test('an approval start prompt delivered after the fix green names where the unit is at then', async ($, on) => {
+  const graph = linearGraph({ feat: 0 }, verifyFile, 1)
+  const git: Checkout = { branch: 'feat', graph }
+  const setup: Options = { session: noFlow, verifyFile, approvedConfig: verifyFile, issueLabels: { 1: ['ready-for-agent'] } }
+  const { clock, prompts } = createWorld(on, git, setup)
+  await declareFlow($, 'fix', [1])
+  git.dirty = { 'test/a.test.ts': 'red' }
+  setup.spawnCode = 1
+  await $.tool.call({ tool: 'mcp__working-agreement__run', argv: ['./check'] })
+  await clock.advance(1)
+  setup.comments = { 1: [{ ...diagnosisComment, createdAt: new Date(clock.now() + 1).toISOString() }] }
+  await runFlowCommand($, `approve ${url}`)
+  await clock.settle()
+  const queued = prompts.at(-1)!
+  expect(queued).toContain('resume the diagnosing-bugs skill at Phase 5')
+  await clock.advance(10)
+  git.dirty = { 'test/a.test.ts': 'green', 'src/a.ts': 'tree' }
+  setup.spawnCode = 0
+  await $.tool.call({ tool: 'mcp__working-agreement__run', argv: ['./check'] })
+  const delivered = await $.prompt.submit({ text: queued, wait: false, origin: { kind: 'plugin', name: 'working-agreement', asUser: true } })
+  const entered = [delivered.text, ...(delivered.context ?? [])].join('\n')
+  expect(entered).toStartWith(`Diagnosis approved: ${url}.`)
+  expect(entered).not.toContain('resume the diagnosing-bugs skill at Phase 5')
+  expect(entered).toContain('call the verify tool on this tree')
 })

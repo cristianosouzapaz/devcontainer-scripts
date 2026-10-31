@@ -11,8 +11,9 @@ import { isChildUnit, isUnitOnBase } from '../domain/step-states'
 import { bestEffort, logFailure } from './best-effort'
 import type { EnginePort } from './engine-port'
 import { createReadPort } from './read-port'
-import { deleteDeclaration, deleteObservedEnds, readCommonDir, readDeclarations, readSession, readSessionMirrors, updateSession, recordsPath } from './record-store'
+import { deleteDeclaration, deleteObservedEnds, readCommonDir, readDeclarations, readSession, readSessionMirrors, updateSession, recordBuckets, recordsPath, sweepBucket } from './record-store'
 import { sameIdentity } from '../domain/records'
+import { pruneSessionHosts } from './session-host'
 import { sessionMemory } from './session-memory'
 import { readGit } from './repository'
 import { readGithubStatus } from './github-sync'
@@ -153,7 +154,7 @@ async function pruneFiles(port: EnginePort): Promise<void> {
   const held = new Set([memory?.live?.runId, memory?.published.runId, memory?.last?.runId])
   // why: A session writes its mirror only on its first record change, so owner liveness cannot keep a temporary file.
   const expiry = await port.now() - temporaryExpiryMs
-  for (const bucket of ['s', 'u', 'd', 'ok', 'runs', 'delegation', 'delegated', 'spawn', 'placed']) {
+  for (const bucket of recordBuckets) {
     // The bucket directory may not exist yet.
     const entries = await port.files.list(recordsPath(common, bucket)).catch(() => [])
     // why: a content capture's copy and stamp carry the index's own mtime, so only its fresh .live marker shows the capture is running.
@@ -173,15 +174,14 @@ async function pruneFiles(port: EnginePort): Promise<void> {
   }
   // A failed listing must not read as no declarations, which would delete every log.
   const declared = new Set((await port.files.list(recordsPath(common, 'u'))).map(entry => entry.name))
-  // The log bucket may not exist yet.
-  for (const { name } of await port.files.list(recordsPath(common, 'log')).catch(() => [])) {
+  await sweepBucket(port, common, 'log', async name => {
     const hash = name.match(/^([0-9a-f]+)\.jsonl$/)?.[1]
     if (hash && !declared.has(`${hash}.json`)) logFailure(port, 'orphan log delete', hasExitedZero(await removeFile(port.processes, recordsPath(common, 'log', name))))
-  }
-  // The observed end bucket may not exist yet.
-  for (const { name } of await port.files.list(recordsPath(common, 'end')).catch(() => [])) {
+  })
+  await sweepBucket(port, common, 'end', async name => {
     if (/^[0-9a-f]+$/.test(name) && !declared.has(`${name}.json`)) {
       await bestEffort(port, 'orphan observed end delete', () => deleteObservedEnds(port, recordsPath(common, 'end', name)), undefined)
     }
-  }
+  })
+  await pruneSessionHosts(port, common)
 }

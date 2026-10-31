@@ -1,6 +1,7 @@
 import { listDecisions } from '../domain/delegated-decision'
 import { describeSigning } from '../domain/delegated-commits'
 import type { DelegatedCommit } from '../domain/delegated-commits'
+import { facts } from '../domain/facts'
 import { isUnitFinished } from '../domain/step-states'
 import { isAncestor } from '../lib/git'
 import { keyedLine } from '../ui/status-text'
@@ -13,6 +14,7 @@ import { readMarkedComments } from '../lib/github'
 import { locatePosition } from './position'
 import { readDeclaration, readSessionMirrors } from './record-store'
 import { readArchives } from './retire'
+import { describeLevel, readSpawnLevel } from './spawn'
 import type { SessionMirror } from './record-store'
 
 const unknown = 'unknown'
@@ -42,10 +44,12 @@ async function reportIssue(port: EnginePort, issue: number, commits: DelegatedCo
   const decisions = comments.isOk ? listDecisions(comments.value) : null
   const notices = unit ? await bestEffort(port, 'report notices', async () => (await readNotices(port, unit.branch))?.sent ?? [], null) : []
   const archives = await bestEffort(port, 'report retirements', () => readArchives(port, issue), null)
+  const level = await bestEffort(port, 'report level', () => readSpawnLevel(port, [issue]), null)
   return [
     `#${issue}${unit ? ` · ${unit.branch}` : ''}`,
     keyedLine('Step', step),
-    keyedLine('Verify', position ? position.verify.fact || unknown : !unit && mirrors ? 'none' : unknown),
+    ...level === undefined ? [] : [keyedLine('Level', level ? describeLevel(level) : unknown)],
+    keyedLine('Verify', position ? position.verify.fact || facts.verifyNotRun : !unit && mirrors ? 'none' : unknown),
     keyedLine('Commits', !unit ? 'none' : !shas ? unknown : shas.join(' ') || 'none'),
     keyedLine('Merge', merge),
     ...listRows('Decision', decisions, entry => `${entry.cost} · ${entry.question} · ${entry.url}`),

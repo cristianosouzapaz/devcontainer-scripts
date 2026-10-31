@@ -212,8 +212,8 @@ export async function readDelivery(port: EnginePort, slice: UnitSlice | null, is
   const containing = found.value
   const selected = containing.find(pr => pr.state === 'MERGED') ?? containing.find(pr => pr.state === 'OPEN')
   const open = eligible.find(pr => pr.state === 'OPEN')
-  if (!selected) return { ...unknown, pullRequest: open, prFact: open ? facts.pushRequired : facts.noPr, prFactCode: open ? 'push-required' : undefined }
-  if (selected.state !== 'OPEN') return { ...unknown, pullRequest: selected, prFact: facts.noPr }
+  if (!selected) return { ...unknown, pullRequest: open, prFact: open ? facts.pushRequired : undefined, prFactCode: open ? 'push-required' : undefined }
+  if (selected.state !== 'OPEN') return { ...unknown, pullRequest: selected }
   const mismatch = describeBaseMismatch(unit, selected)
   if (mismatch) return { ...unknown, pullRequest: selected, prFact: facts.retargetPr, prDetail: mismatch, prFactCode: 'base-mismatch' }
   const missing = issues.find(issue => !selected.closingIssuesReferences.includes(issue))

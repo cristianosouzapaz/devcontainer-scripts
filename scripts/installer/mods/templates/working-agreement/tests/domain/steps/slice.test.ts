@@ -36,7 +36,7 @@ test('only the linked worktree holding the unit branch contributes dirty content
   checkout.worktrees = { '/repo': { branch: 'other', dirty: { 'foreign': 'x' } }, '/linked': { branch: 'feat' } }
   const world = createWorld(on, checkout, { session: { flow: 'trivial' } })
   checkout.branch = 'other'
-  expect(await readFlowStatus($)).toContain('▸ Code · no change from the base')
+  expect(await readFlowStatus($)).toContain('▸ Code\n')
   checkout.worktrees['/linked']!.dirty = { 'src/new.ts': 'new' }
   expect(await readFlowStatus($)).toContain('✓ Code')
   expect(await readFlowStatus($)).toContain('▸ Verify · no verify command configured')
@@ -54,7 +54,7 @@ test('two units use separate slices and the earlier unit freezes at the later ba
   chat.id = 'second'
   expect((await declareFlow($, 'small-feature', [2])).deny).toBeUndefined()
   expect(sessions.get('second')?.units[0]?.base).toBe('f1')
-  expect(await readFlowStatus($)).toContain('▸ Code · no change from the base')
+  expect(await readFlowStatus($)).toContain('▸ Code\n')
   chat.id = 'empty-third'
   expect((await declareFlow($, 'small-feature', [3])).deny).toContain('empty slice')
   chat.id = 'second'
@@ -132,7 +132,7 @@ test('re-declaring a rewritten later unit still takes the tip as its base', asyn
   expect((await declareFlow($, 'small-feature', [2])).deny).toBeUndefined()
   expect(sessions.get('second')?.units[0]?.base).toBe('o1')
   expect(await readFlowStatus($)).not.toContain('rewritten')
-  expect(await readFlowStatus($)).toContain('▸ Code · no change from the base')
+  expect(await readFlowStatus($)).toContain('▸ Code\n')
   expect((await readStepStates(world)).Commit).not.toBe('done')
 })
 
@@ -229,7 +229,7 @@ test('Code compares trees rather than the number of commits and only the current
   checkout.graph!.refs.feat = 'empty'
   const world = createWorld(on, checkout, { session: { flow: 'trivial' } })
   const status = await readFlowStatus($)
-  expect(status).toContain('▸ Code · no change from the base')
+  expect(status).toContain('▸ Code\n')
   expect((await readStepStates(world)).Commit).toBe('done')
   expect(status).not.toContain('no verify command configured')
   expect(status).not.toContain('uncommitted changes')
@@ -273,7 +273,7 @@ test('base ancestry orders three slices independently of session filename order'
   checkout.graph!.refs.feat = 'f2'
   chat.id = 'a-first-filename'
   await declareFlow($, 'small-feature', [3])
-  expect(await readFlowStatus($)).toContain('no change from the base')
+  expect(await readFlowStatus($)).toContain('▸ Code\n')
   chat.id = 'z-last-filename'
   expect(await readFlowStatus($)).toContain('feat · frozen')
   expect((await readStepStates(world)).Commit).toBe('done')
@@ -294,7 +294,7 @@ test('a base repaired in another chat replaces the inherited rewritten base for 
   await declareFlow($, 'small-feature', [2])
   chat.id = 'second'
   expect(await readFlowStatus($)).not.toContain('rewritten')
-  expect(await readFlowStatus($)).toContain('no change from the base')
+  expect(await readFlowStatus($)).toContain('▸ Code\n')
 })
 
 /**
@@ -332,7 +332,7 @@ test('a PR into another base than the unit base came from is a mismatch until re
   expect(sessions.get('sid')?.units[0]).toMatchObject({ base: 'n1', baseBranch: 'next' })
   const redeclared = await readFlowStatus($)
   expect(redeclared).toContain('Slice      n1..f1')
-  expect(redeclared).toContain('▸ Integrate · PR #5 into next open — merge it')
+  expect(redeclared).toContain('▸ Integrate\n')
 })
 
 test('a PR base that is not fetched refuses the declaration with the fetch to run', async ($, on) => {

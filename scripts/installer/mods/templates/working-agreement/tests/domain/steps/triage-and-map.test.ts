@@ -37,22 +37,22 @@ test('wontfix keeps Triage current with its label as its fact', async ($, on) =>
   expect(await readFlowStatus($)).toContain('▸ Triage · wontfix')
 })
 
-test('Map names a missing wayfinder:map label as its fact', async ($, on) => {
+test('Map without its wayfinder:map label shows the step alone', async ($, on) => {
   createWorld(on, { branch: 'feat' }, { session: noFlow, subIssues: { 1: [{ state: 'closed', labels: ['wayfinder:map'] }] } })
   await declareFlow($, 'large-feature', [1])
-  expect(await readFlowStatus($)).toContain('▸ Map · no wayfinder:map label')
+  expect(await readFlowStatus($)).toContain('▸ Map\n')
 })
 
-test('Map names a missing wayfinder sub-issue as its fact', async ($, on) => {
+test('Map without a wayfinder sub-issue shows the step alone', async ($, on) => {
   createWorld(on, { branch: 'feat' }, { session: noFlow, issueLabels: { 1: ['wayfinder:map'] } })
   await declareFlow($, 'large-feature', [1])
-  expect(await readFlowStatus($)).toContain('▸ Map · no wayfinder:* sub-issue')
+  expect(await readFlowStatus($)).toContain('▸ Map\n')
 })
 
-test('Map names open wayfinder sub-issues as its fact', async ($, on) => {
+test('Map with open wayfinder sub-issues shows the step alone', async ($, on) => {
   createWorld(on, { branch: 'feat' }, { session: noFlow, issueLabels: { 1: ['wayfinder:map'] }, subIssues: { 1: [{ state: 'open', labels: ['wayfinder:map'] }] } })
   await declareFlow($, 'large-feature', [1])
-  expect(await readFlowStatus($)).toContain('▸ Map · 1 wayfinder:* sub-issue open')
+  expect(await readFlowStatus($)).toContain('▸ Map\n')
 })
 
 test('a sub-issue read failure leaves Map current with its error', async ($, on) => {

@@ -1,23 +1,32 @@
 import type { On } from 'claude-code'
 import { expect } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import { coveredSkips, seedUnit } from '../support/parallel-worktrees'
 
 import { createEmptySession } from '../../hooks/domain/records'
 import { coordinator, noFlow } from '../support/builders'
-import { callModTool, declareFlow, inside, readRevision } from '../support/helpers'
+import { callModTool, declareFlow, inside, readPromptContext, readRevision, runFlowCommand } from '../support/helpers'
 import { test } from '../support/kit'
-import { buildScope, createWorld, placedFile, records, scopeFile } from '../support/world'
+import { buildScope, coordinatorHost, createWorld, placedFile, records, scopeFile } from '../support/world'
 import type { Checkout, Options, World } from '../support/world'
 
 /** A herdr workspace the fake server holds: its label, checkout and whether an agent runs in its pane. */
 interface Workspace { id: string; label: string; path: string; hasAgent?: boolean }
 
 /** An issue as the spawn's GitHub read returns it. */
-interface Issue { state?: string; title?: string; labels?: string[]; blockedBy?: { number: number; state: string }[] }
+interface Issue { state?: string; title?: string; labels?: string[]; parent?: number; blockedBy?: { number: number; state: string }[] }
 
+/** The unit agent's input box: the submits it misses before it takes one, the prompts it loses before it shows one, the text typed and unsent, the prompts it took and whether it works. */
+interface Agent { misses: number; drops?: number; typed: string; received: string[]; isWorking: boolean }
 
-/** The unit agent's input box: the submits it misses before it takes one, the text typed and unsent, the prompts it took and whether it works. */
-interface Agent { misses: number; typed: string; received: string[]; isWorking: boolean }
+/** The model and effort a unit is spawned on, with the reason for them. */
+interface Level { model?: string; effort?: string; reason: string }
+
+/** A spawned unit: the world, its agent and the herdr workspaces. */
+interface SpawnedUnit { world: World; agent: Agent; workspaces: Workspace[] }
+
+/** A Verify run's outcome. */
+type VerifyKind = 'pass' | 'fail'
 
 /**
  * Answers herdr like a live server that keeps the workspaces it opens.
@@ -38,16 +47,28 @@ const herdrServer = (workspaces: Workspace[], agent: Agent = { misses: 0, typed:
     agent.isWorking = true
     return true
   }
-  // why: herdr 0.9.5 fails a waited prompt that saw no working or blocked state within 5s with agent_prompt_stalled, leaving the text typed.
+  // why: claude takes /exit from the input box and leaves its pane to the shell.
+  if (noun === 'agent' && verb === 'prompt' && args[3] === '/exit') {
+    const workspace = workspaces.find(each => each.label === `wa-spawn:${args[2]?.replace('issue-', '')}`)
+    if (workspace) workspace.hasAgent = false
+    agent.isWorking = false
+    return '{}'
+  }
   if (noun === 'agent' && verb === 'prompt') {
+    // why: a prompt sent before the TUI is ready never reaches its input box.
+    if (agent.drops) {
+      agent.drops -= 1
+      return { exitCode: 1, stderr: 'agent_prompt_stalled' }
+    }
     agent.typed += args[3] ?? ''
+    // why: herdr 0.9.5 fails a waited prompt that saw no working or blocked state within 5s with agent_prompt_stalled, leaving the text typed.
     return submit() || !args.includes('--wait') ? '{}' : { exitCode: 1, stderr: 'agent_prompt_stalled' }
   }
   if (noun === 'agent' && verb === 'send-keys') {
     if (args.includes('Enter') && agent.typed) submit()
     return '{}'
   }
-  if (noun === 'agent' && verb === 'wait') return agent.isWorking ? '{}' : { exitCode: 1, stderr: 'timeout' }
+  if (noun === 'agent' && verb === 'wait') return agent.isWorking === !args.includes('idle') ? '{}' : { exitCode: 1, stderr: 'timeout' }
   if (noun === 'workspace' && verb === 'list') {
     return JSON.stringify({ result: { workspaces: workspaces.map(each => ({ workspace_id: each.id, label: each.label, worktree: { checkout_path: each.path } })) } })
   }
@@ -64,7 +85,7 @@ const herdrServer = (workspaces: Workspace[], agent: Agent = { misses: 0, typed:
     const workspace = workspaces.find(each => option('--pane').startsWith(`${each.id}:`))
     if (workspace) workspace.hasAgent = true
   }
-  if (noun === 'agent' && verb === 'read') return 'unit output'
+  if (noun === 'agent' && verb === 'read') return option('--source') === 'visible' ? `> ${agent.typed}\n? for shortcuts` : 'unit output'
   return '{}'
 }
 
@@ -79,7 +100,7 @@ const github = (issues: Record<number, Issue>): Options['gh'] => args => {
   const issue = issues[number]
   if (!query || !issue) return undefined
   return { stdout: JSON.stringify({ data: { repository: { issue: { state: issue.state ?? 'OPEN', title: issue.title ?? 'feat(mod): spawn a unit',
-    labels: { nodes: (issue.labels ?? ['ready-for-agent']).map(name => ({ name })) }, blockedBy: { nodes: issue.blockedBy ?? [] } } } } }) }
+    labels: { nodes: (issue.labels ?? ['ready-for-agent']).map(name => ({ name })) }, parent: issue.parent ? { number: issue.parent } : null, blockedBy: { nodes: issue.blockedBy ?? [] } } } } }) }
 }
 
 /**
@@ -113,6 +134,43 @@ const createSpawnWorld = (on: On, workspaces: Workspace[], issues: Record<number
  * @returns The matching command lines.
  */
 const herdrRuns = (world: World, prefix: string): string[] => world.herdrCalls.map(call => call.argv.join(' ')).filter(line => line.startsWith(`herdr ${prefix}`))
+
+/**
+ * Seeds the unit session of #12 on its spawned branch with these Verify outcomes, newest first.
+ * @param world - The world.
+ * @param outcomes - Each run's outcome.
+ */
+async function seedVerifies(world: World, outcomes: VerifyKind[]): Promise<void> {
+  const verifyRuns = outcomes.map((kind, index) => ({ tree: `t${index}`, base: 'm0', configBlob: 'c', commands: [['t']], runId: `r${index}`, at: 1000 - index,
+    outcome: kind === 'pass' ? { kind } : { kind, code: 1, signal: null } }))
+  await seedUnit(world, 'unit-12', { branch: 'feat/12-spawn-a-unit', issues: [12] }, { verifyRuns })
+}
+
+/**
+ * Starts #12 on a cheap level under a scope that delegates it, its agent idle after the start prompt.
+ * @param $ - The test's engine.
+ * @param on - The test's hook registration.
+ * @param level - The model and effort, with the reason.
+ * @returns The world, the agent and the unit's workspaces.
+ */
+async function spawnCheap($: Engine, on: On, level: Level = { model: 'haiku', effort: 'low', reason: 'a typo fix' }): Promise<SpawnedUnit> {
+  const workspaces: Workspace[] = []
+  const agent: Agent = { misses: 0, typed: '', received: [], isWorking: false }
+  const world = createSpawnWorld(on, workspaces, { 12: {} }, { herdrReply: herdrServer(workspaces, agent) })
+  await world.ready
+  world.files.set(scopeFile('sid'), buildScope('sid', [12]))
+  expect((await callModTool($, 'spawn', { number: 12, ...level })).isError).toBe(false)
+  agent.isWorking = false
+  return { world, agent, workspaces }
+}
+
+/**
+ * Reads the spawn record of an issue's unit.
+ * @param world - The world.
+ * @param issue - The issue.
+ * @returns The record's fields, none when spawn wrote none.
+ */
+const readSpawnRecord = (world: World, issue: number): Record<string, unknown> => JSON.parse(world.files.get(`${records}/spawn/${issue}.json`) ?? '{}')
 
 /**
  * Seeds the unit session of an issue's branch as finished: every step before Commit covered, its worktree clean.
@@ -262,6 +320,30 @@ for (const [name, refs, base, parent] of [
   })
 }
 
+for (const [name, blockedBy] of [
+  ['a sub-issue of an issue with a unit branch starts from that branch\'s tip and declares it as its parent', []],
+  ['a sub-issue blocked by its own parent starts from the parent\'s tip, since the parent is where it lands, not what it waits for', [{ number: 5, state: 'OPEN' }]],
+] as const) {
+  test(name, async ($, on) => {
+    const { graph } = repository()
+    const checkout = repository()
+    // #5's integration branch has moved past main; its own unit is still working.
+    checkout.graph = { ...graph, commits: { ...graph?.commits, c2: { parents: ['p1'], files: { a: '1', c: '1' } } }, refs: { ...graph?.refs, 'chore/5-integrate': 'c2' } }
+    const world = createSpawnWorld(on, [], { 12: { parent: 5, blockedBy: [...blockedBy] } }, {}, checkout)
+    await world.ready
+    world.files.set(scopeFile('sid'), buildScope('sid', [12]))
+    expect((await callModTool($, 'plan')).text).toContain('can start now from chore/5-integrate')
+    expect((await callModTool($, 'spawn', { number: 12 })).isError).toBe(false)
+    expect(await readRevision(world, 'feat/12-spawn-a-unit')).toBe('c2')
+    checkout.branch = 'feat/12-spawn-a-unit'
+    checkout.worktrees = { ...checkout.worktrees, '/repo': { branch: checkout.branch } }
+    world.chat.id = 'unit'
+    world.seedChat('unit', { ...createEmptySession('unit'), info: { 12: { title: 'feat(mod): spawn a unit', labels: ['ready-for-agent'] } } })
+    await declareFlow($, 'small-feature', [12])
+    expect(world.sessions.get('unit')?.units[0]).toMatchObject({ baseBranch: 'chore/5-integrate', base: 'c2' })
+  })
+}
+
 test('a blocked issue whose dependency\'s unit is still working says what it waits for and starts nothing', async ($, on) => {
   const world = createSpawnWorld(on, [], { 12: { blockedBy: [{ number: 7, state: 'OPEN' }] } })
   expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining('#12 waits: #7\'s unit is working'), isError: true })
@@ -312,6 +394,15 @@ test('a unit that never takes its start prompt is reported, and a later spawn su
   expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining('start prompt is sent now'), isError: false })
   expect(agent).toMatchObject({ isWorking: true, typed: '', received: [expect.stringMatching(/^Work on issue #12 /)] })
   expect(agent.received[0]?.match(/Work on issue/g)).toHaveLength(1)
+})
+
+test('a later spawn types the start prompt again when the unit lost it before its input box showed it', async ($, on) => {
+  const agent: Agent = { misses: 0, drops: 1, typed: '', received: [], isWorking: false }
+  createSpawnWorld(on, [], { 12: {} }, { herdrReply: herdrServer([], agent) })
+  expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining('did not take its start prompt'), isError: true })
+  expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining('start prompt is sent now'), isError: false })
+  expect(agent).toMatchObject({ isWorking: true, typed: '', received: [expect.stringMatching(/^Work on issue #12 /)] })
+  expect((await callModTool($, 'spawn', { number: 12 })).text).toMatch(/already runs .*\.$/)
 })
 
 test('a failing herdr call reports herdr\'s own error', async ($, on) => {
@@ -492,7 +583,99 @@ test('plan bases a child of an integrated blocker on the branch that integrated 
   expect(await readRevision(world, 'feat/12-spawn-a-unit')).toBe('c2')
 })
 
+test('an issue another running session has declared gets no unit from spawn, and plan names that session, until that session is gone', async ($, on) => {
+  const world = createSpawnWorld(on, [], { 12: {} })
+  await world.ready
+  world.files.set(scopeFile('sid'), buildScope('sid', [12]))
+  await seedUnit(world, 'manual', { branch: 'main', issues: [12] }, {})
+  world.files.set(`${records}/host/manual.json`, JSON.stringify(coordinatorHost))
+  expect(await callModTool($, 'spawn', { number: 12 })).toEqual({ text: expect.stringContaining('declared by session manual'), isError: true })
+  expect((await callModTool($, 'plan')).text).toContain('declared by session manual')
+  expect(herdrRuns(world, 'worktree create')).toEqual([])
+  world.files.set(`${records}/host/manual.json`, JSON.stringify({ ...coordinatorHost, pid: 404 }))
+  expect((await callModTool($, 'spawn', { number: 12 })).isError).toBe(false)
+})
+
 test('plan is refused outside a coordinator session', async ($, on) => {
   createSpawnWorld(on, [], {}, { session: noFlow })
   expect(await callModTool($, 'plan')).toEqual({ text: expect.stringContaining('only a coordinator'), isError: true })
+})
+
+test('spawn with no model or effort starts the unit on the user\'s defaults, and the result says so', async ($, on) => {
+  const world = createSpawnWorld(on, [], { 12: {} })
+  expect((await callModTool($, 'spawn', { number: 12 })).text).toContain('default model, default effort')
+  expect(herdrRuns(world, 'agent start')[0]).not.toMatch(/--model|--effort/)
+  expect(world.runs.some(line => line.startsWith('claude '))).toBe(false)
+})
+
+test('spawn with a model, an effort and a reason starts the unit on them and records all three for plan and the report', async ($, on) => {
+  const { world } = await spawnCheap($, on)
+  expect(herdrRuns(world, 'agent start')[0]).toContain(' -- --permission-mode default --model haiku --effort low --session-id ')
+  expect(readSpawnRecord(world, 12)).toMatchObject({ model: 'haiku', effort: 'low', reason: 'a typo fix' })
+  expect((await callModTool($, 'plan')).text).toContain('model haiku, effort low (a typo fix)')
+  expect((await runFlowCommand($, 'report')).text).toContain('model haiku, effort low (a typo fix)')
+})
+
+for (const [name, args, refusal] of [
+  ['an effort outside low, medium and high', { effort: 'max', reason: 'r' }, 'effort must be one of low, medium, high'],
+  ['a model or effort without a reason', { model: 'haiku' }, 'reason must say'],
+  ['a model name that reads as an option', { model: '--dangerously-skip-permissions', reason: 'r' }, 'model must be a model name'],
+] as const) {
+  test(`spawn refuses ${name} and starts nothing`, async ($, on) => {
+    const world = createSpawnWorld(on, [], { 12: {} })
+    expect(await callModTool($, 'spawn', { number: 12, ...args })).toEqual({ text: expect.stringContaining(refusal), isError: true })
+    expect(herdrRuns(world, '')).toEqual([])
+  })
+}
+
+test('an unknown model makes spawn fail with the CLI\'s own message, before any branch or worktree exists', async ($, on) => {
+  const world = createSpawnWorld(on, [], { 12: {} }, { claude: () => ({ stdout: JSON.stringify({ is_error: true, result: 'There\'s an issue with the selected model (nope).' }) }) })
+  expect(await callModTool($, 'spawn', { number: 12, model: 'nope', reason: 'r' }))
+    .toEqual({ text: expect.stringContaining('does not run model nope, so nothing is started: There\'s an issue with the selected model'), isError: true })
+  expect(await readRevision(world, 'feat/12-spawn-a-unit')).toBe('')
+  expect(herdrRuns(world, 'worktree')).toEqual([])
+  expect(world.files.has(`${records}/spawn/12.json`)).toBe(false)
+})
+
+test('a resumed unit keeps its recorded model and effort, whatever the new call gives', async ($, on) => {
+  const { world, workspaces } = await spawnCheap($, on)
+  workspaces.length = 0
+  const resumed = await callModTool($, 'spawn', { number: 12, effort: 'high', reason: 'other' })
+  expect(resumed.text).toContain('its recorded model and effort are kept')
+  expect(herdrRuns(world, 'agent start')[1]).toContain('--model haiku --effort low --resume ')
+})
+
+test('two consecutive red Verifies resume the idle unit on the default model with effort high and tell the coordinator', async ($, on) => {
+  const { world } = await spawnCheap($, on)
+  await seedVerifies(world, ['fail', 'fail'])
+  expect(await readPromptContext($)).toContain('#12 escalated: two consecutive red Verifies')
+  expect(herdrRuns(world, 'agent prompt issue-12 /exit')).toHaveLength(1)
+  const restart = herdrRuns(world, 'agent start')[1]
+  expect(restart).toContain(' --effort high --resume ')
+  expect(restart).not.toContain('--model')
+  expect(readSpawnRecord(world, 12)).toMatchObject({ effort: 'high', reason: 'escalated: two consecutive red Verifies' })
+  expect(await readPromptContext($)).not.toContain('escalated')
+  expect(herdrRuns(world, 'agent start')).toHaveLength(2)
+})
+
+test('a red Verify after a green one, or a unit on the user\'s defaults, is not escalated', async ($, on) => {
+  const { world } = await spawnCheap($, on)
+  await seedVerifies(world, ['fail', 'pass'])
+  expect(await readPromptContext($)).not.toContain('escalated')
+  expect(herdrRuns(world, 'agent prompt issue-12 /exit')).toEqual([])
+  expect(await callModTool($, 'escalate_unit', { number: 12, reason: 'r' })).toMatchObject({ isError: false })
+  expect(await callModTool($, 'escalate_unit', { number: 12, reason: 'again' })).toEqual({ text: expect.stringContaining('not escalated'), isError: true })
+  expect(herdrRuns(world, 'agent start')).toHaveLength(2)
+})
+
+test('a coordinator request escalates an idle unit now, and a working one only once it is idle', async ($, on) => {
+  const { world, agent } = await spawnCheap($, on)
+  agent.isWorking = true
+  expect((await callModTool($, 'escalate_unit', { number: 12, reason: 'an unexpected design decision' })).text).toContain('applied once it is idle')
+  expect(await readPromptContext($)).not.toContain('escalated')
+  expect(herdrRuns(world, 'agent prompt issue-12 /exit')).toEqual([])
+  agent.isWorking = false
+  expect(await readPromptContext($)).toContain('#12 escalated: coordinator request: an unexpected design decision')
+  expect(herdrRuns(world, 'agent start')[1]).toContain(' --effort high --resume ')
+  expect(readSpawnRecord(world, 12)).not.toHaveProperty('escalation')
 })

@@ -3,7 +3,7 @@ import { isUnitFinished } from '../domain/step-states'
 import { findWorktreeRoot, readFirstParentFork, readGitOutput, readLocalBranchTips, readMergeConflicts, readParentBranch, readWorktreeStatus, runGit } from '../lib/git'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
-import { recordDelegated } from './delegated-commits'
+import { recordDelegated, runUnsignedGit } from './delegated-commits'
 import { readOwnScope } from './delegation'
 import type { EnginePort } from './engine-port'
 import { logEvent } from './flow-log'
@@ -59,8 +59,7 @@ export async function mergeChild(port: EnginePort, child: string): Promise<Resul
     + `the unit can bring the tip in with merge_parent, or ${handOver}`)
   // why: a fast-forward's tip is known before it moves, so a window closing mid-merge already finds the record; a merge commit's is not.
   if (isFastForward) await recordPlaced(port, parent, childTip)
-  // why: A delegated commit is unsigned by design; the user's signing rebase signs it on their return.
-  const merge = await runGit(port.processes, ['-C', root, 'merge', '--no-gpg-sign', '--no-edit', isFastForward ? '--ff-only' : '--no-ff', child])
+  const merge = await runUnsignedGit(port, ['-C', root, 'merge'], ['--no-edit', isFastForward ? '--ff-only' : '--no-ff', child])
   if (merge.exitCode !== 0) {
     if (!isFastForward) await runGit(port.processes, ['-C', root, 'merge', '--abort'])
     return fail(`${child} does not merge cleanly into ${parent}, so the merge was aborted; ${handOver}`)

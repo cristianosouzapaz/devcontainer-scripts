@@ -1,6 +1,6 @@
 import { hasOnlyKeys, isNonEmptyString, isRecord } from '../lib/guards'
 
-/** Holds one commit a delegated unit made on its own branch, keyed by its change so the user's signing rebase keeps it readable. */
+/** Holds one commit a delegated unit made on its own branch, keyed by its change so the user's re-sign keeps it readable. */
 export interface DelegatedCommit { v: 1; key: string; sha: string; branch: string }
 
 /** Holds a branch with unsigned delegated commits, as the signing commands rewrite it. */
@@ -15,6 +15,29 @@ export interface SigningBranch {
 }
 
 /**
+ * Re-creates every commit of base..head signed, on its exact tree, byte-exact message, author and dates, then moves head and
+ * the named merged children with their old value as a guard, only once the head keeps its tree and every commit carries a
+ * signature, which must also verify when this machine can verify one.
+ * Run as `bash -c "$script" resign <root> <base> <head> [<child>...]`; it holds no single quote so it can be quoted whole.
+ */
+const resignScript = 'set -euo pipefail; cd "$1"; base=$2; head=$3; shift 3; declare -A map; verify=; '
+  // why: An SSH signature verifies only against an allowed-signers file, an OpenPGP one only against a keyring.
+  + 'case $(git config gpg.format || echo openpgp) in ssh) git config gpg.ssh.allowedSignersFile >/dev/null && verify=1 || :;; '
+  + 'openpgp) gpg --list-keys 2>/dev/null | grep -c . >/dev/null && verify=1 || :;; esac; '
+  + 'for c in $(git rev-list --reverse --topo-order "$base..$head"); do parents=(); '
+  + 'for p in $(git rev-list --parents -n1 "$c" | cut -d" " -f2-); do parents+=(-p "${map[$p]:-$p}"); done; '
+  // why: The message goes through a pipe, since a shell variable, $(…) or <<< would strip or add trailing newlines.
+  + 'map[$c]=$(git cat-file commit "$c" | sed "1,/^$/d" | GIT_AUTHOR_NAME=$(git log -1 --format=%an "$c") '
+  + 'GIT_AUTHOR_EMAIL=$(git log -1 --format=%ae "$c") GIT_AUTHOR_DATE=$(git log -1 --format=%aD "$c") '
+  + 'GIT_COMMITTER_DATE=$(git log -1 --format=%cD "$c") git commit-tree -S "$(git rev-parse "$c^{tree}")" "${parents[@]}" -F -); done; '
+  + 'old=$(git rev-parse "refs/heads/$head"); new=${map[$old]}; '
+  + '[[ $(git rev-parse "$old^{tree}") == $(git rev-parse "$new^{tree}") ]] || { echo "tree changed, no ref moved" >&2; exit 1; }; '
+  + 'for c in $(git rev-list "$base..$new"); do git cat-file commit "$c" | grep -c ^gpgsig >/dev/null || { echo "unsigned $c, no ref moved" >&2; exit 1; }; '
+  + '[[ -z $verify ]] || git verify-commit "$c" >/dev/null 2>&1 || { echo "signature of $c does not verify, no ref moved" >&2; exit 1; }; done; '
+  + 'for b in "$head" "$@"; do o=$(git rev-parse "refs/heads/$b"); git update-ref -m "re-sign delegated commits" "refs/heads/$b" "${map[$o]}" "$o"; done; '
+  + 'echo "signed $head: tree unchanged, every commit carries a signature${verify:+ that verifies here}"'
+
+/**
  * Validates a delegated-commit record read from disk with exactly its keys.
  * @param value - The decoded JSON.
  * @returns The record, or null.
@@ -26,27 +49,23 @@ export function parseDelegatedCommit(value: unknown): DelegatedCommit | null {
 }
 
 /**
- * Gives, per parent chain, the commands that sign and push it: each merged child's worktree is detached, then the chain's
- * head is rebased in place with every merged child's ref updated, its signatures listed and the head pushed.
- * A branch its parent has not merged heads a chain of its own.
+ * Gives, per parent chain, the commands that sign and push it: the chain's head and every child it merged are re-signed in
+ * place without replaying a merge, then the head is pushed. A branch its parent has not merged heads a chain of its own.
  * @param branches - The branches with unsigned delegated commits.
  * @param defaultBranch - The default branch, whose origin copy the chains keep as their base.
  * @returns The commands, one per line, in the order to run them.
  */
 export function composeSigningCommands(branches: SigningBranch[], defaultBranch: string): string[] {
-  // why: --force-rebase signs commits --keep-base would otherwise keep as they are, --rebase-merges keeps the child merges,
-  // and --update-refs moves the merged children's refs, which it skips while a worktree holds them.
+  // why: A rebase re-runs every merge and stops on each conflict resolved by hand; re-creating each commit on its own tree
+  // keeps the verified content, and a moved ref still matches its worktree since every tree stays the same.
   const merged = (head: string, seen: string[] = []): SigningBranch[] => branches
     .filter(entry => entry.isMerged && entry.parent === head && !seen.includes(entry.branch))
     .flatMap(entry => [entry, ...merged(entry.branch, [...seen, head])])
   return branches.filter(entry => !entry.isMerged).sort((a, b) => a.branch.localeCompare(b.branch)).flatMap(entry => {
-    const git = entry.root ? `git -C ${entry.root}` : 'git'
-    const base = `origin/${defaultBranch}`
+    const children = merged(entry.branch).map(child => ` ${child.branch}`).join('')
     return [
-      ...merged(entry.branch).flatMap(child => child.root ? [`git -C ${child.root} switch --detach`] : []),
-      `${git} rebase --keep-base --rebase-merges --update-refs --force-rebase --gpg-sign ${base} ${entry.branch}`,
-      `${git} log --format='%G? %h %s' ${base}..${entry.branch}`,
-      `${git} push -u origin ${entry.branch}`,
+      `bash -c '${resignScript}' resign ${entry.root ?? '.'} origin/${defaultBranch} ${entry.branch}${children}`,
+      `${entry.root ? `git -C ${entry.root}` : 'git'} push -u origin ${entry.branch}`,
     ]
   })
 }
@@ -57,5 +76,5 @@ export function composeSigningCommands(branches: SigningBranch[], defaultBranch:
  * @returns The block to append, empty when nothing is left to sign.
  */
 export function describeSigning(commands: string[]): string {
-  return commands.length ? `\n\nDelegated commits are unsigned and local — sign and push them, in this order (every log line must start with G):\n${commands.map(command => `  ${command}`).join('\n')}` : ''
+  return commands.length ? `\n\nDelegated commits are unsigned and local — sign and push them, in this order (each re-sign moves no ref unless the tree is unchanged and every commit carries a signature):\n${commands.map(command => `  ${command}`).join('\n')}` : ''
 }

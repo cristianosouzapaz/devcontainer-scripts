@@ -211,6 +211,16 @@ export function seedVerifyHolder(world: World, owner: Record<string, unknown> = 
 }
 
 /**
+ * Ends the other session's hold on the Verify lock that seedVerifyHolder made, freeing its ticket and the lock.
+ * @param world - The test world.
+ * @param root - The common directory whose queue it held.
+ */
+export function releaseVerifyHolder(world: World, root = common): void {
+  world.files.delete(`${root}/working-agreement/verify/lock/owner.json`)
+  world.files.delete(`${root}/working-agreement/verify/q/000000000000000-holder/lease`)
+}
+
+/**
  * Resolves a revision in the world's repository.
  * @param world - The world.
  * @param revision - The revision.

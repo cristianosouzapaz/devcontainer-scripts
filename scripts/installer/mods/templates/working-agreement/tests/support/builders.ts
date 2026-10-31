@@ -12,7 +12,7 @@ interface WriteCall { tool: 'Write'; file_path: string; content: string }
 export const noFlow = { flow: null, issues: [], info: {} }
 
 /** Every tool the mod registers, in registration order. */
-export const modToolNames = ['run', 'verify', 'declare_flow', 'suggest_coordinate', 'suggest_delegate', 'merge_child', 'commit', 'merge_parent', 'issue_create', 'issue_edit', 'issue_close', 'issue_comment', 'spawn', 'plan', 'unit_prompt', 'unit_read', 'retire_unit'] as const
+export const modToolNames = ['run', 'verify', 'declare_flow', 'suggest_coordinate', 'suggest_delegate', 'merge_child', 'commit', 'merge_parent', 'issue_create', 'issue_edit', 'issue_close', 'issue_comment', 'spawn', 'escalate_unit', 'plan', 'unit_prompt', 'unit_read', 'retire_unit'] as const
 
 /** A coordinator session with no flow. */
 export const coordinator = { ...noFlow, role: 'coordinator' }
@@ -114,6 +114,12 @@ export const buildVerifyRun = (changes: Partial<VerifyRecord> = {}): VerifyRecor
  * @returns The checkout.
  */
 export const buildChangedCheckout = (): Checkout => ({ branch: 'feat', ahead: 8, isDirty: true, tree: 'one' })
+
+/**
+ * Builds a dirty checkout of `feat` that changes `src/a.ts` on tree `one`; a fresh copy, since tests move it.
+ * @returns The checkout.
+ */
+export const buildChanged = (): Checkout => ({ branch: 'feat', changed: ['src/a.ts'], isDirty: true, tree: 'one' })
 
 /**
  * Names a Verify config by the id `/flow approve verify` previews and takes.

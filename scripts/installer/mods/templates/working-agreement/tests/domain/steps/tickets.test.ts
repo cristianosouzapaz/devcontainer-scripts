@@ -14,7 +14,7 @@ const buildSpecDoneOptions = (): Options => ({
 
 test('a Small feature that never runs to-tickets shows Tickets skipped and reaches Code', async ($, on) => {
   createWorld(on, { branch: 'feat' }, buildSpecDoneOptions())
-  expect(await readFlowStatus($)).toContain('↷ Tickets · optional')
+  expect(await readFlowStatus($)).toContain('↷ Tickets\n')
   expect(await readCurrentStep($)).toBe('Code')
 })
 
@@ -65,7 +65,7 @@ test('a Tickets read that errors after a good read keeps the last good sub-issue
 
 test('a started Tickets with no sub-issues is skipped, not current, once Code has a change', async ($, on) => {
   createWorld(on, { branch: 'feat', changed: ['src/a.ts'] }, { ...buildSpecDoneOptions(), unit: { skills: ['grilling', 'to-spec', 'to-tickets'], } })
-  expect(await readFlowStatus($)).toContain('↷ Tickets · optional')
+  expect(await readFlowStatus($)).toContain('↷ Tickets\n')
   expect(await readCurrentStep($)).not.toBe('Code')
 })
 

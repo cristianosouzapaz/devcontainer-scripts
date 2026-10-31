@@ -36,7 +36,7 @@ test('the PR step reads PR #<n> once done, in the status and in the declaration 
 
 test('the PR step reads PR with no PR on record', async ($, on) => {
   createWorld(on, { branch: 'feat', ahead: 1 }, { ...twoIssueCloseOut, unit: { skips: [{ step: 'verify', reason: 'covered separately' }], skills: ['generate-commit'] } })
-  expect(await readFlowStatus($)).toContain('▸ PR · no PR')
+  expect(await readFlowStatus($)).toContain('▸ PR\n')
   expect(await readPromptContext($)).toContain('current step: PR.')
 })
 
@@ -155,13 +155,13 @@ for (const [columns, pill] of [[32, ' ready-for-agent '], [31, ' ready-for-age�
   })
 }
 
-test('the mounted pane draws Diagnose as one row with its first unmet fact', async ($, on) => {
+test('the mounted pane draws Diagnose as one row, alone in its normal state', async ($, on) => {
   createWorld(on, { branch: 'fix' }, { session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } } })
-  expect(await readFlowStatus($)).toContain('▸ Diagnose · no red run yet')
+  expect(await readFlowStatus($)).toContain('▸ Diagnose\n')
   const ui = await mountPane($, { columns: 40, rows: 30 })
   const text = (await ui.findAll({ type: 'Text' })).map(textOf).join(' ')
   expect(text).toContain('Diagnose')
-  expect(text).toContain('no red run yet')
+  expect(text).not.toContain('no red run')
   expect(text).not.toContain('Diagnosis')
   expect(text).not.toContain('Approval')
   await ui.unmount()

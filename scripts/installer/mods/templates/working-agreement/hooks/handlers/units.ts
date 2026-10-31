@@ -2,12 +2,14 @@ import type { Args, EventResult, Frozen } from 'claude-code'
 
 import type { EnginePort } from '../core/engine-port'
 import { readOwnScope } from '../core/delegation'
-import { isInsideHerdr, runHerdrText } from '../core/herdr-worktrees'
+import { isInsideHerdr, outsideHerdr, runHerdrText } from '../core/herdr-worktrees'
 import { commentIssue } from '../core/issue-write'
 import { readSession } from '../core/record-store'
 import { retireUnit } from '../core/retire'
 import type { Archive, RetirementPlan } from '../core/retire'
-import { spawnUnit, unitAgent } from '../core/spawn'
+import { escalateOrRequest } from '../core/escalation'
+import { efforts, parseEffort, spawnUnit, unitAgent } from '../core/spawn'
+import type { UnitLevel } from '../core/spawn'
 import { isCoordinatorSession, unitTools } from '../domain/coordinator'
 import { coversIssues } from '../domain/delegation'
 import { markForAgent } from '../domain/messages'
@@ -45,10 +47,12 @@ async function runUnitTool(port: EnginePort, tool: UnitTool, args: Record<string
   if (tool === 'spawn') {
     const instructions = args.instructions ?? ''
     if (typeof instructions !== 'string') return fail('instructions must be text')
-    return spawnUnit(port, issue, instructions.trim())
+    const level = readLevel(args)
+    return level.isOk ? spawnUnit(port, issue, instructions.trim(), level.value) : level
   }
   if (tool === 'retire_unit') return retireDelegated(port, issue, args.reason)
-  if (!await isInsideHerdr(port)) return fail('this session does not run inside herdr, which hosts every unit session')
+  if (!await isInsideHerdr(port)) return fail(outsideHerdr)
+  if (tool === 'escalate_unit') return escalateDelegated(port, issue, args.reason)
   if (tool === 'unit_read') {
     const lines = args.lines ?? 40
     if (!isSafeInteger(lines) || lines < 1 || lines > 500) return fail('lines must be a whole number from 1 to 500')
@@ -61,6 +65,34 @@ async function runUnitTool(port: EnginePort, tool: UnitTool, args: Record<string
 }
 
 /**
+ * Reads the model, effort and reason a spawn call picks.
+ * @param args - The call's arguments.
+ * @returns The level, empty when neither model nor effort is given, or why it is refused.
+ */
+function readLevel(args: Record<string, unknown>): Result<UnitLevel> {
+  const { model, effort, reason } = args
+  if (model === undefined && effort === undefined) return succeed({})
+  // why: the name reaches claude as an argument value; one starting with a dash would read as an option.
+  if (model !== undefined && (typeof model !== 'string' || !/^[\w.][\w.:@/[\]-]*$/.test(model))) return fail('model must be a model name or alias the claude CLI accepts')
+  const level = parseEffort(effort)
+  if (effort !== undefined && !level) return fail(`effort must be one of ${efforts.join(', ')}`)
+  if (typeof reason !== 'string' || !reason.trim()) return fail('reason must say in one line why this unit gets that model or effort')
+  return succeed({ ...typeof model === 'string' ? { model } : {}, ...level ? { effort: level } : {}, reason: reason.trim().split('\n')[0] ?? '' })
+}
+
+/**
+ * Raises a unit of this coordinator's scope to the user's default model with effort high, now when it is idle, else once it is.
+ * @param port - The engine calls.
+ * @param issue - The issue number.
+ * @param reason - Why the coordinator raises the unit.
+ * @returns The escalation, the recorded request, or the refusal.
+ */
+async function escalateDelegated(port: EnginePort, issue: number, reason: unknown): Promise<Result<string>> {
+  const delegated = await requireDelegated(port, issue, reason, 'reason must say why the unit needs more capability', `#${issue} is not in this coordinator's delegation scope`)
+  return delegated.isOk ? escalateOrRequest(port, issue, delegated.value) : delegated
+}
+
+/**
  * Retires a unit of an issue this coordinator delegates, recording the retirement as a delegated decision on the issue before anything is removed.
  * @param port - The engine calls.
  * @param issue - The issue number.
@@ -68,13 +100,28 @@ async function runUnitTool(port: EnginePort, tool: UnitTool, args: Record<string
  * @returns What was archived and removed, or the refusal.
  */
 async function retireDelegated(port: EnginePort, issue: number, reason: unknown): Promise<Result<string>> {
-  if (typeof reason !== 'string' || !reason.trim()) return fail('reason must say why the unit is redone')
-  const scope = await readOwnScope(port)
-  if (!scope || !coversIssues(scope, [issue])) return fail(`#${issue} is not in this coordinator's delegation scope, so retiring its unit is the user's: /flow retire ${issue}`)
+  const delegated = await requireDelegated(port, issue, reason, 'reason must say why the unit is redone',
+    `#${issue} is not in this coordinator's delegation scope, so retiring its unit is the user's: /flow retire ${issue}`)
+  if (!delegated.isOk) return delegated
   return retireUnit(port, issue, () => succeed(undefined), async (plan, archive) => {
-    const posted = await commentIssue(port, { number: issue, body: composeRetirementDecision(plan, archive, reason.trim()) })
+    const posted = await commentIssue(port, { number: issue, body: composeRetirementDecision(plan, archive, delegated.value) })
     return posted.isOk ? succeed(posted.value) : fail(`the delegated decision was not posted: ${posted.error}`)
   })
+}
+
+/**
+ * Checks that a call gives a reason and that its issue is in this coordinator's delegation scope.
+ * @param port - The engine calls.
+ * @param issue - The issue number.
+ * @param reason - The call's reason.
+ * @param missing - The refusal of a call without a reason.
+ * @param outside - The refusal of an issue outside the scope.
+ * @returns The trimmed reason, or the refusal.
+ */
+async function requireDelegated(port: EnginePort, issue: number, reason: unknown, missing: string, outside: string): Promise<Result<string>> {
+  if (typeof reason !== 'string' || !reason.trim()) return fail(missing)
+  const scope = await readOwnScope(port)
+  return scope && coversIssues(scope, [issue]) ? succeed(reason.trim()) : fail(outside)
 }
 
 /**

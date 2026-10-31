@@ -1,14 +1,12 @@
-import type { DelegationScope, ScopeHost } from '../../types'
+import type { DelegationScope } from '../../types'
 
 import { hasOnlyKeys, isNonEmptyString, isRecord, isSafeInteger } from '../lib/guards'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
 import { appendInstructions, formatIssueReferences, modToolPrefix } from './messages'
+import { parseHost } from './process-host'
 
 export type { DelegationScope } from '../../types'
-
-/** Whether a scope's coordinator still runs: `unknown` where its process cannot be judged, which counts as gone. */
-export type CoordinatorLiveness = 'live' | 'gone' | 'unknown'
 
 /**
  * What `/flow delegate` asks: revoke the scope, or add the named issues (none names the issues the coordinator creates),
@@ -40,16 +38,6 @@ export function parseScope(value: unknown): DelegationScope | null {
     ? { v: 1, sessionId: value.sessionId, issues: value.issues as number[], coversCreated: value.coversCreated, ...(value.isPushUnguarded ? { isPushUnguarded: true as const } : {}),
       ...(value.triage ? { triage: value.triage as number[] } : {}), ...(value.instructions ? { instructions: value.instructions as string[] } : {}),
       ...(value.paneId ? { paneId: value.paneId } : {}), ...(host ? { host } : {}) } : null
-}
-
-/**
- * Validates a coordinator's process identity with exactly its keys.
- * @param value - The decoded JSON.
- * @returns The identity, or null.
- */
-function parseHost(value: unknown): ScopeHost | null {
-  return isRecord(value) && hasOnlyKeys(value, ['pidns', 'pid', 'pidStart', 'bootId']) && isNonEmptyString(value.pidns) && isSafeInteger(value.pid) && value.pid > 0
-    && isNonEmptyString(value.pidStart) && isNonEmptyString(value.bootId) ? { pidns: value.pidns, pid: value.pid, pidStart: value.pidStart, bootId: value.bootId } : null
 }
 
 /**

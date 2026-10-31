@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
 import { noFlow, diagnosed, diagnosisComment } from '../support/builders'
-import { declareFlow, readFlowStatus, readStepStates, seedVerifyHolder } from '../support/helpers'
+import { declareFlow, readFlowStatus, readStepStates, releaseVerifyHolder, seedVerifyHolder } from '../support/helpers'
 import { createWorld, records } from '../support/world'
 import type { Checkout, Options } from '../support/world'
 
@@ -125,8 +125,7 @@ test("run waits behind another session's Verify and runs once it finishes", asyn
   const pending = $.tool.call({ tool: 'mcp__working-agreement__run', argv })
   await clock.settle()
   expect(sessions.get('sid')?.units[0]?.runs).toEqual([])
-  files.delete(`${records}/verify/lock/owner.json`)
-  files.delete(`${records}/verify/q/000000000000000-holder/lease`)
+  releaseVerifyHolder(world)
   await clock.advance(1000)
   expect((await pending).result).toContain('red recorded')
   expect([...files.keys()].filter(path => path.startsWith(`${records}/verify/`))).toEqual([])
@@ -161,7 +160,35 @@ for (const tool of ['run', 'verify']) {
     expect(result.result).toContain(tool === 'run' ? 'red recorded' : 'Verify passed')
     expect(sessions.get(chat.id)?.units[0]?.generation).toBe(previous.units[0]?.generation)
     expect(sessions.get(chat.id)?.units[0]?.base).toBe(previous.units[0]?.base)
-    if (tool === 'run') expect(await readFlowStatus($)).toContain('no comment after the red')
+    if (tool === 'run') expect(await readFlowStatus($)).toContain('▸ Diagnose\n')
     else expect((await readStepStates(world)).Verify).toBe('done')
   })
 }
+
+for (const script of ['./check | head', './check; true', './check || true', './check &', './check > out.log', 'if ./check; then :; fi', '[ -f a ]', 'test -f a', 'echo $(./check)', 'echo `./check`', './a && ./b', 'cd x && ./a && ./b', 'cd x && ./a | grep fail']) {
+  test(`run refuses a shell wrapper that can mask the test's exit status: ${script}`, async ($, on) => {
+    const { sessions } = createWorld(on, { branch: 'fix', isDirty: true, tree: 'red' }, { session: { flow: 'fix' }, spawnCode: 7 })
+    const result = await $.tool.call({ tool: 'mcp__working-agreement__run', argv: ['bash', '-c', script] })
+    expect(result.result).toContain('Refused')
+    expect(result.result).toContain('names the run\'s log file — filter the output by reading that log, never through a pipe')
+    expect(sessions.get('sid')?.units[0]?.runs ?? []).toEqual([])
+  })
+}
+
+for (const command of [['sh', '-c', 'cd sub/pkg && claude plugin test .'], ['bash', '-c', './check'], ['bats', 'test/a.bats']]) {
+  test(`run records a direct command or one cd prefix: ${JSON.stringify(command)}`, async ($, on) => {
+    const { sessions } = createWorld(on, { branch: 'fix', isDirty: true, tree: 'red' }, { session: { flow: 'fix' }, spawnCode: 7 })
+    expect((await $.tool.call({ tool: 'mcp__working-agreement__run', argv: command })).result).toContain('red recorded')
+    expect(sessions.get('sid')?.units[0]?.runs.map(run => run.argv)).toEqual([command])
+  })
+}
+
+test('the run result lists failing test lines that precede the output tail', async ($, on) => {
+  const output = ['not ok 1 early bats failure', '(fail) early bun failure', ...Array.from({ length: 100 }, (_, index) => `(pass) case ${index}`)].join('\n')
+  createWorld(on, { branch: 'fix', isDirty: true, tree: 'red' }, { session: { flow: 'fix' }, spawnCode: 1, spawnOutput: output })
+  const result = await $.tool.call({ tool: 'mcp__working-agreement__run', argv })
+  expect(result.result).toContain('not ok 1 early bats failure')
+  expect(result.result).toContain('(fail) early bun failure')
+  expect(result.result).toContain('(pass) case 99')
+  expect(result.result).not.toContain('(pass) case 0\n')
+})

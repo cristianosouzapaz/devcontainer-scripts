@@ -10,6 +10,8 @@ import { readWorkingTreeKey } from '../core/repository'
 import { finishRunView, runStatus, withRunView } from '../core/run-view'
 import { findWorktreeRoot } from '../lib/git'
 import { executeCommand, prepareRunLog, recordToolRun, withToolRun } from '../core/tool-run'
+import { describeTail, readFailingLines } from '../core/run-command'
+import { masksExitStatus, wrapperRefusal } from '../domain/run-argv'
 import { verifyOutcome } from '../core/verify'
 import { holdVerifyTurn, isTurnHeld, leaveVerifyQueue, waitVerifyTurn } from '../core/verify-queue'
 import { changedPaths, defaultVerifyTimeoutMinutes, readVerifyConfig } from '../core/verify-config'
@@ -35,6 +37,7 @@ const cancelled = 'Run cancelled; no record written.'
 export async function handleRun(port: EnginePort, input: unknown, signal: AbortSignal): Promise<ToolRunResult> {
   if (!isRunInput(input)) return { result: 'Expected { argv: string[] }: a non-empty array of non-empty strings.' }
   const argv = input.argv
+  if (masksExitStatus(argv)) return { result: wrapperRefusal }
   return withToolRun(port, 'Run', sid => run(port, argv, signal, sid))
 }
 
@@ -127,6 +130,8 @@ async function execute(port: EnginePort, job: RunJob, signal: AbortSignal): Prom
       : !judgement.done ? `this pass does not count: ${need}`
       : pinned ? `this pass is not the fix green: that is the approved red's argv ${JSON.stringify(pinned.argv)} passing on a different tree`
       : 'this pass pairs with no earlier red of the same argv on a different tree'
-    return `Run ${record.outcome.kind}: ${status}.\n${tail}\nthe first error may be earlier — see ${log}\n${progress}`
+    const failing = await readFailingLines(port, log)
+    const failures = failing.length ? `failing test lines (first ${failing.length}):\n${failing.join('\n')}\noutput tail:\n` : ''
+    return `Run ${record.outcome.kind}: ${status}.\n${failures}${describeTail(tail, log)}\n${progress}`
   })
 }

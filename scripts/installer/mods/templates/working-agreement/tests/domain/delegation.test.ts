@@ -2,12 +2,12 @@ import type { On } from 'claude-code'
 import { expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { coordinator, diagnoseRuns, diagnosisComment, guarded, noFlow, verifyFile } from '../support/builders'
+import { coordinator, diagnoseRuns, diagnosisComment, fixed, guarded, noFlow, verifyFile } from '../support/builders'
 import { callModTool, declareFlow, inside, readFlowStatus, readPromptContext, runFlowCommand, startSkill } from '../support/helpers'
 import { createIssueGithub, defaultIssueLabels, ticket } from '../support/issue-github'
 import type { IssueGithub } from '../support/issue-github'
 import { test } from '../support/kit'
-import { buildScope, buildStat, configBlob, coordinatorHost, createWorld, hashIdentity, records, scopeFile } from '../support/world'
+import { buildScope, buildStat, configBlob, coordinatorHost, createWorld, hashIdentity, markSpawned, records, scopeFile, seedDelegation } from '../support/world'
 import type { Options } from '../support/world'
 
 const unitScope = buildScope('coord', [1])
@@ -51,7 +51,7 @@ const createTicket = async ($: Engine): Promise<string> => (await callModTool($,
 function createDelegatedUnit(on: On, issues = [3], options: Partial<Options> = {}): IssueGithub {
   const github = createIssueGithub({ issues: { 3: {} } })
   const world = createWorld(on, { branch: 'feat' }, { session: noFlow, ...options, gh: github.gh })
-  world.files.set(scopeFile('coord'), buildScope('coord', issues))
+  seedDelegation(world, 'coord', issues, { spawned: [1, 3, 7] })
   return github
 }
 
@@ -145,6 +145,7 @@ for (const [name, scope, isDelegated] of [
   test(`${name} the delegation in the pane, the sidebar and /flow status`, async ($, on) => {
     const world = createWorld(on, { branch: 'feat' }, { session: noFlow, herdrEnv: inside })
     if (scope) world.files.set(scopeFile('coord'), JSON.stringify(scope))
+    markSpawned(world, [1, 3, 7])
     await declareFlow($, 'fix', [3])
     const status = await readFlowStatus($)
     const row = { key: 'Delegation', value: 'on', tone: 'text' }
@@ -163,7 +164,7 @@ for (const [name, host, stat, fact] of [
 ] as const) {
   test(`a unit whose coordinator cannot be seen running because ${name} shows it and is not delegated`, async ($, on) => {
     const world = createWorld(on, { branch: 'feat' }, { session: noFlow, herdrEnv: inside })
-    world.files.set(scopeFile('coord'), buildScope('coord', [3], host))
+    seedDelegation(world, 'coord', [3], { spawned: [1, 3, 7], host })
     if (stat) world.files.set(`/proc/${coordinatorHost.pid}/stat`, stat)
     else world.files.delete(`/proc/${coordinatorHost.pid}/stat`)
     await declareFlow($, 'small-feature', [3])
@@ -219,7 +220,7 @@ test('suggest_delegate outside a coordinator session suggests nothing', async ($
 
 test('the user\'s steps taken in a delegated unit are recorded as delegated and shown in the pane and /flow status', async ($, on) => {
   const world = createWorld(on, { branch: 'feat' }, smallFeatureOn1(['ready-for-agent']))
-  world.files.set(scopeFile('coord'), unitScope)
+  seedDelegation(world, 'coord', [1], { spawned: [1, 3, 7] })
   await startSkill($, 'to-spec')
   expect((await runFlowCommand($, 'skip PR delivered elsewhere')).text).toContain('Skipped PR')
   expect(world.sessions.get('sid')?.units[0]?.delegated).toEqual(['/to-spec', '/flow skip pr'])
@@ -231,16 +232,29 @@ test('the user\'s steps taken in a delegated unit are recorded as delegated and 
 
 test('a delegated unit\'s prompt tells it to commit its own work with the commit tool, overriding the rule that commits are the user\'s', async ($, on) => {
   const world = createWorld(on, { branch: 'feat' }, smallFeatureOn1(['ready-for-agent']))
-  world.files.set(scopeFile('coord'), unitScope)
+  seedDelegation(world, 'coord', [1], { spawned: [1, 3, 7] })
   const context = await readPromptContext($)
   expect(context).toContain('commit it with the commit tool')
   expect(context).toContain('overrides')
 })
 
+test('a delegated unit at Commit is told to commit with the commit tool and go on, never to hand the commands to the user', async ($, on) => {
+  const world = createWorld(on, { branch: 'feat', ahead: 8, isDirty: true }, {
+    session: noFlow, unit: { skills: ['diagnosing-bugs', 'generate-commit'], ...fixed }, issueLabels: { 1: ['ready-for-agent'] }, comments: { 1: [diagnosisComment] },
+  })
+  await declareFlow($, 'fix', [1])
+  await runFlowCommand($, 'skip verify covered separately')
+  seedDelegation(world, 'coord', [1], { spawned: [1, 3, 7] })
+  const context = await readPromptContext($)
+  expect(context).toContain('current step: Commit')
+  expect(context).not.toContain('ask the user to run the commit commands')
+  expect(context).toContain('Next action: stage the finished work with git add, commit it with the commit tool with the message generate-commit produced and go on')
+})
+
 for (const source of ['projectSettings', 'plugin', 'built-in'] as const) {
   test(`a ${source} skill named like a flow skill proves no step and records nothing delegated`, async ($, on) => {
     const world = createWorld(on, { branch: 'feat' }, smallFeatureOn1([]))
-    world.files.set(scopeFile('coord'), unitScope)
+    seedDelegation(world, 'coord', [1], { spawned: [1, 3, 7] })
     await startSkill($, 'to-spec', source)
     expect(world.sessions.get('sid')?.units[0]?.skills).not.toContain('to-spec')
     expect(world.sessions.get('sid')?.units[0]?.delegated).toBeUndefined()
@@ -252,14 +266,33 @@ test('the diagnosis approval in a delegated unit is recorded as delegated', asyn
     session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } },
     unit: { runs: [diagnoseRuns[0]!] }, comments: { 1: [diagnosisComment] }, issueLabels: { 1: ['ready-for-agent'] },
   })
-  world.files.set(scopeFile('coord'), unitScope)
+  seedDelegation(world, 'coord', [1], { spawned: [1, 3, 7] })
   expect((await runFlowCommand($, `approve ${diagnosisComment.url}`)).text).toContain('Diagnosis approved')
   expect(world.sessions.get('sid')?.units[0]?.delegated).toEqual(['/flow approve'])
 })
 
+test('a session spawn did not start, though a live scope covers its issue, gets no delegated-unit rules and records no step as delegated', async ($, on) => {
+  const world = createWorld(on, { branch: 'feat' }, smallFeatureOn1(['ready-for-agent']))
+  world.files.set(scopeFile('coord'), unitScope)
+  markSpawned(world, [1], 'unit')
+  await startSkill($, 'to-spec')
+  expect(await readPromptContext($)).not.toContain('This unit is delegated')
+  expect(world.sessions.get('sid')?.units[0]?.delegated).toBeUndefined()
+})
+
+test('declaring an issue whose spawned unit runs in another session is refused, naming that session, until that session is gone', async ($, on) => {
+  const world = createWorld(on, { branch: 'feat' }, { session: noFlow })
+  world.files.set(scopeFile('coord'), buildScope('coord', [3]))
+  markSpawned(world, [3], 'unit')
+  world.files.set(`${records}/host/unit.json`, JSON.stringify(coordinatorHost))
+  expect((await callModTool($, 'declare_flow', { flow: 'fix', issues: [3] })).deny).toContain('runs in session unit')
+  world.files.set(`${records}/host/unit.json`, JSON.stringify({ ...coordinatorHost, pid: 404 }))
+  expect((await callModTool($, 'declare_flow', { flow: 'fix', issues: [3] })).deny).toBeUndefined()
+})
+
 test('the user\'s steps stay the user\'s outside the scope and after /flow delegate stop', async ($, on) => {
   const world = createWorld(on, { branch: 'feat' }, smallFeatureOn1([]))
-  world.files.set(scopeFile('coord'), buildScope('coord', [7]))
+  seedDelegation(world, 'coord', [7], { spawned: [1, 3, 7] })
   await startSkill($, 'to-spec')
   expect(world.sessions.get('sid')?.units[0]?.delegated).toBeUndefined()
   expect(await readPromptContext($)).not.toContain('This unit is delegated')
@@ -275,6 +308,7 @@ for (const [name, scope, isApproved] of [['refused in a delegated unit', unitSco
   test(`the Verify config approval is ${name}`, async ($, on) => {
     const world = createWorld(on, { branch: 'feat' }, { verifyFile })
     if (scope) world.files.set(scopeFile('coord'), scope)
+    markSpawned(world, [1, 3, 7])
     const blob = configBlob(verifyFile)
     const reply = (await runFlowCommand($, `approve verify ${blob.slice(0, 12)}`)).text
     expect(reply?.includes('never taken in a delegated unit')).toBe(!isApproved)
@@ -326,7 +360,7 @@ test('a delegated decision puts the delegated-review label on its issue', async 
 test('a delegated decision on a repository without the delegated-review label is refused before anything is posted', async ($, on) => {
   const github = createIssueGithub({ issues: { 3: {} }, labels: defaultIssueLabels.filter(label => label !== 'delegated-review') })
   const world = createWorld(on, { branch: 'feat' }, { session: noFlow, gh: github.gh })
-  world.files.set(scopeFile('coord'), buildScope('coord', [3]))
+  seedDelegation(world, 'coord', [3], { spawned: [1, 3, 7] })
   const outcome = await callModTool($, 'issue_comment', { number: 3, body: decision('low') })
   expect(outcome.isError).toBe(true)
   expect(outcome.text).toContain('/flow setup-labels')
@@ -395,7 +429,7 @@ test('an undelegated unit\'s spec needs no Delegated decisions section', async (
 test('an unreadable delegation scope refuses the Verify approval and a spec without decisions, and arms the word guard', async ($, on) => {
   const options: Options = { session: noFlow, gh: createIssueGithub().gh }
   const world = createWorld(on, { branch: 'feat' }, options)
-  world.files.set(scopeFile('coord'), buildScope('coord', [3]))
+  seedDelegation(world, 'coord', [3], { spawned: [1, 3, 7] })
   await declareFlow($, 'small-feature', [3])
   options.readFailurePrefix = `${records}/delegation/`
   expect((await runFlowCommand($, 'approve verify 0123456789ab')).text).toContain('never taken in a delegated unit')
@@ -438,7 +472,7 @@ for (const [name, from, to, isAllowed] of [
     test(`without triage handed over, ${who} ${name}`, async ($, on) => {
       const github = createIssueGithub({ issues: { 3: { labels: [from, ...typed] } } })
       const world = createWorld(on, { branch: 'feat' }, { session: noFlow, ...options, gh: github.gh })
-      world.files.set(scopeFile('coord'), buildScope('coord', [3]))
+      seedDelegation(world, 'coord', [3], { spawned: [1, 3, 7] })
       if (issues.length) await declareFlow($, 'small-feature', [...issues])
       const outcome = await callModTool($, 'issue_edit', { number: 3, triage: to })
       expect(outcome.isError).toBe(!isAllowed)

@@ -45,7 +45,10 @@ async function storeApproval(port: ApprovePort, url: string): Promise<Result<str
   const session = await port.readSession()
   const flow = findFlow(session.flow)
   if (!session.unit || !hasDiagnoseStep(flow)) return fail('The declared flow has no Diagnose step, so there is nothing to approve.')
-  const runs = (await port.readUnit(session.unit)).runs
+  const unit = await port.readUnit(session.unit)
+  // why: A repeated approval, such as one delivered late, re-pins nothing, so evidence recorded after the first one stands.
+  if (unit.approval === url) return succeed(`Already approved: ${url}`)
+  const runs = unit.runs
   if (!findEarliestRed(runs)) return fail('There is no red run yet: reproduce the bug through the run tool first.')
   const comments = new Map<number, IssueComment[]>()
   for (const issue of session.issues) {

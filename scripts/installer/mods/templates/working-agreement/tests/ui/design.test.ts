@@ -32,7 +32,7 @@ for (const columns of [30, 60]) {
     createWorld(on, { branch: 'feat' })
     const slice = { base: 'a', end: 'b', tree: 'tree', baseTree: 'base', commits: 1, isClean: true, isFrozen: true, isRewritten: false, isShared: false }
     const session: Session = { ...declared, blocked: { edits: 2 }, handoff: { state: 'failed', reason: 'unavailable' } }
-    const base = buildView(session, withStates(position('diagnose', { slice }), session), { reason: 'unreachable', readAt: null }, false)
+    const base = buildView(session, withStates(position('diagnose', { slice, unit: { ...createEmptyUnit(), runs: diagnoseRuns } }), session), { reason: 'unreachable', readAt: null }, false)
     const displayed: Displayed = { value: { ...base, hasRunLog: true, footer: { action: 'continue', isRunning: false },
       notes: [...base.notes, { key: 'Checkout', value: "other, not this unit's branch", tone: 'warn' }],
       violations: [{ factId: 'v', text: '✗ a commit appeared', tone: 'error' }, { factId: 'u', text: 'could not check', tone: 'warn' }],
@@ -46,8 +46,8 @@ for (const columns of [30, 60]) {
     await expectText(ui, '▸ ', { color: 'suggestion' })
     await expectText(ui, '○ ', { color: 'inactive' })
     await expectText(ui, '↷ ', { color: 'inactive' })
-    // At 30 columns a fact is cut at a word boundary, so its first words survive.
-    await expectText(ui, columns === 30 ? 'no red run…' : 'no red run yet', { color: 'text', wrap: 'truncate-end' })
+    // At 30 columns a fact is cut at a word boundary, so its first words survive; with a red and no comments read, Diagnose is off the normal path.
+    await expectText(ui, columns === 30 ? 'issue…' : 'issue comments unavailable', { color: 'text', wrap: 'truncate-end' })
     await expectText(ui, columns === 30 ? 'optional for…' : 'optional for this unit', { color: 'inactive', wrap: 'truncate-end' })
     await expectText(ui, 'feature/a-long-branch-name', { color: 'text', wrap: 'truncate-middle' })
     await expectText(ui, 'frozen', { color: 'inactive' })
@@ -104,16 +104,13 @@ test('merged PR and failing CI draw their own symbols, facts and theme keys', as
 })
 
 for (const [name, unit, info, fact, full = fact] of [
-  ['red', { runs: [] }, { comments: [] }, 'no red run yet'],
-  ['comment', { runs: diagnoseRuns }, { comments: [] }, 'no comment after the red'],
   ['approval', { runs: diagnoseRuns }, { comments: [diagnosisComment] }, 'waiting for /flow approve'],
   ['deleted approval', { runs: diagnoseRuns, approval: diagnosisComment.url }, { comments: [] }, 'approved comment deleted'],
-  ['issue', { runs: diagnoseRuns }, { comments: [] }, 'issue not yet created'],
   ['comments unavailable', { runs: diagnoseRuns }, { comments: { error: 'comments unreadable' } }, 'issue comments unavailable', 'comments unreadable'],
 ] as [string, Partial<Unit>, DiagnoseComments, string, string?][]) {
   test(`Diagnose pane and status wording: ${name}`, async ($, on) => {
     createWorld(on, { branch: 'feat' })
-    const session: Session = { ...declared, issues: name === 'issue' ? [] : [1], info: { 1: { title: 'bug', labels: [], ...info } } }
+    const session: Session = { ...declared, issues: [1], info: { 1: { title: 'bug', labels: [], ...info } } }
     const located = position('diagnose', { unit: { ...createEmptyUnit(), skips: [{ step: 'triage', reason: 'the fixture starts at Diagnose' }], ...unit } })
     const view = buildView(session, withStates(located, session), null, false)
     serveDisplayed(on, { value: view })

@@ -12,8 +12,9 @@ source "$BOOTSTRAP_LIB_DIR/loader.sh"
 
 # ----- INSTALLER REFRESH ------------------------------------------------------
 
+# why: the global asset sync's source resolution, never the image's older SCRIPTS_REF
 # why: a release is validated before it is promoted, so an active one is safe to run when the refresh fails
-if ! bash "$DEVCONTAINER_INSTALLER_ROOT/install.sh"; then
+if ! { resolve_assets_source && SCRIPTS_REF="$ASSETS_SHA" bash "$DEVCONTAINER_INSTALLER_ROOT/install.sh"; }; then
 	if [[ -f "$DEVCONTAINER_INSTALLER_DIR/devcontainer-install.js" ]]; then
 		log_warning 'installer refresh failed, continuing with the active release'
 	else

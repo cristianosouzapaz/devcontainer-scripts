@@ -3,7 +3,7 @@ import type { Args, Frozen } from 'claude-code'
 import { bestEffort } from '../core/best-effort'
 import { declareFlow } from '../core/declaration'
 import { composeSigningReturn, readPushGuard } from '../core/delegated-commits'
-import { findDelegation, readOwnScope, recordDelegatedStep, runDelegate } from '../core/delegation'
+import { findDelegation, findLiveDelegation, readOwnScope, recordDelegatedStep, runDelegate } from '../core/delegation'
 import type { EnginePort } from '../core/engine-port'
 import { createFeaturePort } from '../core/feature-port'
 import { findMissingReviewLabel, setUpLabels } from '../core/issue-write'
@@ -209,7 +209,8 @@ function startAfter(port: EnginePort, result: Result<string>): string {
   if (result.isOk) submitStart(port, async () => {
     const session = await readSession(port)
     const position = await locatePosition(createReadPort(port), session)
-    return position ? composeStart(position, session, result.value) : null
+    const isDelegated = position ? !!await bestEffort(port, 'delegation read', () => findLiveDelegation(port, session.issues), null) : false
+    return position ? composeStart(position, session, result.value, isDelegated) : null
   })
   return unwrap(result)
 }

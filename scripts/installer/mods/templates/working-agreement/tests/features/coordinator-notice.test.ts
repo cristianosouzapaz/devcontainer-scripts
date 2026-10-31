@@ -6,7 +6,7 @@ import { coordinator } from '../support/builders'
 import { endTurn, inside, runFlowCommand } from '../support/helpers'
 import { test } from '../support/kit'
 import { childCheckout, delegationCheckout, parChild, seedDelegatedChild } from '../support/parallel-worktrees'
-import { coordinatorHost, createWorld, records, scopeFile } from '../support/world'
+import { coordinatorHost, createWorld, markSpawned, records, scopeFile } from '../support/world'
 import type { Options, World } from '../support/world'
 
 /** A delegated unit's world and the options it runs on. */
@@ -29,6 +29,7 @@ function createChild(on: Parameters<typeof createWorld>[0], scope: object | null
   // The engine answers no classic hook itself; the session that hears the notification is the end of its chain.
   on('classic.Notification', () => ({}))
   if (scope) world.files.set(scopeFile('coord'), JSON.stringify(scope))
+  markSpawned(world, [1])
   return { world, options }
 }
 
@@ -52,6 +53,14 @@ test('a unit no scope delegates, or whose scope names no pane, sends nothing', a
   await endTurn($)
   world.files.set(scopeFile('coord'), JSON.stringify({ v: 1, sessionId: 'coord', issues: [1], coversCreated: false }))
   await endTurn($)
+  expect(notices(world)).toEqual([])
+})
+
+test('a session spawn did not start, though it declares a delegated issue, sends its coordinator nothing', async ($, on) => {
+  const { world } = createChild(on)
+  markSpawned(world, [1], 'unit')
+  await endTurn($)
+  await $.classic.Notification({ message: 'Claude needs your permission to use Bash', notification_type: 'permission_prompt' } as never)
   expect(notices(world)).toEqual([])
 })
 
@@ -88,6 +97,8 @@ test('the same turn composes byte-identical notices, each kind fixed', () => {
   expect(composeTurnNotice(turn)).toEqual(composeTurnNotice({ ...turn }))
   expect(composeTurnNotice({ ...turn, step: { id: 'integrate', label: 'Integrate', isHuman: false } })?.text)
     .toBe('#7 reached Integrate: Verify passed on abcdef0; ready for merge_child.')
+  expect(composeTurnNotice({ ...turn, step: { id: 'commit', label: 'Commit', isHuman: false } })?.text)
+    .toBe('#7 ended its turn at Commit without committing: Verify passed on abcdef0; read its pane and have it commit with the commit tool.')
   expect(composeTurnNotice(turn)?.text).toBe('#7 ended its turn at Code on a decision or a question: read its pane and answer through the delegated-decision path.')
   expect(composeTurnNotice({ ...turn, step: { id: 'spec', label: 'Spec', isHuman: true } })?.text).toBe('#7 ended its turn on the user\'s step Spec: read its pane and run it there.')
   expect(composeTurnNotice({ ...turn, reason: 'error' })?.text).toBe('#7 is blocked: its turn ended on an API error; read its pane.')

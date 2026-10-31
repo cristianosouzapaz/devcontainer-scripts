@@ -1,13 +1,10 @@
 import type { Session } from './records'
 import { describeUnknownEnd, isCodeJudgedByFix, isOnBase, isUnitOnBase } from './step-states'
-import type { ChildState, ChildUnit, DeliveryFact, Position, StepState } from './step-states'
+import type { ChildUnit, DeliveryFact, Position, StepState } from './step-states'
 import { facts } from './facts'
 
 /** Holds the instruction that sends the agent to a branch before its first write on the default branch. */
 export const branchFirstInstruction = 'create a branch for the issue (git switch -c <name>)'
-
-/** Holds the child states whose issues a Close out's PR delivers. */
-const deliveredChildStates: ChildState[] = ['integrated', 'stranded']
 
 /**
  * Tells whether a child unit is integrated into its parent branch, a stranded one included, whose commits the parent holds.
@@ -32,7 +29,7 @@ export const isIntegrationBranch = (children: ChildUnit[]): boolean => children.
  * @returns The delivered issues, in ascending order.
  */
 function listDeliveredIssues(flow: string | null, issues: number[], children: ChildUnit[]): number[] {
-  const delivered = flow === 'close-out' ? children.filter(child => deliveredChildStates.includes(child.state)).flatMap(child => child.identity.issues) : []
+  const delivered = flow === 'close-out' ? children.filter(isIntegratedChild).flatMap(child => child.identity.issues) : []
   return [...new Set([...issues, ...delivered])].sort((a, b) => a - b)
 }
 
@@ -80,9 +77,10 @@ export function describeMissingIssue(flow: string | null, issues: number[], issu
  * @param state - The step and its first failing fact.
  * @param session - The session, which holds the declared issues.
  * @param position - Where the unit stands: its record, the checkout, the verify state.
+ * @param isDelegated - Whether a live coordinator delegates the unit, which then commits its own work.
  * @returns The step's next action, as an imperative phrase.
  */
-export function describeRequirement(state: StepState, session: Session, position: Position): string {
+export function describeRequirement(state: StepState, session: Session, position: Position, isDelegated = false): string {
   const { step } = state
   const { unit: { skills }, pullRequest, git } = position
   const isPushed = !!git?.isUpToDate
@@ -93,11 +91,16 @@ export function describeRequirement(state: StepState, session: Session, position
   if (step.isUnlocking) return state.factCode === 'verify-not-run' ? 'call the verify tool on this tree (finish any change still in progress first)' : describeCode(position)
   if (step.observe === 'verify.passed') return position.verify.factCode === 'verify-config-missing'
     ? "propose the minimum .claude/working-agreement.json: rules mapping path globs to the targeted check each change needs, as argvs taken from the project's docs, scripts or CI (workspaces, manifests, CI paths: filters), never the full suite, which CI runs; a change no rule matches is left to CI; argv only, strict keys (always, rules, timeoutMinutes, waitForCiLabels, issues, $schema), sub-packages as [\"sh\",\"-c\",\"cd pkg && …\"]; write it on the unit's branch as a normal change, ship it in its PR, then stop and ask the user to approve it with /flow approve verify" : 'call the verify tool'
-  // The agent never commits or pushes: it hands the user the commands, and the step follows what git then reports.
+  // Outside delegation the agent hands the user the commands; a delegated unit commits through the commit tool and never pushes.
   if (step.observe === 'commit') {
     const target = pullRequest?.baseRefName && pullRequest.baseRefName !== git?.base ? pullRequest.baseRefName : 'the default branch'
     const sharedBranch = position.slice?.isShared
       ? `; this branch carries another unit's commits: bring ${target} in with a merge, never a rebase (a rebase leaves the earlier units' PR step not done)` : ''
+    // why: Delegation exists to take the user out of the loop; a unit told to hand the commit over stalls until someone notices.
+    if (isDelegated) {
+      const message = !step.skill ? '' : skills.includes(step.skill) ? ` with the message ${step.skill} produced` : ` with the message the ${step.skill} skill produces`
+      return `stage the finished work with git add, commit it with the commit tool${message} and go on (never hand the commands to the user, never push)${sharedBranch}`
+    }
     if (!step.skill) return `stop and give the user the git add, git commit and git push commands to run (never commit or push yourself)${sharedBranch}`
     return skills.includes(step.skill)
       ? `stop and ask the user to run the commit commands ${step.skill} produced, then push the branch (never commit or push yourself; no need to run it again)${sharedBranch}`
@@ -156,9 +159,7 @@ export function describeRequirement(state: StepState, session: Session, position
  */
 function describeCode(position: Position): string {
   const { git } = position
-  const steps = [
-    ...(isOnBase(git) ? [`${branchFirstInstruction} first`] : []),
-  ]
+  const steps = isOnBase(git) ? [`${branchFirstInstruction} first`] : []
   const diagnosis = position.flow.steps.find(step => step.isInWorktree)?.skill
   const change = isCodeJudgedByFix(position.flow, position.unit)
     ? `resume the ${diagnosis} skill at Phase 5: write the regression test if the red is not already one, apply the approved fix, rerun the red command's argv through the run tool until it passes (the green; Bash runs never count), do the Phase 6 cleanup, then call the verify tool`

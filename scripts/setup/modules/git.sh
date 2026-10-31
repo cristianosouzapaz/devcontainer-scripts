@@ -26,6 +26,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 # - GIT_CLONE_TOKEN
 # - GIT_CLONE_TOKEN_<HOST>
 # - GIT_EMAIL
+# - GIT_TOKEN_DURING_INSTALL
 # - GIT_USER
 # - PROJECT_NAME
 # - REPO_SOURCE
@@ -263,13 +264,19 @@ install_dependencies() {
 	return 0
 }
 
-# install_dependencies_without_tokens: runs install_dependencies with every clone token removed from the environment, then restores them
+# install_dependencies_without_tokens: runs install_dependencies with every clone token out of reach, then restores them
 # Notes: a package-manager lifecycle script from the cloned repository is arbitrary
-#   code and must never see a clone credential; the tokens come back because a later
-#   repository still needs its own. Not a subshell: install_dependencies records
-#   failures in the shared error stack, which a subshell would discard.
+#   code running as this same user, so any file or helper it can reach, it can read:
+#   the tokens leave the environment, the credential store's content is held only in
+#   this shell's memory with the file deleted, and credential.helper is blanked, so
+#   `git credential fill` has nothing to return. All of it comes back whatever the
+#   install's outcome, because a later repository and the developer still need it.
+#   GIT_TOKEN_DURING_INSTALL=true skips the store and helper part, for dependencies
+#   that are private git repositories cloned with the same token. Not a subshell:
+#   install_dependencies records failures in the shared error stack, which a
+#   subshell would discard.
 install_dependencies_without_tokens() {
-	local rc=0 var_name
+	local rc=0 var_name saved_store="" saved_helper="" hide_store=false
 	local -a token_vars=()
 	local -A saved_tokens=()
 
@@ -282,8 +289,29 @@ install_dependencies_without_tokens() {
 		unset "$var_name"
 	done
 
+	if [[ "${GIT_TOKEN_DURING_INSTALL}" != "true" ]]; then
+		hide_store=true
+		saved_helper=$(git config --global credential.helper) || true
+		git config --global credential.helper ""
+		if [[ -f "$_GIT_CREDENTIALS_FILE" ]]; then
+			saved_store=$(<"$_GIT_CREDENTIALS_FILE")
+			rm -f -- "$_GIT_CREDENTIALS_FILE"
+		fi
+	fi
+
 	install_dependencies || rc=$?
 
+	if [[ "$hide_store" == true ]]; then
+		if [[ -n "$saved_store" ]]; then
+			# why: a new file would otherwise get the umask's mode, not the store's 600
+			( umask 077 && atomic_write "$_GIT_CREDENTIALS_FILE" printf '%s\n' "$saved_store" ) || rc=1
+		fi
+		if [[ -n "$saved_helper" ]]; then
+			git config --global credential.helper "$saved_helper" || rc=1
+		else
+			git config --global --unset credential.helper || true
+		fi
+	fi
 	for var_name in "${token_vars[@]}"; do
 		export "$var_name=${saved_tokens[$var_name]}"
 	done

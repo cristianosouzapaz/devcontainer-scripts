@@ -2,6 +2,7 @@ import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
 import { temporaryExpiryMs } from '../../hooks/core/timing'
+import { recordBuckets } from '../../hooks/core/record-store'
 import { buildPullRequest, diagnoseRuns, noFlow, verifyFile } from '../support/builders'
 import { conformanceGraph } from '../support/graph-fixture'
 import { declareFlow, readFlowStatus, readStepStates, runFlowCommand } from '../support/helpers'
@@ -112,7 +113,7 @@ test('a partial merge followed by more commits starts a fresh unit on re-declara
   expect(fresh?.skips).toBeUndefined()
   expect(fresh?.verifyRuns).toEqual([])
   expect(fresh?.runs).toEqual([])
-  expect(await readFlowStatus($)).toContain('▸ Code · no change from the base')
+  expect(await readFlowStatus($)).toContain('▸ Code\n')
   expect(await readFlowStatus($)).not.toContain('PR #5 · merged')
 })
 
@@ -156,7 +157,7 @@ test('a dead chat holding both concluded and live units cannot donate old eviden
   expect(sessions.get('sid')?.units[0]?.approval).toBeUndefined()
   expect(sessions.get('sid')?.units[0]?.skills).toEqual([])
   expect(sessions.get('sid')?.units[0]?.skips ?? []).toEqual([])
-  expect(await readFlowStatus($)).toContain('▸ Code · no change from the base')
+  expect(await readFlowStatus($)).toContain('▸ Code\n')
 })
 
 for (const trigger of ['startup', 'declaration']) {
@@ -193,7 +194,7 @@ for (const failure of ['gh', 'gh api graphql -F owner={owner} -F name={repo} -f 
     const orphansFiles = buildRunFiles('dead', '1-1-dead')
     for (const [path, text] of orphansFiles) files.set(path, text)
     const orphans = [...orphansFiles.keys()]
-    for (const bucket of ['s', 'u', 'd', 'ok', 'runs']) {
+    for (const bucket of recordBuckets) {
       const temporary = `${directory}/${bucket}/.tmp-dead-1`
       files.set(temporary, 'temporary')
       orphans.push(temporary)
@@ -245,7 +246,7 @@ for (const trigger of ['startup', 'declaration']) {
     const deletedFiles = new Map([...buildRunFiles('sid', '1-3-sid'), ...buildRunFiles('dead-with-hyphens', '1-1-dead-with-hyphens')])
     for (const [path, text] of deletedFiles) files.set(path, text)
     const deleted = [...deletedFiles.keys()]
-    for (const bucket of ['s', 'u', 'd', 'ok', 'runs']) {
+    for (const bucket of recordBuckets) {
       const dead = `${directory}/${bucket}/.tmp-dead-with-hyphens-1`
       files.set(dead, 'temporary')
       modified.set(dead, clock.now() - expiredAgeMs)
@@ -422,6 +423,6 @@ test('Close out keeps its recorded conclusion base while its slice follows the l
   expect(await readFlowStatus($)).toContain('✓ Commit')
   checkout.graph!.refs.main = 'f2'
   checkout.graph!.refs['origin/main'] = 'f2'
-  expect(await readFlowStatus($)).toContain('▸ Commit · nothing yet')
+  expect(await readFlowStatus($)).toContain('▸ Commit\n')
   expect(sessions.get('sid')?.units[0]?.base).toBe('m1')
 })

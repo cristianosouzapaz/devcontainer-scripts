@@ -1,4 +1,4 @@
-import { findDeniedWord, isGitCommit } from '../domain/bash-guards'
+import { findDeniedWord, isGitCommit, listScriptCandidates } from '../domain/bash-guards'
 import { composeSigningCommands, parseDelegatedCommit } from '../domain/delegated-commits'
 import type { DelegatedCommit, SigningBranch } from '../domain/delegated-commits'
 import { markForAgent } from '../domain/messages'
@@ -6,6 +6,7 @@ import type { Identity } from '../domain/records'
 import { hashObject, isAncestor, readDefaultRef, readGitOutput, readParentBranch, readWorktrees, runGit } from '../lib/git'
 import { readBranchRulesets } from '../lib/github'
 import { readJson } from '../lib/json'
+import type { ProcessOutput } from '../lib/process'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
 import { findDelegation, findLiveDelegation } from './delegation'
@@ -39,7 +40,7 @@ export async function readDelegatedUnit(port: EnginePort, isLiveOnly = true): Pr
  * @returns The key, or null when the change cannot be read.
  */
 async function readChangeKey(port: EnginePort, sha: string): Promise<string | null> {
-  // why: -m diffs a merge against each parent, which the signing rebase's recreated merge keeps; a plain commit's diff is unchanged.
+  // why: -m diffs a merge against each parent, which the user's re-signed merge keeps; a plain commit's diff is unchanged.
   const diff = await readGitOutput(port.processes, ['diff-tree', '-r', '--no-commit-id', '-m', sha])
   if (diff === null) return null
   const run = await hashObject(port.processes, diff)
@@ -76,7 +77,28 @@ export async function readDelegatedCommits(port: EnginePort): Promise<DelegatedC
 }
 
 /**
- * Refuses, in a delegated unit session, a command that names a word able to move another ref; other sessions are not checked.
+ * Names the first script file a command runs through an interpreter that the repository does not track.
+ * Known gaps of this accident guard: a script piped to an interpreter's stdin, an untracked file executed directly, a tracked script
+ * edited to carry denied words, and a script only staged with git add, which ls-files already counts as tracked.
+ * @param port - The engine calls.
+ * @param command - The raw Bash command.
+ * @returns The script's path, or undefined when every script it runs is tracked.
+ */
+async function findUntrackedScript(port: EnginePort, command: string): Promise<string | undefined> {
+  const cwd = await port.readCwd()
+  for (const candidates of listScriptCandidates(command)) {
+    for (const candidate of candidates) {
+      const path = candidate.startsWith('/') ? candidate : `${cwd}/${candidate}`
+      if ((await port.files.stat(path).catch(() => null))?.kind !== 'file') continue
+      if ((await runGit(port.processes, ['-C', cwd, 'ls-files', '--error-unmatch', '--', path])).exitCode !== 0) return candidate
+      break
+    }
+  }
+  return undefined
+}
+
+/**
+ * Refuses, in a delegated unit session, a command that names a word able to move another ref or runs an untracked script; other sessions are not checked.
  * @param port - The engine calls.
  * @param command - The raw Bash command.
  * @returns The deny reason, or undefined when the command may run.
@@ -91,9 +113,25 @@ export async function denyDelegatedCommand(port: EnginePort, command: string): P
   const names = aliases.exitCode === 0 ? aliases.stdout.split('\n').filter(Boolean).map(line => line.split(' ')[0]?.slice('alias.'.length) ?? '')
     : aliases.exitCode === 1 ? [] : null
   const word = findDeniedWord(command, names)
+  const script = word === undefined ? await findUntrackedScript(port, command) : undefined
+  if (script) return markForAgent(`Under delegation running an untracked script is refused before it runs (${script}): the word guard cannot read a file's contents. `
+    + 'Run its commands directly, or a script tracked in the repository; a commit goes through the commit tool.')
   return word === undefined ? undefined : markForAgent(`Under delegation this command is refused before it runs (it names ${word}): `
     + 'a delegated unit only commits on its own branch; pushes, merges, rebases, ref rewrites and PR writes are the user\'s on their return. '
     + 'A commit message that names one of these words goes through the commit tool.')
+}
+
+/**
+ * Runs a git command that writes a commit, unsigned.
+ * @param port - The engine calls.
+ * @param command - The git arguments up to the subcommand.
+ * @param rest - The arguments after it.
+ * @param stdin - Optional standard input.
+ * @returns The unmodified process output.
+ */
+export function runUnsignedGit(port: EnginePort, command: string[], rest: string[], stdin?: string): Promise<ProcessOutput> {
+  // why: A delegated commit stays unsigned whatever commit.gpgsign says; the user's re-sign signs it on their return.
+  return runGit(port.processes, [...command, '--no-gpg-sign', ...rest], stdin)
 }
 
 /**
@@ -108,8 +146,7 @@ export async function commitDelegated(port: EnginePort, message: string): Promis
   if (!unit) return fail('only a delegated unit commits through this tool; elsewhere commits are the user\'s.')
   const elsewhere = await refuseOtherCheckout(port, unit.branch)
   if (elsewhere) return fail(elsewhere)
-  // why: A delegated commit stays unsigned whatever commit.gpgsign says; the user's signing step signs it on their return.
-  const run = await runGit(port.processes, ['commit', '--no-gpg-sign', '-F', '-'], message)
+  const run = await runUnsignedGit(port, ['commit'], ['-F', '-'], message)
   if (run.exitCode !== 0) return fail(`git commit failed — stage the work with git add first: ${`${run.stdout}\n${run.stderr}`.trim()}`)
   const sha = await recordHead(port, unit.branch, 'a commit')
   if (!sha.isOk) return sha
@@ -180,7 +217,7 @@ export async function recordDelegated(port: EnginePort, shas: string[], branch: 
 }
 
 /**
- * Finds, after the user's signing rebase, the commit that replaced a delegated commit a unit's recorded base names.
+ * Finds, after the user's re-sign, the commit that replaced a delegated commit a unit's recorded base names.
  * @param port - The engine calls.
  * @param base - The recorded base, no longer in the branch's history.
  * @param tip - The branch tip.

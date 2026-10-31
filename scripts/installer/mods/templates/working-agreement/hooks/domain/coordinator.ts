@@ -5,13 +5,13 @@ import { appendInstructions, markForAgent, modToolPrefix } from './messages'
 export const suggestCoordinateTool = `${modToolPrefix}suggest_coordinate`
 /** The issue tools, by the name after the mod's prefix. */
 export const issueTools = ['issue_create', 'issue_edit', 'issue_close', 'issue_comment'] as const
-/** The coordinator's tools that start, message and retire unit sessions, by the name after the mod's prefix. */
-export const unitTools = ['spawn', 'unit_prompt', 'unit_read', 'retire_unit'] as const
+/** The coordinator's tools that start, message, escalate and retire unit sessions, by the name after the mod's prefix. */
+export const unitTools = ['spawn', 'unit_prompt', 'unit_read', 'retire_unit', 'escalate_unit'] as const
 
 // why: These tools write nothing in the repository but the engine does not mark them read-only; Agent is safe here
 // because every call of the subagent it starts is checked again under its agentId. The issue tools are the coordinator's
 // only GitHub write channel, spawn starts the unit sessions that do write, unit_prompt is its only channel to them, retire_unit
-// removes a delegated unit only after the mod archived its work and posted the decision, and
+// removes a delegated unit only after the mod archived its work and posted the decision, escalate_unit only resumes a unit's own session on a higher level, and
 // merge_child is its one repository write, which the mod itself runs only for a delegated child/parent pair it knows; plan only reads.
 const modTools = [suggestCoordinateTool, suggestDelegateTool, ...[...issueTools, ...unitTools, 'merge_child', 'plan'].map(name => `${modToolPrefix}${name}`)]
 const allowedTools = ['Agent', 'Skill', 'ToolSearch', 'AskUserQuestion', 'TodoWrite', ...modTools]

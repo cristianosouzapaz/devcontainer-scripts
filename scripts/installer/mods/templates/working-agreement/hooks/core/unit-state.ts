@@ -50,6 +50,16 @@ export async function readUnitState(port: EnginePort, issue: number, base: Defau
 }
 
 /**
+ * Reads the repository's default branch by name and by the ref it resolves through.
+ * @param port - The engine calls.
+ * @returns The default branch, or null when the repository state is unreadable.
+ */
+export async function readDefaultBase(port: EnginePort): Promise<DefaultBase | null> {
+  const git = await readGit(port)
+  return git ? { name: git.base, ref: await readDefaultRef(port.processes, git.base) } : null
+}
+
+/**
  * Finds the branch an issue's unit already has, whatever type and slug it was given: `<n>-` starts its name or follows its last slash.
  * @param port - The engine calls.
  * @param issue - The issue number.
@@ -70,7 +80,7 @@ export async function findUnitBranch(port: EnginePort, issue: number): Promise<R
  */
 export async function readIssueStart(port: EnginePort, issue: number): Promise<Result<IssueStart>> {
   const read = await readGraphql(port.processes, `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){issue(number:${issue}){`
-    + 'state title labels(first:100){nodes{name}} blockedBy(first:50){nodes{number state}}}}}', [], { fallback: 'not found' })
+    + 'state title labels(first:100){nodes{name}} parent{number} blockedBy(first:50){nodes{number state}}}}}', [], { fallback: 'not found' })
   if (!read.isOk) return fail(`cannot read #${issue}: ${read.error}`)
   const fields = isRecord(read.value.issue) ? read.value.issue : null
   if (!fields) return fail(`cannot read #${issue}: unreadable gh output`)
@@ -80,30 +90,49 @@ export async function readIssueStart(port: EnginePort, issue: number): Promise<R
   const refuse = (reason: string): Result<IssueStart> => succeed({ title, blockers, base: { isReady: false, reason } })
   if (fields.state !== 'OPEN') return refuse(`#${issue} is closed`)
   if (triage !== 'ready-for-agent') return refuse(`#${issue} is ${triage ?? 'not triaged'}, and only a ready-for-agent issue gets a unit: triage stays the user's unless /flow delegate triage hands it over`)
-  const base = await resolveBase(port, blockers)
+  const base = await resolveBase(port, blockers, isRecord(fields.parent) ? Number(fields.parent.number) : undefined)
   return base.isReady ? succeed({ title, blockers, base }) : refuse(`#${issue} waits: ${base.reason}`)
 }
 
 /**
- * Picks where a new unit branch starts: the dependency's branch, or the branch that has integrated it, else the default branch.
+ * Picks where a new unit branch starts: the tip of its parent issue's unit branch, where a sub-issue lands, once every other
+ * dependency is integrated there; else by its dependencies alone.
+ * @param port - The engine calls.
+ * @param blockers - The issue's open blocked-by dependencies.
+ * @param parentIssue - The issue's native parent, if any.
+ * @returns The base ref, or what the unit waits for.
+ */
+async function resolveBase(port: EnginePort, blockers: number[], parentIssue: number | undefined): Promise<Base> {
+  const integration = parentIssue === undefined ? undefined : await findUnitBranch(port, parentIssue)
+  if (!integration) return await resolveDependencyBase(port, blockers)
+  if (!integration.isOk) return { isReady: false, reason: integration.error }
+  // why: a sub-issue blocked by its own parent would wait for a unit that finishes only with its PR; the parent is where it lands.
+  const others = blockers.filter(blocker => blocker !== parentIssue)
+  const dependency = others.length ? await resolveDependencyBase(port, others) : null
+  const isIntegrated = !dependency || (dependency.isReady && dependency.parent === integration.value)
+  return isIntegrated ? { isReady: true, ref: `refs/heads/${integration.value}`, parent: integration.value }
+    : { isReady: false, reason: `its dependency #${others.join(', #')} is not integrated into ${integration.value} yet` }
+}
+
+/**
+ * Picks where a new unit branch starts by its dependencies: the dependency's branch, or the branch that has integrated it, else the default branch.
  * @param port - The engine calls.
  * @param blockers - The issue's open blocked-by dependencies.
  * @returns The base ref, or what the unit waits for.
  */
-async function resolveBase(port: EnginePort, blockers: number[]): Promise<Base> {
-  const git = await readGit(port)
-  if (!git) return { isReady: false, reason: 'the repository state is unreadable' }
-  const defaultRef = await readDefaultRef(port.processes, git.base)
+async function resolveDependencyBase(port: EnginePort, blockers: number[]): Promise<Base> {
+  const base = await readDefaultBase(port)
+  if (!base) return { isReady: false, reason: 'the repository state is unreadable' }
   const [blocker, ...others] = blockers
-  if (blocker === undefined) return { isReady: true, ref: defaultRef, parent: git.base }
+  if (blocker === undefined) return { isReady: true, ref: base.ref, parent: base.name }
   if (others.length) return { isReady: false, reason: `it is blocked by #${blockers.join(', #')}, and a child unit has one parent` }
   const parent = await findUnitBranch(port, blocker)
   // why: when a dependent unit may start is the coordinator's call; a commit count does not say the dependency is ready.
   if (!parent?.isOk) return { isReady: false, reason: `its dependency #${blocker} has no unit branch yet` }
   // why: a dependent built on unfinished work duplicates or conflicts with it; only a committed, verified unit is a base.
-  const state = await readUnitState(port, blocker, { name: git.base, ref: defaultRef }, await readSessionMirrors(port))
+  const state = await readUnitState(port, blocker, base, await readSessionMirrors(port))
   if (state !== 'finished' && state !== 'integrated') return { isReady: false, reason: `#${blocker}'s unit is ${state}` }
-  return await readCollector(port, parent.value, git.base, defaultRef) ?? { isReady: true, ref: parent.value, parent: parent.value }
+  return await readCollector(port, parent.value, base.name, base.ref) ?? { isReady: true, ref: parent.value, parent: parent.value }
 }
 
 /**

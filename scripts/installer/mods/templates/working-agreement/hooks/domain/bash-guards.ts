@@ -5,12 +5,25 @@ import { markForAgent } from './messages'
 const deniedWords = new Set(['push', 'rebase', 'reset', 'update-ref', 'filter-branch', 'merge', 'eval'])
 const deniedText = [/\bGIT_(DIR|WORK_TREE|CONFIG\w*)\b/, /--git-dir\b/, /--work-tree\b/, /-c\s*alias\./, /-c\s*core\.hooksPath/i, /\b(ba)?sh\s+-\w*c/]
 const readOnlyPr = new Set(['view', 'list', 'checks', 'diff'])
+/** The names of the shells a command may run, as a pattern source. */
+export const shellNames = '(ba|z|da|k)?sh'
+// why: A script file hides its words from the guard; an interpreter's first operand that is a file is the script it runs.
+const interpreter = new RegExp(`^(${shellNames}|python[\\d.]*|node|perl|ruby|deno|bun|tsx|ts-node|source)$`)
 
 /** Where an issue write is told to go instead of a raw gh call, with the tool each third-party skill uses. */
 const issueBashDeny = markForAgent('Raw GitHub issue, label, milestone and dependency writes are denied — use the mod\'s tools: ' +
   'issue_create (to-spec: kind spec; to-tickets: kind ticket with parent and blockedBy; wayfinder: labels wayfinder:* with kind decision; triage: kind bug), ' +
   'issue_edit (triage label, type, priority, assignees, parent, blockedBy, title, body, reopen), issue_comment (triage briefs, wayfinder resolutions), ' +
   'issue_close (state reason); missing labels come from /flow setup-labels, which the user runs.')
+
+/**
+ * Names the command a word runs, without its directory.
+ * @param word - The command word, a bare name or a path.
+ * @returns The part after its last slash.
+ */
+export function commandName(word: string): string {
+  return word.split('/').pop() ?? ''
+}
 
 /**
  * Splits a command into its words, dropping quotes and shell separators.
@@ -75,6 +88,19 @@ export function judgeIssueBash(command: string): string | undefined {
 export function isGitCommit(command: string): boolean {
   const words = splitWords(command)
   return words.includes('git') && words.includes('commit')
+}
+
+/**
+ * Lists, for each simple command that runs an interpreter, the words after it that are not options: the first of them that is a file is its script.
+ * @param command - The raw Bash command.
+ * @returns One candidate list per interpreter run.
+ */
+export function listScriptCandidates(command: string): string[][] {
+  return command.split(/[;&|()`\n]+/).map(splitWords).flatMap(words => {
+    // why: `.` reads as source only where a command starts, unlike the `.` of `find . -name`.
+    const index = words[0] === '.' ? 0 : words.findIndex(word => interpreter.test(commandName(word)))
+    return index < 0 ? [] : [words.slice(index + 1).filter(word => !word.startsWith('-'))]
+  })
 }
 
 /**

@@ -48,12 +48,12 @@ async function readInstruction(world: World): Promise<string> {
 test('a child after Commit has Integrate current in place of PR, with the merge in the worktree that holds the parent', async ($, on) => {
   createWorld(on, childCheckout(), parChild())
   const status = await readFlowStatus($)
-  expect(status).toContain('▸ Integrate · not merged into par')
+  expect(status).toContain('▸ Integrate\n')
   expect(status).toContain('Merge')
   expect(status).toContain('git -C /par merge --no-ff a')
   expect(status).not.toMatch(/ PR\b/)
   const context = await readPromptContext($)
-  expect(context).toContain('current step: Integrate. not merged into par. Next action: the user\'s step: stop and ask them to run git -C /par merge --no-ff a to merge this unit into par (never merge yourself).')
+  expect(context).toContain('current step: Integrate. Next action: the user\'s step: stop and ask them to run git -C /par merge --no-ff a to merge this unit into par (never merge yourself).')
 })
 
 test('a parent checked out in no worktree gets a merge naming both branches, never a path', async ($, on) => {
@@ -99,14 +99,14 @@ test('a parent PR whose head does not contain the slice end leaves Integrate awa
 test('a merged child PR into the parent counts only once the user has fetched origin/par', async ($, on) => {
   const checkout = childCheckout({ 'origin/par': 'p1' })
   createWorld(on, checkout, { ...parChild(), prs: [buildPullRequest({ number: 7, state: 'MERGED', headRefName: 'a', baseRefName: 'par', headRefOid: 'a2' })] })
-  expect(await readFlowStatus($)).toContain('▸ Integrate · not merged into par')
+  expect(await readFlowStatus($)).toContain('▸ Integrate\n')
   checkout.graph = { ...checkout.graph!, refs: { ...checkout.graph!.refs, 'origin/par': 'ma' } }
   expect(await readFlowStatus($)).toContain("✓ Integrate · awaiting par's PR")
 })
 
-test('an open child PR into the parent only enriches the fact; the verdict stays ancestry', async ($, on) => {
+test('an open child PR into the parent only enriches the guidance; the verdict stays ancestry', async ($, on) => {
   createWorld(on, childCheckout(), { ...parChild(), prs: [buildPullRequest({ number: 7, headRefName: 'a', baseRefName: 'par', headRefOid: 'a2' })] })
-  expect(await readFlowStatus($)).toContain('▸ Integrate · PR #7 into par open — merge it')
+  expect(await readFlowStatus($)).toContain('▸ Integrate\n')
   expect(await readPromptContext($)).toContain('stop and ask them to merge PR #7 and fetch, or run git -C /par merge --no-ff a')
 })
 
@@ -115,7 +115,7 @@ test('a new commit on the child after integration makes Integrate current again'
   createWorld(on, checkout, parChild())
   expect(await readFlowStatus($)).toContain("✓ Integrate · awaiting par's PR")
   checkout.graph = withCommit(checkout.graph!, 'a3', ['a2'], 'a')
-  expect(await readFlowStatus($)).toContain('▸ Integrate · not merged into par')
+  expect(await readFlowStatus($)).toContain('▸ Integrate\n')
 })
 
 test('Integrate depends on Commit as PR does: uncommitted changes on an integrated child make Commit current', async ($, on) => {
@@ -129,13 +129,13 @@ test('Integrate depends on Commit as PR does: uncommitted changes on an integrat
 test('an empty slice is never integrated, although the parent tip reaches its end', async ($, on) => {
   const skips = [...parChild().unit!.skips as unknown[], { step: 'commit', reason: 'nothing to commit' }]
   createWorld(on, childCheckout({ a: 'p1' }), { unit: { ...parChild().unit, skips } })
-  expect(await readFlowStatus($)).toContain('▸ Integrate · not merged into par')
+  expect(await readFlowStatus($)).toContain('▸ Integrate\n')
 })
 
 test('a unit whose base branch is the default branch keeps its PR step', async ($, on) => {
   createWorld(on, childCheckout(), { unit: { ...parChild().unit, base: 'p1', baseBranch: 'main' } })
   const status = await readFlowStatus($)
-  expect(status).toContain('▸ PR · no PR')
+  expect(status).toContain('▸ PR\n')
   expect(status).not.toContain('Integrate')
 })
 
@@ -209,7 +209,7 @@ test('a child observed before its branch was deleted stays judged on its observe
 test('a child observed before its branch was deleted unmerged is told to restore the branch, never to merge a branch that is gone', async ($, on) => {
   const checkout = { ...childCheckout(), worktrees: { '/repo': { branch: 'a', head: 'a2' }, '/par': { branch: 'par' } } }
   const world = await createChildWorld(on, checkout)
-  expect(await readFlowStatus($)).toContain('▸ Integrate · not merged into par')
+  expect(await readFlowStatus($)).toContain('▸ Integrate\n')
   checkout.graph = withoutBranch(checkout.graph!, 'a')
   await world.clock.settle()
   const status = await readFlowStatus($)
@@ -318,7 +318,7 @@ test('a parent PR merged before the child was cut never strands it', async ($, o
 test('a stranded child that is not integrated yet shows the merge first: no step leaves the gap silent', async ($, on) => {
   const checkout = strandedCheckout({ par: 'pp' })
   const world = createWorld(on, checkout, { ...parChild(), prs: [strandingPullRequest] })
-  expect(await readFlowStatus($)).toContain('▸ Integrate · not merged into par')
+  expect(await readFlowStatus($)).toContain('▸ Integrate\n')
   checkout.graph = { ...checkout.graph!, refs: { ...checkout.graph!.refs, par: 'mpp' } }
   await world.clock.advance(61000)
   expect(await readFlowStatus($)).toContain('✗ Integrate · parent PR #9 merged')
@@ -329,7 +329,7 @@ test("in one session, a concluded child that gets a new commit is current again,
   const world = createWorld(on, checkout, { ...parChild(), prs: [buildParentPullRequest({ number: 9, headRefOid: 'ma' })] })
   expect(await readFlowStatus($)).toContain('✓ Integrate · merged #9')
   checkout.graph = withCommit(checkout.graph!, 'a3', ['a2'], 'a')
-  expect(await readFlowStatus($)).toContain('▸ Integrate · not merged into par')
+  expect(await readFlowStatus($)).toContain('▸ Integrate\n')
   checkout.graph = withCommit(checkout.graph!, 'ma3', ['ma', 'a3'], 'par')
   await world.clock.advance(61000)
   expect(await readFlowStatus($)).toContain("✗ Integrate · parent PR #9 merged without this unit's commits")
@@ -339,7 +339,7 @@ test("a new commit on the child after its parent's PR merged: Integrate is curre
   const checkout = childCheckout({ par: 'ma' })
   checkout.graph = withCommit(checkout.graph!, 'a3', ['a2'], 'a')
   const world = createWorld(on, checkout, { ...parChild(), prs: [buildParentPullRequest({ number: 9, headRefOid: 'ma' })] })
-  expect(await readFlowStatus($)).toContain('▸ Integrate · not merged into par')
+  expect(await readFlowStatus($)).toContain('▸ Integrate\n')
   checkout.graph = withCommit(checkout.graph!, 'ma3', ['ma', 'a3'], 'par')
   await world.clock.advance(61000)
   expect(await readFlowStatus($)).toContain("✗ Integrate · parent PR #9 merged without this unit's commits")

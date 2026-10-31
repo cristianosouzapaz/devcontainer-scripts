@@ -81,7 +81,7 @@ test('a Close out on a branch cut from a parent branch keeps its PR step', async
   await declareFlow($, 'close-out', [3])
   await runFlowCommand($, 'skip verify covered separately')
   const status = await readFlowStatus($)
-  expect(status).toContain('▸ PR · no PR')
+  expect(status).toContain('▸ PR\n')
   expect(status).not.toContain('Integrate')
 })
 

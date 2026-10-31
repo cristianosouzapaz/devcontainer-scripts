@@ -68,3 +68,16 @@ export async function readJson(files: FilePort, path: string): Promise<unknown> 
   if (!parsed.isOk) throw new Error(`${path}: ${parsed.error}`)
   return parsed.value
 }
+
+/**
+ * Reads external JSON strictly when the caller asks for it, else falls back on a failed read.
+ * @param files - The engine's file reader.
+ * @param path - The file to read.
+ * @param strict - Whether a failed read throws.
+ * @param fallback - What a failed read gives unless strict.
+ * @returns The decoded value, undefined when the file is confirmed missing, or the fallback.
+ * @throws When strict and the read fails or the text is not JSON.
+ */
+export async function readJsonUnlessStrict(files: FilePort, path: string, strict: boolean, fallback: unknown): Promise<unknown> {
+  return readJson(files, path).catch((error: unknown) => { if (strict) throw error; return fallback })
+}

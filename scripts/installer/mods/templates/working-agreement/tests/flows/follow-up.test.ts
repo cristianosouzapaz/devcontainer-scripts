@@ -47,7 +47,7 @@ test("a Follow-up child is integrated by the user's merge and its issue is requi
   const world = createWorld(on, checkout, options)
   expect((await runFlowCommand($, 'follow-up #1')).text).toContain('base from par (branch reflog)')
   await runFlowCommand($, 'skip verify covered by the parent')
-  expect(await readFlowStatus($)).toContain('Integrate · not merged into par')
+  expect(await readFlowStatus($)).toContain('▸ Integrate\n')
   checkout.graph = withCommit(checkout.graph!, 'mpb', ['p1', 'b1'], 'par')
   await world.clock.advance(61000)
   expect(await readFlowStatus($)).toContain("✓ Integrate · awaiting par's PR")

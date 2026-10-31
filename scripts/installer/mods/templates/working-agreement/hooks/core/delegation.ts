@@ -1,16 +1,19 @@
 import { coversIssues, describeScope, parseScope, widenScope } from '../domain/delegation'
-import type { CoordinatorLiveness, DelegateRequest, DelegationScope } from '../domain/delegation'
+import type { DelegateRequest, DelegationScope } from '../domain/delegation'
+import type { SessionLiveness } from '../domain/process-host'
 import { removeFile } from '../lib/files'
-import { readJson } from '../lib/json'
+import { readJson, readJsonUnlessStrict } from '../lib/json'
 import { hasExitedZero } from '../lib/process'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
 import { mergeUnique } from '../domain/records'
 import type { EnginePort } from './engine-port'
 import { logEvent } from './flow-log'
-import { readHost, readStartTime } from './host'
+import { judgeSession, stampHost } from './host'
 import { atomicReplace, listRecordNames, readCommonDir, readSession, readSessionMirrors, recordsPath, updateUnits } from './record-store'
+import { readSessionLiveness } from './session-host'
 import { withRecordLock } from './session-memory'
+import { readSpawnedSession, unitAgent } from './spawn'
 import { isCoordinatorSession } from '../domain/coordinator'
 
 // why: The scopes live beside the session mirrors, under the common directory every worktree shares, so a unit session
@@ -54,36 +57,91 @@ async function listScopes(port: EnginePort, strict: boolean): Promise<Delegation
   const names = strict ? await listRecordNames(port, directory) : await listRecordNames(port, directory).catch(() => [])
   const scopes: DelegationScope[] = []
   for (const name of names.filter(name => name.endsWith('.json')).sort((a, b) => a.localeCompare(b))) {
-    const scope = parseScope(await readJson(port.files, recordsPath(common, bucket, name)).catch((error: unknown) => { if (strict) throw error; return undefined }))
+    const scope = parseScope(await readJsonUnlessStrict(port.files, recordsPath(common, bucket, name), strict, undefined))
     if (scope && name === `${scope.sessionId}.json`) scopes.push(scope)
   }
   return scopes
 }
 
 /**
- * Finds the scope that delegates a unit, in any coordinator of the repository, whether or not its coordinator still runs:
- * a guard that delegation adds holds until the scope is stopped.
+ * Tells whether this session is the one spawn started for one of a unit's issues: a scope delegates that session only,
+ * never another one that declares the same issues, even in the unit's own worktree.
  * @param port - The engine calls.
  * @param issues - The unit's issues.
- * @param strict - Whether an unreadable bucket or scope throws, for a caller to which not delegating is the unsafe direction.
- * @returns The covering scope, or null; unless strict, an unlistable bucket or an unreadable scope counts as not delegating.
+ * @param strict - Whether an unreadable spawn record throws.
+ * @returns Whether this session is the spawned unit.
  */
-export async function findDelegation(port: EnginePort, issues: number[], strict = false): Promise<DelegationScope | null> {
-  if (!issues.length) return null
-  return (await listScopes(port, strict)).find(scope => coversIssues(scope, issues)) ?? null
+async function isSpawnedSession(port: EnginePort, issues: number[], strict: boolean): Promise<boolean> {
+  const sessionId = await port.readSessionId()
+  for (const issue of issues) {
+    if (await readSpawnedSession(port, issue, strict) === sessionId) return true
+  }
+  return false
 }
 
 /**
- * Finds the scope that delegates a unit and whose coordinator still runs, for the actions only delegation allows.
+ * Finds the scope that delegates this session's unit, in any coordinator of the repository, whether or not its coordinator
+ * still runs: a guard that delegation adds holds until the scope is stopped.
  * @param port - The engine calls.
  * @param issues - The unit's issues.
- * @param strict - Whether an unreadable bucket or scope throws.
- * @returns The covering live scope, or null; an orphaned scope delegates nothing.
+ * @param strict - Whether an unreadable bucket, scope or spawn record throws, for a caller to which not delegating is the unsafe direction.
+ * @returns The covering scope, or null when none covers the unit or this session is not the one spawn started for it;
+ * unless strict, an unreadable record counts as not delegating.
+ */
+export async function findDelegation(port: EnginePort, issues: number[], strict = false): Promise<DelegationScope | null> {
+  return findCovering(port, issues, strict, async () => (await listScopes(port, strict)).find(scope => coversIssues(scope, issues)) ?? null)
+}
+
+/**
+ * Finds the scope that delegates this session's unit and whose coordinator still runs, for the actions only delegation allows.
+ * @param port - The engine calls.
+ * @param issues - The unit's issues.
+ * @param strict - Whether an unreadable bucket, scope or spawn record throws.
+ * @returns The covering live scope, or null; an orphaned scope delegates nothing, and a session spawn did not start is never delegated.
  */
 export async function findLiveDelegation(port: EnginePort, issues: number[], strict = false): Promise<DelegationScope | null> {
-  if (!issues.length) return null
+  return findCovering(port, issues, strict, () => findLiveScope(port, issues, strict))
+}
+
+/**
+ * Finds a scope for this session's unit only when this session is the one spawn started for it.
+ * @param port - The engine calls.
+ * @param issues - The unit's issues.
+ * @param strict - Whether an unreadable spawn record throws.
+ * @param find - Finds the scope once the session is the spawned unit.
+ * @returns What find returns, or null for no issues or a session spawn did not start.
+ */
+async function findCovering(port: EnginePort, issues: number[], strict: boolean, find: () => Promise<DelegationScope | null>): Promise<DelegationScope | null> {
+  if (!issues.length || !await isSpawnedSession(port, issues, strict)) return null
+  return find()
+}
+
+/**
+ * Finds the scope covering issues whose coordinator still runs, whichever session asks.
+ * @param port - The engine calls.
+ * @param issues - The issues.
+ * @param strict - Whether an unreadable bucket or scope throws.
+ * @returns The covering live scope, or null.
+ */
+async function findLiveScope(port: EnginePort, issues: number[], strict: boolean): Promise<DelegationScope | null> {
   for (const scope of (await listScopes(port, strict)).filter(scope => coversIssues(scope, issues))) {
     if (await readLiveness(port, scope) === 'live') return scope
+  }
+  return null
+}
+
+/**
+ * Finds the first issue a declaration would take from a delegated unit that runs in another session.
+ * @param port - The engine calls.
+ * @param issues - The issues to declare.
+ * @returns The refusal naming the unit's session, or null when no running unit of a live scope holds any of them.
+ */
+export async function findHeldIssue(port: EnginePort, issues: number[]): Promise<string | null> {
+  const sessionId = await port.readSessionId()
+  for (const issue of issues) {
+    const holder = await readSpawnedSession(port, issue, false)
+    if (!holder || holder === sessionId || !await findLiveScope(port, [issue], false) || await readSessionLiveness(port, holder) !== 'live') continue
+    return `#${issue} is delegated: its unit runs in session ${holder} (herdr agent ${unitAgent(issue)}). Work on it there, or ask the coordinator to retire it first.`
   }
   return null
 }
@@ -95,11 +153,8 @@ export async function findLiveDelegation(port: EnginePort, issues: number[], str
  * @returns `live` for this session's own scope or a running recorded process, `gone` once that process ended or its pid was
  * reused, and `unknown` without a recorded process or outside its pid namespace and boot.
  */
-export async function readLiveness(port: EnginePort, scope: DelegationScope): Promise<CoordinatorLiveness> {
-  if (scope.sessionId === await port.readSessionId()) return 'live'
-  const host = await readHost(port)
-  if (!scope.host || scope.host.pidns !== host.pidns || scope.host.bootId !== host.bootId) return 'unknown'
-  return readStartTime(await port.files.read(`/proc/${scope.host.pid}/stat`).catch(() => '')) === scope.host.pidStart ? 'live' : 'gone'
+export async function readLiveness(port: EnginePort, scope: DelegationScope): Promise<SessionLiveness> {
+  return judgeSession(port, scope.sessionId, async () => scope.host)
 }
 
 /**
@@ -108,10 +163,10 @@ export async function readLiveness(port: EnginePort, scope: DelegationScope): Pr
  * @param scope - The scope.
  * @returns The scope with the current process.
  */
-async function stampHost(port: EnginePort, scope: DelegationScope): Promise<DelegationScope> {
+async function stampScope(port: EnginePort, scope: DelegationScope): Promise<DelegationScope> {
   const { host: _host, ...rest } = scope
-  const { pidns, pid, pidStart, bootId } = await readHost(port)
-  return pidns && pid && pidStart && bootId ? { ...rest, host: { pidns, pid, pidStart, bootId } } : rest
+  const host = await stampHost(port)
+  return host ? { ...rest, host } : rest
 }
 
 /**
@@ -124,7 +179,7 @@ export function refreshScopeHost(port: EnginePort): Promise<void> {
     if (!isCoordinatorSession(await readSession(port))) return
     const scope = await readOwnScope(port)
     if (!scope) return
-    const stamped = await stampHost(port, scope)
+    const stamped = await stampScope(port, scope)
     if (JSON.stringify(stamped) !== JSON.stringify(scope)) await atomicReplace(port, await scopePath(port, scope.sessionId), JSON.stringify(stamped))
   })
 }
@@ -173,7 +228,7 @@ export function runDelegate(port: EnginePort, request: DelegateRequest, isPushGu
     const scope = await readOwnScope(port)
     const { environment, paneId } = await port.readHerdrEnv()
     const widened = widenScope(scope, sessionId, request.issues, !isPushGuarded, request.isTriage, request.instructions, environment === '1' && paneId ? paneId : scope?.paneId)
-    await atomicReplace(port, path, JSON.stringify(await stampHost(port, widened)))
+    await atomicReplace(port, path, JSON.stringify(await stampScope(port, widened)))
     return succeed(`Delegating ${describeScope(widened)} until /flow delegate stop.`)
   })
 }

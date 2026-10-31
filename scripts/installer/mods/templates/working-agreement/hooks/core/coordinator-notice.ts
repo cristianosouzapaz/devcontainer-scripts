@@ -1,6 +1,7 @@
 import { composePermissionNotice, composeTurnNotice, isNoticeOwed, parseNoticeRecord, recordNotice } from '../domain/notice'
 import type { Notice, NoticeRecord, UnitTurn } from '../domain/notice'
 import type { Session } from '../domain/records'
+import { facts } from '../domain/facts'
 import { readJson } from '../lib/json'
 import { formatErrorLine } from '../lib/result'
 import { findLiveDelegation } from './delegation'
@@ -45,7 +46,7 @@ export function noticeTurnEnd(port: EnginePort, turn: Pick<UnitTurn, 'reason' | 
     const position = await locatePosition(port, session)
     const current = position?.current?.step
     return record => composeTurnNotice({ ...turn, issues: session.issues, step: current ? { id: current.id, label: current.label, isHuman: !!current.isHuman } : null,
-      tree: position?.slice?.tree ?? null, verifyFact: position?.verify.isVerified ? null : position?.verify.fact || 'not run', last: record })
+      tree: position?.slice?.tree ?? null, verifyFact: position?.verify.isVerified ? null : position?.verify.fact || facts.verifyNotRun, last: record })
   })
 }
 

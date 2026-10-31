@@ -51,8 +51,15 @@ interface Repository { common: string; branch: string }
 interface GhResponse { body: unknown; exitCode?: number }
 /** A GitHub Actions job: its status and the runner labels it asks for. */
 interface ActionsJob { status: string; labels: string[] }
-interface GhAnswer { stdout?: string; exitCode?: number; stderr?: string }
+interface CliAnswer { stdout?: string; exitCode?: number; stderr?: string }
 interface HerdrActivity { calls: number; active: number; maximum: number }
+/** What a seeded delegation records beyond its scope's issues. */
+interface DelegationSeed {
+  /** The issues spawn started a unit for in the world's session; the scope's issues by default. */
+  spawned?: number[]
+  /** The coordinator's process; the world's running coordinator by default, none when null. */
+  host?: unknown
+}
 
 /** The records and external responses that replace a world's defaults. */
 export interface Options {
@@ -61,7 +68,9 @@ export interface Options {
   herdrGate?: Promise<void>
   ghResponse?: GhResponse
   /** Answers a gh call ahead of every modelled one; undefined leaves it to them. */
-  gh?: (args: string[]) => GhAnswer | undefined
+  gh?: (args: string[]) => CliAnswer | undefined
+  /** Answers a claude CLI call, such as spawn's model check; a valid one-turn reply when unset. */
+  claude?: (args: string[]) => CliAnswer
   herdrResult?: HerdrResult
   /** The standard output herdr prints for these arguments, or its whole result; empty when unset. */
   herdrReply?: (args: string[]) => string | Partial<HerdrResult> & { stdout?: string }
@@ -339,6 +348,13 @@ const gitAnswers: GitEntry[] = [
   } },
   { name: 'aliases', pattern: /^config --get-regexp \^alias\\\.$/, answer: c => c.graph.aliases
     ? ok(Object.entries(c.graph.aliases).map(([name, value]) => `alias.${name} ${value}`).join('\n')) : { exitCode: 1, stdout: '' } },
+  // The index, not the worktree, decides: a file only staged is tracked, and a path outside the repository is fatal.
+  { name: 'tracked', pattern: /^ls-files --error-unmatch -- (.+)$/, answer: (c, m) => {
+    const path = m[1] ?? ''
+    if (!path.startsWith(`${c.owner[0]}/`)) return { exitCode: 128, stdout: '' }
+    const relative = path.slice(c.owner[0].length + 1)
+    return { ...c.filesAt('HEAD'), ...c.checkout.staged }[relative] ? ok(relative) : { exitCode: 1, stdout: '' }
+  } },
   { name: 'add', pattern: /^add -A$/, answer: () => ok('') },
   // A safe delete leaves the graph alone: tests read the deletion from the recorded runs.
   { name: 'branch-delete', pattern: /^branch -d (\S+)$/, answer: (c, m) => {
@@ -417,6 +433,16 @@ export const declarationFile = async (identity: Identity): Promise<string> => `$
 export const scopeFile = (sessionId: string): string => `${records}/delegation/${sessionId}.json`
 
 /**
+ * Records the world's session as the unit spawn started for issues, as spawn's record leaves it.
+ * @param world - The world.
+ * @param issues - The issues.
+ * @param sessionId - The session spawn started.
+ */
+export function markSpawned(world: Pick<World, 'files'>, issues: number[], sessionId = 'sid'): void {
+  for (const issue of issues) world.files.set(`${records}/spawn/${issue}.json`, JSON.stringify({ isStarted: true, isPrompted: true, mode: 'default', sessionId }))
+}
+
+/**
  * Writes a coordinator's delegation scope as `/flow delegate` leaves it.
  * @param sessionId - The coordinator session.
  * @param issues - The delegated issues.
@@ -425,6 +451,18 @@ export const scopeFile = (sessionId: string): string => `${records}/delegation/$
  */
 export const buildScope = (sessionId: string, issues: number[], host: unknown = coordinatorHost): string =>
   JSON.stringify({ v: 1, sessionId, issues, coversCreated: false, ...host === null ? {} : { host } })
+
+/**
+ * Delegates issues to a coordinator and records the world's session as the unit spawn started for them.
+ * @param world - The world.
+ * @param coordinator - The coordinator session whose scope delegates the issues.
+ * @param issues - The delegated issues.
+ * @param seed - The spawned issues and the coordinator's process, when they differ from the defaults.
+ */
+export function seedDelegation(world: Pick<World, 'files'>, coordinator: string, issues: number[], seed: DelegationSeed = {}): void {
+  world.files.set(scopeFile(coordinator), buildScope(coordinator, issues, seed.host))
+  markSpawned(world, seed.spawned ?? issues)
+}
 
 /**
  * Builds a /proc stat line, whose twenty-second field is the process's start time.
@@ -821,6 +859,10 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     if (command === 'uname -s') return buildResult(options.platform ?? 'Linux')
     if (e.argv[0] === 'tail') return buildResult((options.spawnOutput ?? '').replace(/\n$/, '').split('\n').slice(-4).join('\n'))
     if (e.argv[0] === 'sh') return buildResult(options.spawnOutput ?? '')
+    if (e.argv[0] === 'claude') {
+      const answer = options.claude?.(e.argv.slice(1)) ?? { stdout: JSON.stringify({ is_error: false, result: 'OK' }) }
+      return buildResult(answer.stdout ?? '', answer.exitCode ?? 0, answer.stderr ?? '')
+    }
     if (e.argv[0] === 'sleep') { await clock.sleep(Number(e.argv[1]) * 1000); return buildResult('') }
     if (e.argv[0] === 'cp' || e.argv[0] === 'mkdir' && e.argv[1] === '-p') return buildResult('')
     const isPresent = (path: string) => created.has(path) || files.has(path) || [...files.keys()].some(file => file.startsWith(`${path}/`))

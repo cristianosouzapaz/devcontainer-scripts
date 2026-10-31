@@ -11,6 +11,7 @@ import type { EnginePort } from './engine-port'
 import { logEvent } from './flow-log'
 import { isInsideHerdr, runHerdr } from './herdr-worktrees'
 import { atomicReplace, listIdentityRecords, readCommonDir, readSession, readSessionMirrors, recordsPath } from './record-store'
+import type { RecordBucket } from './record-store'
 import { deriveSessionId, listUnitWorkspaces, progressPath, withSpawnLock } from './spawn'
 import { findUnitBranch } from './unit-state'
 import { noticePath } from './coordinator-notice'
@@ -209,7 +210,7 @@ async function findTranscripts(port: EnginePort, session: string): Promise<Resul
  * @param branch - The branch.
  * @returns The records' paths.
  */
-async function listBranchRecords(port: EnginePort, common: string, name: string, branch: string): Promise<string[]> {
+async function listBranchRecords(port: EnginePort, common: string, name: RecordBucket, branch: string): Promise<string[]> {
   const directory = recordsPath(common, name)
   const entries = (await port.files.list(directory).catch(() => [])).filter(entry => entry.name.endsWith('.json'))
   const named = await Promise.all(entries.map(async entry => {

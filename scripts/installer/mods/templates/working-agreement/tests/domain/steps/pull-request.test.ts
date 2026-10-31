@@ -47,7 +47,7 @@ test('a PR opened by a Bash call shows at the next pane judgement, before the ca
   options.afterTool = () => { options.prs = [buildPullRequest()] }
   const { views } = createWorld(on, { branch: 'feat', ahead: 1 }, options)
   await endTurn($)
-  expect(views.at(-1)?.steps.find(step => step.id === 'pr')?.detail).toBe('no PR')
+  expect(views.at(-1)?.steps.find(step => step.id === 'pr')?.detail).toBeUndefined()
   await $.tool.call({ tool: 'Bash', command: 'gh pr create' })
   await endTurn($)
   expect(views.at(-1)?.steps.find(step => step.id === 'pr')).toMatchObject({ state: 'done', label: 'PR #5' })
@@ -63,7 +63,7 @@ test('PR closure comes from closingIssuesReferences for every declared issue', a
 for (const changes of [{ state: 'CLOSED' }, { isCrossRepository: true }, { headRefName: 'other' }]) {
   test(`a noncandidate is no PR: ${JSON.stringify(changes)}`, async ($, on) => {
     createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, prs: [buildPullRequest(changes)] })
-    expect(await readFlowStatus($)).toContain('▸ PR · no PR')
+    expect(await readFlowStatus($)).toContain('▸ PR\n')
     expect(await readPromptContext($)).toContain('create-pr skill to open the PR')
   })
 }
@@ -129,7 +129,7 @@ test('a current PR step without a skill names its PR', async ($, on) => {
 
 test('an empty slice never selects a merged PR', async ($, on) => {
   createWorld(on, { branch: 'feat', ahead: 1 }, { ...pushedCloseOut, session: trivialFlow(), unit: { base: 'c1', skips: [{ step: 'code', reason: 'covered' }, { step: 'verify', reason: 'covered' }, { step: 'commit', reason: 'covered' }] }, prs: [buildPullRequest({ state: 'MERGED' })] })
-  expect(await readFlowStatus($)).toContain('PR · no PR')
+  expect(await readFlowStatus($)).toContain('▸ PR\n')
   expect(await readFlowStatus($)).not.toContain('PR #5 · merged')
 })
 
@@ -229,7 +229,7 @@ test('two children carrying the same issue require it once', async ($, on) => {
 
 test('a stranded child, left out of the parent PR that merged, is required in the next one', async ($, on) => {
   await createRound(on, parentCheckout({ par: 'mpar', b: 'b2' }), [buildParentPullRequest({ number: 8, headRefOid: 'ma' })], [buildChildEntry('b', 3)])
-  expect(await readFlowStatus($)).toContain('▸ PR · no PR')
+  expect(await readFlowStatus($)).toContain('▸ PR\n')
   expect(await readPromptContext($)).toContain('open the PR (body must carry Closes #1, Closes #3)')
 })
 

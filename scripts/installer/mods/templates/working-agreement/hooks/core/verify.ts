@@ -121,7 +121,7 @@ const nameUnit = (identity: Identity): string => identity.issues.length ? format
  * @param port - Engine calls.
  * @param slice - Current unit boundaries and content.
  * @param unit - Evidence merged across session files.
- * @returns The Verify verdict, whether a run on this tree and base or a config blocker ends Code, and one short fact.
+ * @returns The Verify verdict, whether a run on this tree and base or a config blocker ends Code, and one short fact, absent before any run.
  */
 export async function readVerifyState(port: EnginePort, slice: UnitSlice | null, unit: Unit): Promise<Evidence['verify']> {
   const loaded = await readVerifyConfig(port, slice?.tree ?? null)
@@ -130,7 +130,7 @@ export async function readVerifyState(port: EnginePort, slice: UnitSlice | null,
   if (!await isVerifyApproved(port, loaded.blob)) {
     return { isVerified: false, isReached: true, fact: facts.verifyConfigApproval, isWaitingApproval: true, command: `/flow approve verify ${shortenBlob(loaded.blob)}` }
   }
-  if (!slice?.tree) return { isVerified: false, isReached: false, fact: facts.verifyNotRun }
+  if (!slice?.tree) return { isVerified: false, isReached: false }
   const selection = await selectVerify(port, loaded.config, slice.baseTree, slice.tree)
   const shared = await readVerifyEvidence(port, { tree: slice.tree, configBlob: loaded.blob, commands: selection.commands })
   const isOwn = (run: VerifyRecord): boolean => unit.verifyRuns.some(own => own.runId === run.runId)
@@ -153,7 +153,7 @@ export async function readVerifyState(port: EnginePort, slice: UnitSlice | null,
   }
   const outcome = records[0]?.outcome
   return { isVerified: false, isReached, isError: outcome?.kind === 'fail' || outcome?.kind === 'timeout', fact: outcome?.kind === 'timeout' ? facts.verifyTimedOut(outcome.minutes)
-    : outcome?.kind === 'fail' ? (outcome.signal ? facts.verifyFailedSignal : outcome.code === null ? facts.verifyFailed : facts.verifyFailedExit(outcome.code)) : facts.verifyNotRun,
+    : outcome?.kind === 'fail' ? (outcome.signal ? facts.verifyFailedSignal : outcome.code === null ? facts.verifyFailed : facts.verifyFailedExit(outcome.code)) : undefined,
     ...(outcome?.kind === 'fail' && outcome.signal ? { detail: `failed, ${formatExit(outcome.code, outcome.signal)}` } : {}), ...run }
 }
 

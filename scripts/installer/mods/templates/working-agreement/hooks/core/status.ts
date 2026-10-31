@@ -12,7 +12,7 @@ import { locatePosition } from './position'
 import { readGit, readRepositoryRoot } from './repository'
 import { readSession, unitLogPath } from './record-store'
 import { sessionMemory } from './session-memory'
-import { readSpawnMode } from './spawn'
+import { describeLevel, readSpawnLevel, readSpawnMode } from './spawn'
 import { isVerifyApproved } from './verify'
 import { configPath, readRepositoryConfig, readVerifyConfig, selectVerify } from './verify-config'
 import { readBranchProtection, readBranchRulesets } from '../lib/github'
@@ -108,7 +108,8 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
     if (position.verify.queued) rows.push(keyedLine('Verify', position.verify.queued))
     if (position.verify.run) rows.push(keyedLine('Run', position.verify.run))
     const mode = await readSpawnMode(statusPort, session.issues)
-    if (mode) rows.push(keyedLine('Spawned', `in ${mode} mode`))
+    const level = await readSpawnLevel(statusPort, session.issues)
+    if (mode) rows.push(keyedLine('Spawned', `in ${mode} mode${level ? `, ${describeLevel(level)}` : ''}`))
     rows.push(keyedLine('Log', await unitLogPath(statusPort, session.unit)))
     const checks = slice ? sessionMemory.checks.get(slice.end)?.result : undefined
     if (slice && checks?.isOk && checks.value.length) rows.push(keyedLine('CI', `${short(slice.end)} · ${checks.value.map(check => `${check.name}: ${check.state}`).join(' · ')}`))

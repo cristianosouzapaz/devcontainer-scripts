@@ -47,9 +47,9 @@ test('every step label fits the prefix the limit reserves, whatever its PR', () 
 })
 
 test('a fact that fits is drawn whole, and a longer one is cut at a word boundary with an ellipsis', () => {
-  expect(fitFact(facts.verifyNotRun, 20)).toBe('not run on this tree')
-  expect(fitFact(facts.verifyNotRun, 19)).toBe('not run on this…')
-  expect(fitFact(facts.verifyNotRun, 8)).toBe('not run…')
+  expect(fitFact(facts.issueCommentsUnavailable, 26)).toBe('issue comments unavailable')
+  expect(fitFact(facts.issueCommentsUnavailable, 25)).toBe('issue comments…')
+  expect(fitFact(facts.issueCommentsUnavailable, 8)).toBe('issue…')
   expect(fitFact('averyveryverylongword', 8)).toBe('averyve…')
 })
 

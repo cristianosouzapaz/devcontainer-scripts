@@ -1,7 +1,7 @@
 import { isAncestor, readMergeConflicts, readParentBranch, readWorktreeStatus, runGit } from '../lib/git'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
-import { readDelegatedUnit, recordHead, refuseOtherCheckout } from './delegated-commits'
+import { readDelegatedUnit, recordHead, refuseOtherCheckout, runUnsignedGit } from './delegated-commits'
 import type { EnginePort } from './engine-port'
 import { logEvent } from './flow-log'
 import { readSession } from './record-store'
@@ -58,8 +58,7 @@ export async function mergeParent(port: EnginePort): Promise<Result<string>> {
   if (await isAncestor(port.processes, parent, branch)) return succeed(`${branch} already holds ${parent}'s tip; merge_child merges it into ${parent}.`)
   const conflicts = await readMergeConflicts(port.processes, branch, parent)
   if (conflicts === null) return fail(`git cannot tell whether ${parent} merges into ${branch}.`)
-  // why: A delegated commit stays unsigned whatever commit.gpgsign says; the user's signing step signs it on their return.
-  const merge = await runGit(port.processes, ['merge', '--no-gpg-sign', '--no-edit', '--no-ff', parent])
+  const merge = await runUnsignedGit(port, ['merge'], ['--no-edit', '--no-ff', parent])
   const session = await readSession(port)
   if (merge.exitCode !== 0) {
     if (conflicts.length) return succeed(`Merging ${parent} into ${branch} stopped on conflicts in ${conflicts.join(', ')}: resolve them, stage them with git add, `

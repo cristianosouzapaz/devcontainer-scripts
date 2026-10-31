@@ -3,13 +3,14 @@ import type { Args, EventResult, Frozen, Next } from 'claude-code'
 import { bestEffort } from '../core/best-effort'
 import { findLiveDelegation } from '../core/delegation'
 import type { EnginePort } from '../core/engine-port'
+import { escalateIdleUnits } from '../core/escalation'
 import { createReadPort } from '../core/read-port'
 import { readWorkingTreeConfig } from '../core/verify-config'
 import { syncIssues } from '../core/github-sync'
 import { locatePosition } from '../core/position'
 import { readVersionedSession } from '../core/record-store'
 import { composeDelegatedLine } from '../domain/delegated-decision'
-import { composeFlowLine } from '../domain/instruction'
+import { composeFlowLine, composeStart, readStartLead } from '../domain/instruction'
 import { markForAgent } from '../domain/messages'
 import { isUnitFinished, withStates } from '../domain/step-states'
 import { armHandoff } from '../features/handoff'
@@ -36,8 +37,8 @@ const composeConfigLine = (error: string): string => markForAgent(`The repositor
   'Tell the user; /flow status shows the error, and Verify refuses until the file is fixed.')
 
 /**
- * Adds the flow's instruction or declaration reminder to a prompt, and a delegated unit's decision routing.
- * A finished unit's prompt carries only an invalid config's notice; a line the text already carries is not added again.
+ * Adds the flow's instruction or declaration reminder to a prompt, and a delegated unit's decision routing; rebuilds the mod's
+ * start prompt from its lead, and adds the coordinator's escalation lines. A finished unit's prompt carries only an invalid config's notice; a line the text already carries is not added again.
  *
  * @param engine - The engine calls.
  * @param event - The submitted prompt.
@@ -49,10 +50,13 @@ export async function handlePromptSubmit(engine: EnginePort, event: Frozen<Args<
   armHandoff(event.origin, event.text)
   const config = await readWorkingTreeConfig(port)
   const configLines = config?.kind === 'invalid' ? [composeConfigLine(config.fact)] : []
-  // Hands the prompt on with the lines its text does not already carry: the mod's start prompt already carries the flow line.
-  const pass = (added: string[]): ReturnType<typeof next> => {
-    const lines = added.filter(text => !event.text.includes(text))
-    return lines.length ? next({ ...event, context: [...(event.context ?? []), ...lines] }) : next(event)
+  // why: The mod's start prompt is written when its command answers but enters only once the session is idle, maybe
+  // after the unit moved on, so only its lead is kept and the step it starts is rewritten from the position at entry.
+  const lead = event.origin?.kind === 'plugin' && event.origin.name === 'working-agreement' ? readStartLead(event.text) : undefined
+  // Hands the prompt on, its text rebuilt from a start prompt's lead, with the lines that text does not already carry.
+  const pass = (added: string[], text = lead ?? event.text): ReturnType<typeof next> => {
+    const lines = added.filter(line => !text.includes(line))
+    return text !== event.text || lines.length ? next({ ...event, text, context: [...(event.context ?? []), ...lines] }) : next(event)
   }
   const held = await readVersionedSession(port)
   const saved = held.session
@@ -61,7 +65,10 @@ export async function handlePromptSubmit(engine: EnginePort, event: Frozen<Args<
   const session = saved.flow ? (await syncIssues(port, held)).session : saved
   const position = located ? withStates(located, session) : null
   if (isUnitFinished(position) && !position?.slice?.isRewritten) return pass(configLines)
-  const line = position ? composeFlowLine(position, session) : isCoordinatorSession(session) ? coordinatorLine : noFlowLine
   const isDelegated = position ? !!await bestEffort(port, 'delegation read', () => findLiveDelegation(port, session.issues), null) : false
-  return pass([line, ...(isDelegated ? [delegatedLine, composeDelegatedLine(session.issues)] : []), ...configLines])
+  const line = position ? composeFlowLine(position, session, isDelegated) : isCoordinatorSession(session) ? coordinatorLine : noFlowLine
+  const start = lead && position ? composeStart(position, session, lead, isDelegated) : null
+  // why: a unit's turn-end notice arrives here as a prompt, the first moment its coordinator's process sees it idle.
+  const escalated = !position && isCoordinatorSession(session) ? await bestEffort(engine, 'escalation', () => escalateIdleUnits(engine), []) : []
+  return pass([line, ...escalated.map(markForAgent), ...(isDelegated ? [delegatedLine, composeDelegatedLine(session.issues)] : []), ...configLines], start ?? undefined)
 }

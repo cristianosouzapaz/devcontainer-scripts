@@ -17,6 +17,7 @@ import type { Result } from '../lib/result'
 import { symbol } from '../ui/symbols'
 import type { EnginePort } from './engine-port'
 import { markIssuesDeclared, mergeIssue, readGithubStatus, readIssueAnswers } from './github-sync'
+import { findHeldIssue } from './delegation'
 import { carryLog, logEvent } from './flow-log'
 import { refreshView } from './pane-view'
 import { locatePosition } from './position'
@@ -51,6 +52,8 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
   if (checked.exitCode !== 0 || !checked.stdout.trim()) return fail('check out a branch first')
   if (!issues.every(issue => Number.isSafeInteger(issue) && issue > 0)) return fail('Issue numbers must be positive integers.')
   const declared = [...new Set(issues)].sort((a, b) => a - b)
+  const holder = await findHeldIssue(port, declared)
+  if (holder) return fail(holder)
 
   const identity = { branch: checked.stdout.trim(), issues: declared }
   const git = await readGit(port)

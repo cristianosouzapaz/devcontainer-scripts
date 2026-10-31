@@ -220,7 +220,7 @@ test('the step fact and /flow status name the unit a borrowed pass ran in', asyn
   await writeVerifyEvidence(port, pass, { branch: 'other', issues: [460] })
   const unit = world.sessions.get('sid')!.units[0]!
   const slice = await readUnitSlice(port, unit.identity, unit, (await readGit(port))!)
-  expect((await readVerifyState(port, slice, unit)).fact).toBe('passed (run in #460)')
+  expect((await readVerifyState(port, slice, unit)).fact).toBe('passed in #460')
   expect(await readFlowStatus($)).toContain('Run        r460 in #460')
 })
 

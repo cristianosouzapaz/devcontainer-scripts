@@ -163,10 +163,10 @@ export interface DelegationScope {
   /** The herdr pane the coordinator ran `/flow delegate` in, which a delegated unit's notices are sent to; absent outside herdr. */
   paneId?: string
   /** The coordinator's process, which tells a unit whether the coordinator still runs; absent where the host does not expose it. */
-  host?: ScopeHost
+  host?: ProcessHost
 }
-/** Holds a coordinator process's identity: a pid means nothing outside its pid namespace and boot, and its start time tells a reused pid. */
-export interface ScopeHost { pidns: string; pid: number; pidStart: string; bootId: string }
+/** Holds a session's process identity: a pid means nothing outside its pid namespace and boot, and its start time tells a reused pid. */
+export interface ProcessHost { pidns: string; pid: number; pidStart: string; bootId: string }
 /** Holds the declaration shared by chats with the same identity. */
 export interface UnitRecord { v: 1; identity: Identity; flow: string; generation?: string }
 /** Holds the slice end of one lifetime of a child unit that one session last observed while its branch was readable. */

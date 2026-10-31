@@ -26,7 +26,7 @@ export async function readUnitSlice(port: EnginePort, identity: Identity, unit: 
   const tip = await read(['rev-parse', '--verify', '--quiet', `refs/heads/${identity.branch}`])
   if (!tip) return null
   // The recorded base orders the branch's units and detects rewritten history; it moves only on re-declaration,
-  // or follows the user's signing rebase when it names a delegated commit.
+  // or follows the user's re-sign when it names a delegated commit.
   const isBaseGone = !wholeBranch && !!unit.base && !await isAncestor(port.processes, unit.base, tip)
   const recorded = isBaseGone && unit.base ? await remapDelegatedBase(port, unit.base, tip) ?? unit.base : unit.base
   const anchor = (wholeBranch ? undefined : recorded) ?? await read(['merge-base', await readDefaultRef(port.processes, unit.baseBranch ?? git.base), tip])

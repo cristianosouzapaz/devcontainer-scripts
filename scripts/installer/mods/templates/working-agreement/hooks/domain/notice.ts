@@ -37,6 +37,11 @@ export function composeTurnNotice(turn: UnitTurn): Notice | null {
     return { key: `blocked:${turn.reason}`, text: `${unit} is blocked: its turn ended on ${turn.reason === 'error' ? 'an API error' : 'a refusal'}; read its pane.` }
   }
   const step = turn.step
+  // why: A commit moves the unit past Commit, so a turn that ends there with Verify passed is a unit that stopped instead of committing.
+  if (step?.id === 'commit' && turn.tree && turn.verifyFact === null) {
+    return { key: `stopped:commit:${turn.tree}:${hashText(turn.answer)}`,
+      text: `${unit} ended its turn at ${step.label} without committing: Verify passed on ${turn.tree.slice(0, 7)}; read its pane and have it commit with the commit tool.` }
+  }
   if (step && turn.tree && (step.id === 'commit' || step.id === 'integrate')) {
     const verify = turn.verifyFact === null ? `: Verify passed on ${turn.tree.slice(0, 7)}` : ` without a Verify pass (${turn.verifyFact})`
     const reached = { key: `reached:${step.id}:${turn.tree}:${hashText(turn.answer)}`, text: `${unit} reached ${step.label}${verify}; ${step.id === 'integrate' ? 'ready for merge_child.' : 'it commits next.'}` }

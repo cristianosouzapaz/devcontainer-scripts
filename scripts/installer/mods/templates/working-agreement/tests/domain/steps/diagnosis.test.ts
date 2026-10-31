@@ -9,12 +9,9 @@ const red = diagnoseRuns[0]!
 const green = diagnoseRuns[1]!
 const info = { 1: { title: 'bug', labels: [], comments: [diagnosisComment] } }
 
-for (const [runs, fact, need] of [
-  [[], 'no red run yet', 'red'],
-  [[green], 'no red run yet', 'red'],
-] as [RunRecord[], string, 'red'][]) {
-  test(`Diagnose needs a failing run first: ${JSON.stringify(runs)}`, () => {
-    expect(judgeDiagnose({ runs }, [1], info)).toEqual({ done: false, fact, need })
+for (const runs of [[], [green]] as RunRecord[][]) {
+  test(`Diagnose needs a failing run first, its normal state, with no fact: ${JSON.stringify(runs)}`, () => {
+    expect(judgeDiagnose({ runs }, [1], info)).toEqual({ done: false, need: 'red' })
   })
 }
 
@@ -33,7 +30,7 @@ test('Diagnose waits for a comment strictly after the earliest red, then approva
   const second = { ...red, runId: 'second', at: 5 }
   for (const at of [0.5, 1]) expect(judgeDiagnose({ runs: [red, second] }, [1], {
     1: { ...info[1], comments: [{ ...diagnosisComment, createdAt: new Date(at).toISOString() }] },
-  }).fact).toBe('no comment after the red')
+  })).toEqual({ done: false, need: 'comment' })
   expect(judgeDiagnose({ runs: [red] }, [1], info)).toMatchObject({ fact: 'waiting for /flow approve', need: 'approval', isWaitingApproval: true })
   expect(judgeDiagnose({ runs: [red], approval: 'other' }, [1], info).done).toBe(false)
 })
@@ -78,7 +75,7 @@ test('a deleted approved comment reopens Diagnose, while a newer comment does no
 })
 
 test('Diagnose displays unavailable issue and comment facts, including a comments read error', () => {
-  expect(judgeDiagnose(diagnosed, [], {}).fact).toBe('issue not yet created')
+  expect(judgeDiagnose(diagnosed, [], {})).toEqual({ done: false, need: 'issue' })
   expect(judgeDiagnose(diagnosed, [1], {}).fact).toBe('issue facts unavailable')
   expect(judgeDiagnose(diagnosed, [1], { 1: { error: 'issue missing' } })).toMatchObject({ fact: 'issue unreadable', detail: 'issue missing' })
   expect(judgeDiagnose(diagnosed, [1], { 1: { title: 'bug', labels: [] } }).fact).toBe('issue comments unavailable')
@@ -105,6 +102,6 @@ test('Diagnose agent sentences follow the requirement, independently of pane wor
     expect(describeDiagnoseNeed(judgement.done ? undefined : judgement.need, [1])).toBe(sentence)
   }
   const missing = judgeDiagnose({ runs: [red] }, [12, 13], { 12: { ...info[1], comments: [] }, 13: { ...info[1], comments: [] } })
-  expect(missing).toMatchObject({ need: 'comment', fact: 'no comment after the red' })
+  expect(missing).toEqual({ done: false, need: 'comment' })
   expect(describeDiagnoseNeed(missing.done ? undefined : missing.need, [12, 13])).toBe("Diagnose next needs a diagnosis comment on #12 or #13 after the red run, then the user's /flow approve <comment URL>")
 })

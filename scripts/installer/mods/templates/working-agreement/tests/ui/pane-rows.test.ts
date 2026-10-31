@@ -3,7 +3,7 @@ import { expect } from 'claude-code/testing'
 import { coordinator, noFlow } from '../support/builders'
 import { declareFlow, mountPane, readFlowStatus, runFlowCommand, startSkill, textOf } from '../support/helpers'
 import { test } from '../support/kit'
-import { buildScope, createWorld, scopeFile } from '../support/world'
+import { createWorld, scopeFile, seedDelegation } from '../support/world'
 
 const delegated = [410, 459, 463, 464, ...Array.from({ length: 494 - 467 + 1 }, (_, index) => 467 + index)]
 const finding = { issue: 410, field: 'body', expected: 'the sections of one kind (spec, ticket, bug)', actual: 'sections Problem' }
@@ -47,7 +47,7 @@ test('a pane audit row keeps a space after its label and wraps its value under t
 
 test('a delegated unit\'s Delegation row names only the delegation\'s state and the steps it took', async ($, on) => {
   const world = createWorld(on, { branch: 'feat' }, { session: { flow: 'small-feature', issues: [1], info: { 1: { title: 'a', labels: ['ready-for-agent'] } } } })
-  world.files.set(scopeFile('coord'), buildScope('coord', [1]))
+  seedDelegation(world, 'coord', [1])
   await startSkill($, 'to-spec')
   expect(readKeyedRow((await readFlowStatus($)) ?? '', 'Delegation')).toEqual(['Delegation on · took /to-spec'])
   world.files.delete(scopeFile('coord'))

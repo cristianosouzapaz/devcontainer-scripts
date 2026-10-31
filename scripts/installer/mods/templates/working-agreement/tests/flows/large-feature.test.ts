@@ -17,11 +17,11 @@ test('a Large feature starts at Map', async ($, on) => {
   await startSkill($, 'wayfinder')
 })
 
-test('a Large feature without an issue starts at Map with its pending fact', async ($, on) => {
+test('a Large feature without an issue starts at Map, the step alone', async ($, on) => {
   createWorld(on, { branch: 'feat' }, { session: noFlow })
   await declareFlow($, 'large-feature')
   expect(await readCurrentStep($)).toBe('Map')
-  expect(await readFlowStatus($)).toContain('▸ Map · issue not yet created')
+  expect(await readFlowStatus($)).toContain('▸ Map\n')
 })
 
 test('a Large feature unit runs from Map to ready tickets', async ($, on) => {

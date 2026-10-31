@@ -119,7 +119,7 @@ export function buildView(session: Session, position: Position, githubFailure: G
         isMerged,
         isRewritten,
         detail: isRewritten ? undefined : isRunUnrecorded ? facts.verifyTreeChangedInRun : isMerged ? (entry.step.observe === 'integrated' ? entry.fact : facts.merged)
-          : entry.state === 'skipped' ? entry.reason || facts.optional
+          : entry.state === 'skipped' ? entry.reason
           : entry.state === 'current' ? entry.fact
           // An integrated child's Integrate names where its delivery stands, because the unit is finished and shows no current step.
           : entry.state === 'done' && entry.step.observe === 'integrated' ? entry.fact : undefined,

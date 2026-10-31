@@ -25,6 +25,7 @@
         "DEFAULT_BRANCH": "main",
         "DUMP_ERROR_STACK": "true",
         "GIT_EMAIL": "cristiano.souzapaz@gmail.com",
+        "GIT_TOKEN_DURING_INSTALL": "false",
         "GIT_USER": "cristianosouzapaz",
         "LOG_FILE": "/tmp/setup.log",
         "LOG_LEVEL": "INFO",

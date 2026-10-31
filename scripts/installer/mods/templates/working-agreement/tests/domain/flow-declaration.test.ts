@@ -81,7 +81,7 @@ test('the unit branch takes over the skips recorded for its issues on the defaul
   git.branch = 'fix'
   expect((await declareFlow($, 'fix', [1])).result).toContain('current step: Code')
   expect(await readFlowStatus($)).toContain('reproduced elsewhere')
-  expect(await readPromptContext($)).not.toContain('run the fix: no green since approval')
+  expect(await readPromptContext($)).not.toContain('apply the approved fix')
 })
 
 test('the unit branch takes over the approval and red run recorded on the default branch', async ($, on) => {
@@ -99,7 +99,7 @@ test('the unit branch takes over the approval and red run recorded on the defaul
   git.branch = 'fix'
   git.dirty = { 'src/a.ts': 'fix' }
   expect((await declareFlow($, 'fix', [1])).result).toContain('current step: Code')
-  expect(await readPromptContext($)).toContain('run the fix: no green since approval')
+  expect(await readPromptContext($)).toContain('apply the approved fix')
 })
 
 test('a branch takes over nothing from a different flow or issue set on the default branch', async ($, on) => {

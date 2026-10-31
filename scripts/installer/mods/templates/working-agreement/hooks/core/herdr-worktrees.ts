@@ -14,6 +14,8 @@ const herdrTimeoutMs = 5000
 const labelPrefix = 'claude-'
 /** Where a parallel unit starts inside herdr: the coordinator's spawn tool opens its workspace and session. */
 export const spawnGuide = 'a coordinator session (/flow coordinate) starts it with the spawn tool, in its own herdr workspace and Claude session'
+/** The refusal of a unit tool in a session outside herdr. */
+export const outsideHerdr = 'this session does not run inside herdr, which hosts every unit session'
 
 /**
  * Tells whether the session runs in a herdr pane.

@@ -7,7 +7,7 @@ import { suggestDelegateTool } from './domain/delegation'
 import { closeReasons, triageLabels } from './domain/issue-fields'
 import { answerTool, describeHookError, failedToolAnswer, markForAgent, modToolPrefix } from './domain/messages'
 import { sessionMemory } from './core/session-memory'
-import { setSpawnLimit } from './core/spawn'
+import { efforts, setSpawnLimit } from './core/spawn'
 import { setHandoffThreshold } from './features/handoff'
 import { commitDelegated } from './core/delegated-commits'
 import { mergeParent } from './core/parent-merge'
@@ -197,16 +197,33 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
         name: 'spawn',
         isDeferred: false,
         description: 'Coordinator only: starts the unit session of an issue in its own herdr worktree on branch <type>/<n>-<title slug> (<n>-<title slug> without a Conventional Commit prefix), ' +
-          'from the default branch, or from the branch of its one open blocker once that blocker\'s unit is finished or integrated. Idempotent: a live session is reused, ' +
+          'from the default branch, or from the branch of its one open blocker once that blocker\'s unit is finished or integrated; a sub-issue of an issue with a unit branch starts from that branch\'s tip, ' +
+          'its parent issue never waited on as a blocker. Idempotent: a live session is reused, ' +
           'a worktree without one is reopened and its session resumed. Refused beyond the configured cap of concurrent units. ' +
-          'instructions: the unit-specific rules, appended verbatim to the start prompt so its first turn starts with them; a unit already prompted does not get them.',
-        inputSchema: { type: 'object', properties: { number: issueNumber, instructions: { type: 'string' } }, required: ['number'], additionalProperties: false },
+          'instructions: the unit-specific rules, appended verbatim to the start prompt so its first turn starts with them; a unit already prompted does not get them. ' +
+          'model and effort: your own judgement of what this unit needs, with a one-line reason; omit both for the user\'s default model and effort, which is also the strong choice. ' +
+          'Pick a cheaper model or a lower effort only for work that is fully specified and routine; anything with open design questions or security weight keeps the defaults. ' +
+          'The choice is recorded, shown in plan, and kept on every resume; a unit that fails Verify twice in a row is escalated by the mod to the user\'s default model with effort high.',
+        inputSchema: { type: 'object', properties: { number: issueNumber, instructions: { type: 'string' },
+          model: { type: 'string', minLength: 1, description: 'A model name or alias the claude CLI accepts; checked before anything starts.' },
+          effort: { type: 'string', enum: [...efforts] },
+          reason: { type: 'string', minLength: 1, description: 'One line: why this unit gets that model or effort. Required with either.' } },
+        required: ['number'], additionalProperties: false },
+      })
+      await $.tool.register({
+        name: 'escalate_unit',
+        isDeferred: false,
+        description: 'Coordinator only, under delegation: raises a unit spawned on a cheaper model or lower effort to the user\'s default model with effort high, keeping its whole '
+          + 'conversation: the mod closes its idle session and resumes it, records the new level and says so. A unit that works is escalated once it is idle, never mid-turn. '
+          + 'Use it when the unit meets a need its level was not picked for, such as an unexpected design decision; routine decisions do not call for it.',
+        inputSchema: { type: 'object', properties: { number: issueNumber, reason: { type: 'string', minLength: 1, description: 'Why the unit needs more capability.' } },
+          required: ['number', 'reason'], additionalProperties: false },
       })
       await $.tool.register({
         name: 'plan',
         isDeferred: false,
         description: 'Coordinator only, read-only: for each delegated issue lists its open blockers and their unit states (none, working, finished, integrated), '
-          + 'its own unit state, and whether spawn would start it now and from which branch, by spawn\'s own rules; issues that can start now come first.',
+          + 'its own unit state, its unit\'s model, effort and reason, and whether spawn would start it now and from which branch, by spawn\'s own rules; issues that can start now come first.',
         inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       })
       await $.tool.register({

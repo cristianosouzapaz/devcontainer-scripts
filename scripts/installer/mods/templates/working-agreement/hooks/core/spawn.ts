@@ -1,25 +1,37 @@
-import { findWorktreeRoot, readDefaultRef, readGitOutput, readParentBranch, readWorktreeStatus } from '../lib/git'
+import { findWorktreeRoot, readGitOutput, readParentBranch, readWorktreeStatus } from '../lib/git'
 import { appendInstructions } from '../domain/messages'
 import { isIssueNumber, isRecord, isSafeInteger } from '../lib/guards'
-import { readJson } from '../lib/json'
-import { executeProcess } from '../lib/process'
+import { parseJson, readJsonUnlessStrict } from '../lib/json'
+import { executeProcess, runProcess } from '../lib/process'
 import { createQueue } from '../lib/queue'
-import { fail, formatErrorLine, succeed } from '../lib/result'
+import { fail, formatErrorLine, succeed, unwrapOr } from '../lib/result'
 import type { Result } from '../lib/result'
 import type { EnginePort } from './engine-port'
-import { isInsideHerdr, listHerdrWorktrees, readField, runHerdr, runHerdrText } from './herdr-worktrees'
+import { isInsideHerdr, listHerdrWorktrees, outsideHerdr, readField, runHerdr, runHerdrText } from './herdr-worktrees'
 import { recordPlaced } from './placed-refs'
 import { atomicReplace, readCommonDir, readSessionMirrors, recordsPath } from './record-store'
 import { readGit, readRepositoryRoot } from './repository'
+import { readSessionLiveness } from './session-host'
 import { sessionMemory } from './session-memory'
-import { findUnitBranch, readIssueStart, readUnitState } from './unit-state'
+import { findUnitBranch, readDefaultBase, readIssueStart, readUnitState } from './unit-state'
 import { breakStaleLock } from './verify-queue'
 
 /** A spawned unit's herdr workspace. */
 export interface UnitWorkspace { issue: number; workspaceId: string; path: string }
 
-/** What a unit's session has been through, so a re-run resumes it instead of starting it twice, and the permission mode it last started in. */
-interface Progress { isStarted: boolean; isPrompted: boolean; isTyped?: boolean; mode?: string }
+/** The model and effort a unit runs on, and why; both absent, the user's own defaults. */
+export interface UnitLevel { model?: string; effort?: Effort; reason?: string }
+
+/**
+ * What a unit's session has been through, so a re-run resumes it instead of starting it twice, the permission mode it last started in,
+ * the level it runs on, the reason of an escalation the coordinator asked for while the unit worked, and the session it runs as.
+ */
+interface Progress extends UnitLevel {
+  isStarted: boolean; isPrompted: boolean; isTyped?: boolean; mode?: string; escalation?: string; sessionId?: string
+}
+
+/** An effort a coordinator may give a unit; xhigh and max stay the user's to ask for. */
+type Effort = typeof efforts[number]
 
 /** Every spawned workspace's label is this followed by the issue number; the cap counts them. */
 const labelPrefix = 'wa-spawn:'
@@ -37,6 +49,15 @@ const promptWaitMs = 10000
 const taken = ['--until', 'working', '--until', 'blocked']
 // why: bypassPermissions would lift every engine check in a session nobody watches; plan would stall it; anything unknown fails closed.
 const inheritedModes = ['default', 'acceptEdits', 'auto']
+/** The efforts a coordinator may pick for a unit. */
+export const efforts = ['low', 'medium', 'high'] as const
+// why: an unknown model still opens an interactive session, which fails only at its first prompt; a one-turn print run fails up front.
+// No settings source but the project's, run from /, so the probe loads no plugin or hook and touches no repository.
+const probeTimeoutMs = 60000
+// why: claude takes /exit from the input box; a resumed session reopens the same conversation.
+const exitWaitMs = 30000
+/** How long a unit's working agent is given to go idle before an escalation is put off. */
+export const busyWaitMs = 1000
 const queueSpawn = createQueue()
 const spawnConfig = { limit: 4 }
 
@@ -63,11 +84,12 @@ export function unitAgent(issue: number): string {
  * @param port - The engine calls.
  * @param issue - The issue number.
  * @param instructions - The coordinator's text for this unit, appended verbatim to its start prompt; empty appends nothing.
+ * @param level - The model and effort the coordinator picks for a unit not yet started, with its reason; a started unit keeps its recorded one.
  * @returns What the unit is now, or why it is not started.
  */
-export async function spawnUnit(port: EnginePort, issue: number, instructions = ''): Promise<Result<string>> {
-  if (!await isInsideHerdr(port)) return fail('this session does not run inside herdr, which hosts every unit session')
-  return withSpawnLock(port, (common, root) => spawnLocked(port, common, root, issue, instructions))
+export async function spawnUnit(port: EnginePort, issue: number, instructions = '', level: UnitLevel = {}): Promise<Result<string>> {
+  if (!await isInsideHerdr(port)) return fail(outsideHerdr)
+  return withSpawnLock(port, (common, root) => spawnLocked(port, common, root, issue, instructions, level))
 }
 
 /**
@@ -90,26 +112,35 @@ export async function withSpawnLock<T>(port: EnginePort, work: (common: string, 
  * @param root - The coordinator's checkout, which herdr creates worktrees from.
  * @param issue - The issue number.
  * @param instructions - The coordinator's text for the start prompt.
+ * @param chosen - The level the coordinator picks, used only by a unit never started.
  * @returns What the unit is now, or why it is not started.
  */
-async function spawnLocked(port: EnginePort, common: string, root: string, issue: number, instructions: string): Promise<Result<string>> {
+async function spawnLocked(port: EnginePort, common: string, root: string, issue: number, instructions: string, chosen: UnitLevel): Promise<Result<string>> {
+  const declaring = await findDeclaringSession(port, issue)
+  if (declaring) return fail(describeDeclaring(issue, declaring))
   const workspaces = await listUnitWorkspaces(port)
   const own = workspaces.find(workspace => workspace.issue === issue)
   const running = own ? [] : await filterRunning(port, workspaces)
   if (running.length >= spawnConfig.limit) {
     return fail(`${running.length} units already run, the cap is ${spawnConfig.limit}: ${running.map(workspace => `#${workspace.issue} (${workspace.path})`).join(', ')}`)
   }
+  const progress = await readProgressFile(port, common, issue, true)
+  const level = progress.isStarted ? pickLevel(progress) : pickLevel(chosen)
+  // why: checked before the branch and worktree exist, so a wrong name starts nothing.
+  if (!progress.isStarted && level.model) {
+    const probed = await probeModel(port, level.model)
+    if (!probed.isOk) return probed
+  }
   const branch = await findUnitBranch(port, issue) ?? await createUnitBranch(port, issue)
   if (!branch.isOk) return branch
   const pane = own ? await findIdlePane(port, own.workspaceId) : await openWorktree(port, root, issue, branch.value)
-  const progressFile = progressPath(common, issue)
-  const progress = readProgress(await readJson(port.files, progressFile))
   const session = await deriveSessionId(common, issue)
   const mode = pane === null ? progress.mode : inheritMode(sessionMemory.permissionMode)
+  const kept = { ...level, ...progress.escalation ? { escalation: progress.escalation } : {}, mode, sessionId: session }
   if (pane !== null) {
     await runHerdrText(port, ['agent', 'start', unitAgent(issue), '--kind', 'claude', '--pane', pane, '--timeout', String(agentStartTimeoutMs),
-      '--', '--permission-mode', inheritMode(mode), progress.isStarted ? '--resume' : '--session-id', session], agentStartTimeoutMs + 15000)
-    await atomicReplace(port, progressFile, JSON.stringify({ ...progress, isStarted: true, mode }))
+      '--', '--permission-mode', inheritMode(mode), ...levelFlags(level), progress.isStarted ? '--resume' : '--session-id', session], agentStartTimeoutMs + 15000)
+    await writeProgress(port, common, issue, { ...progress, ...kept, isStarted: true })
   }
   // why: a live unit whose start prompt failed would otherwise wait forever on an empty prompt.
   if (!progress.isPrompted) {
@@ -117,19 +148,62 @@ async function spawnLocked(port: EnginePort, common: string, root: string, issue
     const text = appendInstructions(`Work on issue #${issue} on branch ${branch.value}: read it with its comments `
       + `(\`gh issue view ${issue} --comments\`), declare its flow, and work only in this worktree. The coordinator is herdr pane ${paneId}.`, instructions)
     if (!await submitPrompt(port, unitAgent(issue), text, progress.isTyped === true)) {
-      await atomicReplace(port, progressFile, JSON.stringify({ isStarted: true, isPrompted: false, isTyped: true, mode }))
-      return fail(`#${issue} did not take its start prompt: herdr agent ${unitAgent(issue)} stays idle with it typed and unsent in its input box. `
-        + 'Read it with unit_read; spawn again submits it without typing it twice')
+      await writeProgress(port, common, issue, { isStarted: true, isPrompted: false, isTyped: true, ...kept })
+      return fail(`#${issue} did not take its start prompt: herdr agent ${unitAgent(issue)} stays idle. `
+        + 'Read it with unit_read; spawn again submits it if its input box shows it, or types it again if not')
     }
-    await atomicReplace(port, progressFile, JSON.stringify({ isStarted: true, isPrompted: true, mode }))
+    await writeProgress(port, common, issue, { isStarted: true, isPrompted: true, ...kept })
   }
   // why: a unit already past its start prompt is mid-turn; text sent now would queue behind that turn, so the coordinator decides how to send it.
-  const unsent = progress.isPrompted && instructions ? '; its start prompt went earlier, so the instructions are not sent: send them with unit_prompt' : ''
+  const clauses = [progress.isPrompted && instructions ? '; its start prompt went earlier, so the instructions are not sent: send them with unit_prompt' : '',
+    progress.isStarted && (chosen.model || chosen.effort) ? '; its recorded model and effort are kept, the ones given are ignored' : '']
   if (pane === null) {
-    return succeed(`#${issue} already runs as herdr agent ${unitAgent(issue)} on ${branch.value}${own ? ` in ${own.path}` : ''}${progress.isPrompted ? '' : '; its start prompt is sent now'}${unsent}.`)
+    return succeed(`#${issue} already runs as herdr agent ${unitAgent(issue)} on ${branch.value}${own ? ` in ${own.path}` : ''}`
+      + `${[progress.isPrompted ? '' : '; its start prompt is sent now', ...clauses].join('')}.`)
   }
   const standing = progress.isStarted ? await describeStanding(port, branch.value) : ''
-  return succeed(`#${issue} ${progress.isStarted ? 'resumed' : 'started'} as herdr agent ${unitAgent(issue)} on ${branch.value} in ${mode} mode (session ${session})${unsent}${standing}.`)
+  return succeed(`#${issue} ${progress.isStarted ? 'resumed' : 'started'} as herdr agent ${unitAgent(issue)} on ${branch.value} in ${mode} mode, `
+    + `${describeLevel(level)} (session ${session})${[...clauses, standing].join('')}.`)
+}
+
+/**
+ * Finds another session that runs and has declared an issue, so no second unit for it starts beside that session.
+ * @param port - The engine calls.
+ * @param issue - The issue.
+ * @returns The session id, or null when only the issue's own unit session, or none, declares it.
+ */
+export async function findDeclaringSession(port: EnginePort, issue: number): Promise<string | null> {
+  const own = await readSpawnedSession(port, issue, false)
+  for (const { session } of await readSessionMirrors(port)) {
+    if (session.sessionId !== own && session.unit?.issues.includes(issue) && await readSessionLiveness(port, session.sessionId) === 'live') return session.sessionId
+  }
+  return null
+}
+
+/**
+ * Names the session spawn started for an issue's unit, which keeps its id across a resume.
+ * @param port - The engine calls.
+ * @param issue - The issue.
+ * @param strict - Whether an unreadable spawn record throws.
+ * @returns The session id, or null when spawn never started a unit for the issue or retired it.
+ */
+export async function readSpawnedSession(port: EnginePort, issue: number, strict: boolean): Promise<string | null> {
+  const common = await readCommonDir(port)
+  if (!common) return null
+  const progress = await readProgressFile(port, common, issue, strict)
+  if (!progress.isStarted) return null
+  // why: a record without sessionId names the session the id derivation gives.
+  return progress.sessionId ?? deriveSessionId(common, issue)
+}
+
+/**
+ * Says why an issue another session declares gets no unit.
+ * @param issue - The issue.
+ * @param session - The declaring session.
+ * @returns The refusal.
+ */
+export function describeDeclaring(issue: number, session: string): string {
+  return `#${issue} is declared by session ${session}, which still runs: no unit starts for it until that session's declaration is removed`
 }
 
 /**
@@ -149,7 +223,8 @@ async function describeStanding(port: EnginePort, branch: string): Promise<strin
 }
 
 /**
- * Submits a unit's start prompt and confirms the agent took it; a submit the agent missed, right after its start, gets one more Enter.
+ * Submits a unit's start prompt and confirms the agent took it; a submit the agent missed, right after its start, gets one more Enter,
+ * and a prompt an earlier spawn typed that its input box no longer shows is typed again.
  * @param port - The engine calls.
  * @param agent - The unit's herdr agent.
  * @param text - The start prompt.
@@ -158,11 +233,27 @@ async function describeStanding(port: EnginePort, branch: string): Promise<strin
  */
 async function submitPrompt(port: EnginePort, agent: string, text: string, isTyped: boolean): Promise<boolean> {
   const isTaken = (args: string[]) => runHerdrText(port, args, promptWaitMs + 5000).then(() => true, () => false)
+  // why: a prompt sent before the agent's TUI was ready never reached its input box, so only a box that shows it is left to submit.
+  const isShown = isTyped && await isTypedInBox(port, agent, text)
   // herdr 0.9.5 takes the text as a positional argument and rejects `--` before it, even for text starting with a dash.
-  if (!isTyped && await isTaken(['agent', 'prompt', agent, text, '--wait', ...taken, '--timeout', String(promptWaitMs)])) return true
+  if (!isShown && await isTaken(['agent', 'prompt', agent, text, '--wait', ...taken, '--timeout', String(promptWaitMs)])) return true
   // why: the missed text stays typed in the input box; typing it again would submit it twice.
   await runHerdrText(port, ['agent', 'send-keys', agent, 'Enter'])
   return isTaken(['agent', 'wait', agent, ...taken, '--timeout', String(promptWaitMs)])
+}
+
+/**
+ * Checks whether a unit's screen shows its start prompt's opening words, typed and unsent.
+ * @param port - The engine calls.
+ * @param agent - The unit's herdr agent.
+ * @param text - The start prompt.
+ * @returns Whether they show; true when the screen is unreadable, so a prompt is never typed twice.
+ */
+async function isTypedInBox(port: EnginePort, agent: string, text: string): Promise<boolean> {
+  const collapse = (value: string) => value.replace(/\s+/g, ' ')
+  // why: the box wraps a long prompt, so only its opening words reliably sit on one line.
+  const opening = collapse(text).split(' ').slice(0, 4).join(' ')
+  return runHerdrText(port, ['agent', 'read', agent, '--source', 'visible']).then(screen => collapse(screen).includes(opening), () => true)
 }
 
 /**
@@ -184,9 +275,8 @@ export async function listUnitWorkspaces(port: EnginePort): Promise<UnitWorkspac
  * @throws When herdr fails or the branches cannot be listed.
  */
 async function filterRunning(port: EnginePort, workspaces: UnitWorkspace[]): Promise<UnitWorkspace[]> {
-  const git = await readGit(port)
-  if (!git) return workspaces
-  const base = { name: git.base, ref: await readDefaultRef(port.processes, git.base) }
+  const base = await readDefaultBase(port)
+  if (!base) return workspaces
   const mirrors = await readSessionMirrors(port)
   const counted = await Promise.all(workspaces.map(async workspace => (await listLivePanes(port, workspace.workspaceId)).some(hasAgent)
     && !['finished', 'integrated'].includes(await readUnitState(port, workspace.issue, base, mirrors))))
@@ -300,24 +390,38 @@ async function holdLock<T>(port: EnginePort, common: string, work: () => Promise
   const directory = recordsPath(common, 'spawn')
   const lock = `${directory}/lock`
   await executeProcess(port.processes, ['mkdir', '-p', '--', directory])
-  const deadline = await port.now() + lockWaitMs
-  for (;;) {
-    if ((await executeProcess(port.processes, ['mkdir', '--', lock])).exitCode === 0) break
+  const take = async (): Promise<boolean> => {
+    if ((await executeProcess(port.processes, ['mkdir', '--', lock])).exitCode === 0) return true
     // why: a listing reports a directory's mtime as zero, so only stat dates the lock.
     const held = await port.files.stat(lock).catch(() => null)
-    if (held && await port.now() - held.mtimeMs > staleLockMs) {
-      await breakStaleLock(port, directory, await port.readSessionId())
-      continue
-    }
-    if (await port.now() > deadline) return fail('another spawn holds the lock; retry once it ends')
-    await port.clock.sleep(250, new AbortController().signal)
+    if (!held || await port.now() - held.mtimeMs <= staleLockMs) return false
+    await breakStaleLock(port, directory, await port.readSessionId())
+    return take()
   }
+  if (!await pollUntil(port, lockWaitMs, 250, take)) return fail('another spawn holds the lock; retry once it ends')
   try {
     return await work()
   } catch (error) {
     return fail(formatErrorLine(error))
   } finally {
     await executeProcess(port.processes, ['rmdir', '--', lock])
+  }
+}
+
+/**
+ * Checks a condition until it holds or the time runs out.
+ * @param port - The engine calls.
+ * @param timeoutMs - How long it is checked.
+ * @param intervalMs - The pause between two checks.
+ * @param check - The condition.
+ * @returns Whether it held before the time ran out.
+ */
+async function pollUntil(port: EnginePort, timeoutMs: number, intervalMs: number, check: () => Promise<boolean>): Promise<boolean> {
+  const deadline = await port.now() + timeoutMs
+  for (;;) {
+    if (await check()) return true
+    if (await port.now() > deadline) return false
+    await port.clock.sleep(intervalMs, new AbortController().signal)
   }
 }
 
@@ -332,14 +436,94 @@ export function progressPath(common: string, issue: number): string {
 }
 
 /**
+ * Reads an issue's spawn progress record.
+ * @param port - The engine calls.
+ * @param common - The git common directory.
+ * @param issue - The issue number.
+ * @param strict - Whether an unreadable record throws; else it reads as a unit never started.
+ * @returns The progress.
+ */
+export async function readProgressFile(port: EnginePort, common: string, issue: number, strict: boolean): Promise<Progress> {
+  return readProgress(await readJsonUnlessStrict(port.files, progressPath(common, issue), strict, undefined))
+}
+
+/**
+ * Replaces an issue's spawn progress record.
+ * @param port - The engine calls.
+ * @param common - The git common directory.
+ * @param issue - The issue number.
+ * @param progress - The whole record.
+ * @returns Once the record is written.
+ */
+export function writeProgress(port: EnginePort, common: string, issue: number, progress: Progress): Promise<void> {
+  return atomicReplace(port, progressPath(common, issue), JSON.stringify(progress))
+}
+
+/**
  * Reads a unit's progress record, a missing or foreign one standing for a unit never started.
  * @param value - The parsed record.
  * @returns The progress.
  */
 function readProgress(value: unknown): Progress {
-  const mode = isRecord(value) && typeof value.mode === 'string' ? value.mode : undefined
+  const text = (key: string): Record<string, string> => isRecord(value) && typeof value[key] === 'string' && value[key] ? { [key]: value[key] } : {}
+  const effort = isRecord(value) ? parseEffort(value.effort) : undefined
   return { isStarted: isRecord(value) && value.isStarted === true, isPrompted: isRecord(value) && value.isPrompted === true,
-    ...(isRecord(value) && value.isTyped === true ? { isTyped: true } : {}), ...(mode ? { mode } : {}) }
+    ...(isRecord(value) && value.isTyped === true ? { isTyped: true } : {}), ...text('mode'), ...text('model'), ...(effort ? { effort } : {}),
+    ...text('reason'), ...text('escalation'), ...text('sessionId') }
+}
+
+/**
+ * Reads an effort a coordinator may give a unit.
+ * @param value - The effort as given or recorded.
+ * @returns The effort, or undefined when it is not one of efforts.
+ */
+export function parseEffort(value: unknown): Effort | undefined {
+  return efforts.find(each => each === value)
+}
+
+/**
+ * Keeps only a level's own fields, so a record or a call never carries more into the start command.
+ * @param level - The level, as recorded or given.
+ * @returns The model, effort and reason that are set.
+ */
+function pickLevel(level: UnitLevel): UnitLevel {
+  return { ...level.model ? { model: level.model } : {}, ...level.effort ? { effort: level.effort } : {}, ...level.reason ? { reason: level.reason } : {} }
+}
+
+/**
+ * Turns a level into the claude flags that start a session on it.
+ * @param level - The level.
+ * @returns `--model` and `--effort` for what is set; none for the user's defaults.
+ */
+function levelFlags(level: UnitLevel): string[] {
+  return [...level.model ? ['--model', level.model] : [], ...level.effort ? ['--effort', level.effort] : []]
+}
+
+/**
+ * Words the level a unit runs on, with its reason.
+ * @param level - The level.
+ * @returns Such as `model haiku, effort low (a typo fix)`; the user's defaults read as such.
+ */
+export function describeLevel(level: UnitLevel): string {
+  const model = level.model ? `model ${level.model}` : 'default model'
+  const effort = level.effort ? `effort ${level.effort}` : 'default effort'
+  return `${model}, ${effort}${level.reason ? ` (${level.reason})` : ''}`
+}
+
+/**
+ * Tells whether the claude CLI accepts a model name, by one print turn that loads no plugin, MCP server or hook.
+ * @param port - The engine calls.
+ * @param model - The model name or alias.
+ * @returns Nothing, or why the model is refused.
+ */
+async function probeModel(port: EnginePort, model: string): Promise<Result<undefined>> {
+  const run = await runProcess(port.processes, ['claude', '--setting-sources', 'project', '--strict-mcp-config', '--no-session-persistence',
+    '--model', model, '--max-turns', '1', '--output-format', 'json', '-p', 'Reply with OK.'], probeTimeoutMs, { cwd: '/' })
+  if (!run.isOk) return fail(`the model ${model} could not be checked, so nothing is started: ${run.error}`)
+  const reply = unwrapOr(parseJson(run.value.stdout), undefined)
+  if (run.value.exitCode === 0 && isRecord(reply) && reply.is_error === false) return succeed(undefined)
+  const said = isRecord(reply) && typeof reply.result === 'string' ? reply.result : run.value.stderr.trim() || `exit ${run.value.exitCode}`
+  return fail(`the claude CLI does not run model ${model}, so nothing is started: ${said}`)
 }
 
 /**
@@ -358,13 +542,93 @@ function inheritMode(mode: string | null | undefined): string {
  * @returns The mode, or undefined when spawn never started one.
  */
 export async function readSpawnMode(port: EnginePort, issues: number[]): Promise<string | undefined> {
-  const common = await readCommonDir(port)
-  if (!common) return undefined
   for (const issue of issues) {
-    const { mode } = readProgress(await readJson(port.files, progressPath(common, issue)).catch(() => undefined))
+    const mode = (await readSpawnProgress(port, issue))?.mode
     if (mode) return mode
   }
   return undefined
+}
+
+/**
+ * Reads the level spawn records for a unit of these issues.
+ * @param port - The engine calls.
+ * @param issues - The unit's issues.
+ * @returns The level, or undefined when spawn never started one.
+ */
+export async function readSpawnLevel(port: EnginePort, issues: number[]): Promise<UnitLevel | undefined> {
+  for (const issue of issues) {
+    const progress = await readSpawnProgress(port, issue)
+    if (progress?.isStarted) return pickLevel(progress)
+  }
+  return undefined
+}
+
+/**
+ * Reads an issue's spawn progress record.
+ * @param port - The engine calls.
+ * @param issue - The issue.
+ * @returns The progress, or null outside a repository or when the record is unreadable.
+ */
+export async function readSpawnProgress(port: EnginePort, issue: number): Promise<Progress | null> {
+  const common = await readCommonDir(port)
+  return common ? readProgressFile(port, common, issue, false) : null
+}
+
+/**
+ * Tells whether a level is the escalation target already: the user's default model with effort high, or the user's defaults untouched,
+ * which the mod never overrides.
+ * @param level - The unit's level.
+ * @returns Whether an escalation would not raise it.
+ */
+export function isTopLevel(level: UnitLevel): boolean {
+  return !level.model && level.effort !== 'low' && level.effort !== 'medium'
+}
+
+/**
+ * Tells whether a unit's agent is idle, waiting briefly for a turn that is ending.
+ * @param port - The engine calls.
+ * @param issue - The issue.
+ * @param waitMs - How long a working agent is given to go idle.
+ * @returns Whether herdr reports it idle or done within that time.
+ */
+export function isUnitIdle(port: EnginePort, issue: number, waitMs: number): Promise<boolean> {
+  return runHerdrText(port, ['agent', 'wait', unitAgent(issue), '--until', 'idle', '--until', 'done', '--timeout', String(waitMs)], waitMs + 5000).then(() => true, () => false)
+}
+
+/**
+ * Raises an idle unit to the user's default model with effort high: closes its session with /exit, records the new level, and resumes the
+ * same conversation on it, under the spawn lock. A unit that works, or already runs at that level, is left as it is.
+ * @param port - The engine calls.
+ * @param issue - The issue.
+ * @param signal - What triggered the escalation, recorded as the level's reason.
+ * @returns The resumed unit, or why it was not escalated.
+ */
+export async function escalateUnit(port: EnginePort, issue: number, signal: string): Promise<Result<string>> {
+  if (!await isInsideHerdr(port)) return fail(outsideHerdr)
+  return withSpawnLock(port, async (common, root) => {
+    const progress = await readProgressFile(port, common, issue, true)
+    if (!progress.isStarted) return fail(`#${issue} has no unit spawn started`)
+    if (isTopLevel(progress)) return fail(`#${issue} already runs on the user's default model and effort, so it is not escalated: its case is the coordinator's`)
+    const own = (await listUnitWorkspaces(port)).find(workspace => workspace.issue === issue)
+    if (own && (await listPanes(port, own.workspaceId)).some(hasAgent)) {
+      if (!await isUnitIdle(port, issue, busyWaitMs)) return fail(`#${issue}'s unit works, so it is not escalated now`)
+      await runHerdrText(port, ['agent', 'prompt', unitAgent(issue), '/exit'])
+      if (!await waitForExit(port, own.workspaceId)) return fail(`#${issue}'s session did not close after /exit, so it is not escalated`)
+    }
+    const { model: _model, escalation: _escalation, ...rest } = progress
+    await writeProgress(port, common, issue, { ...rest, effort: 'high', reason: `escalated: ${signal}` })
+    return spawnLocked(port, common, root, issue, '', {})
+  })
+}
+
+/**
+ * Waits for the agent of a workspace to leave its pane.
+ * @param port - The engine calls.
+ * @param workspaceId - The unit's workspace.
+ * @returns Whether no agent runs there before the wait ends.
+ */
+async function waitForExit(port: EnginePort, workspaceId: string): Promise<boolean> {
+  return pollUntil(port, exitWaitMs, 500, async () => !(await listPanes(port, workspaceId)).some(hasAgent))
 }
 
 /**

@@ -8,6 +8,9 @@ import type { DiagnoseNeed, Position } from './step-states'
 /** A successful declaration: the reply that lists its steps, and the prompt that starts its current step, null when none is current. */
 export interface DeclaredFlow { reply: string; start: string | null }
 
+/** Separates a start prompt's lead from the step it starts, so the prompt can be rebuilt from its lead. */
+const startMarker = ' Start the current step ('
+
 /**
  * Names the agent's next Diagnose requirement independently of the pane wording.
  * @param need - The first unmet Diagnose requirement, or undefined after completion.
@@ -30,12 +33,13 @@ export function describeDiagnoseNeed(need: DiagnoseNeed | undefined, issues: num
  *
  * @param position - The unit's position.
  * @param session - The session.
+ * @param isDelegated - Whether a live coordinator delegates the unit.
  * @returns The instruction, without the `[working-agreement]` prefix the agent reads it with.
  */
-export function composeInstruction(position: Position, session: Session): string {
+export function composeInstruction(position: Position, session: Session, isDelegated = false): string {
   const checkout = session.unit && position.git && session.unit.branch !== position.git.branch
     ? ` checked out: ${position.git.branch} (not this unit's branch).` : ''
-  return composeUnitInstruction(position, session) + checkout
+  return composeUnitInstruction(position, session, isDelegated) + checkout
 }
 
 /**
@@ -45,14 +49,26 @@ export function composeInstruction(position: Position, session: Session): string
  * @param position - The unit's position after the command.
  * @param session - The session with the declared issues.
  * @param lead - What the command did, as the prompt's first sentence.
+ * @param isDelegated - Whether a live coordinator delegates the unit.
  * @returns The prompt, or null when the unit has no current step to start.
  */
-export function composeStart(position: Position, session: Session, lead: string): string | null {
+export function composeStart(position: Position, session: Session, lead: string, isDelegated = false): string | null {
   const { pullRequest, current } = position
   if (position.isConcluded || position.slice?.isRewritten || position.integration?.state === 'unknown-end' || !current) return null
   const stop = /[.!?]$/.test(lead) ? '' : '.'
   const source = session.issues.length ? ' from the issue' : ''
-  return `${lead}${stop} Start the current step (${formatStepLabel(current.step, pullRequest)})${source}. ${composeFlowLine(position, session)}`
+  return `${lead}${stop}${startMarker}${formatStepLabel(current.step, pullRequest)})${source}. ${composeFlowLine(position, session, isDelegated)}`
+}
+
+/**
+ * Reads the lead of a start prompt composeStart wrote.
+ *
+ * @param text - A prompt's text.
+ * @returns The lead with its closing stop, or undefined when the text is no start prompt.
+ */
+export function readStartLead(text: string): string | undefined {
+  const index = text.indexOf(startMarker)
+  return index > 0 ? text.slice(0, index) : undefined
 }
 
 /**
@@ -60,17 +76,19 @@ export function composeStart(position: Position, session: Session, lead: string)
  *
  * @param position - The unit's position.
  * @param session - The session.
+ * @param isDelegated - Whether a live coordinator delegates the unit.
  * @returns The instruction, marked as the working agreement's.
  */
-export const composeFlowLine = (position: Position, session: Session): string => markForAgent(composeInstruction(position, session))
+export const composeFlowLine = (position: Position, session: Session, isDelegated = false): string => markForAgent(composeInstruction(position, session, isDelegated))
 
 /**
  * Directs the agent to the unit's next unmet requirement and any following human handover.
  * @param position - The unit's judged position.
  * @param session - The session's declared issues and facts.
+ * @param isDelegated - Whether a live coordinator delegates the unit.
  * @returns The flow instruction, including completion or blocked-state notices.
  */
-function composeUnitInstruction(position: Position, session: Session): string {
+function composeUnitInstruction(position: Position, session: Session, isDelegated: boolean): string {
   const { flow, pullRequest, current } = position
   const issue = session.issues.length ? ` ${formatIssueReferences(session.issues, ' ')}` : ''
   if (position.isConcluded) return `${flow.label}${issue} — Unit finished.`
@@ -90,7 +108,7 @@ function composeUnitInstruction(position: Position, session: Session): string {
   const handover = next?.step.isHuman && next.step.skill
     ? ` When it is done, do not run or offer ${next.step.skill} yourself: the next step is the user's — tell them to run /${next.step.skill}.`
     : ''
-  const requirement = describeRequirement(current, session, position)
+  const requirement = describeRequirement(current, session, position, isDelegated)
   const detail = current.step.isInWorktree ? describeDiagnoseNeed(current.need, session.issues) : current.detail ?? current.fact
   const fact = detail && detail !== requirement ? ` ${detail}.` : ''
   return `${flow.label}${issue} — current step: ${formatStepLabel(current.step, pullRequest)}.${fact} Next action: ${requirement}.${handover}`

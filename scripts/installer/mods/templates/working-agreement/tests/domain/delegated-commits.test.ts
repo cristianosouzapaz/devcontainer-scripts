@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 
 import { readUnitSlice } from '../../hooks/core/unit-slice'
-import { findDeniedWord } from '../../hooks/domain/bash-guards'
+import { findDeniedWord, listScriptCandidates } from '../../hooks/domain/bash-guards'
 import { composeSigningCommands } from '../../hooks/domain/delegated-commits'
 import { hashObject } from '../../hooks/lib/git'
 import type { SigningBranch } from '../../hooks/domain/delegated-commits'
@@ -9,7 +9,7 @@ import { coordinator, guarded, noFlow } from '../support/builders'
 import { callModTool, declareFlow, runFlowCommand } from '../support/helpers'
 import { test } from '../support/kit'
 import { readDelegated } from '../support/parallel-worktrees'
-import { buildScope, createTestPort, createWorld, delegatedFile, scopeFile } from '../support/world'
+import { buildScope, createTestPort, createWorld, delegatedFile, markSpawned, scopeFile } from '../support/world'
 import type { Checkout, Graph, Options, World } from '../support/world'
 
 /** Holds the history change the next opaque Bash call makes. */
@@ -52,6 +52,7 @@ function arrange(on: Parameters<typeof createWorld>[0], isDelegated = true, opti
     if (pending.change) checkout.graph = pending.change(checkout.graph!)
     delete pending.change
   } })
+  markSpawned(world, [3])
   if (isDelegated) world.files.set(scopeFile('coord'), buildScope('coord', [3]))
   return { world, checkout, pending }
 }
@@ -87,6 +88,25 @@ for (const command of ['git push origin feat', 'git rebase main', 'git branch -D
     arrange(on)
     await declareFlow($, 'fix', [3])
     expect((await $.tool.call({ tool: 'Bash', command })).deny).toContain('Under delegation this command is refused')
+  })
+}
+
+for (const command of ['bash /tmp/s/commit.sh', 'python3 -u /tmp/s/commit.py', 'source /tmp/s/commit.sh', '. /tmp/s/commit.sh', 'node /tmp/s/commit.js']) {
+  test(`a delegated unit's ${command} running an untracked script is refused before it runs`, async ($, on) => {
+    const { world } = arrange(on)
+    for (const name of ['commit.sh', 'commit.py', 'commit.js']) world.files.set(`/tmp/s/${name}`, 'git push origin feat\n')
+    await declareFlow($, 'fix', [3])
+    expect((await $.tool.call({ tool: 'Bash', command })).deny).toContain('untracked script')
+  })
+}
+
+for (const [command, isDelegated] of [['bash f', true], ['python3 -m pytest', true], ['bash /tmp/s/commit.sh', false]] as const) {
+  test(`${command} runs ${isDelegated ? 'under' : 'without'} delegation`, async ($, on) => {
+    const { world } = arrange(on, isDelegated)
+    world.files.set('/tmp/s/commit.sh', 'git push origin feat\n')
+    world.files.set('/repo/f', 'a')
+    await declareFlow($, 'fix', [3])
+    expect((await $.tool.call({ tool: 'Bash', command })).deny).toBeUndefined()
   })
 }
 
@@ -136,20 +156,27 @@ test('the word guard refuses git when the aliases are unreadable', () => {
   expect(findDeniedWord('bash -c "git log"', [])).toBe('bash -c')
 })
 
-test('the signing commands rebase each parent chain in place, detaching its merged children first', () => {
-  const branch = (name: string, parent: string | null, isMerged = false, root: string | null = null): SigningBranch => ({ branch: name, root, parent, isMerged })
-  expect(composeSigningCommands([branch('child', 'feat'), branch('done', 'feat', true, '/done'), branch('feat', null, false, '/feat')], 'main')).toEqual([
-    'git rebase --keep-base --rebase-merges --update-refs --force-rebase --gpg-sign origin/main child',
-    'git log --format=\'%G? %h %s\' origin/main..child',
-    'git push -u origin child',
-    'git -C /done switch --detach',
-    'git -C /feat rebase --keep-base --rebase-merges --update-refs --force-rebase --gpg-sign origin/main feat',
-    'git -C /feat log --format=\'%G? %h %s\' origin/main..feat',
-    'git -C /feat push -u origin feat',
-  ])
+test('a script candidate is an interpreter\'s operand within its own simple command, and `.` sources only where a command starts', () => {
+  expect(listScriptCandidates('bash -x a.sh b; cat c')).toEqual([['a.sh', 'b']])
+  expect(listScriptCandidates('node --version && cat /tmp/x')).toEqual([[]])
+  expect(listScriptCandidates('find . -name x.sh')).toEqual([])
+  expect(listScriptCandidates('cd /r && . ./env.sh')).toEqual([['./env.sh']])
+  expect(listScriptCandidates('/usr/bin/env python3 < /tmp/x.py')).toEqual([['/tmp/x.py']])
 })
 
-test('/flow delegate stop gives the signing rebase and push commands per branch chain', async ($, on) => {
+test('the signing commands re-sign each parent chain in place with its merged children, then push it', () => {
+  const branch = (name: string, parent: string | null, isMerged = false, root: string | null = null): SigningBranch => ({ branch: name, root, parent, isMerged })
+  const commands = composeSigningCommands([branch('child', 'feat'), branch('done', 'feat', true, '/done'), branch('feat', null, false, '/feat')], 'main')
+  expect(commands.map(command => command.replace(/'[^']*'/, '<re-sign>'))).toEqual([
+    'bash -c <re-sign> resign . origin/main child',
+    'git push -u origin child',
+    'bash -c <re-sign> resign /feat origin/main feat done',
+    'git -C /feat push -u origin feat',
+  ])
+  expect(commands[0]).toContain('commit-tree -S')
+})
+
+test('/flow delegate stop gives the re-sign and push commands per branch chain', async ($, on) => {
   const git: Graph = {
     commits: { a: { parents: [], files: { f: 'a' } }, b: { parents: ['a'], files: { f: 'b' } }, c: { parents: ['b'], files: { f: 'c' } } },
     refs: { main: 'a', 'origin/main': 'a', feat: 'b', child: 'c' }, created: { child: 'feat' },
@@ -160,12 +187,10 @@ test('/flow delegate stop gives the signing rebase and push commands per branch 
   world.files.set(delegatedFile('k2'), JSON.stringify({ v: 1, key: 'k2', sha: 'c', branch: 'child' }))
   const text = (await runFlowCommand($, 'delegate stop')).text ?? ''
   expect(text).toContain('sign and push them, in this order')
-  expect(text.split('\n').filter(line => line.startsWith('  git')).map(line => line.trim())).toEqual([
-    'git rebase --keep-base --rebase-merges --update-refs --force-rebase --gpg-sign origin/main child',
-    'git log --format=\'%G? %h %s\' origin/main..child',
+  expect(text.split('\n').filter(line => /^ {2}(git|bash) /.test(line)).map(line => line.trim().replace(/'[^']*'/, '<re-sign>'))).toEqual([
+    'bash -c <re-sign> resign . origin/main child',
     'git push -u origin child',
-    'git -C /feat rebase --keep-base --rebase-merges --update-refs --force-rebase --gpg-sign origin/main feat',
-    'git -C /feat log --format=\'%G? %h %s\' origin/main..feat',
+    'bash -c <re-sign> resign /feat origin/main feat',
     'git -C /feat push -u origin feat',
   ])
 })

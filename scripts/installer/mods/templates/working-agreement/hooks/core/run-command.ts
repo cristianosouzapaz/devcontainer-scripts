@@ -27,6 +27,11 @@ const outputTailBytes = 32768
 const agentTailLines = 60
 /** The UTF-8 bytes allowed in the command-output tail shown to the agent. */
 const agentTailBytes = 8192
+/** The failing test lines shown to the agent ahead of the tail. */
+const failingLinesCap = 20
+/** Bats TAP and bun test result lines that report a failed test, as a pattern both RegExp and `grep -E` read alike. */
+const failingPattern = '^(not ok |\\(fail\\) )'
+const failingLine = new RegExp(failingPattern)
 /** The 50 ms polls a stopped group gets after SIGTERM before SIGKILL: time for the log readers to flush. */
 const killGraceTicks = 40
 
@@ -75,6 +80,7 @@ const killGroup = `log=$1; pgid=$(cat "$log.pgid" 2>/dev/null) || exit 0; rm -f 
 kill -TERM "-$pgid" 2>/dev/null || exit 0
 i=0; while [ "$i" -lt ${killGraceTicks} ] && kill -0 "-$pgid" 2>/dev/null; do sleep 0.05; i=$((i + 1)); done
 kill -KILL "-$pgid" 2>/dev/null || :`
+const findFailing = `grep -E '${failingPattern}' "$1" | head -n ${failingLinesCap}; :`
 const finishLog = `set -e; log=$1; footer=$2; if [ -s "$log.overflow" ]; then head -c ${logCapBytes} "$log" >"$log.tmp"; mv -f "$log.tmp" "$log"; printf "\\n[output truncated]\\n" >>"$log"; cat "$log.output" >>"$log"; fi; printf "\\n%s\\n" "$footer" >>"$log"; cat "$log.output"; rm -f "$log.output" "$log.output.chunk" "$log.output.next" "$log.overflow" "$log.tmp" "$log.pgid"`
 
 /**
@@ -144,6 +150,27 @@ export async function closeCommandLog(port: EnginePort, log: string, footer: str
     tail.push(char)
   }
   return tail.reverse().join('')
+}
+
+/**
+ * Reads the log's first failing test lines, so a failure ahead of the tail needs no filter around the command.
+ * @param port - Engine calls.
+ * @param log - Absolute log path.
+ * @returns Up to failingLinesCap Bats `not ok` or bun `(fail)` lines.
+ */
+export async function readFailingLines(port: EnginePort, log: string): Promise<string[]> {
+  const result = await executeProcess(port.processes, ['sh', '-c', findFailing, 'verify-failing', log])
+  return cleanOutput(result.stdout).split('\n').filter(line => failingLine.test(line)).slice(0, failingLinesCap)
+}
+
+/**
+ * Words a failed command's output tail with where its full log is.
+ * @param tail - The output tail shown to the agent.
+ * @param log - Absolute log path.
+ * @returns The tail, then the pointer to the log.
+ */
+export function describeTail(tail: string, log: string): string {
+  return `${tail}\nthe first error may be earlier — see ${log}`
 }
 
 /**

@@ -6,7 +6,7 @@ import { coordinator } from '../support/builders'
 import { callModTool, inside, readRevision, runFlowCommand } from '../support/helpers'
 import { defaultIssueLabels } from '../support/issue-github'
 import { test } from '../support/kit'
-import { buildScope, common, createWorld, declarationFile, hashIdentity, records, scopeFile } from '../support/world'
+import { buildScope, common, createWorld, declarationFile, hashIdentity, markSpawned, records, scopeFile } from '../support/world'
 import type { Checkout, Graph, Options, World } from '../support/world'
 
 /** A herdr workspace the fake server holds: its label, checkout and whether an agent runs in its pane. */
@@ -93,7 +93,7 @@ async function createScene(on: On, options: Options = {}, checkout = repository(
   world.files.set(`${records}/s/${session}.json`, JSON.stringify({ ...world.sessions.get('sid'), role: undefined, sessionId: session, info: {},
     unit: identity, units: [{ identity, skills: [], verifyRuns: [], runs: [] }] }))
   world.files.set(await declarationFile(identity), JSON.stringify({ v: 1, identity, flow: 'small-feature' }))
-  world.files.set(`${records}/spawn/12.json`, JSON.stringify({ isStarted: true, isPrompted: true, mode: 'default' }))
+  markSpawned(world, [12], session)
   world.files.set(`${transcripts}/${session}.jsonl`, '{}\n')
   return { world, checkout, session }
 }
