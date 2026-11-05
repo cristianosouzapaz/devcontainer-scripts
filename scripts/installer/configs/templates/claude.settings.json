@@ -5,13 +5,11 @@
         "allow": [
             "Artifact",
             "Bash(*)",
-            "Edit(*)",
+            "Edit(/**)",
             "mcp__context7__*",
-            "Read(*)",
             "Skill(*)",
             "WebFetch(*)",
-            "WebSearch(*)",
-            "Write(*)"
+            "WebSearch(*)"
         ],
         "deny": [
             "Bash(gh pr close *)",
