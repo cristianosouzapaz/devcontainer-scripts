@@ -3,10 +3,11 @@ ARG NODE_IMAGE="node:24.22.1-bookworm-slim"
 FROM ${NODE_IMAGE}
 
 # python3 provides the stdlib the herdr Claude Code hook needs (the base image
-# ships only python3-minimal, which lacks json/socket).
+# ships only python3-minimal, which lacks json/socket). libatomic1 lets a Node feature
+# version newer than the base image's run: Node 26 links against libatomic.so.1.
 # hadolint ignore=DL3008
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates coreutils curl jq python3 \
+    && apt-get install -y --no-install-recommends ca-certificates coreutils curl jq libatomic1 python3 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PNPM_HOME=/root/.local/share/pnpm \
