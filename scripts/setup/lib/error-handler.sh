@@ -174,6 +174,7 @@ on_exit() {
 
 # setup_error_traps: turns on errtrace and installs handle_error on ERR, on_exit on EXIT, on_sigint on INT and on_sigterm on TERM; call once at startup
 setup_error_traps() {
+	# why: errtrace must stay on in the caller, or functions and subshells it runs never fire the ERR trap
 	set -E
 	trap 'handle_error' ERR
 	trap 'on_exit' EXIT

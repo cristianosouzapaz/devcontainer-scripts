@@ -2,14 +2,14 @@ import { expect } from 'claude-code/testing'
 
 import { readUnitSlice } from '../../hooks/core/unit-slice'
 import { findDeniedWord, listScriptCandidates } from '../../hooks/domain/bash-guards'
-import { composeSigningCommands } from '../../hooks/domain/delegated-commits'
+import { composeSignScript, describeSigning, groupChains, nameSignScript } from '../../hooks/domain/delegated-commits'
 import { hashObject } from '../../hooks/lib/git'
-import type { SigningBranch } from '../../hooks/domain/delegated-commits'
+import type { SigningBranch, SigningChain, SigningPlan } from '../../hooks/domain/delegated-commits'
 import { coordinator, guarded, noFlow } from '../support/builders'
 import { callModTool, declareFlow, runFlowCommand } from '../support/helpers'
 import { test } from '../support/kit'
 import { readDelegated } from '../support/parallel-worktrees'
-import { buildScope, createTestPort, createWorld, delegatedFile, markSpawned, scopeFile } from '../support/world'
+import { buildScope, configBlob, createTestPort, createWorld, delegatedFile, markSpawned, root, scopeFile } from '../support/world'
 import type { Checkout, Graph, Options, World } from '../support/world'
 
 /** Holds the history change the next opaque Bash call makes. */
@@ -18,6 +18,9 @@ interface PendingChange { change?: (git: Graph) => Graph }
 /** A delegation test's world, its live checkout and the change slot the next Bash call applies. */
 interface Arranged { world: World; checkout: Checkout; pending: PendingChange }
 
+
+/** An approved Verify config whose runners are a project script and a tool, as any project may name its own. */
+const runnerConfig = '{"always":[["scripts/check.sh"]],"rules":[{"paths":["src/**"],"run":["tools/suite","unit"]}]}'
 
 /**
  * Builds a repository whose unit branch `feat` and side branch `other` start at the default branch, with the git alias `pu`.
@@ -39,9 +42,9 @@ const commitOn = (git: Graph, branch: string, isSigned = false): Graph => ({
 })
 
 /**
- * Arranges a unit session on `feat` for issue #3, delegated by the coordinator `coord` unless told otherwise.
+ * Arranges a unit session on `feat` for issue 3, delegated by the coordinator `coord` unless told otherwise.
  * @param on - The hook registrar.
- * @param isDelegated - Whether a scope delegates #3.
+ * @param isDelegated - Whether a scope delegates issue 3.
  * @param options - Further world options.
  * @returns The world, the live checkout and the change slot the next Bash call applies.
  */
@@ -91,6 +94,44 @@ for (const command of ['git push origin feat', 'git rebase main', 'git branch -D
   })
 }
 
+for (const command of ['claude plugin test .', 'cd /repo && ./scripts/check.sh', 'scripts/check.sh --fast', 'bash scripts/check.sh', 'tools/suite unit',
+  '/repo/tools/suite', 'bats tests/unit', 'npx bats x.bats']) {
+  test(`a delegated unit's ${command} is refused for the run and verify tools`, async ($, on) => {
+    arrange(on, true, { verifyFile: runnerConfig, approvedConfig: runnerConfig })
+    await declareFlow($, 'small-feature', [3])
+    expect((await $.tool.call({ tool: 'Bash', command })).deny).toContain('the run tool')
+  })
+}
+
+test('a script no approved Verify config runs is no heavy test run', async ($, on) => {
+  arrange(on, true, { verifyFile: runnerConfig, approvedConfig: runnerConfig })
+  await declareFlow($, 'small-feature', [3])
+  expect((await $.tool.call({ tool: 'Bash', command: 'scripts/free.sh' })).deny).toBeUndefined()
+})
+
+test('a runner the unit removed from its tree\'s config is still refused while the approved config runs it', async ($, on) => {
+  const { checkout } = arrange(on, true, { verifyFile: '{"always":[["scripts/check.sh"]]}', approvedConfig: runnerConfig })
+  checkout.graph = { ...checkout.graph!, blobs: { [configBlob(runnerConfig)]: runnerConfig } }
+  await declareFlow($, 'small-feature', [3])
+  expect((await $.tool.call({ tool: 'Bash', command: 'tools/suite unit' })).deny).toContain('the run tool')
+})
+
+test('when the approved config cannot be read, a runner of the tree\'s config is refused too', async ($, on) => {
+  const tree = '{"always":[["scripts/other.sh"]]}'
+  const { world } = arrange(on, true, { verifyFile: tree, approvedConfig: runnerConfig })
+  world.files.set(`${root}/.claude/working-agreement.json`, tree)
+  await declareFlow($, 'small-feature', [3])
+  expect((await $.tool.call({ tool: 'Bash', command: 'scripts/other.sh' })).deny).toContain('the run tool')
+})
+
+for (const [command, isDelegated] of [['claude plugin test .', false], ['grep -rn bats test', true], ['cat scripts/check.sh', true]] as const) {
+  test(`${command} is no test run ${isDelegated ? 'under' : 'without'} delegation`, async ($, on) => {
+    arrange(on, isDelegated)
+    await declareFlow($, 'small-feature', [3])
+    expect((await $.tool.call({ tool: 'Bash', command })).deny).toBeUndefined()
+  })
+}
+
 for (const command of ['bash /tmp/s/commit.sh', 'python3 -u /tmp/s/commit.py', 'source /tmp/s/commit.sh', '. /tmp/s/commit.sh', 'node /tmp/s/commit.js']) {
   test(`a delegated unit's ${command} running an untracked script is refused before it runs`, async ($, on) => {
     const { world } = arrange(on)
@@ -120,7 +161,7 @@ for (const command of ['git commit -F msg', 'git -c commit.gpgsign=false commit 
 
 test('a delegated unit\'s commit tool commits its staged work unsigned on its own branch and records it as delegated', async ($, on) => {
   const { world, checkout } = arrange(on)
-  await declareFlow($, 'fix', [3])
+  await declareFlow($, 'small-feature', [3])
   checkout.staged = { f: 'b' }
   const result = await callModTool($, 'commit', { message: 'fix: change' })
   expect(result.isError).toBe(false)
@@ -164,16 +205,62 @@ test('a script candidate is an interpreter\'s operand within its own simple comm
   expect(listScriptCandidates('/usr/bin/env python3 < /tmp/x.py')).toEqual([['/tmp/x.py']])
 })
 
-test('the signing commands re-sign each parent chain in place with its merged children, then push it', () => {
+test('the chains group every merged child under its head and leave an unmerged child a chain of its own', () => {
   const branch = (name: string, parent: string | null, isMerged = false, root: string | null = null): SigningBranch => ({ branch: name, root, parent, isMerged })
-  const commands = composeSigningCommands([branch('child', 'feat'), branch('done', 'feat', true, '/done'), branch('feat', null, false, '/feat')], 'main')
-  expect(commands.map(command => command.replace(/'[^']*'/, '<re-sign>'))).toEqual([
-    'bash -c <re-sign> resign . origin/main child',
-    'git push -u origin child',
-    'bash -c <re-sign> resign /feat origin/main feat done',
-    'git -C /feat push -u origin feat',
+  const chains = groupChains([branch('child', 'feat'), branch('done', 'feat', true, '/done'), branch('feat', null, false, '/feat')])
+  expect(chains.map(({ head, children }) => [head.branch, children.map(child => child.branch)])).toEqual([['child', []], ['feat', ['done']]])
+})
+
+test('the sign script is named by the issue of a single chain, by the branch without an issue number, and all for several chains', () => {
+  expect(nameSignScript(['chore/518-integrate-the-round'])).toBe('518.sh')
+  expect(nameSignScript(['hotfix/login'])).toBe('hotfix-login.sh')
+  expect(nameSignScript(['chore/518-a', 'feat/527-b'])).toBe('all.sh')
+})
+
+test('the sign script quotes every name and holds the phases the user reviews', () => {
+  const script = composeSignScript([{ branch: 'feat/1-it\'s', root: '/my repo', children: ['kid'] }], 'main')
+  expect(script).toContain('"$@" \'/my repo\' \'origin/main\' \'feat/1-it\'\\\'\'s\' \'kid\'')
+  for (const phase of ['Phase 1, pre-check', 'Phase 2, verify capability', 'Phase 3, re-create', 'Phase 4, checks', 'Phase 5, move refs', '--dry-run']) expect(script).toContain(phase)
+})
+
+/**
+ * Builds a chain for the summary.
+ * @param branch - The head.
+ * @param patch - The fields to change.
+ * @returns The chain.
+ */
+const chain = (branch: string, patch: Partial<SigningChain> = {}): SigningChain => ({ branch, root: `/${branch.split('/')[1]}`, commits: 5, unsigned: 4, children: [], strays: [], ...patch })
+
+test('the summary of one chain labels the commits, child refs, checks and pre-check, then the steps', () => {
+  const plan: SigningPlan = { base: 'main', verify: 'off (no allowedSignersFile)', path: '/r/.git/working-agreement/sign/518.sh', chains: [chain('chore/518-round', { children: ['feat/402-a', 'feat/501-b'] })] }
+  expect(describeSigning(plan)).toBe([
+    '', '',
+    'To sign  chore/518-round',
+    '  Commits      5 above origin/main (4 unsigned, 1 signed)',
+    '  Child refs   2 move with it (#402 #501)',
+    '  Checks       tree unchanged · every commit signed · verify: off (no allowedSignersFile)',
+    '  Pre-check    ✔ every child is inside the head',
+    '', 'Run',
+    '  1. bash /r/.git/working-agreement/sign/518.sh --dry-run    # lists, moves nothing',
+    '  2. bash /r/.git/working-agreement/sign/518.sh',
+    '  3. git -C /518-round push -u origin chore/518-round',
+  ].join('\n'))
+})
+
+test('the summary of several chains is a table with a row per chain, one script and the pushes in order', () => {
+  const plan: SigningPlan = { base: 'main', verify: 'on', path: '/r/.git/working-agreement/sign/all.sh', chains: [chain('chore/518-a', { children: ['kid'] }), chain('feat/527-b', { strays: [{ branch: 'feat/9-x', commits: ['abc1234'] }] })] }
+  const text = describeSigning(plan)
+  expect(text).toContain('To sign  2 chains above origin/main')
+  expect(text).toMatch(/\n {2}chore\/518-a +5 +4 +1 +✔ every child is inside the head\n/)
+  expect(text).toMatch(/\n {2}feat\/527-b +5 +4 +0 +✘ #9 has abc1234 outside the head/)
+  expect(text.split('\n').filter(line => /^ {2}\d\. /.test(line))).toEqual([
+    '  1. bash /r/.git/working-agreement/sign/all.sh --dry-run    # lists, moves nothing', '  2. bash /r/.git/working-agreement/sign/all.sh',
+    '  3. git -C /518-a push -u origin chore/518-a', '  4. git -C /527-b push -u origin feat/527-b',
   ])
-  expect(commands[0]).toContain('commit-tree -S')
+})
+
+test('nothing is said when no chain is left to sign', () => {
+  expect(describeSigning(null)).toBe('')
 })
 
 test('/flow delegate stop gives the re-sign and push commands per branch chain', async ($, on) => {
@@ -186,13 +273,13 @@ test('/flow delegate stop gives the re-sign and push commands per branch chain',
   world.files.set(delegatedFile('k1'), JSON.stringify({ v: 1, key: 'k1', sha: 'b', branch: 'feat' }))
   world.files.set(delegatedFile('k2'), JSON.stringify({ v: 1, key: 'k2', sha: 'c', branch: 'child' }))
   const text = (await runFlowCommand($, 'delegate stop')).text ?? ''
-  expect(text).toContain('sign and push them, in this order')
-  expect(text.split('\n').filter(line => /^ {2}(git|bash) /.test(line)).map(line => line.trim().replace(/'[^']*'/, '<re-sign>'))).toEqual([
-    'bash -c <re-sign> resign . origin/main child',
-    'git push -u origin child',
-    'bash -c <re-sign> resign /feat origin/main feat',
-    'git -C /feat push -u origin feat',
+  expect(text).toContain('Delegation stopped\n  Scope        #3 → yours again\n  Ruleset      signed commits required')
+  expect(text).toContain('To sign  2 chains above origin/main')
+  expect(text.split('\n').filter(line => /^ {2}\d\. /.test(line)).map(line => line.trim())).toEqual([
+    '1. bash /repo.git/working-agreement/sign/all.sh --dry-run    # lists, moves nothing', '2. bash /repo.git/working-agreement/sign/all.sh',
+    '3. git push -u origin child', '4. git -C /feat push -u origin feat',
   ])
+  expect(world.files.get('/repo.git/working-agreement/sign/all.sh')).toContain('\'/feat\' \'origin/main\' \'feat\'')
 })
 
 for (const [name, options, isUnguarded] of [

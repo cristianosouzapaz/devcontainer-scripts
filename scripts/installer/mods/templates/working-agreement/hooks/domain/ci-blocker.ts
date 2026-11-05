@@ -11,7 +11,7 @@ interface CiBlocker {
  * Says why a PR's CI holds the unit back and what the agent does about it.
  *
  * @param checks - The CI state, which is not passing.
- * @param pullRequest - The PR as gh names it (`#5`, a URL or a branch), or empty for the current branch's.
+ * @param pullRequest - The PR as gh names it (`#<n>`, a URL or a branch), or empty for the current branch's.
  * @returns The reason and the action, for a deny or an instruction.
  */
 export function describeCiBlocker(checks: CiState, pullRequest: string): CiBlocker {

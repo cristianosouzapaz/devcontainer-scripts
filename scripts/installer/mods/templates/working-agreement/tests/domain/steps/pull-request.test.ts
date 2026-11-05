@@ -179,8 +179,11 @@ test('every PR next action records uncaptured context once, except a retry', () 
   }
 })
 
+/** The fact a Close out's PR step shows for child `b` (issue 3) deleted before any session observed its end. */
+const neverObserved = '▸ PR #10 · child #3: end never observed (branch deleted) — verify it is merged, then add Closes #3 to the PR or close #3'
+
 /**
- * Creates the Close out on `par` for #1, with child units of `par` left in another chat's records.
+ * Creates the Close out on `par` for issue 1, with child units of `par` left in another chat's records.
  * @param on - The engine's event registration.
  * @param checkout - The parent's checkout.
  * @param prs - The PRs GitHub lists.
@@ -194,13 +197,13 @@ async function createRound(on: On, checkout: Checkout, prs: Record<string, unkno
   if (children.length) await seedChildren(world, children)
 }
 
-/** Children `a` (#2) and `b` (#3) integrated into `par`, which now sits on their merges (`mpar`). */
+/** Children `a` (issue 2) and `b` (issue 3) integrated into `par`, which now sits on their merges (`mpar`). */
 const integrated = (): [Checkout, UnitEntry[]] => [parentCheckout({ par: 'mpar', b: 'b2' }), [buildChildEntry('a', 2), buildChildEntry('b', 3)]]
 
 test("a Close out on an integration branch requires only its declared issues and its integrated, unconcluded children's", async ($, on) => {
   const checkout = parentCheckout({ par: 'mpar', b: 'b2' })
   checkout.graph = withCommit(checkout.graph!, 'cc1', ['p2'], 'c')
-  // why: `a` was delivered by the earlier round's PR #8, `b` is integrated, `c` is cut from `par` but not merged into it.
+  // why: `a` was delivered by the earlier round's PR 8, `b` is integrated, `c` is cut from `par` but not merged into it.
   const children = [buildChildEntry('a', 2), buildChildEntry('b', 3), buildChildEntry('c', 4, { base: 'p2' })]
   await createRound(on, checkout, [buildParentPullRequest({ number: 8, headRefOid: 'ma' }), buildRoundPullRequest('mpar', [1])], children)
   expect(await readFlowStatus($)).toContain('▸ PR #10 · missing Closes #3')
@@ -265,11 +268,8 @@ test('a child merged into the parent, observed, then deleted stays integrated an
   expect(await readPromptContext($)).toContain('update PR #10 (body must carry Closes #1, Closes #3)')
 })
 
-/** The fact a Close out's PR step shows for child `b` (#3) deleted before any session observed its end. */
-const neverObserved = '▸ PR #10 · child #3: end never observed (branch deleted) — verify it is merged, then add Closes #3 to the PR or close #3'
-
 /**
- * Creates a round whose child `b` (#3) was merged into `par` and deleted with no judgement in between.
+ * Creates a round whose child `b` (issue 3) was merged into `par` and deleted with no judgement in between.
  * @param on - The engine hooks.
  * @param options - Options that replace the round's; their PRs stay live for the test to change.
  * @returns The world.

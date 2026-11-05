@@ -1,5 +1,4 @@
-#!/bin/bash
-set -euo pipefail
+# shellcheck shell=bash
 
 # MODULE_NAME="herdr"
 # MODULE_DESCRIPTION="Initializes project Herdr configuration and agent integrations"

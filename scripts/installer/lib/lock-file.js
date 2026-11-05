@@ -3,8 +3,8 @@ import { dirname, join, resolve } from "node:path";
 
 /** @fileoverview Immutable loading, updating, reconciliation, and persistence for template locks. */
 
-const LOCK_VERSION = "2";
-const emptyLock = () => ({ version: LOCK_VERSION, updatedAt: "", configs: {}, artifacts: {}, mdBlocks: {} });
+const lockVersion = "2";
+const emptyLock = () => ({ version: lockVersion, updatedAt: "", configs: {}, artifacts: {}, mdBlocks: {} });
 const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const isMissingFileError = (error) => isRecord(error) && Object.hasOwn(error, "code") && error.code === "ENOENT";
 
@@ -26,7 +26,7 @@ const addAdapter = (adapters, agent, adapter) => {
 export const readLockFile = (projectRoot) => {
     try {
         const parsed = JSON.parse(readFileSync(join(projectRoot, "template-lock.json"), "utf8"));
-        if (!isRecord(parsed) || !Object.hasOwn(parsed, "version") || parsed.version !== LOCK_VERSION) return emptyLock();
+        if (!isRecord(parsed) || !Object.hasOwn(parsed, "version") || parsed.version !== lockVersion) return emptyLock();
         return { ...emptyLock(), ...parsed, configs: isRecord(parsed.configs) ? { ...parsed.configs } : {}, artifacts: isRecord(parsed.artifacts) ? { ...parsed.artifacts } : {}, mdBlocks: isRecord(parsed.mdBlocks) ? { ...parsed.mdBlocks } : {} };
     } catch (error) {
         if (error instanceof SyntaxError || isMissingFileError(error)) return emptyLock();
@@ -43,10 +43,15 @@ export const readLockFile = (projectRoot) => {
  * @throws {Error} If the lock cannot be written.
  */
 export const writeLockFile = (projectRoot, lockData) => {
-    writeFileSync(join(projectRoot, "template-lock.json"), `${JSON.stringify({ ...lockData, version: LOCK_VERSION, updatedAt: new Date().toISOString() }, null, 4)}\n`, "utf8");
+    writeFileSync(join(projectRoot, "template-lock.json"), `${JSON.stringify({ ...lockData, version: lockVersion, updatedAt: new Date().toISOString() }, null, 4)}\n`, "utf8");
 };
 
-/** @param {object} lock - Lock data. @param {string} path - Canonical artifact path. @returns {string|null} Recorded version, if valid. */
+/**
+ * Read the version recorded for an artifact.
+ * @param {object} lock - Lock data.
+ * @param {string} path - Canonical artifact path.
+ * @returns {string|null} Recorded version, if valid.
+ */
 export const getArtifactVersion = (lock, path) => {
     const artifact = isRecord(lock.artifacts) && Object.hasOwn(lock.artifacts, path) ? lock.artifacts[path] : null;
     return isRecord(artifact) && typeof artifact.version === "string" ? artifact.version : null;
@@ -96,8 +101,17 @@ export const reconcileArtifactAdapters = (lock, root, path) => {
     return { lock: { ...lock, artifacts: { ...(isRecord(lock.artifacts) ? lock.artifacts : {}), [path]: { ...artifact, adapters } } }, changed };
 };
 
-/** @param {string} skillName - Skill directory name. @returns {{ path: string, type: string, target: string }} Claude skill adapter. */
+/**
+ * Describe the symlink that exposes a skill to Claude Code.
+ * @param {string} skillName - Skill directory name.
+ * @returns {{ path: string, type: string, target: string }} Claude skill adapter.
+ */
 export const claudeSkillAdapter = (skillName) => ({ path: join(".claude", "skills", skillName), type: "symlink", target: join(".agents", "skills", skillName) });
 
-/** @param {string} skillName - Skill directory name. @param {string} filename - Claude rule filename. @returns {{ path: string, type: string, target: string }} Claude rule adapter. */
+/**
+ * Describe the symlink that exposes a skill to Claude Code as a rule.
+ * @param {string} skillName - Skill directory name.
+ * @param {string} filename - Claude rule filename.
+ * @returns {{ path: string, type: string, target: string }} Claude rule adapter.
+ */
 export const claudeRuleAdapter = (skillName, filename) => ({ path: join(".claude", "rules", filename), type: "symlink", target: join(".agents", "skills", skillName, "SKILL.md") });

@@ -5,6 +5,7 @@ import { facts } from '../domain/facts'
 import { isUnitFinished } from '../domain/step-states'
 import { isAncestor } from '../lib/git'
 import { keyedLine } from '../ui/status-text'
+import type { KeyLabel } from '../ui/theme'
 import { bestEffort } from './best-effort'
 import { readNotices } from './coordinator-notice'
 import { composeSigningReturn, readDelegatedCommits } from './delegated-commits'
@@ -14,7 +15,7 @@ import { readMarkedComments } from '../lib/github'
 import { locatePosition } from './position'
 import { readDeclaration, readSessionMirrors } from './record-store'
 import { readArchives } from './retire'
-import { describeLevel, readSpawnLevel } from './spawn'
+import { describeLevel, readSpawnStart } from './spawn'
 import type { SessionMirror } from './record-store'
 
 const unknown = 'unknown'
@@ -44,7 +45,7 @@ async function reportIssue(port: EnginePort, issue: number, commits: DelegatedCo
   const decisions = comments.isOk ? listDecisions(comments.value) : null
   const notices = unit ? await bestEffort(port, 'report notices', async () => (await readNotices(port, unit.branch))?.sent ?? [], null) : []
   const archives = await bestEffort(port, 'report retirements', () => readArchives(port, issue), null)
-  const level = await bestEffort(port, 'report level', () => readSpawnLevel(port, [issue]), null)
+  const level = await bestEffort(port, 'report level', async () => (await readSpawnStart(port, [issue]))?.level, null)
   return [
     `#${issue}${unit ? ` · ${unit.branch}` : ''}`,
     keyedLine('Step', step),
@@ -65,7 +66,7 @@ async function reportIssue(port: EnginePort, issue: number, commits: DelegatedCo
  * @param render - Words one fact.
  * @returns The rows.
  */
-function listRows<T>(key: string, values: T[] | null, render: (value: T) => string): string[] {
+function listRows<T>(key: KeyLabel, values: T[] | null, render: (value: T) => string): string[] {
   if (!values) return [keyedLine(key, unknown)]
   return values.length ? values.map(value => keyedLine(key, render(value))) : [keyedLine(key, 'none')]
 }
@@ -83,6 +84,6 @@ export async function composeReport(port: EnginePort): Promise<string> {
   const sections = issues === null ? [`Delegated issues: ${unknown}`] : issues.length
     ? await Promise.all(issues.map(async issue => (await reportIssue(port, issue, commits, mirrors)).join('\n')))
     : ['This coordinator delegates no issue.']
-  const signing = await bestEffort(port, 'signing commands', () => composeSigningReturn(port), null)
-  return `${sections.join('\n\n')}${signing ? describeSigning(signing) : `\n\nSigning commands: ${unknown}`}`
+  const signing = await bestEffort(port, 'signing plan', () => composeSigningReturn(port), undefined)
+  return `${sections.join('\n\n')}${signing === undefined ? `\n\nSigning: ${unknown}` : describeSigning(signing)}`
 }

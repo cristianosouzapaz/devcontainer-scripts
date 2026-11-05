@@ -21,12 +21,14 @@ const claudeDir = '/claude'
 const transcripts = `${claudeDir}/projects/-wt-feat-12-redo-the-unit`
 
 /**
- * Answers herdr like a live server: it opens and removes labelled worktree workspaces, and a removal drops the git worktree too.
+ * Answers herdr like a live server: it opens and removes labelled worktree workspaces, a removal drops the git worktree too, and an
+ * agent start marks the unit's session as running.
  * @param workspaces - The open workspaces.
  * @param checkout - The repository, whose worktrees a removal changes.
+ * @param session - Whether the unit's session runs, set by an agent start.
  * @returns The world's herdr reply.
  */
-const herdrServer = (workspaces: Workspace[], checkout: Checkout): Options['herdrReply'] => args => {
+const herdrServer = (workspaces: Workspace[], checkout: Checkout, session: { isLive: boolean }): Options['herdrReply'] => args => {
   const [noun, verb] = args
   const option = (name: string): string => args[args.indexOf(name) + 1] ?? ''
   if (noun === 'workspace' && verb === 'list') {
@@ -47,7 +49,19 @@ const herdrServer = (workspaces: Workspace[], checkout: Checkout): Options['herd
     const workspace = workspaces.find(each => each.id === option('--workspace'))
     return JSON.stringify({ result: { panes: [{ pane_id: `${workspace?.id}:p1`, ...(workspace?.hasAgent ? { agent: 'claude' } : {}) }] } })
   }
+  if (noun === 'agent' && verb === 'start') session.isLive = true
   return '{}'
+}
+
+/**
+ * Acts as a running unit session's mod acknowledging the mail that reached its mailbox.
+ * @param mail - The world's files.
+ */
+function acknowledgeMail(mail: Map<string, string>): void {
+  for (const path of [...mail.keys()].filter(each => each.startsWith(`${records}/mail/12/new/`))) {
+    mail.set(path.replace('/new/', '/cur/'), mail.get(path) ?? '')
+    mail.delete(path)
+  }
 }
 
 /**
@@ -65,7 +79,7 @@ const github: Options['gh'] = args => {
 }
 
 /**
- * Builds main on m0 and #12's unit branch one commit past it, checked out in its own worktree with an untracked file.
+ * Builds main on m0 and issue 12's unit branch one commit past it, checked out in its own worktree with an untracked file.
  * @param graph - Fields replacing the graph's defaults.
  * @returns The coordinator's checkout on main.
  */
@@ -77,7 +91,7 @@ const repository = (graph: Partial<Graph> = {}): Checkout => ({
 })
 
 /**
- * Creates a coordinator inside herdr with #12's spawned unit: its workspace, session mirror, declaration, spawn record and transcript.
+ * Creates a coordinator inside herdr with issue 12's spawned unit: its workspace, session mirror, declaration, spawn record and transcript.
  * @param on - The test's hook registration.
  * @param options - Options replacing the coordinator defaults.
  * @param checkout - The repository.
@@ -85,8 +99,12 @@ const repository = (graph: Partial<Graph> = {}): Checkout => ({
  */
 async function createScene(on: On, options: Options = {}, checkout = repository()): Promise<Scene> {
   const workspaces = [{ id: 'w1', label: 'wa-spawn:12', path: worktree, hasAgent: true }]
+  const holder: { world?: World } = {}
+  const unit = { isLive: false }
   const world = createWorld(on, checkout, { session: coordinator, herdrEnv: { ...inside, CLAUDE_CONFIG_DIR: claudeDir },
-    herdrReply: herdrServer(workspaces, checkout), gh: github, ...options })
+    herdrReply: herdrServer(workspaces, checkout, unit), gh: github,
+    beforeRun: () => { if (unit.isLive && holder.world) acknowledgeMail(holder.world.files) }, ...options })
+  holder.world = world
   await world.ready
   const session = await deriveSessionId(common, 12)
   const identity = { branch, issues: [12] }
@@ -138,6 +156,70 @@ test('a delegating coordinator retires an in-scope unit: archive first, a delega
   const spawned = await callModTool($, 'spawn', { number: 12 })
   expect(spawned).toEqual({ text: expect.stringContaining('started'), isError: false })
   expect(world.runs.find(run => run.startsWith('herdr agent start issue-12'))).toContain(`--session-id ${session}`)
+})
+
+// contract: retiring a unit removes its stall record, so the unit spawned after it is reported afresh
+test('retirement removes the unit\'s stall record', async ($, on) => {
+  const scene = await createScene(on)
+  delegate(scene.world, [12])
+  scene.world.files.set(`${records}/stalls/12.json`, JSON.stringify({ v: 1, session: scene.session, stall: 'turn', key: `${scene.session}:turn:1` }))
+  expect(await callModTool($, 'retire_unit', { number: 12, reason: 'stalled' })).toEqual({ text: expect.stringContaining('Retired #12\'s unit'), isError: false })
+  expect(scene.world.files.has(`${records}/stalls/12.json`)).toBe(false)
+})
+
+// contract: retiring a unit moves its mailbox's messages into the archive, keeps its sequence file, and says how many it moved
+test('retirement archives the unit\'s mailbox, counting unread, read and invalid messages, and keeps its sequence', async ($, on) => {
+  const { world } = await createScene(on)
+  delegate(world, [12])
+  for (const path of ['new/a.1.json', 'cur/b.1.json', 'cur/c.1.json', 'bad/d.1.json']) world.files.set(`${records}/mail/12/${path}`, '{}')
+  world.files.set(`${records}/mail/12/seq.json`, '7')
+  expect((await runFlowCommand($, 'retire #12')).text).toContain('- 1 unread, 2 read and 1 invalid message(s) in its mailbox, moved into the archive')
+  expect((await callModTool($, 'retire_unit', { number: 12, reason: 'redo' })).isError).toBe(false)
+  expect([...world.files.keys()].filter(path => path.startsWith(`${records}/mail/12/`))).toEqual([`${records}/mail/12/seq.json`])
+  const archived = [...world.files.keys()].filter(path => /\/retired\/12-[^/]+-mail\//.test(path)).map(path => path.replace(/^.*-mail\//, '')).sort()
+  expect(archived).toEqual(['bad/d.1.json', 'cur/b.1.json', 'cur/c.1.json', 'new/a.1.json'])
+  expect(world.runs.find(run => run.startsWith('gh issue comment 12 --body ## Delegated decision'))).toContain('1 unread, 2 read and 1 invalid message(s) move into the archive')
+})
+
+// contract: a reply to a message of a retired session is archived with that retirement and never reaches the new unit's mailbox
+test('an answer to a question the retired session sent is kept in the retirement\'s archive, not delivered to the new unit', async ($, on) => {
+  const { world } = await createScene(on)
+  delegate(world, [12])
+  world.files.set(`${records}/mail/coordinator-sid/new/q.1.json`, JSON.stringify({ v: 1, id: 'q', kind: 'question', from: '12', to: 'coordinator-sid', issue: 12,
+    in_reply_to: '', seq: 1, created_at: new Date(world.clock.now()).toISOString(), expects: '', attempt: 1, body: 'A or B?', refs: [], author: 'agent' }))
+  await world.clock.advance(5000)
+  expect((await callModTool($, 'retire_unit', { number: 12, reason: 'redo' })).isError).toBe(false)
+  expect(await callModTool($, 'send', { kind: 'answer', in_reply_to: 'q', body: 'A.' })).toEqual({ text: expect.stringContaining('Not delivered'), isError: false })
+  expect([...world.files.keys()].filter(path => path.startsWith(`${records}/mail/12/new/`))).toEqual([])
+  expect([...world.files.keys()].some(path => /\/retired\/12-[^/]+-mail\/late\/q-re-coordinator-sid\.json$/.test(path))).toBe(true)
+})
+
+// contract: the user's answer to a question a retired session asked is kept in the retirement's archive, and the question no longer waits in the inbox
+test('the user\'s answer to a forwarded question of a retired session is archived, not delivered, and the question leaves the inbox', async ($, on) => {
+  const { world } = await createScene(on)
+  delegate(world, [12])
+  world.files.set(`${records}/mail/user/new/q.1.json`, JSON.stringify({ v: 2, id: 'q', kind: 'question', from: '12', to: 'user', issue: 12, in_reply_to: '', seq: 1,
+    created_at: new Date(world.clock.now()).toISOString(), expects: '', attempt: 1, body: 'A or B?', refs: [], author: 'agent', options: ['A', 'B'] }))
+  world.files.set(`${records}/forwards/q.json`, JSON.stringify({ v: 1, id: 'q', coordinator: 'coordinator-sid', at: new Date(world.clock.now()).toISOString(), note: 'yours' }))
+  expect((await runFlowCommand($, 'inbox')).text).toContain('/flow inbox answer q ')
+  await world.clock.advance(5000)
+  expect((await callModTool($, 'retire_unit', { number: 12, reason: 'redo' })).isError).toBe(false)
+  expect((await runFlowCommand($, 'inbox')).text).not.toContain('/flow inbox answer q ')
+  expect((await runFlowCommand($, 'inbox answer q a')).text).toContain('Not delivered')
+  expect([...world.files.keys()].filter(path => path.startsWith(`${records}/mail/12/new/`))).toEqual([])
+  expect([...world.files.keys()].some(path => /\/retired\/12-[^/]+-mail\/late\/q-re-user\.json$/.test(path))).toBe(true)
+})
+
+// contract: a cancel the retired session never replied to does not hold back a cancel to the unit spawned after the retirement
+test('a cancel left open by a retired session does not stop the coordinator cancelling the respawned unit', async ($, on) => {
+  const { world } = await createScene(on)
+  delegate(world, [12])
+  world.files.set(`${records}/mail/12/new/c.1.json`, JSON.stringify({ v: 2, id: 'c', kind: 'cancel', from: 'coordinator-sid', to: '12', issue: 12, in_reply_to: '', seq: 1,
+    created_at: new Date(world.clock.now()).toISOString(), expects: '', attempt: 1, body: 'Stop.', refs: [], author: 'agent', options: [] }))
+  await world.clock.advance(5000)
+  expect((await callModTool($, 'retire_unit', { number: 12, reason: 'redo' })).isError).toBe(false)
+  expect((await callModTool($, 'spawn', { number: 12 })).isError).toBe(false)
+  expect(await callModTool($, 'unit_prompt', { number: 12, kind: 'cancel', text: 'Stop the new work.' })).toMatchObject({ isError: false })
 })
 
 test('/flow report lists a retired unit with its restore command', async ($, on) => {

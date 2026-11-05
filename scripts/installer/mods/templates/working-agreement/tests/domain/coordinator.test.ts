@@ -155,3 +155,12 @@ test('an unreadable role denies the call', async ($, on) => {
   createAllowingWorld(on, { isStateAbsent: true, beforeSessionId: () => { throw new Error('unreadable') } })
   expect((await $.tool.check({ tool: 'Bash', input: { command: 'ls' } })).decision).toBe('deny')
 })
+
+// contract: /flow coordinate refuses in a linked worktree, where herdr cannot create the unit worktrees, and records no role
+test('/flow coordinate refuses in a linked worktree, names the main checkout and records no role', async ($, on) => {
+  createWorld(on, { branch: 'feat', main: '/main', worktrees: { '/repo': { branch: 'feat' }, '/main': { branch: 'main' } } }, { session: noFlow, herdrEnv: inside })
+  const text = (await runFlowCommand($, 'coordinate')).text
+  expect(text).toContain('linked worktree')
+  expect(text).toContain('/main')
+  expect(await readFlowStatus($)).not.toContain('Coordinator')
+})

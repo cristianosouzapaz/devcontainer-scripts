@@ -1,5 +1,4 @@
-#!/bin/bash
-set -euo pipefail
+# shellcheck shell=bash
 
 # MODULE_NAME="git"
 # MODULE_DESCRIPTION="Configures git credentials, validates token, clones or updates repositories"
@@ -62,6 +61,7 @@ remove_credentials_store() {
 }
 
 # url_host <url>: prints the host[:port] of a scheme:// URL, or an empty line for any other address
+# Stdout: the host[:port], or an empty line
 url_host() {
 	local url="${1:-}" host
 	[[ "$url" == *://* ]] || { echo ""; return 0; }
@@ -71,12 +71,14 @@ url_host() {
 }
 
 # url_scheme <url>: prints the scheme of a scheme:// URL
+# Stdout: the scheme, one line
 url_scheme() {
 	local url="${1:-}"
 	echo "${url%%://*}"
 }
 
 # token_env_var_name <host>: prints the per-host token variable name (gitlab.example.com → GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM)
+# Stdout: the variable name, one line
 token_env_var_name() {
 	local host="${1:-}" normalized
 	normalized=$(printf '%s' "${host^^}" | tr -c 'A-Z0-9' '_')
@@ -84,6 +86,7 @@ token_env_var_name() {
 }
 
 # resolve_token_for_host <host>: prints GIT_CLONE_TOKEN_<HOST>, else GIT_CLONE_TOKEN, else an empty line
+# Stdout: the token, or an empty line
 resolve_token_for_host() {
 	local host="${1:-}" var_name
 	var_name=$(token_env_var_name "$host")
@@ -100,6 +103,7 @@ resolve_token_for_host() {
 configure_git_credentials() {
 	local -a repo_urls=("$@")
 	local -A seen_hosts=()
+	local url host scheme token staged_file="" has_credentials=false
 
 	if ! check_env_var GIT_USER; then
 		push_error "$DEVCONTAINER_VALIDATION_ERROR" "${LINENO}" "configure_git_credentials" "GIT_USER" "GIT_USER is not set"
@@ -118,7 +122,6 @@ configure_git_credentials() {
 	git config --global user.name "${GIT_USER}"
 
 	if ! (
-		local url host scheme token staged_file="" has_credentials=false
 		trap '[[ -z "$staged_file" ]] || rm -f -- "$staged_file"' EXIT
 
 		for url in "${repo_urls[@]}"; do
@@ -153,6 +156,7 @@ configure_git_credentials() {
 }
 
 # detect_package_manager: prints the package manager from package.json's packageManager, else from the lock file (pnpm > npm > yarn, warning when several exist), else npm
+# Stdout: pnpm, npm or yarn, one line
 detect_package_manager() {
 	local declared_pm=""
 	local -a found_locks=()
@@ -181,14 +185,17 @@ detect_package_manager() {
 	echo "npm"
 }
 
-# configure_pnpm: points the pnpm store outside the workspace and widens the network retry budget (5 retries, 120s cap)
+# configure_pnpm: points the install user's pnpm store outside the workspace and widens the network retry budget (5 retries, 120s cap)
 # Notes: best effort with output discarded: a failure must not abort the module before
 #   the install attempt runs its own failure handling, including the warning path when
-#   REQUIRE_DEPENDENCY_INSTALL is false. The persistent-data module persists the store.
+#   REQUIRE_DEPENDENCY_INSTALL is false. The persistent-data module persists the store;
+#   its path is resolved past the /root link, which the install user cannot traverse.
 configure_pnpm() {
-	pnpm config set store-dir /root/.local/share/pnpm/store >/dev/null 2>&1 || true
-	pnpm config set fetch-retries 5 >/dev/null 2>&1 || true
-	pnpm config set fetch-retry-maxtimeout 120000 >/dev/null 2>&1 || true
+	local store
+	store="$(readlink -m -- "${PNPM_HOME:-/root/.local/share/pnpm}")/store"
+	as_install_user pnpm config set store-dir "$store" >/dev/null 2>&1 || true
+	as_install_user pnpm config set fetch-retries 5 >/dev/null 2>&1 || true
+	as_install_user pnpm config set fetch-retry-maxtimeout 120000 >/dev/null 2>&1 || true
 }
 
 # install_dependencies: installs the current directory's dependencies with the detected package manager, skipping without package.json
@@ -214,7 +221,7 @@ install_dependencies() {
 			configure_pnpm
 			if [[ -f "pnpm-lock.yaml" ]]; then
 				exit_code=0
-				spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --frozen-lockfile --force || exit_code=$?
+				spinner_stream log_debug as_install_user timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --frozen-lockfile --force || exit_code=$?
 				if [[ $exit_code -eq 0 ]]; then
 					spinner_cleanup
 					log_item_success "Dependencies installed with pnpm (frozen-lockfile)"
@@ -226,7 +233,7 @@ install_dependencies() {
 			fi
 			if [[ "$skip_fallback" == false ]]; then
 				exit_code=0
-				spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --force || exit_code=$?
+				spinner_stream log_debug as_install_user timeout "$_PKG_INSTALL_TIMEOUT" pnpm install --force || exit_code=$?
 				if [[ $exit_code -eq 0 ]]; then
 					spinner_cleanup
 					log_item_success "Dependencies installed with pnpm"
@@ -236,7 +243,7 @@ install_dependencies() {
 			;;
 		yarn)
 			exit_code=0
-			spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" yarn install --frozen-lockfile --non-interactive || exit_code=$?
+			spinner_stream log_debug as_install_user timeout "$_PKG_INSTALL_TIMEOUT" yarn install --frozen-lockfile --non-interactive || exit_code=$?
 			if [[ $exit_code -eq 0 ]]; then
 				spinner_cleanup
 				log_item_success "Dependencies installed with yarn"
@@ -245,7 +252,7 @@ install_dependencies() {
 			;;
 		npm)
 			exit_code=0
-			spinner_stream log_debug timeout "$_PKG_INSTALL_TIMEOUT" npm install || exit_code=$?
+			spinner_stream log_debug as_install_user timeout "$_PKG_INSTALL_TIMEOUT" npm install || exit_code=$?
 			if [[ $exit_code -eq 0 ]]; then
 				spinner_cleanup
 				log_item_success "Dependencies installed with npm"
@@ -264,58 +271,26 @@ install_dependencies() {
 	return 0
 }
 
-# install_dependencies_without_tokens: runs install_dependencies with every clone token out of reach, then restores them
-# Notes: a package-manager lifecycle script from the cloned repository is arbitrary
-#   code running as this same user, so any file or helper it can reach, it can read:
-#   the tokens leave the environment, the credential store's content is held only in
-#   this shell's memory with the file deleted, and credential.helper is blanked, so
-#   `git credential fill` has nothing to return. All of it comes back whatever the
-#   install's outcome, because a later repository and the developer still need it.
-#   GIT_TOKEN_DURING_INSTALL=true skips the store and helper part, for dependencies
-#   that are private git repositories cloned with the same token. Not a subshell:
-#   install_dependencies records failures in the shared error stack, which a
-#   subshell would discard.
+# install_dependencies_without_tokens: runs install_dependencies with every package-manager call as the install user, out of reach of every clone token
+# Returns: install_dependencies' status; a boundary that cannot be established counts
+#   as a failed install, fatal only when REQUIRE_DEPENDENCY_INSTALL is true.
+# Notes: a lifecycle script from the cloned repository is arbitrary code, and setup runs
+#   as root: install_user_session (lib/install-user.sh) proves, as the install user, that
+#   no setup secret is reachable before anything runs. GIT_TOKEN_DURING_INSTALL=true
+#   hands that user a throwaway copy of the credential store, for dependencies that are
+#   private git repositories cloned with the same token.
 install_dependencies_without_tokens() {
-	local rc=0 var_name saved_store="" saved_helper="" hide_store=false
-	local -a token_vars=()
-	local -A saved_tokens=()
-
-	[[ -n "${GIT_CLONE_TOKEN:-}" ]] && token_vars+=("GIT_CLONE_TOKEN")
-	for var_name in "${!GIT_CLONE_TOKEN_@}"; do
-		token_vars+=("$var_name")
-	done
-	for var_name in "${token_vars[@]}"; do
-		saved_tokens["$var_name"]="${!var_name}"
-		unset "$var_name"
-	done
-
-	if [[ "${GIT_TOKEN_DURING_INSTALL}" != "true" ]]; then
-		hide_store=true
-		saved_helper=$(git config --global credential.helper) || true
-		git config --global credential.helper ""
-		if [[ -f "$_GIT_CREDENTIALS_FILE" ]]; then
-			saved_store=$(<"$_GIT_CREDENTIALS_FILE")
-			rm -f -- "$_GIT_CREDENTIALS_FILE"
-		fi
+	local rc=0
+	local -a session_opts=()
+	[[ "${GIT_TOKEN_DURING_INSTALL}" != "true" ]] || session_opts=(--expose-clone-token "$_GIT_CREDENTIALS_FILE")
+	install_user_session "${session_opts[@]}" "$PWD" install_dependencies || rc=$?
+	[[ "$rc" -eq 2 ]] || return "$rc"
+	if [[ "${REQUIRE_DEPENDENCY_INSTALL}" == "true" ]]; then
+		push_error "$DEVCONTAINER_FATAL_ERROR" "${LINENO}" "install_dependencies_without_tokens" "install_user_session" "Dependency installation not isolated"
+		return 1
 	fi
-
-	install_dependencies || rc=$?
-
-	if [[ "$hide_store" == true ]]; then
-		if [[ -n "$saved_store" ]]; then
-			# why: a new file would otherwise get the umask's mode, not the store's 600
-			( umask 077 && atomic_write "$_GIT_CREDENTIALS_FILE" printf '%s\n' "$saved_store" ) || rc=1
-		fi
-		if [[ -n "$saved_helper" ]]; then
-			git config --global credential.helper "$saved_helper" || rc=1
-		else
-			git config --global --unset credential.helper || true
-		fi
-	fi
-	for var_name in "${token_vars[@]}"; do
-		export "$var_name=${saved_tokens[$var_name]}"
-	done
-	return "$rc"
+	log_item_warning "Dependency installation skipped: it could not be isolated from setup secrets (see the errors above)"
+	return 0
 }
 
 # setup_repository <resolved_url>: in the current directory, fast-forwards an existing repository when AUTO_UPDATE is true, or clones resolved_url

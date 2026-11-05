@@ -31,7 +31,7 @@ test('a Fix unit runs from Triage to a merged PR', async ($, on) => {
   graph.commits.c1!.files['test/a.test.ts'] = 'green'
   const git: Checkout = { branch: 'feat', graph }
   const options: Options = { session: noFlow, verifyFile, approvedConfig: verifyFile, issueLabels: { 1: ['needs-triage'] } }
-  const { clock, views } = createWorld(on, git, options)
+  const { clock, views, approveConfig } = createWorld(on, git, options)
   expect((await declareFlow($, 'fix', [1])).result).toContain('current step: Triage')
   await startSkill($, 'triage')
   options.issueLabels = { 1: ['ready-for-agent'] }
@@ -52,5 +52,5 @@ test('a Fix unit runs from Triage to a merged PR', async ($, on) => {
   expect((await $.tool.call({ tool: 'mcp__working-agreement__run', argv: ['./check'] })).result).toContain('green after red: the approved fix passes; call the verify tool')
   expect(readPaneCurrentStep(views)).toBe('Code')
   expect(await readFlowStatus($)).toContain('▸ Code\n')
-  await completeDelivery($, { git, options, clock, views })
+  await completeDelivery($, { git, options, clock, views, approveConfig })
 })

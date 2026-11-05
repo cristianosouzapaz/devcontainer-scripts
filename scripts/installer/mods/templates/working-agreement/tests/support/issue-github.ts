@@ -3,8 +3,8 @@ import type { Options } from './world'
 /** An issue as the fake GitHub keeps it. */
 interface FakeIssue { labels: string[]; assignees: string[]; parent: number | null; blockedBy: number[]; state: string; stateReason: string | null }
 
-/** A posted issue comment. */
-interface FakeComment { issue: number; url: string; body: string }
+/** A posted issue comment, with its author's login and creation time. */
+interface FakeComment { issue: number; url: string; body: string; author?: string; createdAt?: string }
 
 /** What the fake GitHub starts with, and the faults it injects. */
 interface IssueGithubOptions {
@@ -59,7 +59,8 @@ export function createIssueGithub(options: IssueGithubOptions = {}): IssueGithub
     }
     const listed = /^api repos\/\{owner\}\/\{repo\}\/issues\/(\d+)\/comments --paginate/.exec(args.join(' '))
     if (listed) {
-      return { stdout: comments.filter(comment => comment.issue === Number(listed[1])).map(({ url, body }) => JSON.stringify({ url, body, createdAt: new Date(0).toISOString() })).join('\n') }
+      return { stdout: comments.filter(comment => comment.issue === Number(listed[1]))
+        .map(({ url, body, author = 'me', createdAt = new Date(0).toISOString() }) => JSON.stringify({ url, body, createdAt, author })).join('\n') }
     }
     const fetched = /^repos\/\{owner\}\/\{repo\}\/issues\/(\d+)$/.exec(args[0] === 'api' ? args[1] ?? '' : '')
     const audited = fetched && issues.get(Number(fetched[1]))
@@ -69,7 +70,7 @@ export function createIssueGithub(options: IssueGithubOptions = {}): IssueGithub
       const types = options.issueTypes ?? null
       return { stdout: JSON.stringify({ data: { repository: { issueTypes: types && { nodes: types.map(name => ({ name })) } } } }) }
     }
-    const snapshot = /issue\(number:(\d+)\)\{state title labels/.exec(query)
+    const snapshot = /issue\(number:(\d+)\)\{state title (?:url )?labels/.exec(query)
     const viewed = snapshot && issues.get(Number(snapshot[1]))
     if (viewed) return { stdout: JSON.stringify({ data: { repository: { issue: { state: viewed.state, title: 'feat: x', labels: { nodes: viewed.labels.map(name => ({ name })) } } } } }) }
     const read = /issue\(number:(\d+)\)\{state stateReason/.exec(query)
@@ -90,6 +91,7 @@ export function createIssueGithub(options: IssueGithubOptions = {}): IssueGithub
     const number = Number(args[2])
     const issue = issues.get(number)
     if (args[0] === 'issue' && issue && args[1] === 'edit') {
+      if (args.length === 3) return { exitCode: 1, stderr: 'field to edit flag required when not running interactively' }
       const unknown = values(args, '--add-label').find(label => !(options.labels ?? defaultIssueLabels).includes(label))
       if (unknown) return { exitCode: 1, stderr: `'${unknown}' not found` }
       const removed = values(args, '--remove-label')
@@ -101,9 +103,14 @@ export function createIssueGithub(options: IssueGithubOptions = {}): IssueGithub
       Object.assign(issue, { state: 'CLOSED', stateReason: (values(args, '--reason')[0] ?? '').toUpperCase().replace(' ', '_') })
       return { stdout: '' }
     }
+    if (args[0] === 'issue' && issue && args[1] === 'reopen') {
+      Object.assign(issue, { state: 'OPEN', stateReason: null })
+      return { stdout: '' }
+    }
     if (args[0] === 'issue' && args[1] === 'comment') {
       const url = `https://github.com/o/r/issues/${number}#issuecomment-${comments.length + 1}`
-      comments.push({ issue: number, url, body: values(args, '--body')[0] ?? '' })
+      // why: each post is created after the last, so a check on creation order sees them in posting order.
+      comments.push({ issue: number, url, body: values(args, '--body')[0] ?? '', createdAt: new Date(1000 + comments.length).toISOString() })
       return { stdout: `${url}\n` }
     }
     if (args[0] === 'label' && args[1] === 'create') return { stdout: '' }

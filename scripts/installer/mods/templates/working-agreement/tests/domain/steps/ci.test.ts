@@ -90,3 +90,16 @@ test('a ref change returns before its slow GitHub read ends, and the pane repain
   await clock.settle()
   expect(views.at(-1)?.steps.find(step => step.id === 'pr')?.fullDetail).toBe('CI failing: test')
 })
+
+test('a call-start reread after a new commit under an open PR makes no GitHub call', async ($, on) => {
+  const checkout = { branch: 'feat', ahead: 1 }
+  const marks: { before?: number; at?: number } = {}
+  const world = createWorld(on, checkout, { ...pushedCloseOut, afterTool: () => { marks.at = world.runs.length } })
+  await $.session.start({ cwd: root, surface: null, isInteractive: false })
+  await world.clock.settle()
+  // A new commit on the unit branch moves the slice end to a sha no GitHub cache holds.
+  checkout.ahead = 2
+  marks.before = world.runs.length
+  await $.tool.call({ tool: 'Bash', command: 'true' })
+  expect(world.runs.slice(marks.before, marks.at).filter(run => run.startsWith('gh '))).toEqual([])
+})

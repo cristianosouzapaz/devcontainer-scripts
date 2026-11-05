@@ -13,7 +13,8 @@ import { judgeSession, stampHost } from './host'
 import { atomicReplace, listRecordNames, readCommonDir, readSession, readSessionMirrors, recordsPath, updateUnits } from './record-store'
 import { readSessionLiveness } from './session-host'
 import { withRecordLock } from './session-memory'
-import { readSpawnedSession, unitAgent } from './spawn'
+import { readSpawnedSession } from './spawn'
+import { unitAgent } from './unit-host'
 import { isCoordinatorSession } from '../domain/coordinator'
 
 // why: The scopes live beside the session mirrors, under the common directory every worktree shares, so a unit session
@@ -117,13 +118,14 @@ async function findCovering(port: EnginePort, issues: number[], strict: boolean,
 }
 
 /**
- * Finds the scope covering issues whose coordinator still runs, whichever session asks.
+ * Finds the scope covering issues whose coordinator still runs, whichever session asks: for what any session may know,
+ * never for an action only delegation allows.
  * @param port - The engine calls.
  * @param issues - The issues.
  * @param strict - Whether an unreadable bucket or scope throws.
  * @returns The covering live scope, or null.
  */
-async function findLiveScope(port: EnginePort, issues: number[], strict: boolean): Promise<DelegationScope | null> {
+export async function findLiveScope(port: EnginePort, issues: number[], strict: boolean): Promise<DelegationScope | null> {
   for (const scope of (await listScopes(port, strict)).filter(scope => coversIssues(scope, issues))) {
     if (await readLiveness(port, scope) === 'live') return scope
   }
@@ -164,7 +166,7 @@ export async function readLiveness(port: EnginePort, scope: DelegationScope): Pr
  * @returns The scope with the current process.
  */
 async function stampScope(port: EnginePort, scope: DelegationScope): Promise<DelegationScope> {
-  const { host: _host, ...rest } = scope
+  const { host: staleHost, ...rest } = scope
   const host = await stampHost(port)
   return host ? { ...rest, host } : rest
 }
@@ -206,8 +208,9 @@ async function stopDelegation(port: EnginePort): Promise<Result<string>> {
     if (!removed.isOk) return fail(`Delegation not stopped: ${removed.error}`)
     const units = new Map(mirrors.flatMap(({ session }) => session.unit && coversIssues(scope, session.unit.issues) ? [[JSON.stringify(session.unit), session]] : []))
     for (const session of units.values()) logEvent(port, { ...session, flow: null, issues: session.unit?.issues ?? [] }, 'delegation-ended', { coordinator: scope.sessionId, by: sessionId })
-    lines.push(scope === own ? `Delegation stopped (was ${describeScope(scope)}): those issues are the user's again.`
-      : `Orphaned delegation of coordinator ${scope.sessionId} stopped (was ${describeScope(scope)}): those issues are the user's again.`)
+    lines.push(scope === own ? 'Delegation stopped' : `Orphaned delegation of coordinator ${scope.sessionId} stopped`,
+      `  ${'Scope'.padEnd(13)}${describeScope(scope, false)} → yours again`,
+      `  ${'Ruleset'.padEnd(13)}${scope.isPushUnguarded ? 'no signed-commit ruleset (recommended)' : 'signed commits required'}`)
   }
   return succeed(lines.join('\n'))
 }
@@ -251,8 +254,8 @@ export function addCreatedIssue(port: EnginePort, issue: number): Promise<boolea
 
 /**
  * Records one of the user's steps as delegated when it was taken in a unit a running coordinator delegates.
- * The mod cannot tell the coordinator's typing, through herdr, from the user's own, so a step taken while the unit is delegated
- * is the coordinator's by the scope, and one taken outside it stays the user's.
+ * A step taken while the unit is delegated is the coordinator's by the scope, whether its mod applied a relayed step or the composer
+ * ran it, since text typed into a pane reads as the user's; one taken outside the scope stays the user's.
  * @param port - The engine calls.
  * @param command - The step's command, as the records and the pane show it.
  * @returns Whether the step was recorded as delegated.

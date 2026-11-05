@@ -2,7 +2,7 @@ import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
 import { noFlow, diagnosed, diagnosisComment } from '../support/builders'
 import { declareFlow, readFlowStatus, readStepStates, releaseVerifyHolder, seedVerifyHolder } from '../support/helpers'
-import { createWorld, records } from '../support/world'
+import { buildScope, createWorld, markSpawned, records, scopeFile } from '../support/world'
 import type { Checkout, Options } from '../support/world'
 
 const argv = ['./check']
@@ -14,6 +14,19 @@ for (const [session, reason] of [[noFlow, 'No unit declared'], [{ flow: 'close-o
     expect(result.result).toContain(reason)
     expect(result.isError).not.toBe(true)
     expect(sessions.get('sid')?.units.flatMap(unit => unit.runs)).toEqual([])
+  })
+}
+
+for (const flow of ['small-feature', 'close-out']) {
+  test(`a delegated unit's run in ${flow} runs queued and records no Diagnose evidence`, async ($, on) => {
+    const world = createWorld(on, { branch: 'fix' }, { session: { flow }, spawnCode: 7, spawnOutput: 'tail' })
+    markSpawned(world, [1])
+    world.files.set(scopeFile('coord'), buildScope('coord', [1]))
+    const result = await $.tool.call({ tool: 'mcp__working-agreement__run', argv })
+    expect(result.result).toContain('Run fail')
+    expect(result.result).toContain('tail')
+    expect(result.result).toContain('no Diagnose evidence recorded')
+    expect(world.sessions.get('sid')?.units.flatMap(unit => unit.runs)).toEqual([])
   })
 }
 

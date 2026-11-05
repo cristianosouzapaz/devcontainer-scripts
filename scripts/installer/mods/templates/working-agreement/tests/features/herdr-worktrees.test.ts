@@ -10,6 +10,11 @@ interface Workspace { id: string; label: string; path: string }
 
 const created = '/workspace/.worktrees/repo/worktree-oak'
 
+const subagentWorkspaces: Workspace[] = [
+  { id: 'w2', label: 'claude-sid:done', path: '/wt/done' }, { id: 'w3', label: 'claude-sid:dirty', path: '/wt/dirty' },
+  { id: 'w4', label: 'claude-sid:ahead', path: '/wt/ahead' }, { id: 'w5', label: 'claude-ffff0000:other', path: '/wt/other' },
+]
+
 /**
  * Answers herdr like a live server: `worktree create` with the checkout, and `workspace list` with these workspaces.
  * @param workspaces - The open worktree workspaces.
@@ -42,11 +47,6 @@ const subagentCheckout = (): Checkout => ({
   worktrees: { '/repo': { branch: 'main' }, '/wt/done': { branch: 'worktree-done' }, '/wt/dirty': { branch: 'worktree-dirty', isDirty: true },
     '/wt/ahead': { branch: 'worktree-ahead' }, '/wt/other': { branch: 'worktree-other' } },
 })
-
-const subagentWorkspaces: Workspace[] = [
-  { id: 'w2', label: 'claude-sid:done', path: '/wt/done' }, { id: 'w3', label: 'claude-sid:dirty', path: '/wt/dirty' },
-  { id: 'w4', label: 'claude-sid:ahead', path: '/wt/ahead' }, { id: 'w5', label: 'claude-ffff0000:other', path: '/wt/other' },
-]
 
 test('inside herdr a created worktree is a herdr workspace in the volume', async ($, on) => {
   const world = createWorld(on, { branch: 'main' }, { herdrEnv: inside, herdrReply: herdrServer() })

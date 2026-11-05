@@ -1,8 +1,8 @@
 import chalk from "chalk";
 import { checkbox, select, Separator } from "@inquirer/prompts";
-import { TOOLS } from "./constants.js";
+import { toolTargets } from "./constants.js";
 import { formatSelectionSummary } from "./selection-summary.js";
-import { PROMPT_THEME } from "./theme.js";
+import { promptTheme } from "./theme.js";
 
 /**
  * @fileoverview Selection-prompt helpers shared by the installer sub-commands: the
@@ -11,7 +11,7 @@ import { PROMPT_THEME } from "./theme.js";
  * themselves live in `pick-assets.js`.
  */
 
-const CLEAR_ON_DONE = { clearPromptOnDone: true };
+const clearOnDone = { clearPromptOnDone: true };
 
 /**
  * Show a selection summary and ask whether to install, edit, or cancel it. The summary lives
@@ -41,8 +41,8 @@ const confirmSelection = async (sections, installLabel = "Install selected asset
             { name: "Cancel", value: "cancel" },
         ],
         pageSize: summaryLines.length + 5,
-        theme: PROMPT_THEME,
-    }, CLEAR_ON_DONE);
+        theme: promptTheme,
+    }, clearOnDone);
 };
 
 /**
@@ -55,6 +55,7 @@ const confirmSelection = async (sections, installLabel = "Install selected asset
  * @param {(selection: unknown) => {title: string, items: string[]}[]} buildSections
  * @param {string} installLabel
  * @param {(selection: unknown) => boolean} [isEmpty]
+ * @param {unknown} [previous] - The prior round's selection, handed to `selectSelection`; undefined on the first pass.
  * @returns {Promise<unknown|null|undefined>}
  * @throws {Error} If a picker or confirmation prompt fails.
  * @effects Repeatedly presents the supplied picker and confirmation prompts on the current terminal.
@@ -101,18 +102,18 @@ export const formatVersionHint = (installedVersion, version) => {
 /**
  * Prompt for one or more coding agents. Callers route on the returned set rather than
  * branching on every combination, so adding an agent needs no new branches here.
- * @returns {Promise<string[]>} Selected values from `TOOLS`.
+ * @returns {Promise<string[]>} Selected values from `toolTargets`.
  * @throws {Error} If the interactive prompt cannot complete.
  * @effects Presents an interactive checkbox prompt on the current terminal.
  */
 export const selectTargetTools = () => checkbox({
     message: "Select target tool(s):",
     choices: [
-        { name: "GitHub Copilot", value: TOOLS.copilot },
-        { name: "Claude Code", value: TOOLS.claude },
-        { name: "Codex", value: TOOLS.codex },
-        { name: "Pi", value: TOOLS.pi },
+        { name: "GitHub Copilot", value: toolTargets.copilot },
+        { name: "Claude Code", value: toolTargets.claude },
+        { name: "Codex", value: toolTargets.codex },
+        { name: "Pi", value: toolTargets.pi },
     ],
     validate: (selected) => selected.length > 0 || "Select at least one coding agent.",
-    theme: PROMPT_THEME,
-}, CLEAR_ON_DONE);
+    theme: promptTheme,
+}, clearOnDone);

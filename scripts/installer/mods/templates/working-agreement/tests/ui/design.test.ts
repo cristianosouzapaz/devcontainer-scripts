@@ -7,6 +7,7 @@ import { createEmptySession, createEmptyUnit } from '../../hooks/domain/records'
 import type { Session, Unit } from '../../hooks/domain/records'
 import { withStates } from '../../hooks/domain/step-states'
 import type { Position } from '../../hooks/domain/step-states'
+import { keyWidth } from '../../hooks/ui/theme'
 import { buildView } from '../../hooks/ui/view-model'
 import { renderStatusText } from '../../hooks/ui/status-text'
 import { pushedCloseOut, diagnoseRuns, diagnosisComment } from '../support/builders'
@@ -35,7 +36,7 @@ for (const columns of [30, 60]) {
     const base = buildView(session, withStates(position('diagnose', { slice, unit: { ...createEmptyUnit(), runs: diagnoseRuns } }), session), { reason: 'unreachable', readAt: null }, false)
     const displayed: Displayed = { value: { ...base, hasRunLog: true, footer: { action: 'continue', isRunning: false },
       notes: [...base.notes, { key: 'Checkout', value: "other, not this unit's branch", tone: 'warn' }],
-      violations: [{ factId: 'v', text: '✗ a commit appeared', tone: 'error' }, { factId: 'u', text: 'could not check', tone: 'warn' }],
+      violations: [{ factId: 'v', text: 'a commit appeared', tone: 'error' }, { factId: 'u', text: 'could not check', tone: 'warn' }],
       steps: [...base.steps, { isError: false, isMerged: false, isRewritten: false, id: 'tickets', symbol: '↷', label: 'Tickets', state: 'skipped', detail: 'optional for this unit' }] } }
     serveDisplayed(on, displayed)
     const ui = await mountPane($, { columns: 60 })
@@ -50,13 +51,16 @@ for (const columns of [30, 60]) {
     await expectText(ui, columns === 30 ? 'issue…' : 'issue comments unavailable', { color: 'text', wrap: 'truncate-end' })
     await expectText(ui, columns === 30 ? 'optional for…' : 'optional for this unit', { color: 'inactive', wrap: 'truncate-end' })
     await expectText(ui, 'feature/a-long-branch-name', { color: 'text', wrap: 'truncate-middle' })
-    await expectText(ui, 'frozen', { color: 'inactive' })
+    // A keyed row is toned as a note is: the key carries the tone, the value and its suffix stay plain.
+    await expectText(ui, 'frozen', { color: 'text' })
+    await expectText(ui, 'Branch', { color: 'inactive' })
+    await expectText(ui, 'GitHub', { color: 'warning' })
     // The GitHub row wraps under the value column, so its first line starts the failure.
-    expect((await ui.findAll({ type: 'Text' })).find(node => node.text.startsWith('read failed') && node.props['color'] === 'warning' && node.props['wrap'] === 'wrap')).toBeDefined()
-    await expectText(ui, columns === 30 ? ' ready-for-ag… ' : ' ready-for-agent ', { color: 'text', backgroundColor: 'subtle', wrap: 'truncate-end' })
+    expect((await ui.findAll({ type: 'Text' })).find(node => node.text.startsWith('read failed') && node.props['color'] === 'text' && node.props['wrap'] === 'wrap')).toBeDefined()
+    await expectText(ui, columns === 30 ? ' ready-for-a… ' : ' ready-for-agent ', { color: 'text', backgroundColor: 'subtle', wrap: 'truncate-end' })
     for (const [key, color] of [['Checkout', 'warning'], ['Violation', 'error'], ['Unchecked', 'warning'], ['Blocked', 'error'], ['Handoff', 'error']]) await expectText(ui, key!, { color, weight: 'semibold' })
-    await expectText(ui, columns === 30 ? '✗ a commit' : '✗ a commit appeared', { color: 'text', wrap: 'wrap' })
-    await expectText(ui, 'could not check', { color: 'text', wrap: 'wrap' })
+    await expectText(ui, columns === 30 ? 'a commit' : 'a commit appeared', { color: 'text', wrap: 'wrap' })
+    await expectText(ui, columns === 30 ? 'could not' : 'could not check', { color: 'text', wrap: 'wrap' })
     const boxes = await ui.findAll({ type: 'Box' })
     for (const text of ['✓ ', 'Diagnose', ' · ', 'Branch', base.progress, ' · frozen']) {
       expect(boxes.find(box => box.props['flexShrink'] === 0 && textOf(box) === text)).toBeDefined()
@@ -64,17 +68,19 @@ for (const columns of [30, 60]) {
     const pillRows = boxes.filter(box => box.props['gap'] === 2 && box.children.some(child => (child as DrawnNode).props?.['backgroundColor'] === 'subtle'))
     expect(pillRows).toHaveLength(columns === 30 ? 3 : 2)
     expect(renderStatusText(displayed.value)).toContain('↷ Tickets · optional for this unit')
-    expect(boxes.find(box => textOf(box).includes('dismiss') && box.props['marginTop'] === 1 && box.props['paddingLeft'] === 11)).toBeDefined()
+    expect(boxes.find(box => textOf(box).includes('dismiss') && box.props['marginTop'] === 1 && box.props['paddingLeft'] === keyWidth)).toBeDefined()
     expect(boxes.find(box => textOf(box).includes('Run log') && box.props['alignItems'] === 'flex-end')?.props['flexDirection']).toBe(columns < 44 ? 'column' : 'row')
     expect(textOf(await ui.drawn())).not.toContain('History')
     expect(textOf(await ui.drawn())).not.toContain('run /')
     displayed.value = buildView(declared, withStates(position('diagnose', { slice: { ...slice, isRewritten: true } }), declared), { reason: 'not authenticated — run gh auth login', readAt: null }, false)
     await ui.redraw()
-    await expectText(ui, 'rewritten', { color: 'error' })
+    await expectText(ui, 'rewritten', { color: 'text' })
+    await expectText(ui, 'Branch', { color: 'error' })
     await expectText(ui, '? ', { color: 'inactive' })
+    expect(displayed.value.progress).toMatch(/^\d+\/\d+$/)
     expect(textOf(await ui.drawn())).not.toContain('History')
     expect(renderStatusText(displayed.value)).not.toContain('History')
-    await expectText(ui, columns === 30 ? 'read failed' : 'read failed (not authenticated — run gh auth', { color: 'warning', wrap: 'wrap' })
+    await expectText(ui, columns === 30 ? 'read failed' : 'read failed (not authenticated — run gh auth', { color: 'text', wrap: 'wrap' })
     checkTheme(await ui.drawn(), themeKeys)
     await ui.unmount()
   })

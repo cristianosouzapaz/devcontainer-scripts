@@ -6,7 +6,7 @@ import { readCurrentStep, readFlowStatus, startSkill } from '../../support/helpe
 import { createWorld } from '../../support/world'
 import type { Options } from '../../support/world'
 
-// A Small feature on #1 whose Spec is done on the stored labels.
+// A Small feature on issue 1 whose Spec is done on the stored labels.
 const buildSpecDoneOptions = (): Options => ({
   session: { info: { 1: { title: 'feat', labels: ['ready-for-agent'] } } },
   unit: { skills: ['grilling', 'to-spec'] }, issueLabels: { 1: ['ready-for-agent'] },

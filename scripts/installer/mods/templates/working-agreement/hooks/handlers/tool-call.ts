@@ -1,23 +1,29 @@
-import type { Args, EventResult, Frozen, Next } from 'claude-code'
+import type { Args, EventResult, Frozen } from 'claude-code'
 
+import { denyUnapprovedCommit } from '../core/approval-gate'
 import { bestEffort } from '../core/best-effort'
+import { denyCancelledCall } from '../core/cancel-gate'
 import { judgeToolCall } from '../core/call-judgement'
 import { denyDelegatedCommand } from '../core/delegated-commits'
 import type { EnginePort } from '../core/engine-port'
 import { createFeaturePort } from '../core/feature-port'
 import { logEvent } from '../core/flow-log'
+import { recordActivity } from '../core/liveness'
 import { isJudgedTool } from '../core/judged-tools'
-import { refreshView } from '../core/pane-view'
+import { refreshView, reread, rereadAtCallStart } from '../core/pane-view'
 import { readSession, updateSession } from '../core/record-store'
-import { withRecordLock } from '../core/session-memory'
+import { sessionMemory, withRecordLock } from '../core/session-memory'
 import { isInsideHerdr, spawnGuide } from '../core/herdr-worktrees'
 import { flowDefinitions } from '../domain/flow-definitions'
-import { judgeIssueBash } from '../domain/bash-guards'
+import { isGitCommit, judgeApprovalBash, judgeIssueBash, judgeMailboxWrite, judgeRecordsBash, judgeReservedFlowBash } from '../domain/bash-guards'
 import { markForAgent, modToolPrefix } from '../domain/messages'
 import { recordHandoffDocument } from '../features/handoff'
 import { toStringOrEmpty } from '../lib/json'
 import { denyCoordinatorCall } from './coordinator'
 import { handleGuarantees } from './guarantees'
+
+/** The chain beneath the guard, which runs the tool: the hook's `next`, or a guard retry's stand-in for it. */
+type ToolChain = (event: Frozen<Args<'tool.call'>>) => Promise<EventResult<'tool.call'>>
 
 const agentWorktreeNote = 'a subagent with isolation: worktree does not see the unit\'s uncommitted changes (inside herdr, or with worktree.baseRef: "head", it sees only the committed HEAD); bring its changes back as an uncommitted patch (git -C <wt> diff --binary | git apply), never as a commit; with agent teams on, pass isolation on the Agent call itself, even for a subagent with a name.'
 
@@ -29,8 +35,14 @@ const agentWorktreeNote = 'a subagent with isolation: worktree does not see the 
  * @param next - The rest of the chain, which runs the tool.
  * @returns The tool's result, or a deny.
  */
-export async function handleToolCall(port: EnginePort, event: Frozen<Args<'tool.call'>>, next: Next<'tool.call'>): Promise<EventResult<'tool.call'>> {
-  return handleGuarantees(port, event, () => handleGatedCall(port, event, next))
+export async function handleToolCall(port: EnginePort, event: Frozen<Args<'tool.call'>>, next: ToolChain): Promise<EventResult<'tool.call'>> {
+  // why: a coordinator's tick reads a turn with no tool event for long as stalled, so each call's start and end both count as one.
+  await bestEffort(port, 'activity', () => recordActivity(port, 'tool'), undefined)
+  try {
+    return await handleGuarantees(port, event, () => handleGatedCall(port, event, next))
+  } finally {
+    await bestEffort(port, 'activity', () => recordActivity(port, 'tool'), undefined)
+  }
 }
 
 /**
@@ -40,10 +52,13 @@ export async function handleToolCall(port: EnginePort, event: Frozen<Args<'tool.
  * @param next - The remaining tool dispatch chain.
  * @returns The refusal or dispatched tool result.
  */
-async function handleGatedCall(port: EnginePort, event: Frozen<Args<'tool.call'>>, next: Next<'tool.call'>): Promise<EventResult<'tool.call'>> {
+async function handleGatedCall(port: EnginePort, event: Frozen<Args<'tool.call'>>, next: ToolChain): Promise<EventResult<'tool.call'>> {
   // The mod's own tools answer without next, so no permission check reaches them: the coordinator guard runs first.
   const coordinatorDeny = await denyCoordinatorCall(port, event)
   if (coordinatorDeny) return { deny: coordinatorDeny }
+  // A cancel gates every tool but send, the mod's own included, until the unit replies or the user lifts it.
+  const cancelDeny = await denyCancelledCall(port, event.tool, event.agentId)
+  if (cancelDeny) return { deny: cancelDeny }
   if (event.tool.startsWith(modToolPrefix)) return next(event)
   const args: Record<string, unknown> = { ...event }
   if (event.tool === 'Skill' && !event.agentId) {
@@ -54,13 +69,26 @@ async function handleGatedCall(port: EnginePort, event: Frozen<Args<'tool.call'>
     }
     return next(event)
   }
+  // The Verify config approval and the user's /flow steps are the user's, from their own terminal, in every session: no agent command names the script or types a step.
+  const approvalDeny = event.tool === 'Bash'
+    ? judgeApprovalBash(toStringOrEmpty(args.command)) ?? judgeReservedFlowBash(toStringOrEmpty(args.command), (await port.readHerdrEnv()).socketPath)
+    : undefined
+  if (approvalDeny) return { deny: approvalDeny }
   // Every GitHub issue write goes through the issue tools, which check its fields; a raw one is refused before it runs.
   const issueDeny = event.tool === 'Bash' ? judgeIssueBash(toStringOrEmpty(args.command)) : undefined
   if (issueDeny) return { deny: issueDeny }
+  // The records, the mailbox among them, are written only through the mod's own code, as a best effort.
+  const mailDeny = event.tool === 'Bash' ? judgeRecordsBash(toStringOrEmpty(args.command))
+    : isJudgedTool(event.tool) ? judgeMailboxWrite(toStringOrEmpty(args.file_path ?? args.notebook_path)) : undefined
+  if (mailDeny) return { deny: mailDeny }
   const delegatedDeny = event.tool === 'Bash' ? await denyDelegatedCommand(port, toStringOrEmpty(args.command)) : undefined
   if (delegatedDeny) return { deny: delegatedDeny }
+  const unapprovedDeny = event.tool === 'Bash' && isGitCommit(toStringOrEmpty(args.command)) ? await denyUnapprovedCommit(port) : undefined
+  if (unapprovedDeny) return { deny: unapprovedDeny }
   const herdrDeny = await denyOutsideHerdr(port, event.tool)
   if (herdrDeny) return { deny: herdrDeny }
+  // A Bash command may change the tree: the view is recomputed before it runs, from the tree as it stands, unless a read is in flight.
+  if (event.tool === 'Bash') await bestEffort(port, 'call start reread', () => rereadAtCallStart(port), undefined)
   if (!isJudgedTool(event.tool)) return event.tool === 'Agent' ? appendAgentWorktreeNote(args, await next(event)) : next(event)
   const verdict = await judgeToolCall(port, args)
   if (verdict.decision === 'deny') {
@@ -72,10 +100,28 @@ async function handleGatedCall(port: EnginePort, event: Frozen<Args<'tool.call'>
     }), undefined)
     return { deny: verdict.reason }
   }
-  const ran = await next(event)
+  const ran = await runWrite(port, () => next(event))
   if (ran.deny !== undefined) return ran
   await bestEffort(port, 'handoff document record', () => recordHandoffDocument(createFeaturePort(port), event.tool, toStringOrEmpty(args.file_path), ran.isError === true), undefined)
   return ran
+}
+
+/**
+ * Runs a file write with the view already showing its tree as changed, then lets the real tree decide again, so a failed or no-op write goes back.
+ * @param port - The engine calls.
+ * @param write - The dispatched write.
+ * @returns The write's result.
+ */
+async function runWrite(port: EnginePort, write: () => Promise<EventResult<'tool.call'>>): Promise<EventResult<'tool.call'>> {
+  sessionMemory.pendingWrites += 1
+  try {
+    await bestEffort(port, 'call start reread', () => rereadAtCallStart(port), undefined)
+    return await write()
+  } finally {
+    sessionMemory.pendingWrites -= 1
+    // The next call starts without waiting on this read.
+    port.defer(() => { void bestEffort(port, 'call end reread', () => reread(port, false), undefined) })
+  }
 }
 
 /**

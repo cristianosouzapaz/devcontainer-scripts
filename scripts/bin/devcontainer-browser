@@ -1,0 +1,63 @@
+#!/bin/bash
+set -euo pipefail
+
+# Stable BROWSER for long-lived terminal sessions. VS Code hands each terminal the IPC socket
+# of its current connection and a browser helper under its commit dir; a process that outlives
+# a reconnect or an update keeps both, dead. This wrapper resolves a live socket and the newest
+# helper at every call instead. DEVCONTAINER_BROWSER_IPC_DIR and
+# DEVCONTAINER_BROWSER_SERVER_ROOTS (space-separated) override /tmp and the VS Code server
+# roots, only so the tests can point it at fixtures.
+
+# ----- SHARED UTILITIES LOADING -----------------------------------------------
+
+# why: readlink -f, so the /usr/local/bin copy or a symlink still finds the script tree
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+BOOTSTRAP_LIB_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")/../setup/lib" && pwd)"
+source "$BOOTSTRAP_LIB_DIR/loader.sh"
+
+# ----- FUNCTIONS --------------------------------------------------------------
+
+# socket_is_live <path>: succeeds when the Unix socket accepts a connection
+socket_is_live() {
+	[[ -S "$1" ]] || return 1
+	python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).connect(sys.argv[1])' "$1" 2>/dev/null
+}
+
+# live_socket: prints VSCODE_IPC_HOOK_CLI when it is live, else the newest live vscode-ipc-*.sock
+# Stdout: the live socket path, one line
+live_socket() {
+	local sock
+	if [[ -n "${VSCODE_IPC_HOOK_CLI:-}" ]] && socket_is_live "$VSCODE_IPC_HOOK_CLI"; then
+		printf '%s\n' "$VSCODE_IPC_HOOK_CLI"
+		return 0
+	fi
+	while IFS= read -r sock; do
+		socket_is_live "$sock" && { printf '%s\n' "$sock"; return 0; }
+	done < <(find "${DEVCONTAINER_BROWSER_IPC_DIR:-/tmp}" -maxdepth 1 -type s -name 'vscode-ipc-*.sock' -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
+	return 1
+}
+
+# newest_helper: prints the most recently modified VS Code browser helper
+# Stdout: the helper path, one line, or nothing when none is found
+newest_helper() {
+	local -a roots=()
+	read -ra roots <<< "${DEVCONTAINER_BROWSER_SERVER_ROOTS:-/vscode/vscode-server/bin $HOME/.vscode-server/bin}"
+	find "${roots[@]}" -path '*/bin/helpers/browser.sh' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2-
+}
+
+# main <url...>: opens the URL through a live VS Code connection, or logs it and fails
+main() {
+	local sock helper
+	if ! sock=$(live_socket); then
+		log_error "No live VS Code connection to open the browser; open it by hand: $*"
+		exit 1
+	fi
+	helper=$(newest_helper)
+	if [[ -z "$helper" ]]; then
+		log_error "No VS Code browser helper found; open it by hand: $*"
+		exit 1
+	fi
+	VSCODE_IPC_HOOK_CLI="$sock" exec "$helper" "$@"
+}
+
+main "$@"

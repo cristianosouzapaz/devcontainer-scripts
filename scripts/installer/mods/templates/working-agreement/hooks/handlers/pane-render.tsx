@@ -61,11 +61,20 @@ async function drawPane(port: EnginePort, elements: PaneElements, props: PanePro
   }
   return renderFlowPane(elements, view, await port.readLiveRun(), { columns: props.bodyColumns, rows: props.scroll.bodyRows }, {
     openIssue: async issueNumber => {
-      await openIssueInBrowser(port.processes, issueNumber)
+      const opened = await openIssueInBrowser(port.processes, issueNumber)
+      const current = await port.readView()
+      if (opened.isOk || !current) return
+      const url = current.issues.find(issue => issue.number === issueNumber)?.url ?? ''
+      await port.writeView({ ...current, openFailure: { issue: issueNumber, reason: opened.error, url } })
     },
     dismissViolations: async () => {
       await dismissViolations(port, (view?.violations ?? []).map(note => note.factId))
       await refreshView(port, { isQuiet: true })
+    },
+    copyMerge: async surface => {
+      const current = await port.readView()
+      const text = current?.notes.find(note => note.key === 'Merge')?.value
+      if (current && text) await port.writeView({ ...current, mergeCopy: await port.copy(text, surface) })
     },
     startNewSession: () => { if (!view?.footer?.isRunning) void startNewSession(createFeaturePort(port)) },
     startHandoff: () => { if (!view?.footer?.isRunning) void startHandoff(createFeaturePort(port)) },

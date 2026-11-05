@@ -92,7 +92,8 @@ const pushes: Scenario[] = [
   })(), change: checkout => { checkout.graph!.refs['origin/sibling'] = 'sm' } },
 ]
 
-// Each placed pair is a branch tip the mod's own spawn or merge_child set during another session's call; the held child commits in that call too.
+// Each placed pair is a branch tip, or a detached HEAD named by its worktree root, that the mod's own spawn or merge_child set during another
+// session's call; the held child commits in that call too.
 const placements: Placement[] = [
   { name: "spawn's new branch on merge_child's merge of the user's sibling commit (the live example)", isJudged: false,
     checkout: parallelCheckout(), placed: [['parent', 'pm'], ['spawned', 'pm']], change: checkout => {
@@ -116,6 +117,17 @@ const placements: Placement[] = [
       checkout.graph = withCommit(checkout.graph!, 'g1', ['c1'], 'grand')
       checkout.graph = withCommit(checkout.graph!, 'cm', ['c1', 'g1'], 'child')
       checkout.graph = withCommit(checkout.graph!, 'c3', ['cm'], 'child')
+    } },
+  { name: "merge_child's gating Verify checking its unreferenced merge commit out on a detached HEAD in a temporary worktree", isJudged: false,
+    checkout: parallelCheckout(), placed: [['/main.verify', 'pm']], change: checkout => {
+      checkout.graph = withCommit(checkout.graph!, 'pm', ['p0', 'c1'])
+      checkout.worktrees!['/main.verify'] = { branch: 'HEAD', head: 'pm' }
+    } },
+  { name: 'a commit on top of the merge commit the mod checked out on a detached HEAD', isJudged: true,
+    checkout: parallelCheckout(), placed: [['/main.verify', 'pm']], change: checkout => {
+      checkout.graph = withCommit(checkout.graph!, 'pm', ['p0', 'c1'])
+      checkout.graph = withCommit(checkout.graph!, 'd1', ['pm'])
+      checkout.worktrees!['/main.verify'] = { branch: 'HEAD', head: 'd1' }
     } },
 ]
 
@@ -213,7 +225,7 @@ for (const [label, unit] of [['a rewritten base', { base: 'm0x', baseBranch: 'pa
     expect(records.map(({ kind, fact }) => ({ kind, ...(kind === 'commit' ? { fact } : {}) }))).toEqual([{ kind: 'commit', fact: { shas: ['l1'] } }, { kind: 'unchecked' }])
     expect(context).not.toContain('unchecked')
     expect(context.split('\n').filter(Boolean)).toHaveLength(1)
-    expect(world.views.at(-1)?.violations?.find(note => note.tone === 'warn')?.text).toMatch(/^unchecked: guarantee snapshots unavailable for 1 call, /)
+    expect(world.views.at(-1)?.violations?.find(note => note.tone === 'warn')?.text).toMatch(/^commits or push could not be placed, for 1 call, /)
   })
 }
 

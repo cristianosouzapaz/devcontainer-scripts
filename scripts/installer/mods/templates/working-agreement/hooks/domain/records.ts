@@ -1,4 +1,4 @@
-import type { ApprovedRed, GithubStatus, IssueAudit, IssueInfo, Identity, ObservedEndRecord, SessionRecord, Unit, UnitEntry, UnitRecord, VerifyEvidence, VerifyRecord, RunRecord, Violation } from '../../types'
+import type { ApprovedRed, GithubStatus, IssueAudit, IssueInfo, Identity, ObservedEndRecord, SessionRecord, Unit, UnitEntry, UnitRecord, VerifyEvidence, VerifyRecord, RunRecord, UncheckedReason, Violation } from '../../types'
 import { hasOnlyKeys, isStringArray, isFiniteNumber, isNonEmptyString, isSafeInteger, isRecord } from '../lib/guards'
 import { isPrFields } from '../lib/github-rows'
 import { flowDefinitions } from './flow-definitions'
@@ -8,6 +8,12 @@ export type { GithubStatus, Identity, IssueInfo, ObservedEndRecord, PullRequest,
 /** Adds the current unit's derived flow and issues for the existing flow logic. */
 export interface Session extends SessionRecord { flow: string | null; issues: number[] }
 
+/** Lists every unchecked reason in the fixed order a fact keeps and the pane prints. */
+export const uncheckedReasons: UncheckedReason[] = [
+  'refs read failed before', 'refs read failed after', 'trees read failed before', 'trees read failed after',
+  'PR read failed before', 'PR read failed after', 'repository read failed before', 'repository read failed after',
+  'commit reachability read failed', 'commits or push could not be placed',
+]
 const githubStatuses: GithubStatus[] = ['connected', 'unreachable', 'unauth', 'unknown']
 // why: Every run of a unit is written into its record on each write; the bounds keep that record small
 // while a red-to-green loop and the regression tests beside it still fit.
@@ -21,7 +27,8 @@ const totalRuns = 50
  */
 function isIssueInfo(value: unknown): value is IssueInfo {
   return isRecord(value) && ((hasOnlyKeys(value, ['error']) && typeof value.error === 'string')
-  || (hasOnlyKeys(value, ['state', 'title', 'labels', 'subIssues', 'comments']) && (value.state === undefined || typeof value.state === 'string') && typeof value.title === 'string' && isStringArray(value.labels)
+  || (hasOnlyKeys(value, ['state', 'title', 'url', 'labels', 'subIssues', 'comments']) && (value.state === undefined || typeof value.state === 'string') && typeof value.title === 'string'
+    && (value.url === undefined || typeof value.url === 'string') && isStringArray(value.labels)
       && (value.comments === undefined || (isRecord(value.comments) && hasOnlyKeys(value.comments, ['error']) && typeof value.comments.error === 'string')
         || (Array.isArray(value.comments) && value.comments.every(comment => isRecord(comment) && hasOnlyKeys(comment, ['url', 'createdAt'])
           && isNonEmptyString(comment.url) && typeof comment.createdAt === 'string' && Number.isFinite(Date.parse(comment.createdAt)))))
@@ -109,8 +116,9 @@ function hasRunStamp(value: Record<string, unknown>): boolean {
  * @returns Whether the unit entry is valid.
  */
 function isUnit(value: unknown): value is UnitEntry {
-  return isRecord(value) && hasOnlyKeys(value, ['identity', 'skills', 'verifyRuns', 'runs', 'approval', 'approvedRed', 'generation', 'base', 'baseBranch', 'skips', 'delegated', 'verifyApproved']) && isIdentity(value.identity) && isStringArray(value.skills)
+  return isRecord(value) && hasOnlyKeys(value, ['identity', 'skills', 'verifyRuns', 'runs', 'approval', 'approvedRed', 'generation', 'base', 'baseBranch', 'skips', 'delegated', 'verifyApproved', 'redVerifies']) && isIdentity(value.identity) && isStringArray(value.skills)
     && (value.delegated === undefined || isStringArray(value.delegated))
+    && (value.redVerifies === undefined || (Number.isInteger(value.redVerifies) && Number(value.redVerifies) >= 0))
     && Array.isArray(value.verifyRuns) && value.verifyRuns.every(isVerifyRecord)
     && Array.isArray(value.runs) && value.runs.every(isRunRecord)
     && ['approval', 'generation', 'base', 'baseBranch'].every(key => value[key] === undefined || typeof value[key] === 'string')
@@ -142,7 +150,8 @@ function isViolation(value: unknown): value is Violation {
     && (fact.before === null || typeof fact.before === 'string') && typeof fact.after === 'string' && !!fact.after
   if (value.kind === 'pr') return hasOnlyKeys(fact, ['number', 'before', 'after']) && isSafeInteger(fact.number) && Number(fact.number) > 0 && isPrFields(fact.before) && isPrFields(fact.after)
   if (value.kind === 'default-tree') return hasOnlyKeys(fact, ['root', 'before', 'after']) && ['root', 'before', 'after'].every(key => typeof fact[key] === 'string' && !!fact[key])
-  return value.kind === 'unchecked' && hasOnlyKeys(fact, ['toolUseId']) && typeof fact.toolUseId === 'string' && value.toolUseIds.includes(fact.toolUseId)
+  return value.kind === 'unchecked' && hasOnlyKeys(fact, ['toolUseId', 'reasons']) && typeof fact.toolUseId === 'string' && value.toolUseIds.includes(fact.toolUseId)
+    && (fact.reasons === undefined || (isStringArray(fact.reasons) && fact.reasons.length > 0 && fact.reasons.every(reason => uncheckedReasons.includes(reason as UncheckedReason))))
 }
 
 /**
@@ -167,7 +176,7 @@ function isIssueAudit(value: unknown): value is IssueAudit {
  * @returns Whether the complete session is valid.
  */
 function isSessionRecord(value: unknown): value is SessionRecord {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['v', 'sessionId', 'unit', 'units', 'info', 'blocked', 'gh', 'isLong', 'handoff', 'skills', 'violations', 'prSnapshot', 'role', 'audit']) || value.v !== 1 || typeof value.sessionId !== 'string' || !value.sessionId
+  if (!isRecord(value) || !hasOnlyKeys(value, ['v', 'sessionId', 'unit', 'units', 'info', 'blocked', 'gh', 'isLong', 'handoff', 'skills', 'violations', 'prSnapshot', 'role', 'audit', 'liftedCancels']) || value.v !== 1 || typeof value.sessionId !== 'string' || !value.sessionId
     || !(value.unit === null || isIdentity(value.unit)) || !Array.isArray(value.units) || !value.units.every(isUnit)
     || !isRecord(value.info) || !Object.values(value.info).every(isIssueInfo)
     || !isRecord(value.blocked) || !hasOnlyKeys(value.blocked, ['edits']) || !isSafeInteger(value.blocked.edits) || Number(value.blocked.edits) < 0
@@ -178,6 +187,7 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     || (value.skills !== undefined && !isStringArray(value.skills))
     || (value.role !== undefined && value.role !== 'coordinator')
     || (value.audit !== undefined && !isIssueAudit(value.audit))
+    || (value.liftedCancels !== undefined && !isStringArray(value.liftedCancels))
     || (value.handoff !== undefined && (!isRecord(value.handoff) || !(
       (value.handoff.state === 'running' && hasOnlyKeys(value.handoff, ['state'])) || (value.handoff.state === 'failed' && hasOnlyKeys(value.handoff, ['state', 'reason']) && typeof value.handoff.reason === 'string'))))) return false
   return true

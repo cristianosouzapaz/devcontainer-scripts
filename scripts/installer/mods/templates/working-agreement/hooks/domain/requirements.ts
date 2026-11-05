@@ -90,7 +90,8 @@ export function describeRequirement(state: StepState, session: Session, position
   if (step.skill && !step.observe) return `run the ${step.skill} skill`
   if (step.isUnlocking) return state.factCode === 'verify-not-run' ? 'call the verify tool on this tree (finish any change still in progress first)' : describeCode(position)
   if (step.observe === 'verify.passed') return position.verify.factCode === 'verify-config-missing'
-    ? "propose the minimum .claude/working-agreement.json: rules mapping path globs to the targeted check each change needs, as argvs taken from the project's docs, scripts or CI (workspaces, manifests, CI paths: filters), never the full suite, which CI runs; a change no rule matches is left to CI; argv only, strict keys (always, rules, timeoutMinutes, waitForCiLabels, issues, $schema), sub-packages as [\"sh\",\"-c\",\"cd pkg && …\"]; write it on the unit's branch as a normal change, ship it in its PR, then stop and ask the user to approve it with /flow approve verify" : 'call the verify tool'
+    ? "propose the minimum .claude/working-agreement.json: rules mapping path globs to the targeted check each change needs, as argvs taken from the project's docs, scripts or CI (workspaces, manifests, CI paths: filters), never the full suite, which CI runs; a change no rule matches is left to CI; argv only, strict keys (always, rules, timeoutMinutes, waitForCiLabels, issues, $schema), sub-packages as [\"sh\",\"-c\",\"cd pkg && …\"]; write it on the unit's branch as a normal change, ship it in its PR, then stop and ask the user to approve it from their own terminal with the command the pane names" : position.verify.isWaitingApproval
+    ? `end your turn and ask the user to approve the Verify config from their own terminal, never from a session: ${position.verify.approval ?? 'the command the pane names'}` : position.verify.isRunning ? 'wait for the running Verify to end' : 'call the verify tool'
   // Outside delegation the agent hands the user the commands; a delegated unit commits through the commit tool and never pushes.
   if (step.observe === 'commit') {
     const target = pullRequest?.baseRefName && pullRequest.baseRefName !== git?.base ? pullRequest.baseRefName : 'the default branch'
@@ -106,7 +107,7 @@ export function describeRequirement(state: StepState, session: Session, position
       ? `stop and ask the user to run the commit commands ${step.skill} produced, then push the branch (never commit or push yourself; no need to run it again)${sharedBranch}`
       : `run the ${step.skill} skill, then stop and ask the user to run the commands it produced and push the branch (never commit or push yourself)${sharedBranch}`
   }
-  // The merge is a commit, so the agent hands it to the user and the step follows the ancestry git then reports.
+  // The merge is a commit, so the agent hands it to the user, or under delegation to the coordinator's merge_child; the step follows the ancestry git then reports.
   if (step.observe === 'integrated') {
     const { integration } = position
     if (!integration) return 'retry; if it keeps failing, stop and tell the user'
@@ -121,6 +122,7 @@ export function describeRequirement(state: StepState, session: Session, position
     if (integration.state === 'integrated' || integration.state === 'delivered') return `the user's step: merge this unit into ${integration.parent}`
     // why: The gap is the parent's delivery, so the child's worktree holds nothing left to do.
     if (integration.state === 'stranded') return `the user's step: stop and ask them to run a Close out on ${integration.parent} that opens a new PR containing this unit (nothing to do in this worktree)`
+    if (isDelegated) return `the coordinator's step: reply done to its assignment; the coordinator integrates this unit into ${integration.parent} with merge_child (never merge yourself)`
     const pullRequest = integration.childPullRequest ? `merge PR #${integration.childPullRequest} and fetch, or ` : ''
     return `the user's step: stop and ask them to ${pullRequest}run ${integration.command} to merge this unit into ${integration.parent} (never merge yourself)`
   }

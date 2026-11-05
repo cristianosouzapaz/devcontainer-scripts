@@ -47,6 +47,7 @@ persistent_data_summary_claude_identity() {
 }
 
 # persistent_data_summary_codex_identity: prints the ChatGPT account email behind the Codex login, or "active session", failing when not logged in
+# Stdout: the account email or "active session", one line
 # Notes: codex login status confirms a session but exposes no account, so the email
 #   is decoded from the id_token JWT in $CODEX_HOME/auth.json; an API-key login has
 #   no id_token and prints "active session".
@@ -82,6 +83,7 @@ persistent_data_summary_github_identity() {
 }
 
 # persistent_data_summary_pi_identity: prints the providers in Pi's auth file that pi auth check reports ready, failing when none is
+# Stdout: the ready providers, one line
 # Notes: readiness comes from the JSON payload, not the command's exit status.
 persistent_data_summary_pi_identity() {
 	local auth_file="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json"

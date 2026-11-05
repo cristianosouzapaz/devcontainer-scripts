@@ -18,6 +18,7 @@ _PERSISTENT_DATA_HOME="${PERSISTENT_DATA_HOME:-/root}"
 # ----- FUNCTIONS --------------------------------------------------------------
 
 # persistent_data_link_path <category_id>: prints the managed link path of a category
+# Stdout: the link path, one line
 # Returns: 1 also for a category with no managed link.
 persistent_data_link_path() {
 	local category_id="$1" home_link home_root
@@ -29,6 +30,7 @@ persistent_data_link_path() {
 }
 
 # persistent_data_link_state <category_id>: prints the state of a category's managed link without touching it: none, ok, missing, foreign or unmanaged
+# Stdout: the state word, one line
 # Notes: the read-only counterpart of persistent_data_link_standard_path, deciding the
 #   same cases. ok points at the category directory, foreign is a symlink elsewhere,
 #   unmanaged is a file or directory at the link path; a tree of empty directories

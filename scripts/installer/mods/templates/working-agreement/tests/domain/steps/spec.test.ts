@@ -6,13 +6,13 @@ import { declareFlow, readCurrentStep, readFlowStatus, readPromptContext, startS
 import { createWorld } from '../../support/world'
 import type { Options } from '../../support/world'
 
-// A Small feature session on the existing #1, grilled, whose spec lands on #1 itself; gh then reports #1 ready-for-agent.
+// A Small feature session on the existing issue 1, grilled, whose spec lands on issue 1 itself; gh then reports issue 1 ready-for-agent.
 const grilled = {
   session: { info: { 1: { title: 'feat', labels: ['needs-info'] } } }, unit: { skills: ['grilling'] },
   issueLabels: { 1: ['ready-for-agent'] },
 }
 
-// A Small feature on #1 whose Spec is done on the stored labels.
+// A Small feature on issue 1 whose Spec is done on the stored labels.
 const specDone: Options = { unit: { skills: ['grilling', 'to-spec'] }, issueLabels: { 1: ['ready-for-agent'] } }
 
 test('Grill stays current while /to-spec runs without the GitHub label', async ($, on) => {

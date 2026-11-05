@@ -95,8 +95,8 @@ export async function readIssueStart(port: EnginePort, issue: number): Promise<R
 }
 
 /**
- * Picks where a new unit branch starts: the tip of its parent issue's unit branch, where a sub-issue lands, once every other
- * dependency is integrated there; else by its dependencies alone.
+ * Picks where a new unit branch starts: the tip of its parent issue's unit branch, where a sub-issue lands, once each other
+ * dependency, however many, is integrated there; else by its dependencies alone.
  * @param port - The engine calls.
  * @param blockers - The issue's open blocked-by dependencies.
  * @param parentIssue - The issue's native parent, if any.
@@ -108,10 +108,34 @@ async function resolveBase(port: EnginePort, blockers: number[], parentIssue: nu
   if (!integration.isOk) return { isReady: false, reason: integration.error }
   // why: a sub-issue blocked by its own parent would wait for a unit that finishes only with its PR; the parent is where it lands.
   const others = blockers.filter(blocker => blocker !== parentIssue)
-  const dependency = others.length ? await resolveDependencyBase(port, others) : null
-  const isIntegrated = !dependency || (dependency.isReady && dependency.parent === integration.value)
-  return isIntegrated ? { isReady: true, ref: `refs/heads/${integration.value}`, parent: integration.value }
-    : { isReady: false, reason: `its dependency #${others.join(', #')} is not integrated into ${integration.value} yet` }
+  const base = others.length ? await readDefaultBase(port) : null
+  if (others.length && !base) return { isReady: false, reason: 'the repository state is unreadable' }
+  const mirrors = base ? await readSessionMirrors(port) : []
+  const gaps = base ? await Promise.all(others.map(blocker => readIntegrationGap(port, blocker, integration.value, base, mirrors))) : []
+  const reasons = gaps.filter(gap => gap !== null)
+  return reasons.length ? { isReady: false, reason: reasons.join('; ') }
+    : { isReady: true, ref: `refs/heads/${integration.value}`, parent: integration.value }
+}
+
+/**
+ * Tells why a blocker's work is not yet in an integration branch, judged against that branch itself rather than the branch the
+ * blocker was cut from, so a blocker cut from a sibling or merged by hand still counts.
+ * @param port - The engine calls.
+ * @param blocker - The blocker's issue number.
+ * @param integration - The integration branch.
+ * @param base - The default branch's name and ref.
+ * @param mirrors - Every session mirror.
+ * @returns What the unit waits for, or null when the blocker is integrated.
+ */
+async function readIntegrationGap(port: EnginePort, blocker: number, integration: string, base: DefaultBase, mirrors: SessionMirror[]): Promise<string | null> {
+  const branch = await findUnitBranch(port, blocker)
+  if (!branch?.isOk) return `its dependency #${blocker} has no unit branch yet`
+  const state = await readUnitState(port, blocker, base, mirrors)
+  if (state !== 'finished' && state !== 'integrated') return `its dependency #${blocker}'s unit is ${state}`
+  // why: a branch that never moved has no work of its own, so the integration branch holding its tip proves nothing.
+  const isHeld = await hasMovedSinceCut(port.processes, branch.value)
+    && await isAncestor(port.processes, `refs/heads/${branch.value}`, `refs/heads/${integration}`)
+  return isHeld ? null : `its dependency #${blocker} is not integrated into ${integration} yet`
 }
 
 /**

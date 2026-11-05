@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import consolaBase from "consola";
 import { select } from "@inquirer/prompts";
-import { PROMPT_THEME } from "./theme.js";
+import { promptTheme } from "./theme.js";
 
 /**
  * @fileoverview The two ways an installer writes a file: `writeWithConflict` for the
@@ -11,7 +11,7 @@ import { PROMPT_THEME } from "./theme.js";
  * lock's `updatedAt` only moves on a real change).
  */
 
-const CLEAR_ON_DONE = { clearPromptOnDone: true };
+const clearOnDone = { clearPromptOnDone: true };
 const consola = consolaBase.withDefaults({ formatOptions: { date: false } });
 
 /**
@@ -40,8 +40,8 @@ export const writeWithConflict = async (destPath, content, filename, templateVer
                 { name: "Backup and replace", value: "backup and replace" },
             ],
             default: "skip",
-            theme: PROMPT_THEME,
-        }, CLEAR_ON_DONE);
+            theme: promptTheme,
+        }, clearOnDone);
 
         if (action === "skip") {
             consola.info(`Skipped ${filename}`);

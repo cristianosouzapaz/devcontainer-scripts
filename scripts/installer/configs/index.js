@@ -16,15 +16,15 @@ import { writeWithConflict } from "../lib/write-file.js";
 
 const consola = setupConsola();
 
-const CONFIGS_FILE_URL = new URL("./configs.json", import.meta.url);
-const TEMPLATES_URL = new URL("./templates/", import.meta.url);
+const configsFileUrl = new URL("./configs.json", import.meta.url);
+const templatesUrl = new URL("./templates/", import.meta.url);
 
 /**
  * Load and validate the config templates catalog from configs.json.
  * @returns {object[]} Validated config template entries.
  * @throws If the catalog file or any entry is invalid.
  */
-const loadConfigsCatalog = () => loadValidatedCatalog(CONFIGS_FILE_URL, "configs", {
+const loadConfigsCatalog = () => loadValidatedCatalog(configsFileUrl, "configs", {
     strings: ["name", "filename", "version", "templateFile"],
     nonEmptyStrings: ["description"],
     stringArrays: ["tags"],
@@ -99,7 +99,7 @@ const askUser = async () => {
         for (const config of selectedConfigs) {
             const destPath = join(destDir, config.filename);
             mkdirSync(dirname(destPath), { recursive: true });
-            const content = readFileSync(new URL(config.templateFile, TEMPLATES_URL), "utf8");
+            const content = readFileSync(new URL(config.templateFile, templatesUrl), "utf8");
             const written = await writeWithConflict(destPath, content, config.filename, config.version, state.lock.configs[config.filename] ?? null);
             if (written) {
                 state.lock = { ...state.lock, configs: { ...state.lock.configs, [config.filename]: config.version } };

@@ -9,7 +9,7 @@ import { join } from "node:path";
  * Display order for skill categories. Categories not listed here are appended after these,
  * in the order first encountered in the catalog.
  */
-const CATEGORY_ORDER = [
+const categoryOrder = [
     "Planning & Workflow",
     "Design & Frontend",
     "Framework (Next.js/Vercel)",
@@ -85,8 +85,8 @@ const groupByCategory = (entries) => {
 
     return new Map(
         [...groups.entries()].sort(([a], [b]) => {
-            const rankA = CATEGORY_ORDER.includes(a) ? CATEGORY_ORDER.indexOf(a) : CATEGORY_ORDER.length;
-            const rankB = CATEGORY_ORDER.includes(b) ? CATEGORY_ORDER.indexOf(b) : CATEGORY_ORDER.length;
+            const rankA = categoryOrder.includes(a) ? categoryOrder.indexOf(a) : categoryOrder.length;
+            const rankB = categoryOrder.includes(b) ? categoryOrder.indexOf(b) : categoryOrder.length;
             return rankA - rankB;
         }),
     );

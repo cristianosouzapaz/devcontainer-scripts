@@ -14,6 +14,7 @@ import { createReadPort } from './read-port'
 import { deleteDeclaration, deleteObservedEnds, readCommonDir, readDeclarations, readSession, readSessionMirrors, updateSession, recordBuckets, recordsPath, sweepBucket } from './record-store'
 import { sameIdentity } from '../domain/records'
 import { pruneSessionHosts } from './session-host'
+import { sweepMailStaging } from './mailbox'
 import { sessionMemory } from './session-memory'
 import { readGit } from './repository'
 import { readGithubStatus } from './github-sync'
@@ -137,7 +138,7 @@ function listIdentities(records: Pick<UnitEntry, 'identity'>[]): Identity[] {
 }
 
 /**
- * Removes expired temporary files, orphaned run artifacts, transition logs and observed slice ends while preserving live
+ * Removes expired temporary files, mailbox staging included, orphaned run artifacts, transition logs and observed slice ends while preserving live
  * owners and displayed runs; a unit's log and observed ends live as long as its declaration.
  * @param port - The engine calls.
  */
@@ -183,5 +184,6 @@ async function pruneFiles(port: EnginePort): Promise<void> {
       await bestEffort(port, 'orphan observed end delete', () => deleteObservedEnds(port, recordsPath(common, 'end', name)), undefined)
     }
   })
+  await sweepMailStaging(port, common, expiry)
   await pruneSessionHosts(port, common)
 }

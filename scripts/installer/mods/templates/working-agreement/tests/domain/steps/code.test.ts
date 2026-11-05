@@ -1,6 +1,6 @@
 import { expect } from 'claude-code/testing'
 import { test } from '../../support/kit'
-import { buildChanged, buildChangedCheckout, buildPullRequest, buildVerifyRun, diagnosed, diagnosisComment, fixed, verifyFile, verifyId } from '../../support/builders'
+import { approvalCommand, buildChanged, buildChangedCheckout, buildPullRequest, buildVerifyRun, diagnosed, diagnosisComment, fixed, verifyFile, verifyId } from '../../support/builders'
 import { endTurn, inside, readCurrentStep, readFlowStatus, readPaneCurrentStep, readPromptContext } from '../../support/helpers'
 import { createWorld } from '../../support/world'
 import type { Options } from '../../support/world'
@@ -22,7 +22,7 @@ test('a change with no Verify run on its tree leaves Code current in every displ
   expect(readPaneCurrentStep(world.views)).toBe('Code')
   expect(world.views.at(-1)?.steps.find(step => step.label === 'Code')?.detail).toBeUndefined()
   expect(world.views.at(-1)?.steps.find(step => step.label === 'Verify')?.state).toBe('pending')
-  expect(world.runs.at(-1)).toContain('--token flow_step=▸ Code --token')
+  expect(world.runs.at(-1)).toMatch(/flow_step=▸ Code(\s|$)/)
 })
 
 test('work committed without a Verify run on its tree leaves Code current', async ($, on) => {
@@ -106,14 +106,44 @@ test('an invalid verify config completes Code and Verify shows its JSON path', a
   expect(await readCurrentStep($)).toBe('Verify')
 })
 
-test('an unapproved verify config completes Code and Verify waits on its approval command', async ($, on) => {
-  const world = createWorld(on, buildChanged(), { verifyFile })
+test('an unapproved verify config, once the unit is idle, completes Code and Verify waits for the terminal approval', async ($, on) => {
+  const world = createWorld(on, buildChanged(), { verifyFile, herdrEnv: inside })
+  await endTurn($)
   const status = await readFlowStatus($)
   expect(status).toContain('✓ Code')
-  expect(status).toContain('/flow approve verify')
+  expect(status).toContain('● Verify · waiting for config approval')
+  expect(status).toContain(approvalCommand())
+  expect(await readCurrentStep($)).toBe('Verify')
+  expect(world.views.at(-1)?.notes?.find(note => note.key === 'Approve')).toMatchObject({ value: expect.stringContaining(approvalCommand()), tone: 'warn' })
+  expect(world.runs.findLast(run => run.includes('report-metadata'))).toMatch(/flow_step=● Verify(\s|$)/)
+  expect(world.suggestions).not.toContain(`/flow approve verify ${verifyId()}`)
+})
+
+test('an unapproved verify config while the unit still works is a note on Code, then Verify, which waits only once the turn ends', async ($, on) => {
+  const world = createWorld(on, buildChanged(), { verifyFile, herdrEnv: inside })
+  await $.turn.start({ text: 'go', turnId: 't' })
+  const status = await readFlowStatus($)
+  expect(status).toContain('▸ Code · config not approved')
+  expect(status).toContain(approvalCommand())
+  expect(status).not.toContain('● Verify')
+  expect(await readCurrentStep($)).toBe('Code')
+  expect(await readPromptContext($)).toContain('Next action: call the verify tool on this tree')
+  await $.tool.call({ tool: 'mcp__working-agreement__verify' })
+  expect(world.views.at(-1)?.notes?.find(note => note.key === 'Approve')).toMatchObject({ value: expect.stringContaining(approvalCommand()), tone: 'text' })
+  expect(world.runs.findLast(run => run.includes('report-metadata'))).toMatch(/flow_step=▸ Verify(\s|$)/)
   expect(await readCurrentStep($)).toBe('Verify')
   await endTurn($)
-  expect(world.suggestions.at(-1)).toBe(`/flow approve verify ${verifyId()}`)
+  expect(world.views.at(-1)?.notes?.find(note => note.key === 'Approve')).toMatchObject({ value: expect.stringContaining(approvalCommand()), tone: 'warn' })
+  expect(world.runs.findLast(run => run.includes('report-metadata'))).toMatch(/flow_step=● Verify(\s|$)/)
+})
+
+test('an unapproved verify config while the unit still works shows its approval note without a warning', async ($, on) => {
+  const world = createWorld(on, buildChanged(), { verifyFile, herdrEnv: inside })
+  await $.turn.start({ text: 'go', turnId: 't' })
+  await readFlowStatus($)
+  await world.clock.advance(61000)
+  expect(world.views.at(-1)?.notes?.find(note => note.key === 'Approve')).toMatchObject({ value: expect.stringContaining(approvalCommand()), tone: 'text' })
+  expect(world.runs.findLast(run => run.includes('report-metadata'))).toMatch(/flow_step=▸ Code(\s|$)/)
 })
 
 test('in a Fix a change without a green after the approval leaves Code current', async ($, on) => {

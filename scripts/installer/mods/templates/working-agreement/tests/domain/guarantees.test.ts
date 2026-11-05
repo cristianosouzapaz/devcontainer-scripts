@@ -1,4 +1,5 @@
 import { expect } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 import { test } from '../support/kit'
 import { handleGuarantees } from '../../hooks/handlers/guarantees'
@@ -11,6 +12,8 @@ import { createTestPort, createWorld, records, root } from '../support/world'
 import type { Checkout, Gate, Graph, Options } from '../support/world'
 
 interface EntryGate extends Gate { entered: number }
+
+const emptyTrees = { sha1: '4b825dc642cb6eb9a060e54bf8d69288fbee4904', sha256: '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321' }
 
 const graph = (): Graph => ({ commits: { a: { parents: [], files: {} } }, refs: { main: 'a', feature: 'a', 'origin/main': 'a' } })
 /**
@@ -47,11 +50,11 @@ for (const agentId of [undefined, 'child']) {
     expect(result.context?.[0]).toBe('existing context')
     expect(result.context?.[1]).toContain("a commit appeared during your call (it may be the user's): stop and tell the user")
     expect(views.at(-1)?.violations?.[0]?.tone).toBe('error')
-    expect(views.at(-1)?.violations?.[0]?.text).toBe('✗ A commit appeared during an agent call (it may be yours)')
+    expect(views.at(-1)?.violations?.[0]?.text).toBe('A commit appeared during an agent call (it may be yours)')
     expect(parseSession(sessions.get('sid'))).not.toBe(null)
     // The direct-dispatch port's record never reaches the engine store, so only the dispatched call continues there.
     if (agentId) return
-    expect((await readFlowStatus($))?.split('\n').find(line => line.startsWith('Violation'))).toContain('✗ A commit appeared during an agent call (it may be yours) · ')
+    expect((await readFlowStatus($))?.split('\n').find(line => line.startsWith('Violation'))).toContain('A commit appeared during an agent call (it may be yours) · ')
     expect((await $.tool.call({ tool: 'Bash', command: 'later' })).deny).toBeUndefined()
     expect(sessions.get('sid')?.violations).toHaveLength(1)
   })
@@ -157,7 +160,7 @@ test('a moved tracking ref records a push of previously local history', async ($
     { kind: 'push', fact: { ref: 'refs/remotes/origin/feature', before: null, after: 'b' } },
   ])
   expect(result.context?.join('')).toContain("a push appeared on refs/remotes/origin/feature during your call (it may be the user's): stop and tell the user")
-  expect(views.at(-1)?.violations?.[0]?.text).toBe('✗ A push appeared on refs/remotes/origin/feature during an agent call (it may be yours)')
+  expect(views.at(-1)?.violations?.[0]?.text).toBe('A push appeared on refs/remotes/origin/feature during an agent call (it may be yours)')
 })
 
 test('default checkout content is judged independently and names another worktree', async ($, on) => {
@@ -167,7 +170,7 @@ test('default checkout content is judged independently and names another worktre
   const result = await $.tool.call({ tool: 'mcp__unknown__write' })
   expect(sessions.get('sid')?.violations?.[0]?.fact).toEqual({ root: '/other', before: 'tree:file=before', after: 'tree:file=after' })
   expect(result.context?.join('')).toContain("in another worktree, during your call (it may be the user's or another session's)")
-  expect(views.at(-1)?.violations?.[0]?.text).toBe("✗ The default-branch tree changed at /other, in another worktree, during an agent call (it may be yours or another session's)")
+  expect(views.at(-1)?.violations?.[0]?.text).toBe("The default-branch tree changed at /other, in another worktree, during an agent call (it may be yours or another session's)")
 })
 
 test("a commit on the unit's branch checked out in another worktree is attributed conservatively", async ($, on) => {
@@ -182,7 +185,7 @@ test("a commit on the unit's branch checked out in another worktree is attribute
   // The diagnostic retains the observed checkout even after that branch is no longer checked out.
   checkout.worktrees!['/other']!.branch = 'main'
   expect((await readFlowStatus($))?.split('\n').find(line => line.startsWith('Violation'))).toContain('on feature, checked out in another worktree')
-  expect(views.at(-1)?.violations?.[0]?.text).toBe("✗ A commit appeared on feature, checked out in another worktree, during an agent call (it may be yours or another session's)")
+  expect(views.at(-1)?.violations?.[0]?.text).toBe("A commit appeared on feature, checked out in another worktree, during an agent call (it may be yours or another session's)")
   expect(describeViolation(record, 'agent', '/other')).not.toContain('another worktree')
   expect(describeViolation(record, 'agent', '/other')).not.toContain("another session's")
 })
@@ -193,7 +196,7 @@ test('a legacy commit violation remains readable without worktree attribution', 
   await $.tool.call({ tool: 'Bash', command: 'opaque' })
   const session = sessions.get('sid')!
   const record = session.violations!.find(record => record.kind === 'commit')!
-  const { checkouts: _checkouts, ...legacy } = record
+  const { checkouts, ...legacy } = record
   const parsed = parseSession({ ...session, violations: [legacy] })
   expect(parsed).not.toBe(null)
   expect(describeViolation(parsed!.violations![0]!, 'agent', '/other')).toBe("a commit appeared during your call (it may be the user's): stop and tell the user")
@@ -236,6 +239,17 @@ for (const missing of ['before', 'after']) {
   })
 }
 
+test('an unchecked call names the reads that failed, never "snapshots unavailable"', async ($, on) => {
+  const checkout: Checkout = { branch: 'feature', graph: graph() }
+  const options: Options = { failing: 'git for-each-ref' }
+  options.afterTool = () => { options.failing = undefined }
+  const { sessions, views } = createWorld(on, checkout, options)
+  await $.tool.call({ tool: 'Bash', command: 'opaque' })
+  const record = sessions.get('sid')?.violations?.[0]
+  expect(record?.kind === 'unchecked' ? record.fact : null).toMatchObject({ reasons: ['refs read failed before', 'trees read failed before'] })
+  expect(views.at(-1)?.violations?.[0]?.text).toMatch(/^refs read failed before, trees read failed before, for 1 call, latest /)
+})
+
 for (const change of [
   { state: 'MERGED', closedAt: '2026-10-19T10:00:00Z' },
   { state: 'CLOSED', closedAt: '2026-10-19T10:00:00Z' },
@@ -257,7 +271,7 @@ for (const change of [
 test('a failed fresh GitHub read leaves git verdicts intact and only PR unchecked', async ($, on) => {
   const git = graph()
   const checkout: Checkout = { branch: 'feature', graph: git }
-  const options: Options = { prs: [buildPullRequest()], afterTool: () => { options.prReadError = true; checkout.graph = commit(checkout.graph!) } }
+  const options: Options = { prs: [buildPullRequest()], isSleepInstant: true, afterTool: () => { options.prReadError = true; checkout.graph = commit(checkout.graph!) } }
   const { sessions } = createWorld(on, checkout, options)
   const result = await $.tool.call({ tool: 'Bash', command: 'opaque' })
   expect(sessions.get('sid')?.violations?.map(record => record.kind)).toEqual(['commit', 'unchecked'])
@@ -272,7 +286,7 @@ for (const call of [
   test(`${call.tool} leaves the PR check untouched even when GitHub cannot be read`, async ($, on) => {
     const git = graph()
     const checkout: Checkout = { branch: 'feature', graph: git }
-    const { sessions } = createWorld(on, checkout, { prs: [buildPullRequest()], prReadError: true, afterTool: () => checkout.graph = commit(checkout.graph!) })
+    const { sessions } = createWorld(on, checkout, { prs: [buildPullRequest()], prReadError: true, isSleepInstant: true, afterTool: () => checkout.graph = commit(checkout.graph!) })
     const result = await $.tool.call(call as never)
     expect(result.deny).toBeUndefined()
     expect(result.context?.join('')).toContain('a commit appeared')
@@ -283,12 +297,115 @@ for (const call of [
 
 for (const tool of ['Bash', 'mcp__unknown__write', 'Task', 'Agent', 'Skill', 'FutureTool']) {
   test(`${tool} marks the PR check unchecked when GitHub cannot be read`, async ($, on) => {
-    const world = createWorld(on, { branch: 'feature' }, { prs: [buildPullRequest()], prReadError: true })
+    const world = createWorld(on, { branch: 'feature' }, { prs: [buildPullRequest()], prReadError: true, isSleepInstant: true })
     const result = await $.tool.call({ tool, command: 'opaque' } as never)
     expect(result.context ?? []).toEqual([])
     expect(world.sessions.get('sid')?.violations?.map(record => record.kind)).toEqual(['unchecked'])
   })
 }
+
+// A delegated unit without a PR reads only the candidates; a unit with one reads its fields before and after the call.
+for (const read of [
+  { query: 'pullRequests(headRefName:', phase: 'before', prs: [], reason: 'PR read failed before' },
+  { query: 'pullRequest(number:', phase: 'before', prs: [buildPullRequest()], reason: 'PR read failed before' },
+  { query: 'pullRequest(number:', phase: 'after', prs: [buildPullRequest()], reason: 'PR read failed after' },
+] as const) {
+  /**
+   * Fails the first reads of one PR query made in the measured call's phase, and counts every one made there.
+   * @param $ - The engine under test.
+   * @param on - The engine's event registration.
+   * @param failures - How many of those reads fail.
+   * @returns The call's result, the session's violations and the reads the phase made.
+   */
+  const callWithFailingReads = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], failures: number) => {
+    const state = { phase: 'warm-up', reads: 0, failures }
+    const options: Options = { prs: [...read.prs], isSleepInstant: true, afterTool: () => { if (state.phase === 'before') state.phase = 'after' }, gh: args => {
+      if (state.phase !== read.phase || !args.some(arg => arg.includes(read.query))) return undefined
+      state.reads += 1
+      return state.failures-- > 0 ? { exitCode: 1, stderr: 'dial tcp: i/o timeout' } : undefined
+    } }
+    const world = createWorld(on, { branch: 'feature', graph: graph() }, options)
+    // Without a PR the snapshot is never held, so a first call leaves the measured one a fresh candidates read.
+    if (!read.prs.length) await $.tool.call({ tool: 'Bash', command: 'warm-up' })
+    state.phase = 'before'
+    const result = await $.tool.call({ tool: 'Bash', command: 'opaque' })
+    return { result, violations: world.sessions.get('sid')?.violations ?? [], reads: state.reads }
+  }
+
+  test(`a ${read.query} read that fails ${read.phase} the call and then answers leaves the call checked`, async ($, on) => {
+    const { result, violations, reads } = await callWithFailingReads($, on, 1)
+    expect(result.result).toBe('written')
+    expect(violations).toEqual([])
+    expect(reads).toBe(2)
+  })
+
+  test(`a ${read.query} read that fails twice ${read.phase} the call leaves it unchecked: ${read.reason}`, async ($, on) => {
+    const { violations } = await callWithFailingReads($, on, 2)
+    expect(violations.map(record => record.kind)).toEqual(['unchecked'])
+    expect(violations[0]?.kind === 'unchecked' ? violations[0].fact.reasons : null).toEqual([read.reason])
+  })
+
+  test(`a ${read.query} read that answers ${read.phase} the call is not repeated`, async ($, on) => {
+    const { violations, reads } = await callWithFailingReads($, on, 0)
+    expect(violations).toEqual([])
+    expect(reads).toBe(1)
+  })
+}
+
+test('a reachability probe that fails fast before the call and then answers leaves the call checked', async ($, on) => {
+  const state = { phase: 'warm-up', probes: 0 }
+  const options: Options = { prs: [], isSleepInstant: true, afterTool: () => { state.phase = 'after' }, gh: args => {
+    if (state.phase !== 'before' || args[0] !== 'api' || args[1] !== 'user') return undefined
+    state.probes += 1
+    return state.probes === 1 ? { exitCode: 1, stderr: 'connection reset by peer' } : undefined
+  } }
+  const world = createWorld(on, { branch: 'feature', graph: graph() }, options)
+  await $.tool.call({ tool: 'Bash', command: 'warm-up' })
+  // Past the probe's minute, so the measured call probes again.
+  await world.clock.advance(61000)
+  state.phase = 'before'
+  await $.tool.call({ tool: 'Bash', command: 'opaque' })
+  expect(world.sessions.get('sid')?.violations ?? []).toEqual([])
+  expect(state.probes).toBe(2)
+})
+
+test('a failed PR read is retried once, a second after it failed', async ($, on) => {
+  const state = { phase: 'warm-up', reads: 0 }
+  const options: Options = { prs: [], afterTool: () => { state.phase = 'after' }, gh: args => {
+    if (state.phase !== 'before' || !args.some(arg => arg.includes('pullRequests(headRefName:'))) return undefined
+    state.reads += 1
+    return state.reads === 1 ? { exitCode: 1, stderr: 'dial tcp: i/o timeout' } : undefined
+  } }
+  const world = createWorld(on, { branch: 'feature', graph: graph() }, options)
+  await $.tool.call({ tool: 'Bash', command: 'warm-up' })
+  state.phase = 'before'
+  const call = $.tool.call({ tool: 'Bash', command: 'opaque' })
+  await world.clock.settle()
+  expect(state.reads).toBe(1)
+  await world.clock.advance(999)
+  expect(state.reads).toBe(1)
+  await world.clock.advance(1)
+  expect(state.reads).toBe(2)
+  await call
+  expect(world.sessions.get('sid')?.violations ?? []).toEqual([])
+})
+
+test('a git failure while reading the PR before the call keeps its own reason, and the log carries the error', async ($, on) => {
+  const options: Options = { prs: [buildPullRequest()] }
+  options.afterTool = () => { options.failing = undefined }
+  const world = createWorld(on, { branch: 'feature', graph: graph() }, options)
+  options.failing = 'git rev-parse --show-toplevel'
+  await $.tool.call({ tool: 'Bash', command: 'opaque' })
+  const record = world.sessions.get('sid')?.violations?.find(held => held.kind === 'unchecked')
+  const reasons = record?.kind === 'unchecked' ? record.fact.reasons ?? [] : []
+  expect(reasons).toContain('repository read failed before')
+  expect(reasons).not.toContain('PR read failed before')
+  await world.clock.settle()
+  const lines = [...world.files.entries()].filter(([path]) => path.startsWith(`${records}/log/`))
+    .flatMap(([, text]) => text.trimEnd().split('\n').map(line => JSON.parse(line) as Record<string, unknown>))
+  const event = lines.find(line => line.event === 'violation' && line.kind === 'unchecked')
+  expect(JSON.stringify(event?.errors)).toContain('git could not run')
+})
 
 for (const tool of ['Skill', 'Agent']) {
   test(`${tool} records a changed PR field`, async ($, on) => {
@@ -307,7 +424,7 @@ test('unchecked calls retain only the latest warning and restart their count aft
     toolUseIds.push(event.tool_use_id)
     return { result: 'written' }
   })
-  const { sessions, clock, views } = createWorld(on, { branch: 'feature' }, { prs: [buildPullRequest()], prReadError: true })
+  const { sessions, clock, views } = createWorld(on, { branch: 'feature' }, { prs: [buildPullRequest()], prReadError: true, isSleepInstant: true })
   const start = clock.now()
   for (const command of ['first', 'second', 'third']) {
     const result = await $.tool.call({ tool: 'Bash', command })
@@ -320,12 +437,12 @@ test('unchecked calls retain only the latest warning and restart their count aft
   expect(session.violations).toHaveLength(1)
   expect(record.kind).toBe('unchecked')
   expect(record.count).toBe(3)
-  expect(record.fact).toEqual({ toolUseId: toolUseIds[2] })
+  expect(record.fact).toEqual({ toolUseId: toolUseIds[2], reasons: ['PR read failed before'] })
   expect(record.toolUseIds).toEqual([toolUseIds[2]])
   expect(record.agentIds).toEqual([])
   expect(record.start).toBe(start)
   expect(record.end).toBe(clock.now() - 10)
-  expect(views.at(-1)?.violations?.[0]).toEqual({ factId: record.factId, tone: 'warn', text: `unchecked: guarantee snapshots unavailable for 3 calls, latest ${toolUseIds[2]}` })
+  expect(views.at(-1)?.violations?.[0]).toEqual({ factId: record.factId, tone: 'warn', text: `PR read failed before, for 3 calls, latest ${toolUseIds[2]}` })
   expect(parseSession(session)).not.toBe(null)
   expect(parseSession({ ...session, violations: [{ ...record, count: undefined }] })).not.toBe(null)
   for (const count of [0, -1, 1.5, '3', null]) expect(parseSession({ ...session, violations: [{ ...record, count }] })).toBe(null)
@@ -339,10 +456,10 @@ test('unchecked calls retain only the latest warning and restart their count aft
   expect(latest).toHaveLength(1)
   expect(latest?.[0]?.count).toBe(1)
   expect(latest?.[0]?.factId).not.toBe(record.factId)
-  expect(latest?.[0]?.fact).toEqual({ toolUseId: toolUseIds[3] })
+  expect(latest?.[0]?.fact).toEqual({ toolUseId: toolUseIds[3], reasons: ['PR read failed before'] })
   expect(latest?.[0]?.toolUseIds).toEqual([toolUseIds[3]])
   expect(latest?.[0]?.start).toBe(nextStart)
-  expect(views.at(-1)?.violations?.[0]?.text).toBe(`unchecked: guarantee snapshots unavailable for 1 call, latest ${toolUseIds[3]}`)
+  expect(views.at(-1)?.violations?.[0]?.text).toBe(`PR read failed before, for 1 call, latest ${toolUseIds[3]}`)
 })
 
 test('parallel unchecked calls keep one warning without losing their count', async ($, on) => {
@@ -351,7 +468,7 @@ test('parallel unchecked calls keep one warning without losing their count', asy
     toolUseIds.push(event.tool_use_id)
     return { result: 'written' }
   })
-  const { sessions } = createWorld(on, { branch: 'feature' }, { prs: [buildPullRequest()], prReadError: true })
+  const { sessions } = createWorld(on, { branch: 'feature' }, { prs: [buildPullRequest()], prReadError: true, isSleepInstant: true })
   const results = await Promise.all(['one', 'two'].map(command => $.tool.call({ tool: 'Bash', command })))
   expect(results.every(result => result.deny === undefined && !(result.context?.length))).toBe(true)
   const records = sessions.get('sid')?.violations
@@ -364,6 +481,33 @@ test('parallel unchecked calls keep one warning without losing their count', asy
     expect(latest.toolUseIds).toEqual([latest.fact.toolUseId])
     expect(latest.agentIds).toEqual([])
   }
+})
+
+test('calls left unchecked for different reasons are counted separately', async ($, on) => {
+  const options: Options = { prs: [buildPullRequest()], failing: 'git for-each-ref', isSleepInstant: true }
+  const { sessions } = createWorld(on, { branch: 'feature', graph: graph() }, options)
+  await $.tool.call({ tool: 'Bash', command: 'refs down' })
+  options.failing = undefined
+  options.prReadError = true
+  for (const command of ['pr down', 'pr still down']) await $.tool.call({ tool: 'Bash', command })
+  const unchecked = sessions.get('sid')?.violations?.filter(record => record.kind === 'unchecked')
+  expect(unchecked).toHaveLength(2)
+  expect(unchecked?.map(record => record.count).sort()).toEqual([1, 2])
+  const repeated = unchecked?.find(record => record.count === 2)
+  expect(repeated?.kind === 'unchecked' ? repeated.fact.reasons : null).toEqual(['PR read failed after'])
+})
+
+test('an unchecked record kept before reasons existed still validates and reads "reason not recorded"', async ($, on) => {
+  const { sessions } = createWorld(on, { branch: 'feature' }, { prs: [buildPullRequest()], prReadError: true, isSleepInstant: true })
+  await $.tool.call({ tool: 'Bash', command: 'opaque' })
+  const session = sessions.get('sid')!
+  const record = session.violations![0]!
+  if (record.kind !== 'unchecked') throw new Error('expected an unchecked record')
+  const legacy = { ...record, fact: { toolUseId: record.fact.toolUseId } }
+  const parsed = parseSession({ ...session, violations: [legacy] })
+  expect(parsed).not.toBe(null)
+  expect(describeViolation(parsed!.violations![0]!, 'user')).toBe(`reason not recorded, for 1 call, latest ${record.fact.toolUseId}`)
+  expect(parseSession({ ...session, violations: [{ ...record, fact: { ...record.fact, reasons: ['made up'] } }] })).toBe(null)
 })
 
 for (const tool of ['run', 'verify']) {
@@ -490,7 +634,7 @@ test('parallel subagent windows preserve both pinned loop ids', async (_$, on) =
 
 for (const state of ['CLOSED', 'MERGED']) {
   test(`a ${state} PR is not checked`, async ($, on) => {
-    const { sessions } = createWorld(on, { branch: 'feature' }, { prs: [buildPullRequest({ state })], prReadError: true })
+    const { sessions } = createWorld(on, { branch: 'feature' }, { prs: [buildPullRequest({ state })], prReadError: true, isSleepInstant: true })
     const result = await $.tool.call({ tool: 'Bash', command: 'opaque' })
     expect(result.context ?? []).toEqual([])
     expect(sessions.get('sid')?.violations ?? []).toEqual([])
@@ -544,8 +688,8 @@ test('the previous turn-end PR read supplies the next window baseline, and the p
   expect(record?.kind).toBe('pr')
   const number = buildPullRequest()['number']
   expect(result.context?.join('')).toContain(`PR #${number} changed its protected fields during your call (it may be the user's): stop and tell the user`)
-  expect(views.at(-1)?.violations?.[0]?.text).toBe(`✗ PR #${number} changed its protected fields during an agent call (it may be yours)`)
-  expect((await readFlowStatus($))?.split('\n').find(line => line.startsWith('Violation'))).toContain(`✗ PR #${number} changed its protected fields during an agent call (it may be yours) · `)
+  expect(views.at(-1)?.violations?.[0]?.text).toBe(`PR #${number} changed its protected fields during an agent call (it may be yours)`)
+  expect((await readFlowStatus($))?.split('\n').find(line => line.startsWith('Violation'))).toContain(`PR #${number} changed its protected fields during an agent call (it may be yours) · `)
   if (record?.kind === 'pr') {
     expect(record.fact.before.reviews.totalCount).toBe(1)
     expect(record.fact.after.reviews.totalCount).toBe(2)
@@ -569,7 +713,7 @@ for (const kind of ['commit', 'default-tree']) {
 
 test('a failed PR snapshot read logs only to debug and preserves the tool result', async ($, on) => {
   const { logs, sessions } = createWorld(on, { branch: 'feature', graph: graph() }, {
-    prs: [buildPullRequest()], prReadError: true,
+    prs: [buildPullRequest()], prReadError: true, isSleepInstant: true,
   })
   const result = await $.tool.call({ tool: 'Bash', command: 'opaque' })
   expect(result.result).toBe('written')
@@ -598,7 +742,6 @@ test('a subagent commit in the worktree its call created records and tells that 
   expect(result.context?.join('')).toContain('on child, checked out in another worktree')
 })
 
-const emptyTrees = { sha1: '4b825dc642cb6eb9a060e54bf8d69288fbee4904', sha256: '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321' }
 for (const { label, format, listed, isFailed } of [
   { label: 'as failed when the worktree holds files', format: 'sha1', listed: 'H a\0R a\0? b\0', isFailed: true },
   { label: 'as failed in a SHA-256 repository holding files', format: 'sha256', listed: 'H a\0', isFailed: true },

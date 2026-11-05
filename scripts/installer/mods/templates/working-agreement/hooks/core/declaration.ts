@@ -17,7 +17,8 @@ import type { Result } from '../lib/result'
 import { symbol } from '../ui/symbols'
 import type { EnginePort } from './engine-port'
 import { markIssuesDeclared, mergeIssue, readGithubStatus, readIssueAnswers } from './github-sync'
-import { findHeldIssue } from './delegation'
+import { bestEffort } from './best-effort'
+import { findHeldIssue, findLiveDelegation } from './delegation'
 import { carryLog, logEvent } from './flow-log'
 import { refreshView } from './pane-view'
 import { locatePosition } from './position'
@@ -167,8 +168,9 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
   const origin = isOnDefault ? '' : recordedBranch ? `, base from ${recordedBranch}${source}` : isKeptBase ? ', base kept from the record' : ', base at the declaration tip'
   const shown = projectDisplayStates(position.states)
   const isTreeChanged = await readIsTreeChanged(port, next.unit, position.unit.generation)
-  const steps = position.states.map((state, index) => `${symbol[markStep(shown[index]!, position, isTreeChanged).mark]} ${formatStepLabel(state.step, position.pullRequest)} (${describeRequirement(state, next, position)})`).join('; ')
-  return succeed({ reply: `Flow declared: ${definition.label}${which}${origin}.${notice} Steps: ${steps}. ${composeInstruction(position, next)}`, start: composeStart(position, next, `Flow declared: ${definition.label}${which}.`) })
+  const isDelegated = !!await bestEffort(port, 'delegation read', () => findLiveDelegation(port, next.issues), null)
+  const steps = position.states.map((state, index) => `${symbol[markStep(shown[index]!, position, isTreeChanged).mark]} ${formatStepLabel(state.step, position.pullRequest)} (${describeRequirement(state, next, position, isDelegated)})`).join('; ')
+  return succeed({ reply: `Flow declared: ${definition.label}${which}${origin}.${notice} Steps: ${steps}. ${composeInstruction(position, next, isDelegated)}`, start: composeStart(position, next, `Flow declared: ${definition.label}${which}.`, isDelegated) })
 }
 
 /**
@@ -214,6 +216,6 @@ async function readPredecessor(port: EnginePort, flow: string, identity: Identit
   const declaration = await readDeclaration(port, { branch: git.base, issues: identity.issues })
   if (declaration?.flow !== flow) return succeed(null)
   // The default branch has no slice, so the branch computes its own base.
-  const { base: _base, baseBranch: _branch, ...unit } = await readUnit(port, declaration.identity)
+  const { base, baseBranch, ...unit } = await readUnit(port, declaration.identity)
   return succeed({ declaration, unit, isAttach: false })
 }

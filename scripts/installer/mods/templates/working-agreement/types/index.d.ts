@@ -9,6 +9,7 @@ export interface IssueComment { url: string; createdAt: string }
 export interface IssueRead {
   state?: string
   title: string
+  url?: string
   labels: string[]
   subIssues?: SubIssueInfo[] | ReadFailure
   comments?: IssueComment[] | ReadFailure
@@ -74,8 +75,15 @@ export interface PushFact { ref: string; before: string | null; after: string }
 export interface PrFact { number: number; before: PrFields; after: PrFields }
 /** Holds the default-branch checkout whose tree a call changed. */
 export interface DefaultTreeFact { root: string; before: string; after: string }
-/** Identifies a call whose effects the guarantees could not observe. */
-export interface UncheckedFact { toolUseId: string }
+/** Names one reason a call's effects could not be checked: a read that failed, or commits or a push no slice could place. */
+export type UncheckedReason =
+  | 'refs read failed before' | 'refs read failed after'
+  | 'trees read failed before' | 'trees read failed after'
+  | 'PR read failed before' | 'PR read failed after'
+  | 'repository read failed before' | 'repository read failed after'
+  | 'commit reachability read failed' | 'commits or push could not be placed'
+/** Identifies a call whose effects the guarantees could not observe, with every reason it met; records kept before reasons existed have none. */
+export interface UncheckedFact { toolUseId: string; reasons?: UncheckedReason[] }
 /** Holds a checkout's branch as it stood when a commit was observed. */
 export interface CommitCheckout { root: string; branch: string | null }
 /** Reports commits a call created. */
@@ -141,6 +149,8 @@ export interface SessionRecord {
   /** Set only by the user's `/flow coordinate`: the session never writes in the repository. */
   role?: 'coordinator'
   audit?: IssueAudit
+  /** The cancels whose tool gate the user's `/flow lift` lifted in this unit, by message id; each is still owed its `done`. */
+  liftedCancels?: string[]
 }
 /**
  * Holds one coordinator's delegation scope, shared with every worktree's sessions: only the coordinator that owns it writes it,
@@ -160,7 +170,7 @@ export interface DelegationScope {
   triage?: number[]
   /** The free text each `/flow delegate` carried after its numbers, verbatim, in the order given; absent while none did. */
   instructions?: string[]
-  /** The herdr pane the coordinator ran `/flow delegate` in, which a delegated unit's notices are sent to; absent outside herdr. */
+  /** The herdr pane the coordinator ran `/flow delegate` in; absent outside herdr. */
   paneId?: string
   /** The coordinator's process, which tells a unit whether the coordinator still runs; absent where the host does not expose it. */
   host?: ProcessHost
@@ -220,6 +230,8 @@ export interface Unit {
   /** The user's steps taken while the unit was delegated, as their commands (`/to-spec`, `/flow skip pr`); the user's own steps are never listed. */
   delegated?: string[]
   verifyRuns: VerifyRecord[]
+  /** The unit's own Verify calls that failed or timed out since its last pass; absent before the first one. */
+  redVerifies?: number
   runs: RunRecord[]
   approval?: string
   /** The red the approval was granted on, judged instead of the retained runs; absent when the approval pinned no red. */
@@ -234,18 +246,20 @@ export interface Unit {
 export type FlowTone = 'text' | 'warn' | 'error' | 'inactive'
 /** Where a flow step stands for the current unit of work. */
 export type FlowStepState = 'done' | 'current' | 'pending' | 'skipped'
-/** Adds a separately toned annotation to a row. */
-export interface RowSuffix { text: string; tone: FlowTone }
-/** A labelled line of the Flow pane, such as the branch or a blocked-write count. */
-export interface FlowRow { key: string; value: string; tone: FlowTone; suffix?: RowSuffix }
+/** A labelled line of the Flow pane, such as the branch or a blocked-write count: its tone colours the key, and its value and suffix stay plain. */
+export interface FlowRow { key: string; value: string; tone: FlowTone; suffix?: string }
 /**
  * One step of the declared flow with its inline status and symbol styling; `detail` is the pane's fact, at most `maxFactLength` characters; `fullDetail` is its full wording for `/flow status`, when that is longer.
  */
 export interface FlowStep { id: string; symbol: string; label: string; state: FlowStepState; detail?: string; fullDetail?: string; isError: boolean; isMerged: boolean; isRewritten: boolean }
-/** An issue the session's unit of work resolves. */
-export interface FlowIssue { number: number; title: string }
+/** An issue the session's unit of work resolves; `url` is empty until GitHub has answered with it. */
+export interface FlowIssue { number: number; title: string; url: string }
 /** Names whether the footer starts a fresh session or continues in a new one. */
 export type FooterAction = 'start' | 'continue'
+/** What pressing the `Merge` note's copy button answered, shown on its row until the next refresh. */
+export type MergeCopy = { isCopied: true } | { isCopied: false; reason: string }
+/** Why opening an issue in the browser failed, shown under its row with its web address until the next refresh. */
+export interface OpenFailure { issue: number; reason: string; url: string }
 /** The pane's closing action, starting fresh or continuing in a new session. */
 export interface FlowFooter { action: FooterAction; isRunning: boolean }
 /** Names where one command of a run stands. */
@@ -296,6 +310,8 @@ export interface FlowView {
   notes: FlowRow[]
   footer: FlowFooter | null
   violations?: ViolationNote[]
+  mergeCopy?: MergeCopy
+  openFailure?: OpenFailure
   hasRunLog?: boolean
   selectedRunId?: string
 }

@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
 import { buildChanged, buildParentGraph, diagnoseRuns, diagnosisComment, noFlow, verifyFile } from '../support/builders'
-import { endTurn, inside, mountPane, readFlowStatus, runFlowCommand, textOf } from '../support/helpers'
+import { endTurn, inside, mountPane, readFlowStatus, readSurfaces, runFlowCommand, textOf } from '../support/helpers'
 import { createWorld } from '../support/world'
 import type { Checkout, Gate, Options } from '../support/world'
 import { parChild } from '../support/parallel-worktrees'
@@ -20,10 +20,9 @@ test('a live Verify run leaves every step drawn in its real state', async ($, on
   await clock.settle()
   const pane = await mountPane($)
   const live = textOf(await pane.drawn())
-  expect(live).toContain('▸ Code')
-  expect(live).not.toContain('▸ Code ·')
-  expect(live).toContain('○ Verify')
-  expect(live).not.toContain('▸ Verify')
+  expect(live).toContain('✓ Code')
+  expect(live).toContain('▸ Verify')
+  expect(live).not.toContain('▸ Verify ·')
   gate.open?.()
   await clock.settle()
   await pending
@@ -42,6 +41,15 @@ for (const [step, checkout, options] of waiting) {
   })
 }
 
+test('Diagnose waiting on a user approval reads in progress while the turn runs and ● only once idle, alike on the pane and the sidebar', async ($, on) => {
+  const [, checkout, options] = waiting[0]!
+  const world = createWorld(on, { ...checkout }, { ...options, herdrEnv: inside })
+  await $.turn.start({ text: 'go', turnId: 't' })
+  expect(readSurfaces(world)).toEqual({ pane: '▸ Diagnose', sidebar: '▸ Diagnose' })
+  await endTurn($)
+  expect(readSurfaces(world)).toEqual({ pane: '● Diagnose', sidebar: '● Diagnose' })
+})
+
 test('a Verify config edited during its run reads ● with the approval fact, not the unrecorded run', async ($, on) => {
   const checkout: Checkout = buildChanged()
   const options: Options = { verifyFile, approvedConfig: verifyFile }
@@ -50,7 +58,7 @@ test('a Verify config edited during its run reads ● with the approval fact, no
   await $.tool.call({ tool: 'mcp__working-agreement__verify' })
   const pane = await mountPane($)
   const drawn = textOf(await pane.drawn())
-  expect(drawn).toContain('● Verify · /flow approve verify')
+  expect(drawn).toContain('● Verify · waiting for config approval')
   expect(drawn).not.toContain('code changed during Verify')
   await pane.unmount()
 })

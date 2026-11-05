@@ -18,6 +18,8 @@ type SubIssue = (typeof githubSamples)['sub-issues'][number]['body'][number]
 export interface Checkout extends Worktree {
   ahead?: number; changed?: string[]; graph?: Graph
   worktrees?: Record<string, Worktree>
+  /** The main checkout, which `git worktree list` names first; the session's own checkout when unset. */
+  main?: string
 }
 
 /** A commit's parents, file hashes by repo-relative path, and optional committer date in epoch seconds. */
@@ -65,25 +67,34 @@ interface DelegationSeed {
 export interface Options {
   herdrEnv?: Record<string, string>
   beforeHerdr?: () => void
+  /** Runs before every process call is answered, such as another session reacting to what the mod just wrote. */
+  beforeRun?: (argv: string[]) => void
   herdrGate?: Promise<void>
   ghResponse?: GhResponse
   /** Answers a gh call ahead of every modelled one; undefined leaves it to them. */
   gh?: (args: string[]) => CliAnswer | undefined
+  /** How long, in clock milliseconds, a gh call with these arguments takes before it is answered; none when unset. */
+  ghDelayMs?: (args: string[]) => number
   /** Answers a claude CLI call, such as spawn's model check; a valid one-turn reply when unset. */
   claude?: (args: string[]) => CliAnswer
   herdrResult?: HerdrResult
+  /** How long, in clock milliseconds, a herdr call with these arguments takes before it is answered; none when unset. */
+  herdrDelayMs?: (args: string[]) => number
   /** The standard output herdr prints for these arguments, or its whole result; empty when unset. */
   herdrReply?: (args: string[]) => string | Partial<HerdrResult> & { stdout?: string }
   approvedConfig?: string
   verifyFile?: string
   platform?: string
-  spawnCode?: number | null
+  /** A spawned command's exit code, or a function deciding it at each spawn, such as from the tree a worktree holds. */
+  spawnCode?: number | null | (() => number | null)
   spawnSignal?: string | null
   spawnGate?: Promise<void>
   spawnOutput?: string
   afterSpawn?: () => void
   beforeSessionId?: () => void
   beforePromptSubmit?: (text: string) => void
+  /** How the engine answers a submitted prompt instead of entering it: held without ever settling, or dropped with a reason; entered when unset. */
+  promptAnswer?: (text: string) => 'held' | { drop: string } | undefined
   /** Whether the engine shows a proposed prompt suggestion; true when unset. */
   isSuggestionShown?: boolean
   contextUsage?: (args: Args<'session.usage'>) => SessionContextUsage
@@ -95,6 +106,8 @@ export interface Options {
   prsHasNextPage?: boolean
   prFields?: Record<string, unknown>
   prReadError?: boolean
+  /** Answers a host `sleep` at once, without moving the clock, for a test the wait's length does not matter to. */
+  isSleepInstant?: boolean
   afterTool?: () => void
   statusGate?: Promise<void>
   failing?: string
@@ -169,6 +182,10 @@ export interface World {
   logs: LogEntry[]
   commands: string[]
   prompts: string[]
+  /** Every native notification raised, in order. */
+  notifications: string[]
+  /** Every toast shown, in order. */
+  toasts: string[]
   suggestions: string[]
   clock: MockClock
   files: Map<string, string>
@@ -196,7 +213,7 @@ interface GraphCache { highest: number; linear?: Graph; indexed?: Graph }
 interface GitAnswer { exitCode: number; stdout: string }
 interface MergedFiles { files: Record<string, string>; conflicts: string[] }
 interface GitContext {
-  graph: Graph; checkout: Checkout; worktrees: Record<string, Worktree>; stdin: string
+  graph: Graph; checkout: Checkout; main?: string; worktrees: Record<string, Worktree>; stdin: string
   commitDates: Map<string, number>
   owner: [string, Repository]; localRoot: string; working: Record<string, string>
   /** The process directory below the repository root, which git prepends to a pathspec without `top` magic. */
@@ -213,6 +230,10 @@ interface GitContext {
   deleteRef: (name: string) => void
   /** Drops a linked worktree from the list git keeps. */
   removeWorktree: (path: string) => void
+  /** Adds a commit to the seeded graph without moving any ref. */
+  addCommit: (sha: string, commit: Commit) => void
+  /** Adds a linked worktree with HEAD detached at a commit. */
+  addDetachedWorktree: (path: string, sha: string) => void
 }
 interface GitEntry { name: string; pattern: RegExp; answer: (context: GitContext, match: readonly string[]) => GitAnswer | Promise<GitAnswer> }
 
@@ -223,6 +244,8 @@ const gitAnswers: GitEntry[] = [
   { name: 'common', pattern: /^rev-parse --path-format=absolute --git-common-dir$/, answer: c => ok(c.owner[1].common) },
   { name: 'repository', pattern: /^rev-parse --path-format=absolute --git-common-dir --show-toplevel$/,
     answer: c => ok(`${c.owner[1].common}\n${c.owner[0]}`) },
+  { name: 'own', pattern: /^rev-parse --path-format=absolute --git-dir --git-common-dir$/, answer: c => ok(`${c.localRoot === (c.main ?? root)
+    ? c.owner[1].common : `${c.owner[1].common}/worktrees/${c.localRoot.split('/').at(-1)}`}\n${c.owner[1].common}`) },
   { name: 'root', pattern: /^rev-parse --show-toplevel$/, answer: c => ok(c.owner[0]) },
   { name: 'symbolic', pattern: /^symbolic-ref (--short -q|-q) HEAD$/, answer: (c, m) => c.checkout.branch === 'HEAD'
     ? { exitCode: 1, stdout: '' } : ok(m[1] === '--short -q' ? c.checkout.branch : `refs/heads/${c.checkout.branch}`) },
@@ -309,6 +332,13 @@ const gitAnswers: GitEntry[] = [
     const blob = c.filesAt(m[2] ?? '')?.[m[3] ?? '']
     return blob ? ok(m[1] === 'rev-parse' ? blob : c.blobText(blob)) : fatal
   } },
+  // A blob is found by its id as git hashes it; the model names an unknown blob after itself, so that answer is no object.
+  { name: 'blob-id', pattern: /^cat-file blob ([^\s:]+)$/, answer: (c, m) => {
+    const id = m[1] ?? ''
+    const known = c.blobText(id)
+    const text = known === `${id}\n` ? Object.values(c.graph.blobs ?? {}).find(content => configBlob(content) === id) : known
+    return text === undefined ? fatal : ok(text)
+  } },
   { name: 'diff', pattern: /^diff --name-only -z --no-renames --no-ext-diff (\S+) (\S+) --(?: (.*))?$/, answer: (c, m) => {
     const [from, to] = [c.filesAt(m[1] ?? ''), c.filesAt(m[2] ?? '')]
     const patterns = m[3]?.split(' ').map(pattern => pattern.startsWith(':(top,glob)') ? pattern.slice(11) : `${c.prefix}${pattern.replace(/^:\(glob\)/, '')}`) ?? []
@@ -391,11 +421,24 @@ const gitAnswers: GitEntry[] = [
     c.removeWorktree(m[1] ?? '')
     return ok('')
   } },
+  { name: 'worktree-add', pattern: /^worktree add --detach (\S+) (\S+)$/, answer: (c, m) => {
+    const id = c.resolve(m[2] ?? '')
+    if (!id || c.worktrees[m[1] ?? ''] || m[1] === root) return fatal
+    c.addDetachedWorktree(m[1] ?? '', id)
+    return ok('')
+  } },
+  // A merge commit is named after its second parent, as the modelled merge names one; no ref moves.
+  { name: 'commit-tree', pattern: /^commit-tree --no-gpg-sign (\S+) -p (\S+) -p (\S+) -F -$/, answer: (c, m) => {
+    const [files, ours, theirs] = [c.filesAt(m[1] ?? ''), c.resolve(m[2] ?? ''), c.resolve(m[3] ?? '')]
+    if (!files || !ours || !theirs) return fatal
+    c.addCommit(`merge-${theirs}`, { parents: [ours, theirs], files })
+    return ok(`merge-${theirs}`)
+  } },
   // The model stages nothing, so the index is the working files `add -A` would stage; each changed path prints as one file header.
   { name: 'diff-cached', pattern: /^diff --cached --binary HEAD$/, answer: c => ok(diffFiles(c.filesAt('HEAD') ?? {}, c.working).filter(path => !isIgnored(c, path))
     .map(path => `diff --git a/${path} b/${path}\n`).join('')) },
   { name: 'worktrees', pattern: /^worktree list --porcelain$/, answer: c => ok(Object.entries(c.worktrees)
-    .sort(([a], [b]) => a === root ? -1 : b === root ? 1 : a.localeCompare(b))
+    .sort(([a], [b]) => { const first = c.main ?? root; return a === first ? -1 : b === first ? 1 : a.localeCompare(b) })
     .map(([path, wt]) => `worktree ${path}\nHEAD ${wt.head ?? c.graph.refs[wt.branch]}\n`
       + `${wt.branch === 'HEAD' ? 'detached' : `branch refs/heads/${wt.branch}`}\n`).join('\n')) },
 ]
@@ -511,7 +554,7 @@ function mergeFiles(c: GitContext, head: string, theirs: string): MergedFiles {
   const [base, ours, other] = [c.filesAt(findMergeBase(c.graph, head, theirs) ?? '') ?? {}, c.filesAt(head) ?? {}, c.filesAt(theirs) ?? {}]
   const paths = [...new Set([...Object.keys(ours), ...Object.keys(other)])].sort()
   const conflicts = paths.filter(path => ours[path] !== base[path] && other[path] !== base[path] && ours[path] !== other[path])
-  const files = Object.fromEntries(paths.map(path => [path, ours[path] === base[path] ? other[path] : ours[path]]).filter(([, hash]) => hash))
+  const files = Object.fromEntries(paths.map(path => [path, ours[path] === base[path] ? other[path] : ours[path]] as const).filter(([, hash]) => hash))
   return { files: files as Record<string, string>, conflicts }
 }
 
@@ -705,7 +748,7 @@ export function linearGraph(tips: Record<string, number>, config?: string, highe
 }
 
 /**
- * Mocks the engine beneath the mod: a Small feature session at Code on #1 (ready-for-agent) by default,
+ * Mocks the engine beneath the mod: a Small feature session at Code on issue 1 (ready-for-agent) by default,
  * checked out on `git.branch`, with GitHub connected and every gh issue open unless `issues` says otherwise.
  *
  * @param on - The test's hook registrar.
@@ -726,6 +769,8 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   const statusGates = new Set<Promise<void>>()
   const issueGates = new Set<Promise<void>>()
   const prompts: string[] = []
+  const notifications: string[] = []
+  const toasts: string[] = []
   const suggestions: string[] = []
   const files = new Map<string, string>()
   const modified = new Map<string, number>()
@@ -749,7 +794,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   // Custom issue state does not inherit the default at-Code skill evidence.
   const seeded = { ...createEmptySession(chat.id), unit: identity, units: options.session?.flow === null && !options.unit ? [] : [{ identity, skills: options.session?.info === undefined ? ['to-spec'] : [], verifyRuns: [], runs: [], ...options.unit }],
     info: { 1: { title: 'feat', labels: ['ready-for-agent'] } }, gh: 'connected', ...options.session }
-  const { flow: _flow, issues: _issues, ...record } = seeded
+  const { flow: seededFlow, issues, ...record } = seeded
   const initial: SessionRecord = { ...record, unit: options.session?.flow === null ? null : identity } as SessionRecord
   const seed = options.isStateAbsent ? undefined : initial
   if (seed) sessions.set(chat.id, seed)
@@ -839,6 +884,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   const run = async (e: Args<'process.run'>): Promise<{ value: ProcessRunResult }> => {
     await ready
     if (e.argv[0] === 'herdr') herdrCalls.push({ argv: [...e.argv], timeoutMs: e.init?.timeoutMs })
+    options.beforeRun?.([...e.argv])
     const raw = e.argv.filter(arg => arg !== '--no-optional-locks')
     const withoutEnv = raw[0] === 'env' ? raw.slice(raw.indexOf('git')) : raw
     const normalized = withoutEnv.filter((arg, index, args) => arg !== '-c' && args[index - 1] !== '-c')
@@ -851,6 +897,8 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       herdrActivity.active += 1
       herdrActivity.maximum = Math.max(herdrActivity.maximum, herdrActivity.active)
       try { options.beforeHerdr?.(); if (herdrActivity.calls === 1) await options.herdrGate
+        const herdrDelayMs = options.herdrDelayMs?.(e.argv.slice(1)) ?? 0
+        if (herdrDelayMs > 0) await clock.sleep(herdrDelayMs)
         const reply = options.herdrReply?.(e.argv.slice(1)) ?? ''
         const answer = typeof reply === 'string' ? { stdout: reply } : reply
         return buildResult(answer.stdout ?? '', answer.exitCode ?? options.herdrResult?.exitCode ?? 0, answer.stderr ?? options.herdrResult?.stderr ?? '')
@@ -863,7 +911,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       const answer = options.claude?.(e.argv.slice(1)) ?? { stdout: JSON.stringify({ is_error: false, result: 'OK' }) }
       return buildResult(answer.stdout ?? '', answer.exitCode ?? 0, answer.stderr ?? '')
     }
-    if (e.argv[0] === 'sleep') { await clock.sleep(Number(e.argv[1]) * 1000); return buildResult('') }
+    if (e.argv[0] === 'sleep') { if (!options.isSleepInstant) await clock.sleep(Number(e.argv[1]) * 1000); return buildResult('') }
     if (e.argv[0] === 'cp' || e.argv[0] === 'mkdir' && e.argv[1] === '-p') return buildResult('')
     const isPresent = (path: string) => created.has(path) || files.has(path) || [...files.keys()].some(file => file.startsWith(`${path}/`))
     if (e.argv[0] === 'mkdir') {
@@ -878,6 +926,16 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       return buildResult('')
     }
     if (e.argv[0] === 'readlink') return (options.pidNamespace ?? hostNamespace) ? buildResult(`${options.pidNamespace ?? hostNamespace}\n`) : buildResult('', 1)
+    // A hard link fails on an existing target, unlike a rename.
+    if (e.argv[0] === 'ln' && e.argv[1] === '--') {
+      const [source, target] = [e.argv[2] ?? '', e.argv[3] ?? '']
+      const text = files.get(source)
+      if (text === undefined) return buildResult('', 1, `ln: failed to access '${source}': No such file or directory`)
+      if (files.has(target)) return buildResult('', 1, `ln: failed to create hard link '${target}': File exists`)
+      files.set(target, text)
+      modified.set(target, modified.get(source) ?? clock.now())
+      return buildResult('')
+    }
     if (e.argv[0] === 'mv' && e.argv[1] === '--') {
       const [source, target] = [e.argv[2] ?? '', e.argv[3] ?? '']
       if (files.has(source) || !isPresent(source)) return buildResult('', 1, `mv: cannot stat '${source}': No such file or directory`)
@@ -969,7 +1027,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       // why: Without -C git runs in the session's directory, as the engine runs a process with no cwd.
       const directory = normalized[1] === '-C' ? localRoot : e.init?.cwd ?? session.cwd
       const prefix = owner && directory.startsWith(`${owner[0]}/`) ? `${directory.slice(owner[0].length + 1)}/` : ''
-      const answer = owner ? await entry.answer({ graph, commitDates, checkout: git, working, worktrees, localRoot, owner, prefix, resolve, filesAt,
+      const answer = owner ? await entry.answer({ graph, commitDates, checkout: git, main: checkout.main, working, worktrees, localRoot, owner, prefix, resolve, filesAt,
         treeName, createBranch: (name, id, from) => { createdRefs.refs[name] = id; if (from) createdRefs.created[name] = from; createdRefs.graph = undefined }, moveBranch: (sha, commit) => {
           if (!checkout.graph) throw new Error('A merge needs a seeded graph')
           checkout.graph = { ...checkout.graph, commits: commit ? { ...checkout.graph.commits, [sha]: commit } : checkout.graph.commits,
@@ -981,6 +1039,11 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
           if (checkout.graph?.refs[name]) checkout.graph = { ...checkout.graph, refs: Object.fromEntries(Object.entries(checkout.graph.refs).filter(([ref]) => ref !== name)) }
         },
         removeWorktree: path => { checkout.worktrees = Object.fromEntries(Object.entries(checkout.worktrees ?? {}).filter(([other]) => other !== path)) },
+        addCommit: (sha, commit) => {
+          if (!checkout.graph) throw new Error('A commit needs a seeded graph')
+          checkout.graph = { ...checkout.graph, commits: { ...checkout.graph.commits, [sha]: commit } }
+        },
+        addDetachedWorktree: (path, sha) => { checkout.worktrees = { ...checkout.worktrees ?? { [root]: checkout }, [path]: { branch: 'HEAD', head: sha } } },
         blobText: id => id === blob ? config ?? '' : graph.blobs?.[id] ?? `${id}\n`, stdin: e.init?.stdin ?? '',
       }, local.match(entry.pattern) ?? []) : fatal
       answeredEntries.add(entry.name)
@@ -988,6 +1051,8 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       if (gate && !statusGates.has(gate)) { statusGates.add(gate); await gate }
       return buildResult(answer.stdout, answer.exitCode)
     }
+    const ghDelayMs = e.argv[0] === 'gh' ? options.ghDelayMs?.(e.argv.slice(1)) ?? 0 : 0
+    if (ghDelayMs > 0) await clock.sleep(ghDelayMs)
     const ghAnswer = e.argv[0] === 'gh' ? options.gh?.(e.argv.slice(1)) : undefined
     if (ghAnswer) return buildResult(ghAnswer.stdout ?? '', ghAnswer.exitCode ?? 0, ghAnswer.stderr ?? '')
     if (options.isLoggedOut && command.startsWith('gh ')) return buildResult('', 4, 'To get started with GitHub CLI, please run:  gh auth login')
@@ -1091,7 +1156,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       const sample = (githubSamples.issue.find(each => each.body.data.repository.issue.state === options.issues?.[number]) ?? githubSamples.issue[0]).body.data.repository.issue
       const labels = (options.issueLabels?.[number] ?? info?.labels ?? []).map(name => ({ name }))
       return buildResult(JSON.stringify({ data: { repository: { issue: { ...sample,
-        state: options.issues?.[number] ?? sample.state, title: info?.title ?? sample.title, labels: { ...sample.labels, nodes: labels },
+        state: options.issues?.[number] ?? sample.state, title: info?.title ?? sample.title, url: `https://github.com/o/r/issues/${number}`, labels: { ...sample.labels, nodes: labels },
       } } } }))
     }
     return buildResult('')
@@ -1109,7 +1174,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       finally { next.signal.removeEventListener('abort', abort) }
     }
     options.afterSpawn?.()
-    return { value: { code: options.spawnCode === undefined ? 0 : options.spawnCode, signal: options.spawnSignal ?? null } }
+    return { value: { code: typeof options.spawnCode === 'function' ? options.spawnCode() : options.spawnCode === undefined ? 0 : options.spawnCode, signal: options.spawnSignal ?? null } }
   })
   const boundaries = {
     processes: { run: async (argv, init) => (await run({ argv, init })).value },
@@ -1143,7 +1208,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
           : { name, kind: 'dir' as const, isLink: false, size: 0, mtimeMs: 0 })
       },
     },
-    readHerdrEnv: async () => ({ environment: options.herdrEnv?.HERDR_ENV, paneId: options.herdrEnv?.HERDR_PANE_ID }),
+    readHerdrEnv: async () => ({ environment: options.herdrEnv?.HERDR_ENV, paneId: options.herdrEnv?.HERDR_PANE_ID, socketPath: options.herdrEnv?.HERDR_SOCKET_PATH }),
     readCwd: async () => session.cwd,
     readClaudeDir: async () => options.herdrEnv?.CLAUDE_CONFIG_DIR,
     readSessionId: async () => { options.beforeSessionId?.(); return chat.id },
@@ -1164,11 +1229,16 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     return {}
   })
   on('ui.log', (_$, e, next) => { logs.push({ text: e.text, to: e.to }); return next(e) })
+  on('ui.notify', (_$, e) => { notifications.push(e.text); return { value: { isSent: true, channel: 'terminal_bell' } } })
+  on('ui.toast', (_$, e) => { toasts.push(e.text); return { value: undefined } })
   on('ui.open', (_$, e) => { opened.push({ id: e.id, title: e.title, closeOnEscape: e.closeOnEscape }); return { value: { isPlaced: true } } })
   on('tool.call', () => { options.afterTool?.(); return { result: 'written' } })
   on('skill.prompt', (_$, e) => ({ text: e.text }))
   on('prompt.submit', (_$, e) => {
     options.beforePromptSubmit?.(e.text)
+    const answer = options.promptAnswer?.(e.text)
+    if (answer === 'held') return new Promise<never>(() => {})
+    if (answer) return answer
     prompts.push(e.text)
     return { text: e.text, context: e.context }
   })
@@ -1177,9 +1247,10 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     return { isShown: options.isSuggestionShown ?? true }
   })
   on('turn.complete', () => ({ text: '' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('classic.UserPromptSubmit', () => ({}))
   return { ready, answeredEntries, herdrActivity, approveConfig, boundaries, directSessionState, herdrCalls, registeredCommands, registeredTools,
-    commands, prompts, suggestions, clock, files, modified, runs, chat, sessions, seedChat, views, liveRuns, paneViews, opened, logs }
+    commands, prompts, suggestions, clock, files, modified, runs, chat, sessions, seedChat, views, liveRuns, paneViews, opened, logs, notifications, toasts }
 }
 
 /**
@@ -1197,7 +1268,8 @@ export function createTestPort(world: World): EnginePort {
     readPluginRoot: async () => '/plugin', readContext: async () => ({ window: 200000 }), readView: async () => world.views.at(-1) ?? null,
     writeView: async view => { world.views.push(view) }, readLiveRun: async () => world.liveRuns.at(-1) ?? null,
     writeLiveRun: async run => { world.liveRuns.push(run) }, readPaneView: async () => world.paneViews.at(-1) ?? 'flow',
-    writePaneView: async view => { world.paneViews.push(view) }, openPane: async closeOnEscape => { world.opened.push({ id: 'working-agreement', title: 'Flow', closeOnEscape }) },
+    writePaneView: async view => { world.paneViews.push(view) }, openPane: async closeOnEscape => { world.opened.push({ id: 'working-agreement', title: 'Flow', closeOnEscape }) }, copy: async () => ({ isCopied: true }),
     runSlashCommand: async () => {}, submitPrompt: async () => {}, suggestPrompt: async () => false, registerSurface: async () => {},
+    notify: async text => { world.notifications.push(text) }, toast: text => { world.toasts.push(text) },
   }
 }

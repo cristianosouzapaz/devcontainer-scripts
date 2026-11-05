@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadJsonCatalog, loadValidatedCatalog } from "../../lib/catalog.js";
-import { TOOLS } from "../../lib/constants.js";
+import { toolTargets } from "../../lib/constants.js";
 import { claudeSkillAdapter, getArtifactVersion, readLockFile, recordArtifact, writeLockFile } from "../../lib/lock-file.js";
 import { handleError, setupConsola } from "../../lib/utils.js";
 import { writeOverwrite, writeWithConflict } from "../../lib/write-file.js";
@@ -17,10 +17,10 @@ import { writeOverwrite, writeWithConflict } from "../../lib/write-file.js";
  */
 
 const consola = setupConsola();
-const TEMPLATE_ROOT = fileURLToPath(new URL("./templates/", import.meta.url));
+const templateRoot = fileURLToPath(new URL("./templates/", import.meta.url));
 
-const LOCAL_SKILLS_FILE_URL = new URL("./skills.json", import.meta.url);
-const GLOBAL_MANIFEST_URL = new URL("./skills.global.json", import.meta.url);
+const localSkillsFileUrl = new URL("./skills.json", import.meta.url);
+const globalManifestUrl = new URL("./skills.global.json", import.meta.url);
 
 /**
  * Assert that a value is an absolute project root path.
@@ -222,7 +222,7 @@ export const ensureClaudeRuleSymlink = (destRoot, skillName, ruleFilename) => {
  * @returns {object[]} Validated local skill entries.
  * @throws If the catalog file or any entry is invalid.
  */
-const loadLocalSkillsCatalog = () => loadValidatedCatalog(LOCAL_SKILLS_FILE_URL, "local skills", {
+const loadLocalSkillsCatalog = () => loadValidatedCatalog(localSkillsFileUrl, "local skills", {
     strings: ["key", "name", "version", "templateFile"],
     nonEmptyStrings: ["description"],
     stringArrays: ["tags"],
@@ -268,14 +268,14 @@ export const installLocalSkills = async (keys, destRoot, lock) => {
         const files = localSkillFiles(entry);
         const [primary, ...resources] = files;
         const canonicalPath = join(".agents", "skills", key, primary.destination);
-        const content = readFileSync(join(TEMPLATE_ROOT, primary.source), "utf8");
+        const content = readFileSync(join(templateRoot, primary.source), "utf8");
         const ok = await writeWithConflict(join(skillDir, primary.destination), content, `${key}/${primary.destination}`, entry.version, getArtifactVersion(lock, canonicalPath));
         if (!ok) continue;
 
         for (const resource of resources) {
             const resourcePath = join(skillDir, resource.destination);
             mkdirSync(dirname(resourcePath), { recursive: true });
-            const resourceContent = readFileSync(join(TEMPLATE_ROOT, resource.source), "utf8");
+            const resourceContent = readFileSync(join(templateRoot, resource.source), "utf8");
             await writeOverwrite(resourcePath, resourceContent, `${key}/${resource.destination}`);
         }
         written[key] = entry.version;
@@ -291,7 +291,7 @@ export const installLocalSkills = async (keys, destRoot, lock) => {
  * @throws If the manifest is not an array of non-empty strings.
  */
 const loadGlobalLocalSkills = () => {
-    const keys = loadJsonCatalog(GLOBAL_MANIFEST_URL);
+    const keys = loadJsonCatalog(globalManifestUrl);
     try {
         assertSkillKeys(keys);
     } catch (error) {
@@ -338,7 +338,7 @@ export const installGlobalLocalSkills = async (options = {}) => {
         const files = localSkillFiles(entry);
         const writes = await files.reduce(async (pending, file) => {
             const changes = await pending;
-            const content = readFileSync(join(TEMPLATE_ROOT, file.source), "utf8");
+            const content = readFileSync(join(templateRoot, file.source), "utf8");
             const changed = await write(join(destRoot, ".agents", "skills", key, file.destination), content, `${key}/${file.destination}`);
             return [...changes, changed];
         }, Promise.resolve([]));
@@ -347,7 +347,7 @@ export const installGlobalLocalSkills = async (options = {}) => {
         ensureClaudeSkillSymlink(destRoot, key);
         const updatedLock = recordArtifact(withArtifact, canonicalPath, {
             kind: "skill",
-            adapters: { [TOOLS.claude]: [claudeSkillAdapter(key)] },
+            adapters: { [toolTargets.claude]: [claudeSkillAdapter(key)] },
         });
 
         return {

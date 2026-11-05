@@ -2,7 +2,7 @@ import { test as kitTest } from 'claude-code/testing'
 import type { TestBody, TestOptions, TestRest } from 'claude-code/testing'
 
 // why: The kit's 5 s default only detects hangs, yet a host that shares its CPU stretches a sound
-// 1 s flow test past it; the slowness signal is the 2.5 s budget warning in test/runners/mods.sh.
+// 1 s flow test past it; the slowness signal is the per-test budget warning of the runner that runs this suite.
 const testTimeoutMs = 20_000
 
 /**

@@ -30,6 +30,8 @@ export interface HandoffPort {
   /** Applies a change to the fresh session; the change may run more than once, so it has no side effects. */
   updateSession: (change: (session: Session) => Session | null) => Promise<Session | null>
   locate: (session: Session) => Promise<Position | null>
+  /** Whether a live coordinator delegates the session's unit; false when the delegation cannot be read. */
+  readIsDelegated: (session: Session) => Promise<boolean>
   refresh: (isQuiet?: boolean) => Promise<void>
   readRoot: () => Promise<string | null>
   readCwd: () => Promise<string>
@@ -113,7 +115,7 @@ export async function startHandoff(port: HandoffPort): Promise<void> {
   if (session.handoff?.state === 'running' || handoff.current) return
   const position = session.flow ? await port.locate(session) : null
   const next = session.flow ? 'The next session continues this unit.' : 'The next session continues this work.'
-  const args = [position ? `Flow: ${composeInstruction(position, session)}` : '', next].filter(Boolean).join(' ')
+  const args = [position ? `Flow: ${composeInstruction(position, session, await port.readIsDelegated(session))}` : '', next].filter(Boolean).join(' ')
   // The end of the /handoff turn carries the handoff on from where it waits.
   const running: RunningHandoff = {
     documentPath: null, isArmed: false,

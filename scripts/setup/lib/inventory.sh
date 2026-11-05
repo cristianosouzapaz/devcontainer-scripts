@@ -116,6 +116,7 @@ inventory_ids() {
 }
 
 # inventory_entry <agents|categories|all> <id>: prints one entry as compact JSON, with the conventional fields filled in
+# Stdout: the entry as one line of compact JSON
 inventory_entry() {
 	local section="$1" id="$2" entry
 

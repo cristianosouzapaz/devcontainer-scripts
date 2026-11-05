@@ -3,6 +3,7 @@ import type { RunCommandStatus, RunCommandView, RunView } from '../../types'
 import type { PaneElements } from './pane-sections'
 import { drawRule } from './pane-layout'
 import { commandSymbol, selectionCursor } from './symbols'
+import type { KeyLabel } from './theme'
 import { keyWidth, panePadding } from './theme'
 
 type TextWrap = 'wrap' | 'truncate-middle' | 'truncate-end'
@@ -206,7 +207,7 @@ function commandBlock(elements: PaneElements, command: RunCommandView, run: RunV
 export function renderRunLog(elements: PaneElements, runs: RunView[], selectedRunId: string | undefined, columns: number, select: (id: string) => void, openFlow: () => void): RenderElement {
   const { Box, Text, Button } = elements
   const selected = runs.find(run => run.runId === selectedRunId) ?? runs[0]
-  const keyed = (key: string, value: string, color: ThemeKey = 'text', wrap: TextWrap = 'wrap') => <Box>
+  const keyed = (key: KeyLabel, value: string, color: ThemeKey = 'text', wrap: TextWrap = 'wrap') => <Box>
     <Box width={keyWidth} flexShrink={0}><Text color="inactive">{key}</Text></Box>
     <Text color={color} wrap={wrap}>{value}</Text>
   </Box>

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadValidatedCatalog } from "../lib/catalog.js";
-import { TOOLS } from "../lib/constants.js";
+import { toolTargets } from "../lib/constants.js";
 import { readGlobalSkillSet } from "../lib/global-skill-set.js";
 import { claudeSkillAdapter, readLockFile, reconcileArtifactAdapters, recordArtifact, writeLockFile } from "../lib/lock-file.js";
 import { pickAssets } from "../lib/pick-assets.js";
@@ -19,9 +19,9 @@ import { ensureClaudeSkillSymlink, installLocalSkills } from "../skills/local/in
 
 const consola = setupConsola();
 
-const AGENT_MD_FILE_URL = new URL("./agent-md.json", import.meta.url);
-const TEMPLATES_URL = new URL("./templates/", import.meta.url);
-const POINTER_LINE = "@AGENTS.md";
+const agentMdFileUrl = new URL("./agent-md.json", import.meta.url);
+const templatesUrl = new URL("./templates/", import.meta.url);
+const pointerLine = "@AGENTS.md";
 
 /**
  * Load and validate the agent-md catalog. An entry's optional `skills` array holds skill
@@ -29,7 +29,7 @@ const POINTER_LINE = "@AGENTS.md";
  * @returns {object[]} Validated agent-md block entries.
  * @throws If the catalog file or any entry is invalid.
  */
-const loadAgentMdCatalog = () => loadValidatedCatalog(AGENT_MD_FILE_URL, "agent-md", {
+const loadAgentMdCatalog = () => loadValidatedCatalog(agentMdFileUrl, "agent-md", {
     strings: ["key", "name", "version", "templateFile"],
     nonEmptyStrings: ["description"],
     stringArrays: ["tags", "targets"],
@@ -89,15 +89,15 @@ const upsertBlock = (content, key, version, body) => {
 const ensureClaudePointer = (claudeMdPath) => {
     if (!existsSync(claudeMdPath)) {
         consola.info("CLAUDE.md not found — creating it as a pointer to AGENTS.md");
-        writeFileSync(claudeMdPath, `${POINTER_LINE}\n`, "utf8");
-        return `${POINTER_LINE}\n`;
+        writeFileSync(claudeMdPath, `${pointerLine}\n`, "utf8");
+        return `${pointerLine}\n`;
     }
 
     const content = readFileSync(claudeMdPath, "utf8");
-    if (content.split("\n").some((line) => line.trim() === POINTER_LINE)) return content;
+    if (content.split("\n").some((line) => line.trim() === pointerLine)) return content;
 
     consola.info("CLAUDE.md found without an AGENTS.md pointer — prepending it");
-    const updated = `${POINTER_LINE}\n\n${content}`;
+    const updated = `${pointerLine}\n\n${content}`;
     writeFileSync(claudeMdPath, updated, "utf8");
     return updated;
 };
@@ -133,7 +133,7 @@ export const partitionReferencedSkills = (blocks, globalSkills) => {
 const installBlocks = (blocks, destPath, destFilename) => {
     const initialContent = existsSync(destPath) ? readFileSync(destPath, "utf8") : "";
     const { content, written } = blocks.reduce((result, { key, version, templateFile }) => {
-        const body = readFileSync(new URL(templateFile, TEMPLATES_URL), "utf8");
+        const body = readFileSync(new URL(templateFile, templatesUrl), "utf8");
         return {
             content: upsertBlock(result.content, key, version, body),
             written: { ...result.written, [key]: version },
@@ -198,7 +198,7 @@ const askUser = async () => {
         const written = installBlocks(selectedBlocks, agentsMdPath, "AGENTS.md");
         state.lock = { ...state.lock, mdBlocks: { ...state.lock.mdBlocks, "AGENTS.md": { ...state.lock.mdBlocks["AGENTS.md"], ...written } } };
 
-        if (selectedTools.includes(TOOLS.claude)) ensureClaudePointer(claudeMdPath);
+        if (selectedTools.includes(toolTargets.claude)) ensureClaudePointer(claudeMdPath);
 
         const { toInstall: skillKeys, alreadyGlobal } = partitionReferencedSkills(selectedBlocks, globalSkills);
 
@@ -213,7 +213,7 @@ const askUser = async () => {
             }
         }
 
-        if (selectedTools.includes(TOOLS.claude)) {
+        if (selectedTools.includes(toolTargets.claude)) {
             for (const key of skillKeys) {
                 const path = join(".agents", "skills", key, "SKILL.md");
                 if (!Object.hasOwn(state.lock.artifacts, path)) continue;

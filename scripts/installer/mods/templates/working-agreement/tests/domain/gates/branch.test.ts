@@ -95,7 +95,7 @@ for (const branch of ['main', 'feature', 'HEAD']) {
     for (const path of [`${records}/x`, `${records}/v/x.json`, '/tmp/records/working-agreement/new/x']) {
       const result = await $.tool.call(buildWriteCall(path))
       expect(result.deny).toContain("cannot write the mod's records")
-      expect(result.deny).toContain('/flow approve')
+      expect(result.deny).toContain('from their own terminal')
     }
     expect((await $.tool.call(buildWriteCall(`${common}/working-agreement-backup/x`))).deny).toBeUndefined()
   })

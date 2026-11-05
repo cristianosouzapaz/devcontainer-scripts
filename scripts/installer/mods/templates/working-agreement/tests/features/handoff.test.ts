@@ -95,8 +95,9 @@ for (const failure of ['carry-over', 'prompt'] as const) {
     expect(handoff?.state).toBe('failed')
     const reason = handoff?.state === 'failed' ? handoff.reason : ''
     expect(reason.length).toBeGreaterThan(0)
-    expect(views.at(-1)?.notes.find(note => note.key === 'Handoff')?.value).toContain(`not completed — ${reason}`)
-    expect(await readFlowStatus($)).toContain(`Handoff    handoff not completed · ${reason}`)
+    expect(views.at(-1)?.notes.find(note => note.key === 'Handoff')?.value).toBe(`not completed · ${reason}`)
+    // One wording, shown once: the pane's note and the status row are the same fact.
+    expect(((await readFlowStatus($)) ?? '').split('\n').filter(line => line.startsWith('Handoff'))).toEqual([`Handoff     not completed · ${reason}`])
   })
 }
 

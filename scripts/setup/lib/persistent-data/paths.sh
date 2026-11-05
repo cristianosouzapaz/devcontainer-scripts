@@ -12,6 +12,7 @@ _PERSISTENT_DATA_PROJECT_ROOT="${PERSISTENT_DATA_PROJECT_ROOT:-/workspace}"
 # ----- FUNCTIONS --------------------------------------------------------------
 
 # persistent_data_root <shared|project>: prints the root directory of a persistent-data scope
+# Stdout: the root directory, one line
 persistent_data_root() {
 	case "$1" in
 	shared) printf '%s\n' "$_PERSISTENT_DATA_SHARED_ROOT" ;;
@@ -24,6 +25,7 @@ persistent_data_root() {
 }
 
 # persistent_data_category_path <category_id>: prints the absolute path of a registered category
+# Stdout: the category directory, one line
 persistent_data_category_path() {
 	local category_id="$1" fields scope relative_path root
 

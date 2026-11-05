@@ -90,7 +90,7 @@ test('a sweep never prunes a stranded child', async ($, on) => {
 })
 
 test('a sweep keeps a child whose branch was deleted before its end was observed', async ($, on) => {
-  const { a: _a, ...refs } = integratedCheckout().graph!.refs
+  const { a, ...refs } = integratedCheckout().graph!.refs
   const world = createWorld(on, { ...integratedCheckout(), graph: { ...buildParentGraph(), refs } }, { session: noFlow, prs: [buildParentPullRequest({ number: 9, headRefOid: 'ma' })] })
   await world.ready
   const paths = await seedChildren(world, [buildChildEntry('a', 2)])

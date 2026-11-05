@@ -1,5 +1,4 @@
-#!/bin/bash
-set -euo pipefail
+# shellcheck shell=bash
 
 # MODULE_NAME="coding-agents"
 # MODULE_DESCRIPTION="Installs and configures the supported coding agent CLIs"
@@ -31,6 +30,7 @@ agent_asset() {
 }
 
 # asset_source <asset_json>: prints the shipped file the asset is written from
+# Stdout: the shipped file path, one line
 # Returns: 1 with the path logged when the shipped file is missing, so every asset kind
 #   reports a missing source the same way.
 asset_source() {
@@ -45,6 +45,7 @@ asset_source() {
 }
 
 # asset_target <entry_id> <asset_json>: prints the absolute path the asset is written to
+# Stdout: the target file path, one line
 # Notes: every target resolves under the owning entry's persistent-data category, the one
 #   base that exists for agents and categories alike. The managed home link points at that
 #   directory, so a CLI reading through the link sees the file this module wrote.
@@ -135,6 +136,7 @@ merge_statusline_settings() {
 }
 
 # codex_settings_with_defaults <defaults_file> <config_file>: prints the Codex configuration with the catalogued root-level defaults filled in and file credential storage enforced
+# Stdout: the complete configuration file content
 # Returns: grep's status when the existing configuration cannot be read, so the caller
 #   aborts before replacing it.
 # Notes: the credential line and the defaults lead the output, so a root-level key can

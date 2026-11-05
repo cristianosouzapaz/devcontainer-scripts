@@ -18,6 +18,7 @@ _HERDR_XDG_RESET_MARKER='devcontainer-herdr-xdg-reset'
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
 # herdr_config_path: prints the Herdr config file path, HERDR_CONFIG_PATH or config.toml in the herdr persistent-data category
+# Stdout: the config file path, one line
 herdr_config_path() {
 	local category_path target
 
@@ -31,6 +32,7 @@ herdr_config_path() {
 }
 
 # herdr_template_path: resolves the config template shipped by Rebuild Container
+# Stdout: the template file path, one line
 herdr_template_path() {
 	local template="${_HERDR_TEMPLATE}"
 	if [[ -z "${template}" ]]; then
@@ -45,6 +47,7 @@ herdr_template_path() {
 }
 
 # herdr_metadata_path: keeps managed history outside the user's Herdr configuration
+# Stdout: the metadata directory path, one line
 herdr_metadata_path() {
 	local root
 	root=$(persistent_data_root project) || return 1

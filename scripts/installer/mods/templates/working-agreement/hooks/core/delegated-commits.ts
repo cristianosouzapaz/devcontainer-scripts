@@ -1,20 +1,23 @@
-import { findDeniedWord, isGitCommit, listScriptCandidates } from '../domain/bash-guards'
-import { composeSigningCommands, parseDelegatedCommit } from '../domain/delegated-commits'
-import type { DelegatedCommit, SigningBranch } from '../domain/delegated-commits'
+import { findDeniedWord, findHeavyTestRun, isGitCommit, listScriptCandidates } from '../domain/bash-guards'
+import { composeSignScript, groupChains, nameSignScript, parseDelegatedCommit } from '../domain/delegated-commits'
+import type { DelegatedCommit, SigningBranch, SigningChain, SigningPlan } from '../domain/delegated-commits'
 import { markForAgent } from '../domain/messages'
 import type { Identity } from '../domain/records'
 import { hashObject, isAncestor, readDefaultRef, readGitOutput, readParentBranch, readWorktrees, runGit } from '../lib/git'
 import { readBranchRulesets } from '../lib/github'
 import { readJson } from '../lib/json'
+import { executeProcess } from '../lib/process'
 import type { ProcessOutput } from '../lib/process'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
+import { denyUnapprovedCommit } from './approval-gate'
 import { findDelegation, findLiveDelegation } from './delegation'
 import type { EnginePort } from './engine-port'
 import { logEvent } from './flow-log'
 import { atomicReplace, listRecordNames, readCommonDir, readSession, recordsPath } from './record-store'
 import { readGit } from './repository'
 import type { RefSnapshot } from './territory'
+import { readApprovedRunners } from './verify'
 
 // why: Any unit session writes here and the coordinator reads every unit's records, so they live under the common directory;
 // one file per change key means two writers never share a file.
@@ -98,7 +101,7 @@ async function findUntrackedScript(port: EnginePort, command: string): Promise<s
 }
 
 /**
- * Refuses, in a delegated unit session, a command that names a word able to move another ref or runs an untracked script; other sessions are not checked.
+ * Refuses, in a delegated unit session, a command that names a word able to move another ref, starts a heavy test run or runs an untracked script; other sessions are not checked.
  * @param port - The engine calls.
  * @param command - The raw Bash command.
  * @returns The deny reason, or undefined when the command may run.
@@ -108,6 +111,9 @@ export async function denyDelegatedCommand(port: EnginePort, command: string): P
   if (!await readDelegatedUnit(port, false).catch(() => true)) return undefined
   if (isGitCommit(command)) return markForAgent('Under delegation a Bash git commit is refused before it runs: stage the work with git add, then commit it with the commit tool, '
     + 'which commits unsigned on this unit\'s branch and records it as delegated.')
+  const heavy = findHeavyTestRun(command, await readApprovedRunners(port))
+  if (heavy) return markForAgent(`Under delegation a test run from Bash is refused before it runs (${heavy}): it would load the host outside the Verify queue `
+    + 'and slow another unit\'s Verify past its timeouts. Run a targeted test through the run tool, which waits its turn in the queue, and the full check through the verify tool.')
   const aliases = await runGit(port.processes, ['config', '--get-regexp', '^alias\\.'])
   // git config exits 1 when no alias is set.
   const names = aliases.exitCode === 0 ? aliases.stdout.split('\n').filter(Boolean).map(line => line.split(' ')[0]?.slice('alias.'.length) ?? '')
@@ -144,6 +150,8 @@ export function runUnsignedGit(port: EnginePort, command: string[], rest: string
 export async function commitDelegated(port: EnginePort, message: string): Promise<Result<string>> {
   const unit = await readDelegatedUnit(port).catch(() => null)
   if (!unit) return fail('only a delegated unit commits through this tool; elsewhere commits are the user\'s.')
+  const unapproved = await denyUnapprovedCommit(port)
+  if (unapproved) return fail(unapproved)
   const elsewhere = await refuseOtherCheckout(port, unit.branch)
   if (elsewhere) return fail(elsewhere)
   const run = await runUnsignedGit(port, ['commit'], ['-F', '-'], message)
@@ -232,14 +240,47 @@ export async function remapDelegatedBase(port: EnginePort, base: string, tip: st
 }
 
 /**
- * Composes the commands that sign and push every branch still holding unsigned delegated commits, parent chains in order.
+ * Words whether the signatures can be verified on this machine, as the sign script decides it when it runs.
  * @param port - The engine calls.
- * @returns The commands, empty when nothing is left to sign.
+ * @param root - A worktree of the repository, or null for the current one.
+ * @returns `on`, or `off` with the reason.
  */
-export async function composeSigningReturn(port: EnginePort): Promise<string[]> {
+async function readVerifyMode(port: EnginePort, root: string | null): Promise<string> {
+  const config = (key: string): Promise<string | null> => readGitOutput(port.processes, ['-C', root ?? '.', 'config', key])
+  const format = await config('gpg.format') ?? 'openpgp'
+  if (format === 'ssh') return await config('gpg.ssh.allowedSignersFile') ? 'on' : 'off (no allowedSignersFile)'
+  if (format !== 'openpgp') return `off (gpg.format ${format})`
+  const keys = await executeProcess(port.processes, ['gpg', '--list-keys']).catch(() => null)
+  return keys?.exitCode === 0 && keys.stdout.trim() ? 'on' : 'off (no keyring)'
+}
+
+/**
+ * Reads the facts of one chain: its commits above the default branch, how many are unsigned and which children have commits outside the head.
+ * @param port - The engine calls.
+ * @param head - The chain's head.
+ * @param children - The branches merged into the head.
+ * @param defaultRef - The default branch's ref.
+ * @returns The chain.
+ */
+async function readChain(port: EnginePort, head: SigningBranch, children: SigningBranch[], defaultRef: string): Promise<SigningChain> {
+  const shas = (await readGitOutput(port.processes, ['rev-list', `refs/heads/${head.branch}`, '--not', defaultRef]))?.split('\n').filter(Boolean) ?? []
+  const strays = (await Promise.all(children.map(async child => {
+    const extra = (await readGitOutput(port.processes, ['rev-list', `refs/heads/${child.branch}`, '--not', `refs/heads/${head.branch}`]))?.split('\n').filter(Boolean) ?? []
+    return { branch: child.branch, commits: extra.map(sha => sha.slice(0, 7)) }
+  }))).filter(stray => stray.commits.length)
+  return { branch: head.branch, root: head.root, commits: shas.length, unsigned: (await readUnsigned(port, shas))?.length ?? 0, children: children.map(child => child.branch), strays }
+}
+
+/**
+ * Plans the signing of every branch still holding unsigned delegated commits and writes the sign script under the records.
+ * @param port - The engine calls.
+ * @returns The plan, or null when nothing is left to sign or the script cannot be written.
+ */
+export async function composeSigningReturn(port: EnginePort): Promise<SigningPlan | null> {
   const git = await readGit(port)
   const worktrees = await readWorktrees(port.processes)
-  if (!git || !worktrees) return []
+  const common = await readCommonDir(port)
+  if (!git || !worktrees || !common) return null
   const defaultRef = await readDefaultRef(port.processes, git.base)
   const records = await readDelegatedCommits(port) ?? []
   const recorded = new Set(records.map(record => record.sha))
@@ -259,7 +300,13 @@ export async function composeSigningReturn(port: EnginePort): Promise<string[]> 
     if (!parent || !names.includes(parent)) return { ...entry, parent: null, isMerged: false }
     return { ...entry, parent, isMerged: await isAncestor(port.processes, entry.branch, parent) }
   }))
-  return composeSigningCommands(branches, git.base)
+  const chains = await Promise.all(groupChains(branches).map(({ head, children }) => readChain(port, head, children, defaultRef)))
+  if (!chains.length) return null
+  const path = recordsPath(common, 'sign', nameSignScript(chains.map(chain => chain.branch)))
+  // why: The script is rewritten on every summary, so what the user reviews is what the summary counted.
+  await executeProcess(port.processes, ['mkdir', '-p', '--', recordsPath(common, 'sign')])
+  await atomicReplace(port, path, composeSignScript(chains, git.base))
+  return { base: git.base, verify: await readVerifyMode(port, chains[0]?.root ?? null), path, chains }
 }
 
 /**

@@ -2,7 +2,7 @@ import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
 import { buildChanged, buildParentGraph, diagnosed, diagnoseRuns, diagnosisComment, noFlow, twoIssueCloseOut, verifyFile } from '../support/builders'
-import { approveVerify, declareFlow, readFlowStatus, releaseVerifyHolder, seedVerifyHolder } from '../support/helpers'
+import { declareFlow, readFlowStatus, releaseVerifyHolder, seedVerifyHolder } from '../support/helpers'
 import { parChild } from '../support/parallel-worktrees'
 import { createWorld } from '../support/world'
 import type { Engine } from 'claude-code/testing'
@@ -85,12 +85,6 @@ test('Code in a Fix before the fix passes shows the step alone', async ($, on) =
   expect(await readStepRow($, '▸')).toBe('▸ Code')
 })
 
-test('Verify on an approved config before its run shows the step alone', async ($, on) => {
-  createWorld(on, buildChanged(), { verifyFile })
-  await approveVerify($)
-  expect(await readStepRow($, '▸')).toBe('▸ Verify')
-})
-
 test('Commit before the first commit shows the step alone', async ($, on) => {
   createWorld(on, buildChanged(), { verifyFile, approvedConfig: verifyFile })
   await $.tool.call({ tool: 'mcp__working-agreement__verify' })
@@ -113,7 +107,7 @@ test('a Verify waiting its turn in the queue keeps its waiting fact while the st
   seedVerifyHolder(world)
   const run = $.tool.call({ tool: 'mcp__working-agreement__verify' })
   await world.clock.settle()
-  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Verify', value: 'queued, 2nd of 2', tone: 'warn' })
+  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Verify', value: 'queued, 2nd of 2', tone: 'text' })
   expect(await readStepRow($, '▸')).toBe('▸ Code')
   expect(await readFlowStatus($)).toContain('queued, 2nd of 2')
   releaseVerifyHolder(world)

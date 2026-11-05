@@ -1,16 +1,22 @@
 import type { StepSkip } from '../../types'
 import type { Identity, UnitEntry } from '../../hooks/domain/records'
 import { buildParentGraph, buildParentPullRequest } from './builders'
-import { buildScope, declarationFile, delegatedFile, hashIdentity, records, scopeFile } from './world'
+import { buildScope, configBlob, declarationFile, delegatedFile, hashIdentity, records, scopeFile } from './world'
 import type { Checkout, Graph, Options, World } from './world'
 
 /** A child unit cut from parent, as the declaration caches it. */
 export const childUnit: Options = { unit: { base: 'p0', baseBranch: 'parent' } }
 
-/** A Close out on #1 with Verify skipped, awaiting only its PR. */
+/** A Close out on issue 1 with Verify skipped, awaiting only its PR. */
 export const roundCloseOut: Options = {
   session: { flow: 'close-out', issues: [1], info: { 1: { title: 'round', labels: [] } } }, unit: { skips: [{ step: 'verify', reason: 'covered separately' }] },
 }
+
+/** The Verify config every commit of a gated checkout carries: one command, which every merged tree runs. */
+const gateConfig ='{"always":[["./check"]]}'
+
+/** Approves the gated checkout's config, so merge_child's Verify runs its command. */
+export const gateOptions: Options = { verifyFile: gateConfig, approvedConfig: gateConfig }
 
 /**
  * Builds the parallel workflow: main, a parent branch cut from it, the session's child with one slice commit, and a sibling.
@@ -157,12 +163,24 @@ export const childCheckout = (change: (git: Graph) => Graph = git => git): Check
 })
 
 /**
- * Checks out the coordinator on the default branch, with parent `par` held by `/par` and child `a` (#2, cut from `par`) by `/a`.
+ * Checks out the coordinator on the default branch, with parent `par` held by `/par` and child `a` (issue 2, cut from `par`) by `/a`.
  * @param change - Rewrites the reference workflow's history before the call.
  * @returns The checkout.
  */
 export const delegationCheckout = (change: (git: Graph) => Graph = git => git): Checkout => ({
   branch: 'main', graph: change(buildParentGraph()), worktrees: { '/repo': { branch: 'main' }, '/par': { branch: 'par' }, '/a': { branch: 'a' } },
+})
+
+/**
+ * Checks out the delegation workflow with the gate config committed in every commit, as the world's working trees hold it under `gateOptions`;
+ * a config only in the working tree reads as an uncommitted change, which refuses merge_child before any Verify.
+ * @param change - Rewrites the reference workflow's history before the config is committed.
+ * @returns The checkout.
+ */
+export const gatedCheckout = (change: (git: Graph) => Graph = git => git): Checkout => delegationCheckout(git => {
+  const changed = change(git)
+  return { ...changed, commits: Object.fromEntries(Object.entries(changed.commits).map(([sha, commit]) =>
+    [sha, { ...commit, files: { ...commit.files, '.claude/working-agreement.json': configBlob(gateConfig) } }])) }
 })
 
 /**

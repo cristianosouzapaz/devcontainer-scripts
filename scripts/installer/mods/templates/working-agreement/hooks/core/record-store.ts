@@ -23,10 +23,10 @@ export interface VersionedSession { session: Session; version: number }
 type SessionChange = (session: Session) => Session | null | Promise<Session | null>
 
 /** A record bucket: a swept one, or one whose temporary files, if any, live in subdirectories the sweep does not reach. */
-export type RecordBucket = typeof recordBuckets[number] | 'log' | 'end' | 'verify'
+export type RecordBucket = typeof recordBuckets[number] | 'sign' | 'log' | 'end' | 'verify' | 'mail'
 
 /** Every bucket atomicReplace writes to: pruneFiles sweeps each one's leftover temporary files. */
-export const recordBuckets = ['s', 'u', 'd', 'ok', 'runs', 'delegation', 'delegated', 'spawn', 'placed', 'host', 'notices', 'retired', 'v'] as const
+export const recordBuckets = ['s', 'u', 'd', 'ok', 'runs', 'delegation', 'delegated', 'spawn', 'placed', 'host', 'notices', 'retired', 'v', 'forwards', 'comments', 'deadletters', 'dd', 'activity', 'stalls'] as const
 
 // A miss means another dispatch wrote in between; this many in a row means a writer that never settles.
 const sessionWriteAttempts = 5
@@ -91,6 +91,36 @@ export async function atomicReplace(port: EnginePort, path: string, text: string
         throw error
       }
     }
+  }
+}
+
+/**
+ * Creates a file once, never over an existing one: writes it whole in a staging directory, then links it into place, so a reader
+ * sees the complete file or none, and a second creation of the same path collides.
+ * @param port - The engine calls.
+ * @param staging - The directory the file is written in first, on the same file system as the path.
+ * @param path - The final file path.
+ * @param text - The entire file.
+ * @returns Whether the file was created; false when the path already existed.
+ */
+export async function atomicCreate(port: EnginePort, staging: string, path: string, text: string): Promise<boolean> {
+  const temporary = await temporaryPath(port, staging)
+  try {
+    await port.files.write(temporary, text)
+    // why: a link fails when its target exists, where a rename would replace it.
+    const run = await executeProcess(port.processes, ['ln', '--', temporary, path])
+    if (run.exitCode === 0) {
+      sessionMemory.recordError = null
+      return true
+    }
+    if (await port.files.exists(path)) return false
+    throw new Error(run.stderr || 'atomic record creation failed')
+  } catch (error) {
+    sessionMemory.recordError = holdError(sessionMemory.recordError, `${path}: ${error instanceof Error ? error.message : String(error)}`, await port.now())
+    throw error
+  } finally {
+    // A crash before this leaves the file in staging, which pruning sweeps.
+    await removeFile(port.processes, temporary)
   }
 }
 
@@ -255,7 +285,7 @@ export async function readVersionedSession(port: EnginePort): Promise<VersionedS
  * @returns A detached session record suitable for persistence.
  */
 function stripSession(session: Session): SessionRecord {
-  const { flow: _flow, issues: _issues, ...record } = session
+  const { flow, issues, ...record } = session
   return JSON.parse(JSON.stringify(record)) as SessionRecord
 }
 
@@ -329,7 +359,10 @@ async function mergeUnits(port: EnginePort, units: UnitEntry[]): Promise<Unit> {
     // why: A pin judges only the approval it was stored with, so both come from the same entry.
     ...(merged.approval ? { approval: merged.approval, approvedRed: merged.approvedRed } : { approval: unit.approval, approvedRed: unit.approvedRed }),
   }), createEmptyUnit())
-  const merged = { ...evidence, runs: retainRuns(units.flatMap(unit => unit.runs)) }
+  // why: each session counts only its own Verify calls, so the session that ran the newest one holds the current count.
+  const newest = units.reduce<UnitEntry | undefined>((best, unit) => (unit.verifyRuns[0]?.at ?? -Infinity) > (best?.verifyRuns[0]?.at ?? -Infinity) ? unit : best, undefined)
+  const { redVerifies, ...rest } = evidence
+  const merged = { ...rest, ...newest?.redVerifies === undefined ? {} : { redVerifies: newest.redVerifies }, runs: retainRuns(units.flatMap(unit => unit.runs)) }
   const bases = [...new Set(units.flatMap(unit => unit.base ? [unit.base] : []))]
   if (bases.length < 2) return merged
   const branch = units[0]?.identity.branch

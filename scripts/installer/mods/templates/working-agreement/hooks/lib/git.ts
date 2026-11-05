@@ -43,6 +43,17 @@ export async function readRoot(processes: ProcessPort): Promise<Result<string | 
 }
 
 /**
+ * Tells whether the checkout is a linked worktree: its own git directory is not the common one, whatever symlinks or bare layout the paths take.
+ * @param processes - The engine's process runner.
+ * @returns True in a linked worktree; false in the main checkout, outside a repository or when git cannot run.
+ */
+export async function isLinkedWorktree(processes: ProcessPort): Promise<boolean> {
+  const run = await runProcess(processes, gitArgv(['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir']))
+  const [own, common] = run.isOk && run.value.exitCode === 0 ? run.value.stdout.trim().split('\n') : []
+  return !!own && !!common && own !== common
+}
+
+/**
  * Selects the first resolvable default-branch candidate.
  * @param processes - The engine's process runner.
  * @param candidates - The refs in preference order.

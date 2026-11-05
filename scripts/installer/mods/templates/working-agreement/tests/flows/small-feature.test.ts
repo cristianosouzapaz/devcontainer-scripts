@@ -23,9 +23,10 @@ test('new work after a green PR shows the PR step pending until Code, Verify, Co
   const graph = linearGraph({ feat: 0 }, verifyFile, 1)
   const git: Checkout = { branch: 'feat', graph, isDirty: true, changed: ['src/a.ts'], tree: 'tree' }
   const options: Options = { session: noFlow, verifyFile, issueLabels: { 1: ['ready-for-agent'] } }
-  const { clock } = createWorld(on, git, options)
+  const world = createWorld(on, git, options)
+  const { clock } = world
   await declareFlow($, 'small-feature', [1])
-  await approveVerify($)
+  approveVerify(world)
   await $.tool.call({ tool: 'mcp__working-agreement__verify' })
   Object.assign(git, { graph: { ...graph, refs: { ...graph.refs, feat: 'c1' } }, isDirty: false, changed: [], tree: undefined })
   Object.assign(options, { prs: [buildPullRequest()], statuses: { c1: [{ context: 'test', state: 'success' }] } })
@@ -46,7 +47,7 @@ test('a Small feature unit runs from Grill to a merged PR', async ($, on) => {
   const graph = linearGraph({ feat: 0 }, verifyFile, 1)
   const git: Checkout = { branch: 'feat', graph }
   const options: Options = { session: noFlow, verifyFile, approvedConfig: verifyFile, issueLabels: { 1: ['needs-triage'] } }
-  const { clock, views } = createWorld(on, git, options)
+  const { clock, views, approveConfig } = createWorld(on, git, options)
   expect((await declareFlow($, 'small-feature', [1])).result).toContain('current step: Grill')
   await startSkill($, 'grilling')
   await startSkill($, 'to-spec')
@@ -62,14 +63,15 @@ test('a Small feature unit runs from Grill to a merged PR', async ($, on) => {
   git.tree = 'tree'
   expect(await readCurrentStep($)).toBe('Code')
   expect(await readFlowStatus($)).toContain('▸ Code\n')
-  await completeDelivery($, { git, options, clock, views })
+  await completeDelivery($, { git, options, clock, views, approveConfig })
 })
 
 test('a child Small feature cut from a parent branch runs from Grill to integrated, with Integrate in place of PR', async ($, on) => {
   const graph = buildParentGraph()
   const git: Checkout = { branch: 'a', graph, worktrees: { '/repo': { branch: 'a' }, '/par': { branch: 'par' } } }
   const options: Options = { session: noFlow, issueLabels: { 1: ['needs-triage'] } }
-  const { clock } = createWorld(on, git, options)
+  const world = createWorld(on, git, options)
+  const { clock } = world
   const reply = (await declareFlow($, 'small-feature', [1])).result
   expect(reply).toContain('base from par (branch reflog)')
   expect(reply).toContain('○ Integrate (the user\'s step: stop and ask them to run git -C /par merge --no-ff a to merge this unit into par (never merge yourself))')

@@ -82,26 +82,34 @@ registry_validate_meta() {
 
 # registry_module_exit: module subshell EXIT handler; stops the spinner and writes the state the module added to run_module's state file
 # Notes: the state is NUL-delimited kind/value pairs, so embedded newlines survive.
-#   Reads run_module's locals through dynamic scope: state_file, error_start,
-#   module_cleanup_start and cleanup_start.
+#   Reads run_module's local state_file through dynamic scope.
 registry_module_exit() {
-	local status=$? record
+	local status=$? errexit=false
+	[[ "$-" != *e* ]] || errexit=true
 	trap - ERR
 	set +e
 	spinner_cleanup
-	{
-		printf 'skip\0%s\0' "${_MODULE_SKIPPED:-}"
-		for record in "${_ERROR_STACK[@]:$error_start}"; do
-			printf 'error\0%s\0' "$record"
-		done
-		for record in "${_MODULE_CLEANUP_HANDLERS[@]:$module_cleanup_start}"; do
-			printf 'module-cleanup\0%s\0' "$record"
-		done
-		for record in "${_CLEANUP_HANDLERS[@]:$cleanup_start}"; do
-			printf 'cleanup\0%s\0' "$record"
-		done
-	} >"$state_file"
+	registry_module_state >"$state_file"
+	if "$errexit"; then set -e; else set +e; fi
 	return "$status"
+}
+
+# registry_module_state: lists the state a module subshell added, for registry_module_exit
+# Stdout: NUL-delimited kind/value pairs: skip once, then error, module-cleanup and cleanup per record
+# Notes: reads run_module's locals through dynamic scope: error_start, module_cleanup_start
+#   and cleanup_start.
+registry_module_state() {
+	local record
+	printf 'skip\0%s\0' "${_MODULE_SKIPPED:-}"
+	for record in "${_ERROR_STACK[@]:$error_start}"; do
+		printf 'error\0%s\0' "$record"
+	done
+	for record in "${_MODULE_CLEANUP_HANDLERS[@]:$module_cleanup_start}"; do
+		printf 'module-cleanup\0%s\0' "$record"
+	done
+	for record in "${_CLEANUP_HANDLERS[@]:$cleanup_start}"; do
+		printf 'cleanup\0%s\0' "$record"
+	done
 }
 
 # ----- PUBLIC FUNCTIONS -------------------------------------------------------
@@ -302,4 +310,4 @@ run_all_modules() {
 	fi
 }
 
-export -f registry_module_exit registry_read_meta registry_validate_secrets_meta registry_validate_meta discover_modules registry_inject_module_secrets run_module run_all_modules
+export -f registry_module_exit registry_module_state registry_read_meta registry_validate_secrets_meta registry_validate_meta discover_modules registry_inject_module_secrets run_module run_all_modules

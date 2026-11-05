@@ -19,7 +19,7 @@ const keysHelpTip = (keys) => keys
     .join(chalk.dim(" • "));
 
 /** Inquirer theme applied to every installer prompt. */
-export const PROMPT_THEME = {
+export const promptTheme = {
     prefix: chalk.cyan("◆"),
     style: { keysHelpTip },
 };

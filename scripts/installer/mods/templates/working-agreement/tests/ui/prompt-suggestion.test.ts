@@ -1,6 +1,6 @@
 import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
-import { diagnoseRuns, diagnosisComment, noFlow, verifyFile, verifyId } from '../support/builders'
+import { diagnoseRuns, diagnosisComment, noFlow, verifyFile } from '../support/builders'
 import { endTurn, readCurrentStep } from '../support/helpers'
 import { createWorld } from '../support/world'
 import type { Options } from '../support/world'
@@ -18,14 +18,15 @@ test('Diagnose waiting for approval suggests approving the newest comment after 
   expect(suggestions).toEqual([`/flow approve ${newer.url}`])
 })
 
-test('Verify with an unapproved config suggests approving it by its twelve-character id', async ($, on) => {
+test('Verify with an unapproved config suggests nothing: no command typed in a session approves it', async ($, on) => {
   const { suggestions } = createWorld(on, { ...unapprovedVerify }, { verifyFile })
   await endTurn($)
-  expect(suggestions).toEqual([`/flow approve verify ${verifyId()}`])
+  expect(await readCurrentStep($)).toBe('Verify')
+  expect(suggestions).toEqual([])
 })
 
 test('a suggestion is not repeated while the step is unchanged', async ($, on) => {
-  const { suggestions, clock } = createWorld(on, { ...unapprovedVerify }, { verifyFile })
+  const { suggestions, clock } = createWorld(on, { branch: 'fix' }, awaitingApproval())
   await endTurn($)
   await clock.advance(61000)
   await endTurn($)
@@ -33,8 +34,8 @@ test('a suggestion is not repeated while the step is unchanged', async ($, on) =
 })
 
 test('a suggestion the engine did not show is offered again at the next refresh', async ($, on) => {
-  const options: Options = { verifyFile, isSuggestionShown: false }
-  const { suggestions } = createWorld(on, { ...unapprovedVerify }, options)
+  const options: Options = { ...awaitingApproval(), isSuggestionShown: false }
+  const { suggestions } = createWorld(on, { branch: 'fix' }, options)
   await endTurn($)
   await endTurn($)
   expect(suggestions).toHaveLength(2)

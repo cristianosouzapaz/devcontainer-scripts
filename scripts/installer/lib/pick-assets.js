@@ -14,7 +14,7 @@ import {
     useState,
 } from "@inquirer/core";
 import chalk from "chalk";
-import { PROMPT_THEME, sectionHeader } from "./theme.js";
+import { promptTheme, sectionHeader } from "./theme.js";
 
 /**
  * @fileoverview Stable multi-select prompt shared by the installer sub-installers, built on
@@ -25,9 +25,9 @@ import { PROMPT_THEME, sectionHeader } from "./theme.js";
  * still intentionally omitted.
  */
 
-const CURSOR_HIDE = "\x1B[?25l";
-const ALL_TAG = "All";
-const SHORTCUTS = { all: "a", invert: "i" };
+const cursorHide = "\x1B[?25l";
+const allTag = "All";
+const shortcuts = { all: "a", invert: "i" };
 
 // Hand-copied from `@inquirer/checkbox`'s default theme so the rewrite renders identically.
 const checkboxTheme = {
@@ -138,7 +138,7 @@ const firstNavigableIndex = (view) => {
 const renderTagBar = (tagList, tagPos, matchCount) => {
     const chip = (tag, index) => {
         if (index === tagPos) return chalk.inverse.bold(` ${tag} `);
-        return tag === ALL_TAG ? tag : chalk.dim(tag);
+        return tag === allTag ? tag : chalk.dim(tag);
     };
     const chips = tagList.map(chip).join("  ");
     return tagPos === 0 ? chips : `${chips}   ${chalk.dim(`· ${matchCount}`)}`;
@@ -160,7 +160,7 @@ const tagCheckbox = createPrompt((config, done) => {
     const tagList = useMemo(() => {
         const tags = new Set();
         for (const item of items) for (const tag of item.tags) tags.add(tag);
-        return [ALL_TAG, ...[...tags].sort()];
+        return [allTag, ...[...tags].sort()];
     }, [items.length]);
     const hasTagBar = tagList.length > 1;
 
@@ -202,11 +202,11 @@ const tagCheckbox = createPrompt((config, done) => {
             }
             setError(undefined);
             setItems(items.map((item) => (item === target ? { ...item, checked: !item.checked } : item)));
-        } else if (key.name === SHORTCUTS.all) {
+        } else if (key.name === shortcuts.all) {
             const inView = new Set(view.filter(isSelectable));
             const turnOn = [...inView].some((item) => !item.checked);
             setItems(items.map((item) => (inView.has(item) ? { ...item, checked: turnOn } : item)));
-        } else if (key.name === SHORTCUTS.invert) {
+        } else if (key.name === shortcuts.invert) {
             const inView = new Set(view.filter(isSelectable));
             setItems(items.map((item) => (inView.has(item) ? { ...item, checked: !item.checked } : item)));
         } else if (isNumberKey(key)) {
@@ -250,8 +250,8 @@ const tagCheckbox = createPrompt((config, done) => {
         ...(hasTagBar ? [["‹ ›", "filter by tag"]] : []),
         ["↑↓", "navigate"],
         ["space", "select"],
-        [SHORTCUTS.all, "all"],
-        [SHORTCUTS.invert, "invert"],
+        [shortcuts.all, "all"],
+        [shortcuts.invert, "invert"],
         ["⏎", "submit"],
     ];
 
@@ -269,7 +269,7 @@ const tagCheckbox = createPrompt((config, done) => {
         .join("\n")
         .trimEnd();
 
-    return `${lines}${CURSOR_HIDE}`;
+    return `${lines}${cursorHide}`;
 });
 
 /**
@@ -286,6 +286,6 @@ const tagCheckbox = createPrompt((config, done) => {
  * @effects Presents an interactive multi-select prompt on the current terminal.
  */
 export const pickAssets = (config, context) => tagCheckbox(
-    { ...config, theme: { ...PROMPT_THEME, ...config.theme } },
+    { ...config, theme: { ...promptTheme, ...config.theme } },
     { clearPromptOnDone: true, ...context },
 );

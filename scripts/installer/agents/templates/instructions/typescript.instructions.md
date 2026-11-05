@@ -15,13 +15,13 @@ applyTo: "**/*.{ts,tsx}"
 ## Naming
 
 - **N1:** Type, interface, class, and enum names MUST use PascalCase.
-- **N2:** Variable and function names MUST use camelCase.
+- **N2:** Variable and function names MUST use camelCase, except React components and JSX element bindings, which use PascalCase.
 - **N3:** Intentionally unused parameters MUST use an underscore prefix.
 
 ## Code Design
 
 - **C1:** Object shapes MUST use interfaces.
-- **C2:** Union and intersection types MUST use type aliases.
+- **C2:** Named union and intersection types MUST be declared with a `type` alias, not an interface.
 - **C3:** Mutually exclusive states MUST use discriminated unions.
 - **C4:** Type-only imports MUST use `import type`.
 - **C5:** Values with unknown runtime shapes MUST use `unknown` until explicitly narrowed.
@@ -34,4 +34,4 @@ applyTo: "**/*.{ts,tsx}"
 
 ## Behavior and Reliability
 
-- **B1:** Functions MUST NOT mutate their arguments.
+- **B1:** Functions MUST NOT mutate their arguments, except that test fakes and fixtures may be mutated by their own callbacks.

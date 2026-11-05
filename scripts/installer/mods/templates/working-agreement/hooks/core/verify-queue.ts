@@ -40,15 +40,21 @@ const sequence = { value: 0 }
  * @param port - The engine calls.
  * @param ms - How long to idle.
  * @param signal - Ends the idle at the next step.
+ * @param onStep - Runs before each step, and may abort the signal.
  */
-async function idle(port: EnginePort, ms: number, signal: AbortSignal): Promise<void> {
+async function idle(port: EnginePort, ms: number, signal: AbortSignal, onStep: () => Promise<void>): Promise<void> {
   const until = await port.now() + ms
   while (!signal.aborted) {
     const left = until - await port.now()
     if (left <= 0) return
+    await onStep()
+    if (signal.aborted) return
     await executeProcess(port.processes, ['sleep', String(Math.min(pollMs, left) / 1000)])
   }
 }
+
+/** Does nothing at an idle step: the wait has no check of its own. */
+const noStep = async (): Promise<void> => {}
 
 /**
  * Reads the lock's owner record.
@@ -152,9 +158,11 @@ export async function leaveVerifyQueue(port: EnginePort, turn: VerifyTurn): Prom
  * @param deadline - When the wait gives up.
  * @param signal - The dispatch's cancellation signal.
  * @param onMove - Called whenever the session's position or the queue's length changes.
+ * @param onStep - Runs at each idle step, and may abort the signal.
  * @returns The held turn, or how the wait ended without one; either way without a ticket left behind.
  */
-export async function waitVerifyTurn(port: EnginePort, common: string, sid: string, deadline: number, signal: AbortSignal, onMove: () => Promise<void>): Promise<QueueWait> {
+export async function waitVerifyTurn(port: EnginePort, common: string, sid: string, deadline: number, signal: AbortSignal, onMove: () => Promise<void>,
+  onStep = noStep): Promise<QueueWait> {
   const dir = recordsPath(common, 'verify')
   const start = await port.now()
   const turn: VerifyTurn = { dir, ticket: `${String(start).padStart(15, '0')}-${sid}`, token: `${start}-${++sequence.value}-${sid}` }
@@ -190,7 +198,7 @@ export async function waitVerifyTurn(port: EnginePort, common: string, sid: stri
         await executeProcess(port.processes, ['rm', '-rf', '--', `${dir}/q/${live[0]}`])
         continue
       }
-      await idle(port, pollMs, signal)
+      await idle(port, pollMs, signal, onStep)
     }
     return { kind: 'cancelled' }
   })().catch(async (error: unknown) => {
@@ -230,9 +238,11 @@ export function holdVerifyTurn(port: EnginePort, turn: VerifyTurn): () => Promis
  * @param deadline - When the wait gives up, the same bound as the wait for the lock.
  * @param signal - The dispatch's cancellation signal.
  * @param onMove - Called when the CI wait starts or ends.
+ * @param onStep - Runs at each idle step, and may abort the signal.
  * @returns How the wait ended.
  */
-export async function waitCiIdle(port: EnginePort, turn: VerifyTurn, labels: string[], deadline: number, signal: AbortSignal, onMove: () => Promise<void>): Promise<CiWait> {
+export async function waitCiIdle(port: EnginePort, turn: VerifyTurn, labels: string[], deadline: number, signal: AbortSignal, onMove: () => Promise<void>,
+  onStep = noStep): Promise<CiWait> {
   const marker = `${turn.dir}/lock/ci`
   const state = { isMarked: false }
   try {
@@ -247,7 +257,7 @@ export async function waitCiIdle(port: EnginePort, turn: VerifyTurn, labels: str
         state.isMarked = true
         await onMove()
       }
-      await idle(port, Math.min(ciPollMs, deadline - now), signal)
+      await idle(port, Math.min(ciPollMs, deadline - now), signal, onStep)
     }
     return 'cancelled'
   } finally {
@@ -267,6 +277,19 @@ export async function waitCiIdle(port: EnginePort, turn: VerifyTurn, labels: str
  */
 export async function isTurnHeld(port: EnginePort, turn: VerifyTurn): Promise<boolean> {
   return (await readOwner(port, turn.dir))?.token === turn.token
+}
+
+/**
+ * Tells whether this session holds the repository's Verify lock and the lock is live, judged as a waiter would before breaking it.
+ * @param port - The engine calls.
+ * @returns Whether a run of this session still holds its queue turn.
+ */
+export async function isOwnTurnLive(port: EnginePort): Promise<boolean> {
+  const common = await readCommonDir(port)
+  if (!common) return false
+  const dir = recordsPath(common, 'verify')
+  if ((await readOwner(port, dir))?.sid !== await port.readSessionId()) return false
+  return !await isLockStale(port, dir, await port.now(), await readHost(port))
 }
 
 /**

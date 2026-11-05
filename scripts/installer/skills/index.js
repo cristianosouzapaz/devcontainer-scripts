@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadJsonCatalog, loadValidatedCatalog } from "../lib/catalog.js";
-import { AGENTS, TOOLS } from "../lib/constants.js";
+import { agents, toolTargets } from "../lib/constants.js";
 import { readGlobalSkillSet } from "../lib/global-skill-set.js";
 import { pickAssets } from "../lib/pick-assets.js";
 import { restoreChecked, selectTargetTools, selectUntilConfirmed } from "../lib/prompts.js";
@@ -20,8 +20,8 @@ import { ensureClaudeSkillSymlink } from "./local/index.js";
 
 const consola = setupConsola();
 
-const SKILLS_FILE_URL = new URL("./skills.json", import.meta.url);
-const GLOBAL_MANIFEST_URL = new URL("./skills.global.json", import.meta.url);
+const skillsFileUrl = new URL("./skills.json", import.meta.url);
+const globalManifestUrl = new URL("./skills.global.json", import.meta.url);
 
 /**
  * Assert that a catalog entry owns the fields used by the interactive installer.
@@ -79,7 +79,7 @@ const isCliFailure = (error) => error instanceof Error;
  * @returns {object[]} Validated skill entries.
  * @throws If the catalog file or any entry is invalid.
  */
-const loadSkillsCatalog = () => loadValidatedCatalog(SKILLS_FILE_URL, "skills", {
+const loadSkillsCatalog = () => loadValidatedCatalog(skillsFileUrl, "skills", {
     strings: ["name", "skill", "url"],
     nonEmptyStrings: ["category", "description"],
     stringArrays: ["tags"],
@@ -130,7 +130,7 @@ const selectSkills = (skills, globalSet = readGlobalSkillSet(), projectSet = rea
  * @throws {Error} If the external CLI cannot install the requested skill.
  * @effects Starts `npx skills add` for the supplied repository and skill.
  */
-const installCanonicalSkill = (url, skill) => execFileSync("npx", ["skills", "add", url, "--skill", skill, "--agent", AGENTS.codex, "--yes"], {
+const installCanonicalSkill = (url, skill) => execFileSync("npx", ["skills", "add", url, "--skill", skill, "--agent", agents.codex, "--yes"], {
     stdio: "pipe",
 });
 
@@ -151,7 +151,7 @@ const runSkillsCli = (args) => execFileSync("npx", args, { stdio: "pipe" });
  * @throws Will throw if the manifest is missing, empty, or has a malformed entry.
  */
 export const loadGlobalSkillsManifest = () => {
-    const entries = loadJsonCatalog(GLOBAL_MANIFEST_URL);
+    const entries = loadJsonCatalog(globalManifestUrl);
     if (entries.length === 0) throw new Error("skills.global.json manifest is empty.");
     for (const [index, entry] of entries.entries()) {
         try {
@@ -165,9 +165,9 @@ export const loadGlobalSkillsManifest = () => {
 };
 
 /**
- * Add one external skill to the machine-wide store. `skills add` is re-run on every sync as
- * the safety net for vercel-labs/skills#1143, where `skills update -g` can report
- * "No global skills tracked"; a re-add is idempotent.
+ * Add one external skill to the machine-wide store. `skills add` is re-run on every sync
+ * because `skills update -g` can report "No global skills tracked" and leave the skill
+ * stale; a re-add is idempotent.
  * @param {{ url: string, skill?: string }} entry - Validated manifest entry to install.
  * @param {(args: string[]) => void} run - CLI effect function.
  * @returns {void} Nothing.
@@ -265,7 +265,7 @@ const askUser = async () => {
             try {
                 installCanonicalSkill(url, skill);
                 for (const dependency of requires) installCanonicalSkill(url, dependency);
-                if (selectedTools.includes(TOOLS.claude)) {
+                if (selectedTools.includes(toolTargets.claude)) {
                     ensureClaudeSkillSymlink(process.cwd(), skill);
                     for (const dependency of requires) ensureClaudeSkillSymlink(process.cwd(), dependency);
                 }

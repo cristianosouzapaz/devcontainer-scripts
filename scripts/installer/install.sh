@@ -6,8 +6,8 @@ set -euo pipefail
 
 # ----- CONFIGURATION ----------------------------------------------------------
 
-readonly _RUNTIME_DEPS=("@inquirer/core" "@inquirer/prompts" "chalk" "consola")
-readonly _CURL_OPTS=(
+readonly -a _RUNTIME_DEPS=("@inquirer/core" "@inquirer/prompts" "chalk" "consola")
+readonly -a _CURL_OPTS=(
 	--fail --location --show-error --silent
 	--retry 5 --retry-delay 2 --retry-connrefused --retry-all-errors
 	--connect-timeout 15 --max-time 120

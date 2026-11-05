@@ -103,6 +103,25 @@ export async function readVerifyConfig(port: EnginePort, tree: string | null): P
 }
 
 /**
+ * Reads a config by the blob id an approval names, whatever tree holds it now.
+ * @param port - Engine calls.
+ * @param blob - The config blob id.
+ * @returns A validated config, missing when the repository does not hold the blob, or invalid with the error naming the field.
+ */
+export async function readConfigBlob(port: EnginePort, blob: string): Promise<ConfigResult> {
+  const read = await runGit(port.processes, ['cat-file', 'blob', blob])
+  if (read.exitCode !== 0) return { kind: 'missing', fact: facts.verifyConfigMissing }
+  try { return { kind: 'valid', config: parseConfig(read.stdout), blob } } catch (error) { return { kind: 'invalid', fact: formatError(error) } }
+}
+
+/**
+ * Lists the programs and scripts a config runs: the first word of each command, each once.
+ * @param config - A validated config.
+ * @returns The runners.
+ */
+export const listConfigRunners = (config: VerifyConfig): string[] => [...new Set([...config.always, ...config.rules.map(rule => rule.run)].map(([runner]) => runner!))]
+
+/**
  * Parses the working tree's config afresh on every call, so an edit shows at the next refresh; a read error counts as invalid.
  * @param port - Engine calls.
  * @param root - The repository root, or null outside a repository.

@@ -1,5 +1,5 @@
-import type { SessionContextUsage, HookStream, PluginState, ProcessSpawnChunk, ProcessSpawnRequest, ProcessSpawnResult } from 'claude-code'
-import type { FlowView, RunView } from '../../types'
+import type { RenderSurface, SessionContextUsage, HookStream, PluginState, ProcessSpawnChunk, ProcessSpawnRequest, ProcessSpawnResult } from 'claude-code'
+import type { FlowView, MergeCopy, RunView } from '../../types'
 import type { FilePort } from '../lib/files'
 import type { ProcessPort } from '../lib/process'
 import type { SessionRecord } from '../domain/records'
@@ -7,7 +7,7 @@ import type { SessionRecord } from '../domain/records'
 /** The engine clock a timeout waits on; the signal ends the wait once the call has settled. */
 interface ClockPort { sleep: (durationMs: number, signal: AbortSignal) => Promise<void> }
 
-interface HerdrEnv { environment: string | undefined; paneId: string | undefined }
+interface HerdrEnv { environment: string | undefined; paneId: string | undefined; socketPath: string | undefined }
 
 interface StreamingProcesses extends ProcessPort { spawn: (request: ProcessSpawnRequest) => HookStream<ProcessSpawnChunk, ProcessSpawnResult> }
 /** A versioned authoritative session value. */
@@ -19,6 +19,8 @@ export type PaneView = PluginState['working-agreement']['paneView']
 export interface EnginePort {
   /** The engine event the port was built for, which the transition log names as a refresh's cause. */
   cause: string
+  /** Set on an observation's port when it answers from cached GitHub facts alone: a fact the cache lacks is never read. */
+  isGithubCacheOnly?: true
   processes: StreamingProcesses
   files: FilePort
   clock: ClockPort
@@ -44,8 +46,14 @@ export interface EnginePort {
   readPaneView: () => Promise<PaneView>
   writePaneView: (view: PaneView) => Promise<void>
   openPane: (closeOnEscape?: true) => Promise<void>
+  /** Puts text on the clipboard of the surface a press came from. */
+  copy: (text: string, surface: RenderSurface) => Promise<MergeCopy>
   runSlashCommand: (command: string, args?: string) => Promise<void>
   submitPrompt: (text: string) => Promise<void>
+  /** Raises a native notification through the person's own channel; it never reaches the model. */
+  notify: (text: string) => Promise<void>
+  /** Shows a short line to the person for a few seconds; it never reaches the model. */
+  toast: (text: string) => void
   /** Proposes a prompt box suggestion; resolves whether the engine showed it. */
   suggestPrompt: (text: string) => Promise<boolean>
   /** Registers `/flow` and the mod's tools, whose specs the entry file holds. */

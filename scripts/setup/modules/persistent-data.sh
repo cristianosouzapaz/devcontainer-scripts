@@ -1,5 +1,4 @@
-#!/bin/bash
-set -euo pipefail
+# shellcheck shell=bash
 
 # MODULE_NAME="persistent-data"
 # MODULE_DESCRIPTION="Initializes persistent-data storage and managed tool paths"

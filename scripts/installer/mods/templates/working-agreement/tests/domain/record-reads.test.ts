@@ -77,12 +77,12 @@ for (const [failure, text, options] of [
   })
 }
 
-test('a config approval whose read rejects is unreadable, never a /flow approve verify', async ($, on) => {
+test('a config approval whose read rejects is unreadable, never a wait for the approval', async ($, on) => {
   const options = verified()
   createWorld(on, { ...checkout }, options)
   expect(await readCurrentStep($)).toBe('Commit')
   options.readFailurePrefix = `${records}/ok/`
   const context = await readPromptContext($)
   expect(context).toContain(unreadable)
-  expect(context).not.toContain('/flow approve verify')
+  expect(context).not.toContain('approve-verify.sh')
 })

@@ -8,7 +8,7 @@ import { createWorld, records } from '../../support/world'
 import type { Checkout, Graph, Options } from '../../support/world'
 
 /**
- * Builds the options of a session with no flow on a repository whose issues #1 to #3 are ready for an agent, fresh for each test.
+ * Builds the options of a session with no flow on a repository whose issues 1 to 3 are ready for an agent, fresh for each test.
  * @returns The world options.
  */
 const readyIssues = (): Options => ({ session: noFlow, issueLabels: { 1: ['ready-for-agent'], 2: ['ready-for-agent'], 3: ['ready-for-agent'] } })
@@ -124,7 +124,8 @@ test('re-declaring a rewritten later unit still takes the tip as its base', asyn
   await declareFlow($, 'small-feature', [2])
   checkout.graph!.refs.feat = 'o1'
   const status = await readFlowStatus($)
-  expect(status).toContain('?/7')
+  expect(status).not.toContain('?/7')
+  expect(status).toMatch(/ \d+\/7\n/)
   expect(status).toContain('feat · rewritten')
   expect(status).toContain('? Commit')
   expect(status).toContain('? PR')
@@ -160,7 +161,7 @@ test('a fast-forward of the unit into its base branch keeps the slice from its r
   checkout.graph!.refs.main = 'f2'
   checkout.graph!.refs['origin/main'] = 'f2'
   const status = await readFlowStatus($)
-  expect(status).toContain('Slice      m1..f2')
+  expect(status).toContain('Slice       m1..f2')
   expect(status).toContain('✓ Code')
 })
 
@@ -173,7 +174,7 @@ for (const [name, baseBranch, base, advanced] of [['a child unit', 'par', 'p1', 
       refs: { main: baseBranch === 'main' ? 'm2' : 'm0', 'origin/main': baseBranch === 'main' ? 'm2' : 'm0', par: 'p2', feat: 'r1' },
     }
     createWorld(on, { branch: 'feat', graph }, { session: { flow: 'trivial' }, unit: { base, baseBranch } })
-    expect(await readFlowStatus($)).toContain(`Slice      ${advanced}..r1\n`)
+    expect(await readFlowStatus($)).toContain(`Slice       ${advanced}..r1\n`)
   })
 }
 
@@ -313,7 +314,7 @@ for (const [label, prs, base] of [['a PR into next', [buildPullRequest({ baseRef
     const { sessions } = createWorld(on, { branch: 'feat', graph: cutFromNext() }, { session: noFlow, prs: [...prs] })
     expect((await declareFlow($, 'small-feature', [1])).deny).toBeUndefined()
     expect(sessions.get('sid')?.units[0]?.base).toBe(base)
-    expect(await readFlowStatus($)).toContain(`Slice      ${base}..f1`)
+    expect(await readFlowStatus($)).toContain(`Slice       ${base}..f1`)
   })
 }
 
@@ -326,18 +327,18 @@ test('a PR into another base than the unit base came from is a mismatch until re
   await clock.advance(61000)
   const status = await readFlowStatus($)
   expect(status).toContain("▸ PR #5 · PR #5 targets next, but the unit's base was taken from main")
-  expect(status).toContain('Slice      c0..f1 · base from main, PR into next')
+  expect(status).toContain('Slice       c0..f1 · base from main, PR into next')
   expect(await readPromptContext($)).toContain("call declare_flow again with the same flow and issues, so the unit's base is taken from next")
   expect((await declareFlow($, 'small-feature', [1])).deny).toBeUndefined()
   expect(sessions.get('sid')?.units[0]).toMatchObject({ base: 'n1', baseBranch: 'next' })
   const redeclared = await readFlowStatus($)
-  expect(redeclared).toContain('Slice      n1..f1')
+  expect(redeclared).toContain('Slice       n1..f1')
   expect(redeclared).toContain('▸ Integrate\n')
 })
 
 test('a PR base that is not fetched refuses the declaration with the fetch to run', async ($, on) => {
   const graph = cutFromNext()
-  const { next: _next, 'origin/next': _origin, ...refs } = graph.refs
+  const { next, 'origin/next': originNext, ...refs } = graph.refs
   createWorld(on, { branch: 'feat', graph: { ...graph, refs } }, { session: noFlow, prs: [buildPullRequest({ baseRefName: 'next', headRefOid: 'f1' })] })
   expect((await declareFlow($, 'small-feature', [1])).deny).toContain('next is not fetched — run git fetch origin next')
 })
@@ -348,16 +349,16 @@ test('a child unit\'s slice starts at its fork point on the parent branch throug
   graph.refs['origin/par'] = 'p1'
   createWorld(on, { branch: 'b', graph }, { session: noFlow })
   await declareFlow($, 'small-feature', [1])
-  expect(await readFlowStatus($)).toContain('Slice      p1..b1\n')
+  expect(await readFlowStatus($)).toContain('Slice       p1..b1\n')
   graph.refs.par = 'ma'
-  expect(await readFlowStatus($), 'a sibling integrated with --no-ff').toContain('Slice      p1..b1\n')
+  expect(await readFlowStatus($), 'a sibling integrated with --no-ff').toContain('Slice       p1..b1\n')
   graph.refs.par = 'p2'
-  expect(await readFlowStatus($), 'the parent advanced').toContain('Slice      p1..b1\n')
+  expect(await readFlowStatus($), 'the parent advanced').toContain('Slice       p1..b1\n')
   graph.refs.b = 'b2'
   // The merged parent tip carries the sibling's and the parent's files, so the slice diff holds only src/b.ts.
-  expect(await readFlowStatus($), 'the parent merged into the child').toContain('Slice      p2..b2\n')
+  expect(await readFlowStatus($), 'the parent merged into the child').toContain('Slice       p2..b2\n')
   graph.refs.par = 'mpar'
-  expect(await readFlowStatus($), 'the child integrated with --no-ff').toContain('Slice      p2..b2\n')
+  expect(await readFlowStatus($), 'the child integrated with --no-ff').toContain('Slice       p2..b2\n')
 })
 
 test('merging the default branch into a unit after declaring keeps its commits out of the slice, even from a stale local default branch', async ($, on) => {
@@ -370,9 +371,9 @@ test('merging the default branch into a unit after declaring keeps its commits o
   await declareFlow($, 'small-feature', [1])
   graph.refs['origin/main'] = 'm2'
   graph.refs.feat = 'mf'
-  expect(await readFlowStatus($), 'origin/main fetched and merged, local main left behind').toContain('Slice      m2..mf\n')
+  expect(await readFlowStatus($), 'origin/main fetched and merged, local main left behind').toContain('Slice       m2..mf\n')
   graph.refs.main = 'm2'
-  expect(await readFlowStatus($)).toContain('Slice      m2..mf\n')
+  expect(await readFlowStatus($)).toContain('Slice       m2..mf\n')
 })
 
 test('a deleted parent branch takes the fork point from its origin copy, then the recorded base, never an unknown slice', async ($, on) => {
@@ -380,12 +381,12 @@ test('a deleted parent branch takes the fork point from its origin copy, then th
   createWorld(on, { branch: 'b', graph }, { session: noFlow })
   await declareFlow($, 'small-feature', [1])
   graph.refs.b = 'b2'
-  const { par: _par, ...withoutLocal } = graph.refs
+  const { par, ...withoutLocal } = graph.refs
   graph.refs = { ...withoutLocal, 'origin/par': 'p2' }
-  expect(await readFlowStatus($)).toContain('Slice      p2..b2\n')
-  const { 'origin/par': _origin, ...withoutEither } = graph.refs
+  expect(await readFlowStatus($)).toContain('Slice       p2..b2\n')
+  const { 'origin/par': originPar, ...withoutEither } = graph.refs
   graph.refs = withoutEither
-  expect(await readFlowStatus($)).toContain('Slice      p1..b2\n')
+  expect(await readFlowStatus($)).toContain('Slice       p1..b2\n')
 })
 
 test('a frozen unit measures its fork point from its slice end, so a parent merged in after the next unit stays out of it', async ($, on) => {
@@ -396,7 +397,7 @@ test('a frozen unit measures its fork point from its slice end, so a parent merg
   await declareFlow($, 'small-feature', [2])
   graph.refs = { ...graph.refs, par: 'p2', b: 'b2' }
   chat.id = 'sid'
-  expect(await readFlowStatus($)).toContain('Slice      p1..b1\n')
+  expect(await readFlowStatus($)).toContain('Slice       p1..b1\n')
 })
 
 test('a child retargeted to the default branch after its parent was merged there takes the merge-base, so the parent\'s delivered commits stay out', async ($, on) => {
@@ -409,5 +410,5 @@ test('a child retargeted to the default branch after its parent was merged there
   options.prs = [buildPullRequest({ headRefName: 'b', headRefOid: 'b1' })]
   expect((await declareFlow($, 'small-feature', [1])).result).toContain('base from main (PR #5).')
   expect(sessions.get('sid')?.units[0]).toMatchObject({ base: 'p1', baseBranch: 'main' })
-  expect(await readFlowStatus($)).toContain('Slice      p1..b1\n')
+  expect(await readFlowStatus($)).toContain('Slice       p1..b1\n')
 })

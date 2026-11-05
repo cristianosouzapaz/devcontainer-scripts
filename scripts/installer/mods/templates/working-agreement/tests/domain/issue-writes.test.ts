@@ -86,7 +86,7 @@ test('a wayfinder decision issue is exempt from the title pattern', async ($, on
 test('configured type and priority labels are each required exactly once', async ($, on) => {
   const github = createIssueGithub({ labels: typedLabels })
   createIssueWorld(on, github, { issues: typed })
-  const { type: _type, priority: _priority, ...untyped } = ticket
+  const { type, priority, ...untyped } = ticket
   expect((await callModTool($, 'issue_create', untyped)).text).toContain('Exactly one type label')
   expect((await callModTool($, 'issue_create', { ...untyped, type: 'feat' })).text).toContain('Exactly one priority label')
   expect((await callModTool($, 'issue_create', { ...ticket, type: 'chore', priority: 'high' })).text).toContain('type must be one of: type::feat, type::fix')
@@ -97,7 +97,7 @@ test('configured type and priority labels are each required exactly once', async
 test('without a config, the default type and priority labels are required and their absence names /flow setup-labels', async ($, on) => {
   const github = createIssueGithub({ labels: triage })
   createIssueWorld(on, github)
-  const { type: _type, ...untyped } = ticket
+  const { type, ...untyped } = ticket
   expect((await callModTool($, 'issue_create', untyped)).text).toContain('/flow setup-labels')
   expect((await callModTool($, 'issue_edit', { number: 7, triage: 'ready-for-human' })).text).toContain('/flow setup-labels')
   expect(writes(github)).toEqual([])
@@ -106,7 +106,7 @@ test('without a config, the default type and priority labels are required and th
 test('an unapproved config is ignored: an agent cannot relax the rules by editing it', async ($, on) => {
   const github = createIssueGithub()
   createIssueWorld(on, github, { issues: { types: [], priorities: [] } }, false)
-  const { type: _type, priority: _priority, ...untyped } = ticket
+  const { type, priority, ...untyped } = ticket
   expect((await callModTool($, 'issue_create', untyped)).text).toContain('Exactly one type label')
   expect(await readFlowStatus($)).toContain('not approved · issue writes use the built-in defaults')
 })
@@ -163,6 +163,16 @@ test('issue_edit swaps the triage label and keeps the issue complete', async ($,
   expect((await callModTool($, 'issue_edit', { number: 7, triage: 'ready-for-human', type: 'fix', priority: 'high' })).text).toContain('Edited #7')
   expect(github.issues.get(7)?.labels).toEqual(['ready-for-human', 'type::fix', 'priority::high'])
   expect((await callModTool($, 'issue_edit', { number: 7, title: 'no pattern' })).text).toContain('title must match')
+})
+
+test('issue_edit reopens a closed issue when no other field changes', async ($, on) => {
+  const github = createIssueGithub({ issues: { 7: { labels: ['ready-for-agent', 'type::fix', 'priority::high'], state: 'CLOSED', stateReason: 'COMPLETED' } } })
+  createIssueWorld(on, github)
+  const outcome = await callModTool($, 'issue_edit', { number: 7, state: 'open' })
+  expect(outcome.text).toContain('Edited #7')
+  expect(outcome.isError).toBe(false)
+  expect(github.issues.get(7)?.state).toBe('OPEN')
+  expect(writes(github)).toEqual(['issue reopen'])
 })
 
 test('issues created or edited through the tools are re-read by the audit at turn end', async ($, on) => {

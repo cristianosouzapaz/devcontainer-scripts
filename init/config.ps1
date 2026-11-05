@@ -87,7 +87,7 @@ function Add-MountsToConfig {
 
     # Listed alphabetically for readability; Write-MountsArray sorts the final array anyway.
     $mounts = [System.Collections.ArrayList]@()
-    [void]$mounts.Add("source=$SecretsPath,target=/tmp/.env,type=bind,consistency=cached,readonly")
+    [void]$mounts.Add("source=$SecretsPath,target=/root/.config/devcontainer/.env,type=bind,consistency=cached,readonly")
     if (-not $UseCompose) {
         [void]$mounts.Add('source=devcontainer-shared-data,target=/var/lib/devcontainer,type=volume')
     }

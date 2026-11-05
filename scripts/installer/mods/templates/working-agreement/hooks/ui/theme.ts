@@ -1,5 +1,11 @@
 import type { ThemeKey } from 'claude-code'
-import type { FlowStepState, FlowTone } from '../../types'
+import type { FlowRow, FlowStepState, FlowTone } from '../../types'
+
+/** A keyed row's label: a fixed one, or an issue's number, which holds `Issue #<n>` up to a four-digit number before it fills the key column. */
+export type KeyLabel = (typeof keyLabels)[number] | `Issue #${number}`
+
+/** A pane row whose key is a known label, so a producer cannot build a row that `keyWidth` was not checked against. */
+export interface KeyedRow extends Omit<FlowRow, 'key'> { key: KeyLabel }
 
 /** The color of a row's value, by its tone. */
 export const toneColor: Record<FlowTone, ThemeKey> = { text: 'text', warn: 'warning', error: 'error', inactive: 'inactive' }
@@ -14,8 +20,16 @@ export const labelColor: Record<FlowStepState, ThemeKey> = {
   done: 'text', current: 'text', pending: 'inactive', skipped: 'inactive',
 }
 
-/** The width of a row's key column, in characters: the longest key, `Delegating` or `Issue #410`, and one space. */
-export const keyWidth = 11
+/** The width of a row's key column, in characters: the longest key, `Issue audit`, and one space. */
+export const keyWidth = 12
+
+/** Every fixed label a keyed row can carry, on the pane, in the run log and in `/flow status`; each is shorter than `keyWidth`. */
+export const keyLabels = [
+  'Approve', 'Blocked', 'Branch', 'CI', 'Changed', 'Checkout', 'Checks', 'Classic', 'Commits', 'Config', 'Cwd', 'Decision', 'Delegating', 'Delegation',
+  'File', 'GitHub', 'Guards', 'Handoff', 'Inbox', 'Issue', 'Issue audit', 'Issues', 'Labels', 'Level', 'Log', 'Merge', 'Mod', 'Notice', 'PR',
+  'Records', 'Retired', 'Rulesets', 'Run', 'Selection', 'Slice', 'Spawned', 'Step', 'Tree', 'Triage', 'Unchecked', 'Verify', 'Violation',
+  'Worktree', 'herdr',
+] as const
 
 /** The pane's padding: columns on each side, rows above. */
 export const panePadding = { x: 2, top: 1 }

@@ -15,6 +15,9 @@ import type { Checkout, Gate, Options, World } from '../support/world'
 import { parseSession } from '../../hooks/domain/records'
 import type { SessionRecord, UnitEntry } from '../../hooks/domain/records'
 
+/** Child `b` (issue 3) of `par`, as a sibling's session records it. */
+const childB = buildChildEntry('b', 3)
+
 /**
  * Reads this chat's session record as its mirror holds it.
  * @param world - The test world.
@@ -97,9 +100,6 @@ test('a /flow command shows its new state over a refresh that read the session b
   await world.clock.settle()
   expect(readPaneCurrentStep(world.views)).toBe('Diagnose')
 })
-
-/** Child `b` (#3) of `par`, as a sibling's session records it. */
-const childB = buildChildEntry('b', 3)
 
 /**
  * Reads child `b`'s slice as a session's judgement does, then waits for the end it caches in that session's own file.

@@ -50,7 +50,8 @@ export async function handleGuarantees(port: EnginePort, event: Frozen<Args<'too
       const after = await snapshotGuarantees(port, event.tool, before)
       const facts = await judgeGuarantees(port, before, after, event.tool_use_id)
       if (facts.length) {
-        const records = await recordViolations(port, facts, { toolUseId: event.tool_use_id, agentId: event.agentId, start, end: await port.now() })
+        const errors = [...new Set([before.prFailure?.error, after.prFailure?.error].filter((error): error is string => !!error))]
+        const records = await recordViolations(port, facts, { toolUseId: event.tool_use_id, agentId: event.agentId, start, end: await port.now(), errors })
         const dismissed = await readDismissals(port)
         const root = await readRepositoryRoot(port)
         context.push(...records.filter(record => record.kind !== 'unchecked' && !dismissed.has(record.factId)).map(record => markForAgent(describeViolation(record, 'agent', root ?? undefined))))

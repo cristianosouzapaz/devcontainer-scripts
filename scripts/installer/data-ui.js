@@ -1,7 +1,7 @@
 import { realpathSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { select } from "@inquirer/prompts";
-import { PROMPT_THEME } from "./lib/theme.js";
+import { promptTheme } from "./lib/theme.js";
 
 /**
  * @fileoverview The small interactive boundary for devcontainer-data. Bash owns the
@@ -9,9 +9,9 @@ import { PROMPT_THEME } from "./lib/theme.js";
  * or confirmation and returns that choice through file descriptor 3.
  */
 
-const PROMPT_OPTIONS = { clearPromptOnDone: true };
+const promptOptions = { clearPromptOnDone: true };
 
-export const DATA_ACTION_CHOICES = [
+export const dataActionChoices = [
     { name: "List categories", value: "list" },
     { name: "Status", value: "status" },
     { name: "Show path", value: "path" },
@@ -22,17 +22,19 @@ export const DATA_ACTION_CHOICES = [
 ];
 
 /**
+ * Ask which persistent-data action to run.
  * @param {unknown} _config
  * @param {Record<string, unknown>} [context]
  * @returns {Promise<string>}
  */
 export const selectDataAction = (_config, context) => select({
     message: "Select an action",
-    choices: DATA_ACTION_CHOICES,
-    theme: PROMPT_THEME,
-}, { ...context, ...PROMPT_OPTIONS });
+    choices: dataActionChoices,
+    theme: promptTheme,
+}, { ...context, ...promptOptions });
 
 /**
+ * Ask which data category to act on; the empty string means "Go back".
  * @param {string[]} categoryIds
  * @param {Record<string, unknown>} [context]
  * @returns {Promise<string>}
@@ -43,10 +45,11 @@ export const selectDataCategory = (categoryIds, context) => select({
         ...categoryIds.map((id) => ({ name: id, value: id })),
         { name: "Go back", value: "" },
     ],
-    theme: PROMPT_THEME,
-}, { ...context, ...PROMPT_OPTIONS });
+    theme: promptTheme,
+}, { ...context, ...promptOptions });
 
 /**
+ * Ask whether to clear every entry in a data category.
  * @param {string} categoryId
  * @param {Record<string, unknown>} [context]
  * @returns {Promise<string>}
@@ -57,10 +60,11 @@ export const confirmDataReset = (categoryId, context) => select({
         { name: "Yes, reset it", value: "yes" },
         { name: "No, cancel", value: "no" },
     ],
-    theme: PROMPT_THEME,
-}, { ...context, ...PROMPT_OPTIONS });
+    theme: promptTheme,
+}, { ...context, ...promptOptions });
 
 /**
+ * Ask how to update a Herdr configuration that has no managed history.
  * @param {unknown} _config
  * @param {Record<string, unknown>} [context]
  * @returns {Promise<string>}
@@ -72,10 +76,11 @@ export const selectFirstHerdrUpdate = (_config, context) => select({
         { name: "Replace with managed template", value: "replace" },
         { name: "Cancel", value: "cancel" },
     ],
-    theme: PROMPT_THEME,
-}, { ...context, ...PROMPT_OPTIONS });
+    theme: promptTheme,
+}, { ...context, ...promptOptions });
 
 /**
+ * Ask whether to replace the Herdr configuration with the managed template, keeping a backup.
  * @param {unknown} _config
  * @param {Record<string, unknown>} [context]
  * @returns {Promise<string>}
@@ -86,8 +91,8 @@ export const confirmHerdrReplace = (_config, context) => select({
         { name: "No, cancel", value: "no" },
         { name: "Yes, replace it", value: "yes" },
     ],
-    theme: PROMPT_THEME,
-}, { ...context, ...PROMPT_OPTIONS });
+    theme: promptTheme,
+}, { ...context, ...promptOptions });
 
 const writeResult = (value) => writeFileSync(3, `${value}\n`);
 

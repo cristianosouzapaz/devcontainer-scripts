@@ -12,18 +12,18 @@ interface WriteCall { tool: 'Write'; file_path: string; content: string }
 export const noFlow = { flow: null, issues: [], info: {} }
 
 /** Every tool the mod registers, in registration order. */
-export const modToolNames = ['run', 'verify', 'declare_flow', 'suggest_coordinate', 'suggest_delegate', 'merge_child', 'commit', 'merge_parent', 'issue_create', 'issue_edit', 'issue_close', 'issue_comment', 'spawn', 'escalate_unit', 'plan', 'unit_prompt', 'unit_read', 'retire_unit'] as const
+export const modToolNames = ['run', 'verify', 'declare_flow', 'suggest_coordinate', 'suggest_delegate', 'merge_child', 'commit', 'merge_parent', 'issue_create', 'issue_edit', 'issue_close', 'issue_comment', 'spawn', 'escalate_unit', 'dismiss_dialog', 'plan', 'unit_prompt', 'send', 'unit_read', 'approve_unit', 'skip_unit', 'follow_up_unit', 'retire_unit'] as const
 
 /** A coordinator session with no flow. */
 export const coordinator = { ...noFlow, role: 'coordinator' }
 
-/** A Close out on #1 and #2, so a PR body must carry both Closes lines. */
+/** A Close out on issue 1 and issue 2, so a PR body must carry both Closes lines. */
 export const twoIssueCloseOut: Options = {
   session: { flow: 'close-out', issues: [1, 2], info: { 1: { title: 'a', labels: [] }, 2: { title: 'b', labels: [] } } },
 }
 
-/** A repository verify file naming `./test/run.sh`. */
-export const verifyFile = JSON.stringify({ always: [['./test/run.sh']] })
+/** A repository verify file naming `./scripts/check.sh`. */
+export const verifyFile = JSON.stringify({ always: [['./scripts/check.sh']] })
 
 /** A Close out with committed work and Verify skipped, awaiting only its PR. */
 export const pushedCloseOut: Options = {
@@ -106,7 +106,7 @@ export function buildParentGraph(): Graph {
  * @returns The run record.
  */
 export const buildVerifyRun = (changes: Partial<VerifyRecord> = {}): VerifyRecord => ({
-  tree: 'one', base: 'c0', configBlob: configBlob(verifyFile), commands: [['./test/run.sh']], outcome: { kind: 'pass' }, runId: 'r', at: 1, ...changes,
+  tree: 'one', base: 'c0', configBlob: configBlob(verifyFile), commands: [['./scripts/check.sh']], outcome: { kind: 'pass' }, runId: 'r', at: 1, ...changes,
 })
 
 /**
@@ -122,11 +122,19 @@ export const buildChangedCheckout = (): Checkout => ({ branch: 'feat', ahead: 8,
 export const buildChanged = (): Checkout => ({ branch: 'feat', changed: ['src/a.ts'], isDirty: true, tree: 'one' })
 
 /**
- * Names a Verify config by the id `/flow approve verify` previews and takes.
+ * Names a Verify config by the id `/flow approve verify` previews and the approval script takes.
  * @param file - The config's text.
  * @returns The first twelve characters of its blob id.
  */
 export const verifyId = (file = verifyFile): string => configBlob(file).slice(0, 12)
+
+/**
+ * Names the tail of the terminal command that approves a Verify config: the mod's script, under whatever root the engine loaded
+ * the mod from, and the config's id.
+ * @param file - The config's text.
+ * @returns The command's end, which every command naming the config carries.
+ */
+export const approvalCommand = (file = verifyFile): string => `/scripts/approve-verify.sh ${verifyId(file)}`
 
 /**
  * Builds a fresh session as its mirror file saves it, without the flow and issues the engine's session state holds.
@@ -134,7 +142,7 @@ export const verifyId = (file = verifyFile): string => configBlob(file).slice(0,
  * @returns The saved session.
  */
 export function buildSavedSession(sessionId = 'sid'): Omit<Session, 'flow' | 'issues'> {
-  const { flow: _flow, issues: _issues, ...saved } = createEmptySession(sessionId)
+  const { flow, issues, ...saved } = createEmptySession(sessionId)
   return saved
 }
 

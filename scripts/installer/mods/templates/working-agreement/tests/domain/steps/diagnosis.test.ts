@@ -47,7 +47,7 @@ test('findFixGreen needs a pass after the bound with an earlier red of the same 
 })
 
 test('a pinned red keeps Diagnose done whatever the retained runs hold, while the approved comment exists', () => {
-  const { outcome: _outcome, ...approvedRed } = red
+  const { outcome, ...approvedRed } = red
   for (const runs of [[], [green], [{ ...red, runId: 'later', at: 50 }]]) {
     expect(judgeDiagnose({ runs, approval: diagnosisComment.url, approvedRed }, [1], info)).toEqual({ done: true, approvedAt: Date.parse(diagnosisComment.createdAt) })
   }
@@ -55,7 +55,7 @@ test('a pinned red keeps Diagnose done whatever the retained runs hold, while th
 })
 
 test('a pinned red takes only its own argv passing on another tree after the bound as the fix green', () => {
-  const { outcome: _outcome, ...approvedRed } = red
+  const { outcome, ...approvedRed } = red
   const regressionRed = { ...red, argv: ['./regression'], runId: 'regression-red', at: 4 }
   const regressionGreen = { ...green, argv: ['./regression'], runId: 'regression-green', at: 5 }
   const fix = { ...green, runId: 'fix', at: 6 }

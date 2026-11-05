@@ -10,6 +10,8 @@ import { buildView } from '../../hooks/ui/view-model'
 
 const unit: Unit = { skills: [], verifyRuns: [], runs: [] }
 const flow = flowDefinitions.flows['fix']!
+const childFlow = resolveUnitFlow(flow, true)
+const integration = { parent: 'par', state: 'pending' as const, command: 'git -C /par merge --no-ff a' }
 
 const session = (overrides: Partial<Session> = {}): Session => ({
   v: 1, sessionId: 'sid', unit: null, units: [], flow: 'fix', issues: [], info: {},
@@ -20,8 +22,6 @@ const positionOf = (overrides: Partial<Position> = {}, currentIndex = 0): Positi
   return { flow, unit, git: null, states, current: states[currentIndex] ?? null, slice: null, verify: { fact: 'no verify command configured', isVerified: false, isReached: true }, checks: 'off', isConcluded: false, ...overrides }
 }
 
-const childFlow = resolveUnitFlow(flow, true)
-const integration = { parent: 'par', state: 'pending' as const, command: 'git -C /par merge --no-ff a' }
 /**
  * Places a child unit at Integrate, current or done.
  * @param isIntegrated - Whether the child is integrated, which leaves no current step.
@@ -43,7 +43,7 @@ test('every issue is listed with its title, and the labels are the first issue\'
   const view = buildView(session({
     issues: [1, 2], info: { 1: { title: 'one', labels: ['bug', 'ready'] }, 2: { title: 'two', labels: ['needs-info'] } },
   }), positionOf(), null, false)
-  expect(view.issues).toEqual([{ number: 1, title: 'one' }, { number: 2, title: 'two' }])
+  expect(view.issues).toEqual([{ number: 1, title: 'one', url: '' }, { number: 2, title: 'two', url: '' }])
   expect(view.labels).toEqual(['bug', 'ready'])
 })
 

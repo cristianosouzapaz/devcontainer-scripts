@@ -1,5 +1,4 @@
-#!/bin/bash
-set -euo pipefail
+# shellcheck shell=bash
 
 # MODULE_NAME="ssh-signing"
 # MODULE_DESCRIPTION="Configures git SSH commit signing via SSH agent"

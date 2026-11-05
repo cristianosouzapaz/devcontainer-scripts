@@ -4,7 +4,7 @@ import { test } from '../support/kit'
 import { buildChangedCheckout, noFlow, verifyFile } from '../support/builders'
 import { approveVerify, declareFlow, endTurn, readFlowStatus, runFlowCommand, startSkill } from '../support/helpers'
 import { childUnit, parallelCheckout, withCommit } from '../support/parallel-worktrees'
-import { configBlob, createWorld, records } from '../support/world'
+import { createWorld, records } from '../support/world'
 import type { Checkout, Gate, Graph, Options } from '../support/world'
 
 interface LogLine { at: number; session: string; generation?: string; branch: string; issues: number[]; event: string; [field: string]: unknown }
@@ -12,7 +12,7 @@ interface LogLine { at: number; session: string; generation?: string; branch: st
 const logs = `${records}/log/`
 
 /**
- * Builds the options of a session with no flow on a repository whose #1 awaits triage, fresh for each test since tests change them.
+ * Builds the options of a session with no flow on a repository whose issue 1 awaits triage, fresh for each test since tests change them.
  * @returns The world options.
  */
 const untriaged = (): Options => ({ session: noFlow, issueLabels: { 1: ['needs-triage'] } })
@@ -118,7 +118,7 @@ test('/flow status names the unit log', async ($, on) => {
   await declareFlow($, 'small-feature', [1])
   await clock.settle()
   const path = [...files.keys()].find(file => file.startsWith(logs))
-  expect(await readFlowStatus($)).toContain(`Log        ${path}`)
+  expect(await readFlowStatus($)).toContain(`Log         ${path}`)
 })
 
 test('the declaration sweep removes a log whose declaration is gone', async ($, on) => {
@@ -142,7 +142,7 @@ test('an issue attached to an issue-less unit carries its log under the new iden
   expect(declares[1]?.replaces).toEqual({ branch: 'feat', issues: [] })
 })
 
-test('an approved verify config, a started handoff and a recorded violation are logged', async ($, on) => {
+test('a started handoff and a recorded violation are logged', async ($, on) => {
   const graph: Graph = { commits: { a: { parents: [], files: {} } }, refs: { main: 'a', feature: 'a', 'origin/main': 'a' } }
   const checkout: Checkout = { branch: 'feature', graph }
   on('tool.call', { tool: 'Bash' }, () => {
@@ -150,13 +150,10 @@ test('an approved verify config, a started handoff and a recorded violation are 
     return { result: 'written' }
   })
   const { files, clock } = createWorld(on, checkout, { verifyFile })
-  const blob = configBlob(verifyFile)
-  await runFlowCommand($, `approve verify ${blob.slice(0, 12)}`)
   await $.tool.call({ tool: 'Bash', command: 'opaque' })
   await runFlowCommand($, 'handoff')
   await clock.settle()
   const lines = readLog(files)
-  expect(lines).toContainEqual(expect.objectContaining({ event: 'approve', config: blob }))
   expect(lines).toContainEqual(expect.objectContaining({ event: 'violation', action: 'recorded', kind: 'commit' }))
   expect(lines).toContainEqual(expect.objectContaining({ event: 'handoff', state: 'started' }))
 })
@@ -205,17 +202,20 @@ test('an older observation overtaken by a newer painted one logs no step', async
 })
 
 test('a Verify done → current logs the fact it shows and the slice it was judged on', async ($, on) => {
-  const { files, clock } = createWorld(on, buildChangedCheckout(), { verifyFile })
-  await approveVerify($)
+  const world = createWorld(on, buildChangedCheckout(), { verifyFile })
+  const { files, clock } = world
+  approveVerify(world)
   await $.tool.call({ tool: 'mcp__working-agreement__verify' })
   await clock.settle()
   for (const path of [...files.keys()].filter(file => file.startsWith(`${records}/ok/`))) files.delete(path)
   await endTurn($)
   await clock.settle()
-  const [done, current] = readLog(files).filter(line => line.event === 'step' && line.step === 'verify')
+  const verifyLines = readLog(files).filter(line => line.event === 'step' && line.step === 'verify')
+  const done = verifyLines.find(line => line.to === 'done')
+  const current = verifyLines.find(line => line.from === 'done' && line.to === 'current')
   expect(done).toMatchObject({ from: 'current', to: 'done', base: 'c0', tree: expect.any(String) })
   expect(done?.fact).toBeUndefined()
-  expect(current).toMatchObject({ from: 'done', to: 'current', fact: '/flow approve verify', base: 'c0', tree: done?.tree, cause: ['turn end'] })
+  expect(current).toMatchObject({ from: 'done', to: 'current', fact: 'waiting for config approval', base: 'c0', tree: done?.tree, cause: ['turn end'] })
 })
 
 test('steps judged on an unreadable slice log no base and no tree', async ($, on) => {

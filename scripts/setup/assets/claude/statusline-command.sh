@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # why: no set -euo pipefail, a status line must degrade to a partial render, never abort
 
 # Renders the Claude Code status line from the session JSON on stdin. A missing key, a

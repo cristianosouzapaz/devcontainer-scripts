@@ -36,11 +36,13 @@ function runningDuration(commands: RunCommandView[], elapsed: number): number {
  * @param initial - The commands and immutable run context.
  * @param signal - The dispatch's cancellation signal.
  * @param work - The dispatch, which updates display data separately from evidence.
+ * @param base - The slice base a Verify run starts on.
  * @returns The tool's normal result.
  */
-export async function withRunView(port: EnginePort, sid: string, identity: Identity, generation: string | undefined, initial: RunView, signal: AbortSignal, work: () => Promise<string>): Promise<string> {
+export async function withRunView(port: EnginePort, sid: string, identity: Identity, generation: string | undefined, initial: RunView, signal: AbortSignal,
+  work: () => Promise<string>, base: string | null = null): Promise<string> {
   const control = new AbortController()
-  sessionMemory.runViews.set(sid, { identity, generation, live: initial, published: initial, last: null })
+  sessionMemory.runViews.set(sid, { identity, generation, live: initial, published: initial, last: null, base })
   const paint = async (): Promise<void> => {
     while (!control.signal.aborted) {
       // An abort ends the wait.

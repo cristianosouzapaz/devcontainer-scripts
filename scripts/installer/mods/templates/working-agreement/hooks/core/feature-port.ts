@@ -2,7 +2,9 @@ import type { ApprovePort } from '../features/approve'
 import type { FollowUpPort } from '../features/follow-up'
 import type { HandoffPort } from '../features/handoff'
 import type { EnginePort } from './engine-port'
+import { bestEffort } from './best-effort'
 import { declareFlow } from './declaration'
+import { findLiveDelegation } from './delegation'
 import { logEvent } from './flow-log'
 import { createReadPort } from './read-port'
 import { refreshView } from './pane-view'
@@ -29,6 +31,7 @@ export function createFeaturePort(port: EnginePort): FeaturePort {
     readUnit: key => readUnit(port, key),
     updateUnits: (session, change) => updateUnits(port, session, change),
     locate: session => locatePosition(createReadPort(port), session),
+    readIsDelegated: async session => !!await bestEffort(port, 'delegation read', () => findLiveDelegation(port, session.issues), null),
     refresh: (isQuiet?: boolean) => refreshView(port, { isQuiet }),
     readRoot: () => readRepositoryRoot(port),
     readCwd: () => port.readCwd(),

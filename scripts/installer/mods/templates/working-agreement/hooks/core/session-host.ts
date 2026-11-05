@@ -1,6 +1,8 @@
+import type { ProcessHost } from '../../types'
 import type { SessionLiveness } from '../domain/process-host'
 import { parseHost } from '../domain/process-host'
 import { removeFile } from '../lib/files'
+import { isRecord } from '../lib/guards'
 import { readJson } from '../lib/json'
 import { hasExitedZero } from '../lib/process'
 import { logFailure } from './best-effort'
@@ -33,21 +35,46 @@ export async function refreshSessionHost(port: EnginePort): Promise<void> {
  * @returns `live` for this session or a running recorded process, `gone` once it ended, and `unknown` without a readable record.
  */
 export async function readSessionLiveness(port: EnginePort, sessionId: string): Promise<SessionLiveness> {
-  return judgeSession(port, sessionId, async () => {
-    const common = await readCommonDir(port)
-    return common ? parseHost(await readJson(port.files, recordsPath(common, bucket, `${sessionId}.json`)).catch(() => undefined)) ?? undefined : undefined
-  })
+  return judgeSession(port, sessionId, async () => await readSessionHost(port, sessionId) ?? undefined)
 }
 
 /**
- * Removes the process record of every session whose recorded process ended.
+ * Reads the process another session last recorded.
+ * @param port - The engine calls.
+ * @param sessionId - The session.
+ * @returns The process, or null without a readable record.
+ */
+export async function readSessionHost(port: EnginePort, sessionId: string): Promise<ProcessHost | null> {
+  const common = await readCommonDir(port)
+  return common ? parseHost(await readJson(port.files, recordsPath(common, bucket, `${sessionId}.json`)).catch(() => undefined)) : null
+}
+
+/**
+ * Removes the process and activity records of every session whose recorded process ended, but for a session a spawn record still names.
  * @param port - The engine calls.
  * @param common - The git common directory.
  * @returns Once every record was judged.
  */
-export function pruneSessionHosts(port: EnginePort, common: string): Promise<void> {
-  return sweepBucket(port, common, bucket, async name => {
+export async function pruneSessionHosts(port: EnginePort, common: string): Promise<void> {
+  // why: a coordinator's tick tells a dead unit from one it cannot judge by this record, so a spawned session's outlives its process.
+  const spawned = await readSpawnedSessions(port, common)
+  await sweepBucket(port, common, bucket, async name => {
     const session = name.match(/^([^.][^/\\]*)\.json$/)?.[1]
-    if (session && await readSessionLiveness(port, session) === 'gone') logFailure(port, 'session host delete', hasExitedZero(await removeFile(port.processes, recordsPath(common, bucket, name))))
+    // why: a session's activity record means nothing once its process ended, so it goes with the host record.
+    if (session && !spawned.has(session) && await readSessionLiveness(port, session) === 'gone') {
+      logFailure(port, 'session host delete', hasExitedZero(await removeFile(port.processes, recordsPath(common, bucket, name), recordsPath(common, 'activity', name))))
+    }
   })
+}
+
+/**
+ * Lists the sessions the spawn records name.
+ * @param port - The engine calls.
+ * @param common - The git common directory.
+ * @returns The session ids; an unreadable record names none.
+ */
+async function readSpawnedSessions(port: EnginePort, common: string): Promise<Set<string>> {
+  const names = (await port.files.list(recordsPath(common, 'spawn')).catch(() => [])).map(entry => entry.name).filter(name => /^\d+\.json$/.test(name))
+  const records = await Promise.all(names.map(name => readJson(port.files, recordsPath(common, 'spawn', name)).catch(() => undefined)))
+  return new Set(records.flatMap(record => isRecord(record) && typeof record.sessionId === 'string' ? [record.sessionId] : []))
 }

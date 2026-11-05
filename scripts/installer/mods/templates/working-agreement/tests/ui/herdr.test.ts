@@ -72,7 +72,7 @@ for (const scenario of ['plain', 'verify-approval', 'verify-fail', 'verify-timeo
       const blob = configBlob(verifyFile)
       world.approveConfig(verifyFile)
       const recorded = { ...unit, verifyRuns: [{ tree: 'tree', base: 'c0', configBlob: blob,
-        commands: [['./test/run.sh']],
+        commands: [['./scripts/check.sh']],
         outcome: scenario === 'verify-fail' ? { kind: 'fail' as const, code: 1, signal: null } : { kind: 'timeout' as const, minutes: 1 }, runId: 'run', at: 1 }] }
       evidence.verify = await readVerifyState(port, evidence.slice, recorded)
     }
@@ -100,9 +100,11 @@ test('alerts ignore unchecked and dismissed records, choose newest, count others
     { ...attribution, kind: 'unchecked' as const, fact: { toolUseId: 'call' }, factId: 'unchecked', end: 4 },
   ] }
   await reportHerdr(port, session, null, new Set(['push']), false)
-  expect(world.runs.at(-1)).toContain('flow_unit= --token flow_step= --token flow_alert=✗ default-tree by agent +1')
+  expect(world.runs.at(-1)).toMatch(/flow_unit=(\s|$)/)
+  expect(world.runs.at(-1)).toMatch(/flow_step=(\s|$)/)
+  expect(world.runs.at(-1)).toContain('flow_alert=✗ a default-branch tree change during an agent call +1')
   await reportHerdr(port, session, null, new Set(['push', 'tree', 'commit']), false)
-  expect(world.runs.at(-1)?.endsWith('--token flow_alert=')).toBe(true)
+  expect(world.runs.at(-1)).toMatch(/flow_alert=(\s|$)/)
 })
 
 for (const failure of ['exit', 'throw']) {
@@ -138,7 +140,7 @@ test('/flow status shows the current sidebar error and removes its row after rec
   const options = { herdrEnv: inside, herdrResult: { exitCode: 9, stderr: 'unavailable\nmore detail' } }
   createWorld(on, { branch: 'feat' }, options)
   const status = await readFlowStatus($)
-  expect(status).toContain('herdr      report-metadata · ')
+  expect(status).toContain('herdr       report-metadata · ')
   expect(status).toContain(' · ×1 · exit 9: unavailable')
   options.herdrResult = { exitCode: 0, stderr: '' }
   expect(await readFlowStatus($)).not.toContain('herdr')

@@ -12,6 +12,9 @@ import type { EnginePort } from './engine-port'
  */
 export interface ErrorWindow { error: string; firstSeen: number; lastSeen: number; failures: number }
 
+/** One guard's checks this session: how many ran, the most of the hook budget one used, and how many timed out or were recovered by the retry. */
+export interface GuardStat { runs: number; maxUsedMs: number; timeouts: number; recovered: number }
+
 /** The last GitHub reachability probe and when it ran. */
 interface GithubCache { at: number; status: GithubStatus }
 
@@ -28,6 +31,8 @@ interface RunDisplay {
   live: RunView | null
   published: RunView
   last: RunView | null
+  /** The slice base a Verify run started on, which only judges whether the run still holds the slice; null for any other run. */
+  base: string | null
 }
 
 /** A merged PR that concluded a unit's lifetime, with the child slice end it was found on, null for any other unit. */
@@ -74,6 +79,32 @@ interface SessionMemory {
   modulesAhead: readonly string[] | null
   /** The permission mode the engine last reported for this session; null before any report. */
   permissionMode: string | null
+  /** Whether this session's main loop runs a turn: from its `turn.start` to its `turn.complete`. */
+  isTurnLive: boolean
+  /** The Edit, Write and NotebookEdit calls running now: until each lands, the view reads the tree as already changed. */
+  pendingWrites: number
+  /** The config blob this session's Verify call was last refused for, unapproved: the unit then waits for its approval. */
+  verifyAskedBlob: string | null
+  /** The unapproved config blob this session's unit last waited on, until its approval is followed up. */
+  approvalWait: string | null
+  /** The approved config blobs this delegated session was prompted to verify, each once. */
+  wokenBlobs: Set<string>
+  /** When this session's doorbell last rang, in epoch ms, until its prompt enters: a burst of deliveries rings once; null when none is pending. */
+  doorbellRungAt: number | null
+  /** Whether the agent sent a message with send since its turn started. */
+  hasSentThisTurn: boolean
+  /** Whether the last prompt was the doorbell's and delivered only informs, which ask for nothing. */
+  isInformOnlyTurn: boolean
+  /** The states a delegated unit's turn end was blocked on, so each state asks for a message once. */
+  turnEndKeys: Set<string>
+  /** The activity this session last recorded and when, so a burst of tool calls writes it once a tick. */
+  activity: { key: string; at: number }
+  /** The stall this coordinator last reported per unit issue, so each one reaches the user once until the unit recovers. */
+  stallReports: Map<number, string>
+  /** The unit issues herdr showed blocked at this coordinator's last tick. */
+  blockedUnits: Set<number>
+  /** Each guard's check measurements, by guard. */
+  guards: Map<string, GuardStat>
 }
 
 /** The hooks' shared in-memory state; a reload evaluates the module again, so it starts over. */
@@ -102,6 +133,19 @@ export const sessionMemory: SessionMemory = {
   shownSuggestion: null,
   modulesAhead: [],
   permissionMode: null,
+  isTurnLive: false,
+  pendingWrites: 0,
+  verifyAskedBlob: null,
+  approvalWait: null,
+  wokenBlobs: new Set(),
+  doorbellRungAt: null,
+  hasSentThisTurn: false,
+  isInformOnlyTurn: false,
+  turnEndKeys: new Set(),
+  activity: { key: '', at: 0 },
+  stallReports: new Map(),
+  blockedUnits: new Set(),
+  guards: new Map(),
 }
 
 /**

@@ -48,8 +48,8 @@ interface Cache<T> { value?: Promise<T> }
 /** Holds the territory facts read from the session's records, only when a held branch makes them matter. */
 interface Scope { unitBranch: string | null; defaultBranch: string; slice: SliceRead }
 
-/** Names a local branch, or a detached worktree HEAD (null branch), that moved during the window. */
-interface MovedTip { branch: string | null; before: string | undefined; after: string }
+/** Names a local branch, or a detached worktree HEAD (null branch), that moved during the window, and where the mod's placed record names it. */
+interface MovedTip { branch: string | null; place: string; before: string | undefined; after: string }
 
 /**
  * Shares one lazy read between every question a window asks.
@@ -91,10 +91,10 @@ async function readScope(port: EnginePort): Promise<Scope> {
  */
 function listMovedTips(before: RefSnapshot, after: RefSnapshot): MovedTip[] {
   const branches = Object.entries(after.refs).filter(([ref, sha]) => ref.startsWith('refs/heads/') && before.refs[ref] !== sha)
-    .map(([ref, sha]) => ({ branch: ref.slice('refs/heads/'.length), before: before.refs[ref], after: sha }))
+    .map(([ref, sha]) => ({ branch: ref.slice('refs/heads/'.length), place: ref.slice('refs/heads/'.length), before: before.refs[ref], after: sha }))
   const heads = after.worktrees.filter(wt => !wt.branch && wt.head).flatMap(wt => {
     const previous = before.worktrees.find(held => held.root === wt.root)?.head
-    return previous === wt.head ? [] : [{ branch: null, before: previous, after: wt.head }]
+    return previous === wt.head ? [] : [{ branch: null, place: wt.root, before: previous, after: wt.head }]
   })
   return [...branches, ...heads]
 }
@@ -141,8 +141,9 @@ export function drawTerritory(port: EnginePort, before: RefSnapshot, after: RefS
   return {
     judgeCommits: async (candidates, beforeTips) => {
       const tips = listMovedTips(before, after)
-      // why: a tip spawn or merge_child set for another unit is the mod's own move, whichever session's window it falls in.
-      const byMod = await Promise.all(tips.map(tip => tip.branch !== null && isPlaced(port, tip.branch, tip.after)))
+      // why: a tip spawn or merge_child set for another unit, or a commit merge_child checked out to verify it, is the mod's own move,
+      // whichever session's window it falls in.
+      const byMod = await Promise.all(tips.map(tip => isPlaced(port, tip.place, tip.after)))
       // An unreadable scope costs only the tips that needed it, never the verdicts of the others.
       const placed = await Promise.all(tips.map((tip, index) => byMod[index] ? false : tip.branch === null ? true : ownsBranch(tip.branch).catch(() => null)))
       if (placed.every(verdict => verdict === true)) return { shas: candidates, isUnplaced: false }

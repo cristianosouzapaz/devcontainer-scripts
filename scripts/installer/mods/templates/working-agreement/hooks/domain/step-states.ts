@@ -42,8 +42,14 @@ interface VerifyState {
   isError?: boolean
   isWaitingApproval?: boolean
   isVerified: boolean
-  /** Whether the change has reached Verify, which ends Code: a run of any outcome exists on the current tree and base, or the config keeps Verify from running. */
+  /** Whether the change has reached Verify, which ends Code: a run of any outcome exists on the current tree and base, this session's Verify run is live on them, or the config keeps Verify from running. */
   isReached: boolean
+  /** The terminal command that approves the config, while it is unapproved; the user runs it in their own terminal. */
+  approval?: string
+  /** The unapproved config's blob id, alongside its approval command. */
+  approvalBlob?: string
+  /** Whether this session's Verify run holds the slice's tree and base, which no older record then decides. */
+  isRunning?: boolean
   /** This session's place in the repository's Verify queue, such as `queued, 2nd of 3`, while it waits for another session's Verify. */
   queued?: string
   /** The run that decides Verify, as `<run id> in <unit>`, named by /flow status. */
@@ -68,7 +74,7 @@ export type DiagnoseNeed = 'red' | 'issue' | 'comments' | 'comment' | 'approval'
 interface DiagnoseDone extends IssueDone { approvedAt?: number }
 
 /** Keeps agent requirements separate from the pane's short facts. */
-type DiagnoseJudgement = DiagnoseDone | DiagnosePending
+export type DiagnoseJudgement = DiagnoseDone | DiagnosePending
 
 /** Names the steps whose state comes entirely from declared issue facts. */
 type IssueStepId = 'grill' | 'spec' | 'triage' | 'map' | 'tickets'
@@ -200,6 +206,8 @@ export interface Position extends Evidence {
   unit: Unit
   states: StepState[]
   current: StepState | null
+  /** Whether the unit's turn ran when the position was observed; a surface that omits it reads the unit as idle. */
+  isWorking?: boolean
 }
 
 /** Holds a PR step fact and the code that selects its action. */
@@ -341,9 +349,24 @@ export function markStep(entry: StepState, position: Position, isTreeChanged: bo
   const isMerged = !isRewritten && position.isConcluded && isDeliveryStep(entry.step) && !!position.pullRequest
   const isFailed = !isRewritten && !isRunUnrecorded && isStepFailed(entry)
   return {
-    mark: isRewritten ? 'rewritten' : isMerged ? 'done' : isFailed ? 'failed' : isCurrent && entry.isWaitingApproval ? 'waitingApproval' : entry.state,
+    // A unit whose turn runs still acts, so its step reads in progress rather than waiting on someone else.
+    mark: isRewritten ? 'rewritten' : isMerged ? 'done' : isFailed ? 'failed' : isCurrent && entry.isWaitingApproval && !position.isWorking ? 'waitingApproval' : entry.state,
     isMerged, isFailed, isRunUnrecorded, isRewritten,
   }
+}
+
+/**
+ * Judges the evidence as it will stand once a file write in flight lands: the tree no longer matches any Verify run,
+ * so a passed Verify is out of date before the write reaches the disk.
+ * @param evidence - What the checkout and the Verify runs show now.
+ * @returns The evidence with the slice's tree marked as being written and Verify neither reached nor passed.
+ */
+export function withPendingWrite<T extends Evidence>(evidence: T): T {
+  const { slice, verify } = evidence
+  if (!slice || slice.isRewritten || !slice.tree) return evidence
+  const { approval, approvalBlob, queued } = verify
+  return { ...evidence, slice: { ...slice, tree: `${slice.tree}+write` },
+    verify: { isVerified: false, isReached: false, ...(approval ? { approval, approvalBlob } : {}), ...(queued ? { queued } : {}) } }
 }
 
 /**
@@ -364,7 +387,7 @@ export function projectDisplayStates(states: StepState[]): StepState[] {
   const currentIndex = states.findIndex(entry => entry.state === 'current')
   return states.map((entry, index): StepState => {
     if (currentIndex < 0 || index <= currentIndex || entry.state !== 'done') return entry
-    const { fact: _fact, factCode: _factCode, ...rest } = entry
+    const { fact, factCode, ...rest } = entry
     return { ...rest, state: 'pending' }
   })
 }
@@ -497,6 +520,8 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
         : !slice ? facts.redeclareSliceUnavailable
         : step.isUnlocking ? (isCodeWritten ? describeMissingVerify(unit, slice) : undefined)
         : slice.commits === 0 ? undefined : facts.uncommitted } : {}),
+      // While the unit still works, an unapproved config is a note on Code, never a wait: the unit has more to do before it.
+      ...(step.isUnlocking && !isBranchGone && !isOnDefault && slice && !verify.isReached && verify.approval ? { fact: facts.verifyConfigUnapproved } : {}),
       ...(step.isUnlocking && !isOnDefault && isCodeWritten && !verify.isReached ? { factCode: 'verify-not-run' as const } : {}),
       ...(step.observe === 'verify.passed' ? { fact: verify.fact, detail: verify.detail, factCode: verify.factCode } : {}),
       ...(state === 'current' && step.observe === 'verify.passed' && verify.command ? { command: verify.command } : {}),
@@ -510,7 +535,7 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
       const unread = step.isOptional && judgement?.isError ? judgement : undefined
       const chosen = unit.skips?.find(skip => skip.step === step.id)?.reason ?? (isEndUnknown && step.observe !== 'integrated' ? facts.branchDeleted : undefined)
       // A skipped step's detail words its reason, never the step's own fact.
-      const { detail: _detail, ...rest } = shared
+      const { detail, ...rest } = shared
       return { ...rest, state, reason: chosen ?? unread?.fact, ...(!chosen && unread?.detail ? { detail: unread.detail } : {}) }
     }
     return { ...shared, state }

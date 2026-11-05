@@ -261,7 +261,7 @@ test('a concluded unit the sweep kept never counts as another unit on the branch
 
 test('a parent branch name that holds shell characters is quoted in the cut command', async ($, on) => {
   const graph = buildParentGraph()
-  const { par: _par, ...refs } = graph.refs
+  const { par, ...refs } = graph.refs
   const world = createWorld(on, { branch: 'p$(x)', graph: { ...graph, refs: { ...refs, 'p$(x)': 'p1' } }, worktrees: { '/repo': { branch: 'p$(x)' } } },
     { session: noFlow, closingPrs: { 2: [closingFrom('p$(x)')] } })
   await world.ready

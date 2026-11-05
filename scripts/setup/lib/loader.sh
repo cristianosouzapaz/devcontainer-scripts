@@ -36,6 +36,8 @@ source "$DEVCONTAINER_LIB_DIR/error-handler.sh"
 source "$DEVCONTAINER_LIB_DIR/logging.sh"
 # shellcheck source=public/scripts/setup/lib/module-registry.sh
 source "$DEVCONTAINER_LIB_DIR/module-registry.sh"
+# shellcheck source=public/scripts/setup/lib/install-user.sh
+source "$DEVCONTAINER_LIB_DIR/install-user.sh"
 # shellcheck source=public/scripts/setup/lib/inventory.sh
 source "$DEVCONTAINER_LIB_DIR/inventory.sh"
 # shellcheck source=public/scripts/setup/lib/persistent-data/paths.sh

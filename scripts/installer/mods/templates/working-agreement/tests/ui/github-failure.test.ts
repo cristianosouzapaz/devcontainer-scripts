@@ -10,7 +10,7 @@ import { createTestPort, createWorld } from '../support/world'
 import type { Gate, Options, World } from '../support/world'
 import type { EnginePort } from '../../hooks/core/engine-port'
 
-// A Small feature on #1 whose Spec is done on GitHub's labels.
+// A Small feature on issue 1 whose Spec is done on GitHub's labels.
 const specDone: Options = { unit: { skills: ['grilling', 'to-spec'] }, issueLabels: { 1: ['ready-for-agent'] } }
 // Past the issue sync's TTL.
 const pastTtl = 61000
@@ -82,7 +82,7 @@ for (const [failure, fail, reason] of [
     await world.clock.advance(2000)
     const recovered = await readFlowStatus($)
     expect(paneGithub(world)).toBeUndefined()
-    expect(statusGithub(recovered)).toMatch(/^GitHub {5}last ok \d{4}-\d{2}-\d{2} \d{2}:\d{2} [+-]\d{2}:\d{2}$/)
+    expect(statusGithub(recovered)).toMatch(/^GitHub {6}last ok \d{4}-\d{2}-\d{2} \d{2}:\d{2} [+-]\d{2}:\d{2}$/)
   })
 }
 
@@ -99,7 +99,9 @@ test('unforced syncs during an outage do not probe GitHub again within the TTL, 
   await world.clock.advance(pastTtl)
   await readPromptContext($)
   const failed = probes()
-  for (const _prompt of [1, 2, 3]) await readPromptContext($)
+  await readPromptContext($)
+  await readPromptContext($)
+  await readPromptContext($)
   expect(probes()).toBe(failed)
   await world.clock.advance(2000)
   await endTurn($)

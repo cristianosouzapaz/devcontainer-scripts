@@ -24,8 +24,8 @@ for (const [name, read] of [
 for (const state of ['OPEN', 'CLOSED']) {
   test(`GraphQL issue reads preserve ${state} and label names`, async (_$, on) => {
     const response = responses(on)
-    expect(await readIssue(response({ data: { repository: { issue: { state, title: 'An issue', labels: { nodes: [{ name: 'ready-for-agent' }] } } } } }), 1))
-      .toEqual({ isOk: true, value: { state, title: 'An issue', labels: ['ready-for-agent'] } })
+    expect(await readIssue(response({ data: { repository: { issue: { state, title: 'An issue', url: 'https://github.com/o/r/issues/1', labels: { nodes: [{ name: 'ready-for-agent' }] } } } } }), 1))
+      .toEqual({ isOk: true, value: { state, title: 'An issue', url: 'https://github.com/o/r/issues/1', labels: ['ready-for-agent'] } })
   })
 }
 

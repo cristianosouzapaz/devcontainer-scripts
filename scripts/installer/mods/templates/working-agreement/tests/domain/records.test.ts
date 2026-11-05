@@ -226,10 +226,11 @@ test('a second failed rename refuses declaration with its error', async ($, on) 
   expect((await declareFlow($, 'small-feature')).deny).toContain('rename failed')
 })
 
-test('classic startup merges the four git watch paths with the existing chain result', async ($, on) => {
+test('classic startup merges the four git watch paths, the user\'s mailbox and the mail root with the existing chain result', async ($, on) => {
   createWorld(on, { branch: 'feature' }, { watchPaths: ['/other'] })
   const result = await $.classic.SessionStart({ source: 'startup' })
-  expect(result.watchPaths).toEqual(['/other', `${common}/HEAD`, `${common}/packed-refs`, `${common}/refs`, `${common}/worktrees`])
+  const mail = `${common}/working-agreement/mail`
+  expect(result.watchPaths).toEqual(['/other', `${common}/HEAD`, `${common}/packed-refs`, `${common}/refs`, `${common}/worktrees`, `${mail}/user/new`, mail])
 })
 
 test('strict run and comment records reject malformed boundary facts and retired diagnosis state', () => {
@@ -279,7 +280,7 @@ test("run history bounds each argv and the total, keeping each argv's earliest r
 
 test('a pinned red needs its approval and the run identity fields, and a record without it still parses', () => {
   const session = buildSavedSession()
-  const { outcome: _outcome, ...approvedRed } = diagnoseRuns[0]!
+  const { outcome, ...approvedRed } = diagnoseRuns[0]!
   const entry = { ...createEmptyUnit(), identity: { branch: 'fix', issues: [1] }, ...diagnosed }
   expect(parseSession({ ...session, units: [entry] })?.units[0]).toEqual(entry)
   expect(parseSession({ ...session, units: [{ ...entry, approvedRed }] })?.units[0]?.approvedRed).toEqual(approvedRed)
@@ -309,7 +310,7 @@ test('sessions merge matching command history and prefer this chat for scalar ap
 })
 
 test("merged sessions take the approval and its pinned red from one entry, never another entry's pin", async ($, on) => {
-  const { outcome: _outcome, ...approvedRed } = diagnoseRuns[0]!
+  const { outcome, ...approvedRed } = diagnoseRuns[0]!
   const { files, sessions } = createWorld(on, { branch: 'feature' }, { session: noFlow,
     unit: { runs: [diagnoseRuns[0]], approval: diagnosisComment.url },
     comments: { 1: [diagnosisComment] }, issueLabels: { 1: ['ready-for-agent'] },
@@ -326,18 +327,18 @@ test("merged sessions take the approval and its pinned red from one entry, never
 
 test('a unit recorded on the default branch before parent branches existed stays on it, even after re-declaring', async ($, on) => {
   const { sessions } = createWorld(on, { branch: 'b', graph: buildParentGraph() }, { unit: { base: 'c0', baseBranch: 'main' } })
-  expect(await readFlowStatus($)).toContain('Slice      c0..b1\n')
+  expect(await readFlowStatus($)).toContain('Slice       c0..b1\n')
   expect((await declareFlow($, 'small-feature', [1])).result).toContain('base from main.')
   expect(sessions.get('sid')?.units[0]).toMatchObject({ base: 'c0', baseBranch: 'main' })
-  expect(await readFlowStatus($)).toContain('Slice      c0..b1\n')
+  expect(await readFlowStatus($)).toContain('Slice       c0..b1\n')
 })
 
 test('a unit recorded with no base branch keeps its fixed base when its parent branch is merged in', async ($, on) => {
   const graph = buildParentGraph()
   createWorld(on, { branch: 'b', graph }, { unit: { base: 'p1' } })
-  expect(await readFlowStatus($)).toContain('Slice      p1..b1\n')
+  expect(await readFlowStatus($)).toContain('Slice       p1..b1\n')
   graph.refs = { ...graph.refs, par: 'p2', b: 'b2' }
-  expect(await readFlowStatus($)).toContain('Slice      p1..b2\n')
+  expect(await readFlowStatus($)).toContain('Slice       p1..b2\n')
 })
 
 test('re-declaring a unit whose recorded base left its history recomputes the base from its recorded base branch, not the reflog', async ($, on) => {
@@ -351,7 +352,7 @@ test('a unit recorded on the default branch with a base off its first-parent cha
   graph.commits.mm = { parents: ['c0', 'p2'], files: { 'src/par.ts': 'p2', 'src/a.ts': 'a2' } }
   graph.refs = { ...graph.refs, main: 'mm', 'origin/main': 'mm' }
   createWorld(on, { branch: 'b', graph }, { unit: { base: 'p1', baseBranch: 'main' } })
-  expect(await readFlowStatus($)).toContain('Slice      p1..b1\n')
+  expect(await readFlowStatus($)).toContain('Slice       p1..b1\n')
 })
 
 test('re-declaring a unit recorded with a base and no base branch keeps both and says the base was kept', async ($, on) => {

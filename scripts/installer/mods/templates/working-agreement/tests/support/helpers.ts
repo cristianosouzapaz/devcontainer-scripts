@@ -4,11 +4,15 @@ import type { Engine, Mounted } from 'claude-code/testing'
 import type { FlowStepState, FlowView } from '../../types'
 import { locatePosition } from '../../hooks/core/position'
 import { readSession } from '../../hooks/core/record-store'
-import { verifyFile, verifyId } from './builders'
+import { verifyFile } from './builders'
+import { keyWidth } from '../../hooks/ui/theme'
 import { common, createTestPort } from './world'
 import type { World } from './world'
 
 interface PaneOptions { columns?: number; rows?: number; requestId?: string; title?: string }
+
+/** Holds what the pane and the herdr sidebar last showed: the pane's current step with its symbol, and the sidebar's step token. */
+export interface Surfaces { pane?: string; sidebar?: string }
 
 /** Holds a node of a drawn tree as the engine returns it. */
 export interface DrawnNode { type?: string; props?: Record<string, unknown>; children?: unknown[] }
@@ -137,6 +141,15 @@ export function mountPane($: Engine, options: PaneOptions = {}): Promise<Mounted
 }
 
 /**
+ * Reads the labels a mounted pane draws in its key column.
+ * @param pane - The mounted pane.
+ * @returns The text of every box as wide as the key column.
+ */
+export async function readKeyLabels(pane: Mounted<'terminal', 'Pane'>): Promise<string[]> {
+  return (await pane.findAll({ type: 'Box' })).filter(box => box.props['width'] === keyWidth && box.props['flexShrink'] === 0).map(textOf)
+}
+
+/**
  * Joins a drawn tree's text, depth first; a node without text reads as its label, as a button draws.
  * @param node - The drawn node.
  * @returns Its text.
@@ -163,12 +176,11 @@ export function checkTheme(node: unknown, keys: readonly string[]): void {
 }
 
 /**
- * Approves a Verify config as the user does, by the id the preview names.
- * @param $ - The test's engine.
+ * Approves a Verify config as the user's terminal does, outside every session: its record appears in the clone.
+ * @param world - The test world.
  * @param file - The config's text.
- * @returns The command's reply.
  */
-export const approveVerify = ($: Engine, file = verifyFile): Promise<CommandRunResult> => runFlowCommand($, `approve verify ${verifyId(file)}`)
+export const approveVerify = (world: Pick<World, 'approveConfig'>, file = verifyFile): void => { world.approveConfig(file) }
 
 /**
  * Asserts that a mounted pane draws a text node with the given text and props.
@@ -188,6 +200,20 @@ export async function expectText(pane: Mounted<'terminal', 'Pane'>, text: string
  */
 export function serveDisplayed(on: On, displayed: { value: FlowView }): void {
   on('state.get', { plugin: 'working-agreement', key: 'view' }, () => ({ value: { value: displayed.value, version: 0 } }))
+}
+
+/**
+ * Reads the pane and the herdr sidebar as last published, which one observation paints together.
+ * @param world - The test world.
+ * @returns The pane's current step and the sidebar's step token.
+ */
+export function readSurfaces(world: World): Surfaces {
+  const view = world.views.at(-1)
+  const current = view?.steps.find(step => step.state === 'current')
+  return {
+    pane: current ? `${current.symbol} ${current.label}` : undefined,
+    sidebar: world.runs.findLast(command => command.startsWith('herdr '))?.match(/--token flow_step=(.*?) --token/)?.[1],
+  }
 }
 
 /**

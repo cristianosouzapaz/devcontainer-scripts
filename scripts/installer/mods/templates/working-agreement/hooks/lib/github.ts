@@ -12,6 +12,9 @@ import type { Result } from './result'
 /** An issue comment with its body, as the delegated-decision markers are read from it. */
 export interface MarkedComment { url: string; body: string }
 
+/** A comment with who wrote it and when, as a delegated decision's check reads it. */
+export interface AuthoredComment extends MarkedComment { createdAt: string; author: string }
+
 /** Whether gh reaches GitHub: logged in and answering, not logged in, or not answering. */
 type GithubAccess = 'connected' | 'unauth' | 'unreachable'
 /** Holds GitHub reachability and the reason it is unavailable. */
@@ -19,8 +22,8 @@ export type GithubProbe = GithubConnected | GithubUnavailable
 interface GithubConnected { status: 'connected'; error: null }
 interface GithubUnavailable { status: Exclude<GithubAccess, 'connected'>; error: string }
 
-/** An issue as GitHub reports it: its state, title and label names. */
-export interface IssueSnapshot { state: string; title: string; labels: string[] }
+/** An issue as GitHub reports it: its state, title, web address and label names. */
+export interface IssueSnapshot { state: string; title: string; url: string; labels: string[] }
 
 /** A same-repository PR from a unit's head branch, into the base it names, with the issues it closes there. */
 export interface PullRequestCandidate { number: number; state: string; url: string; headRefOid: string; baseRefName: string; closingIssuesReferences: number[] }
@@ -102,15 +105,15 @@ export async function probeGithub(processes: ProcessPort): Promise<GithubProbe> 
  *
  * @param processes - The engine's process runner.
  * @param issue - The issue number.
- * @returns Its state, title and labels, or a failure with gh's first error line.
+ * @returns Its state, title, web address and labels, or a failure with gh's first error line.
  */
 export async function readIssue(processes: ProcessPort, issue: number): Promise<Result<IssueSnapshot>> {
-  const query = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){issue(number:${issue}){state title labels(first:100){nodes{name}}}}}`
+  const query = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){issue(number:${issue}){state title url labels(first:100){nodes{name}}}}}`
   const repository = await readGraphql(processes, query, [], { fallback: 'not found' })
   if (!repository.isOk) return repository
   const fields = isRecord(repository.value.issue) ? repository.value.issue : null
   if (!fields) return fail('unreadable gh output')
-  return succeed({ state: toStringOrEmpty(fields.state), title: toStringOrEmpty(fields.title), labels: filterRecords(isRecord(fields.labels) ? fields.labels.nodes : null).map(label => toStringOrEmpty(label.name)) })
+  return succeed({ state: toStringOrEmpty(fields.state), title: toStringOrEmpty(fields.title), url: toStringOrEmpty(fields.url), labels: filterRecords(isRecord(fields.labels) ? fields.labels.nodes : null).map(label => toStringOrEmpty(label.name)) })
 }
 
 /**
@@ -153,6 +156,36 @@ export async function readMarkedComments(processes: ProcessPort, issue: number):
   const rows = await readRows(processes, ['gh', 'api', `repos/{owner}/{repo}/issues/${issue}/comments`, '--paginate', '--jq', '.[] | {url: .html_url, body}'])
   return rows.isOk ? succeed(rows.value.map(row => ({ url: toStringOrEmpty(row.url), body: toStringOrEmpty(row.body) })))
     : fail(`cannot read the comments of #${issue}: ${rows.error}`)
+}
+
+/**
+ * Reads one comment of an issue fresh, with its author and creation time.
+ * @param processes - The engine's process runner.
+ * @param issue - The issue number.
+ * @param url - The comment's URL.
+ * @returns The comment, or why it cannot be read or is not on the issue.
+ */
+export async function readAuthoredComment(processes: ProcessPort, issue: number, url: string): Promise<Result<AuthoredComment>> {
+  const rows = await readRows(processes, ['gh', 'api', `repos/{owner}/{repo}/issues/${issue}/comments`, '--paginate', '--jq',
+    '.[] | {url: .html_url, body, createdAt: .created_at, author: .user.login}'])
+  if (!rows.isOk) return fail(`cannot read the comments of #${issue}: ${rows.error}`)
+  const row = rows.value.find(each => each.url === url)
+  if (!row) return fail(`${url} is not a comment of #${issue}`)
+  const createdAt = toStringOrEmpty(row.createdAt)
+  if (!Number.isFinite(Date.parse(createdAt))) return fail(`${url} has no readable creation time`)
+  return succeed({ url, body: toStringOrEmpty(row.body), createdAt, author: toStringOrEmpty(row.author) })
+}
+
+/**
+ * Reads the login gh is authenticated as.
+ * @param processes - The engine's process runner.
+ * @returns The login, or the read failure.
+ */
+export async function readGhLogin(processes: ProcessPort): Promise<Result<string>> {
+  const run = hasExitedZero(await runProcess(processes, ['gh', 'api', 'user', '--jq', '.login']))
+  if (!run.isOk) return fail(`cannot read the gh login: ${run.error}`)
+  const login = run.value.stdout.trim()
+  return login ? succeed(login) : fail('gh printed no login')
 }
 
 /**

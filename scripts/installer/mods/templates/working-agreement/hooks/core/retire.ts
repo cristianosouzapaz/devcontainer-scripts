@@ -5,30 +5,44 @@ import { readJson } from '../lib/json'
 import { executeProcess } from '../lib/process'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
+import { unitAddress } from '../domain/mail'
+import type { Envelope } from '../domain/mail'
+import { deriveReplyId } from '../domain/mail-reply'
 import { sameIdentity } from '../domain/records'
 import type { Identity } from '../domain/records'
 import type { EnginePort } from './engine-port'
 import { logEvent } from './flow-log'
-import { isInsideHerdr, runHerdr } from './herdr-worktrees'
+import { runHerdr } from './herdr-worktrees'
 import { atomicReplace, listIdentityRecords, readCommonDir, readSession, readSessionMirrors, recordsPath } from './record-store'
 import type { RecordBucket } from './record-store'
-import { deriveSessionId, listUnitWorkspaces, progressPath, withSpawnLock } from './spawn'
+import { mailPath } from './mailbox'
+import { deriveSessionId, progressPath, withSpawnLock } from './spawn'
+import { readUnitHost } from './unit-host'
 import { findUnitBranch } from './unit-state'
 import { noticePath } from './coordinator-notice'
-import type { UnitWorkspace } from './spawn'
+import { stallPath } from './liveness'
+import type { UnitWorkspace } from './unit-host'
 
-/** Everything a retirement archives and removes for one issue's unit, as read before anything changes. */
+/**
+ * Everything a retirement archives and removes for one issue's unit, as read before anything changes, with how many messages its
+ * mailbox held unread, read and invalid.
+ */
 export interface RetirementPlan {
   issue: number; branch: string; tip: string; session: string
   workspace: UnitWorkspace | null; worktree: string | null; isDirty: boolean
-  identities: Identity[]; records: string[]; transcripts: string[]
+  identities: Identity[]; records: string[]; transcripts: string[]; mail: MailCount
 }
+
+/** How many messages a mailbox holds: unread in new/, read in cur/, and invalid in bad/. */
+interface MailCount { unread: number; read: number; invalid: number }
 
 /** What an archive kept: the ref holding the branch tip, the patch of uncommitted changes, and the command that restores both. */
 export interface Archive { v: 1; issue: number; branch: string; ref: string; patch: string | null; restore: string }
 
 // why: Beside the other records, under the common directory every worktree shares, so a coordinator's report reads them.
 const bucket = 'retired'
+/** The mailbox directories a retirement moves into its archive; the sequence file stays, so the address never reuses a number. */
+const archivedBoxes = ['new', 'cur', 'bad', 'tmp'] as const
 
 /**
  * Reads what retiring an issue's unit would archive and remove, refusing a unit whose work has left its branch or that runs this session.
@@ -50,18 +64,22 @@ export async function planRetirement(port: EnginePort, issue: number): Promise<R
   if (session === await port.readSessionId() || worktree === await port.readCwd()) return fail(`this session is #${issue}'s unit, and a session never retires itself`)
   const merged = await findMerge(port, branch, tip)
   if (merged) return fail(`${branch} ${merged}, so its unit is not retired`)
-  const workspace = await isInsideHerdr(port) ? (await listUnitWorkspaces(port)).find(entry => entry.issue === issue) ?? null : null
+  const host = await readUnitHost(port)
+  const workspace = host ? (await host.list(port)).find(entry => entry.issue === issue) ?? null : null
   const isDirty = worktree !== null && await readWorktreeStatus(port.processes, worktree) !== ''
   const mirror = (await readSessionMirrors(port)).find(entry => entry.session.sessionId === session)?.session
   const identities = [{ branch, issues: [issue] }, ...mirror?.units.map(entry => entry.identity) ?? [], ...mirror?.unit ? [mirror.unit] : []]
     .filter((identity, index, all) => identity.branch === branch && all.findIndex(other => sameIdentity(other, identity)) === index)
   const delegated = await listBranchRecords(port, common, 'delegated', branch)
+  const count = async (box: 'new' | 'cur' | 'bad'): Promise<number> => (await port.files.list(mailPath(common, unitAddress(issue), box)).catch(() => []))
+    .filter(entry => entry.name.endsWith('.json')).length
   const records = [progressPath(common, issue), recordsPath(common, 's', `${session}.json`),
-    noticePath(common, branch), ...delegated, ...(await Promise.all(identities.map(identity => listIdentityRecords(port, identity)))).flat()]
+    noticePath(common, branch), stallPath(common, issue), ...delegated, ...(await Promise.all(identities.map(identity => listIdentityRecords(port, identity)))).flat()]
   const transcripts = await findTranscripts(port, session)
   if (!transcripts.isOk) return transcripts
   return succeed({ issue, branch, tip, session, workspace, worktree, isDirty, identities,
-    records: await filterExisting(port, records), transcripts: transcripts.value })
+    records: await filterExisting(port, records), transcripts: transcripts.value,
+    mail: { unread: await count('new'), read: await count('cur'), invalid: await count('bad') } })
 }
 
 /**
@@ -78,6 +96,7 @@ export function describeRetirement(plan: RetirementPlan): string {
     plan.workspace ? `- herdr workspace ${plan.workspace.workspaceId} with its agent, and worktree ${plan.workspace.path}` : plan.worktree ? `- worktree ${plan.worktree}` : '- no worktree',
     `- branch ${plan.branch}`,
     ...plan.records.map(path => `- record ${path}`),
+    `- ${describeMail(plan.mail)} in its mailbox, moved into the archive`,
     ...plan.transcripts.map(path => `- transcript ${path}`),
     `A later spawn ${plan.issue} starts a fresh session.`,
   ].join('\n')
@@ -103,13 +122,81 @@ export function retireUnit(port: EnginePort, issue: number, check: (plan: Retire
     if (!archive.isOk) return fail(`nothing was removed: ${archive.error}`)
     const recorded = await record(plan.value, archive.value)
     if (!recorded.isOk) return fail(`archived as ${archive.value.ref}, but nothing was removed: ${recorded.error}`)
-    const removed = await removeUnit(port, plan.value)
+    const removed = await removeUnit(port, common, plan.value, archive.value)
     const session = await readSession(port)
-    for (const identity of plan.value.identities) logEvent(port, { ...session, unit: identity }, 'retired', { ref: archive.value.ref, patch: archive.value.patch, by: session.sessionId })
+    for (const identity of plan.value.identities) {
+      logEvent(port, { ...session, unit: identity }, 'retired', { ref: archive.value.ref, patch: archive.value.patch, by: session.sessionId, mailArchived: plan.value.mail })
+    }
     const kept = `archived as ${archive.value.ref}${archive.value.patch ? ` and ${archive.value.patch}` : ''}; restore with: ${archive.value.restore}`
     if (!removed.isOk) return fail(`#${issue}'s unit is ${kept}, but its removal stopped: ${removed.error}`)
     return succeed(`Retired #${issue}'s unit (${plan.value.branch}): ${kept}${recorded.value ? `\n${recorded.value}` : ''}\nA later spawn ${issue} starts a fresh session.`)
   })
+}
+
+/**
+ * Words what a retirement drops from the unit's mailbox.
+ * @param mail - The mailbox's counts.
+ * @returns Such as `2 unread and 5 read message(s)`.
+ */
+export function describeMail(mail: MailCount): string {
+  return `${mail.unread} unread, ${mail.read} read and ${mail.invalid} invalid message(s)`
+}
+
+/**
+ * Names the directory a retirement archives the unit's mailbox in, beside its archive record.
+ * @param common - The git common directory.
+ * @param archive - The retirement's archive.
+ * @returns The path.
+ */
+function mailArchivePath(common: string, archive: Archive): string {
+  return recordsPath(common, bucket, `${archive.issue}-${archive.ref.split('/').at(-1) ?? ''}-mail`)
+}
+
+/**
+ * Finds the latest retirement of an issue's unit, so a message its retired session sent or received is told apart from the new unit's.
+ * @param port - The engine calls.
+ * @param issue - The issue number.
+ * @returns The archive and when it was made, or null when the unit was never retired.
+ */
+export async function readLatestRetirement(port: EnginePort, issue: number): Promise<{ archive: Archive; at: number } | null> {
+  const archive = (await readArchives(port, issue)).at(-1)
+  // why: the archive's ref ends in its compact UTC stamp, such as 20261104T093000Z.
+  const stamp = archive?.ref.split('/').at(-1)?.replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/, '$1-$2-$3T$4:$5:$6Z')
+  const at = stamp ? Date.parse(stamp) : NaN
+  return archive && Number.isFinite(at) ? { archive, at } : null
+}
+
+/**
+ * Tells whether a message belongs to a retired unit session: sent or received under the unit's address before its latest retirement.
+ * @param port - The engine calls.
+ * @param envelope - The message.
+ * @returns Whether a unit retirement came after it.
+ */
+export async function isFromRetiredSession(port: EnginePort, envelope: Envelope): Promise<boolean> {
+  const unit = [envelope.from, envelope.to].find(address => /^\d+$/.test(address))
+  const retired = unit ? await readLatestRetirement(port, Number(unit)) : null
+  return !!retired && Date.parse(envelope.created_at) < retired.at
+}
+
+/**
+ * Keeps a reply to a retired unit session's message in that retirement's archive instead of sending it, since the unit's address
+ * outlives the retirement and the reply would otherwise reach the new unit's session.
+ * @param port - The engine calls.
+ * @param common - The git common directory.
+ * @param original - The message replied to.
+ * @param reply - The reply's kind, sender, text and references.
+ * @returns What happened to the reply, or null when the message is the live unit's and the reply goes out as usual.
+ */
+export async function keepLateReply(port: EnginePort, common: string, original: Envelope,
+  reply: { kind: string; from: string; body: string; refs: string[] }): Promise<string | null> {
+  const retired = /^\d+$/.test(original.from) ? await readLatestRetirement(port, Number(original.from)) : null
+  if (!retired || Date.parse(original.created_at) >= retired.at) return null
+  const late = `${mailArchivePath(common, retired.archive)}/late`
+  const kept = `${late}/${deriveReplyId(original.id, reply.from)}.json`
+  await executeProcess(port.processes, ['mkdir', '-p', '--', late])
+  await atomicReplace(port, kept, JSON.stringify({ ...reply, to: original.from, in_reply_to: original.id, at: new Date(await port.now()).toISOString() }))
+  return `Not delivered: message ${original.id} came from #${original.from}'s retired session, and its new unit never gets a reply meant for that one. `
+    + `The ${reply.kind} is kept in ${kept}.`
 }
 
 /**
@@ -172,14 +259,25 @@ async function archiveUnit(port: EnginePort, common: string, plan: RetirementPla
 }
 
 /**
- * Removes a unit once its work is archived: the herdr workspace with its agent first, so the session writes no more records, then the worktree,
- * the branch, the records and the transcript.
+ * Removes a unit once its work is archived: the herdr workspace with its agent first, so the session writes no more records, then its
+ * mailbox's messages move into the archive, then the worktree, the branch, the records and the transcript go.
  * @param port - The engine calls.
+ * @param common - The git common directory.
  * @param plan - The retirement.
+ * @param archive - The retirement's archive.
  * @returns Nothing, or the step that failed.
  */
-async function removeUnit(port: EnginePort, plan: RetirementPlan): Promise<Result<void>> {
+async function removeUnit(port: EnginePort, common: string, plan: RetirementPlan, archive: Archive): Promise<Result<void>> {
   if (plan.workspace) await runHerdr(port, ['worktree', 'remove', '--workspace', plan.workspace.workspaceId, '--force'])
+  // why: the retired session's mail stays readable for the record, but out of the mailbox a respawn reads.
+  const target = mailArchivePath(common, archive)
+  await executeProcess(port.processes, ['mkdir', '-p', '--', target])
+  for (const box of archivedBoxes) {
+    const source = mailPath(common, unitAddress(plan.issue), box)
+    if (await port.files.stat(source).then(() => true, () => false) && (await executeProcess(port.processes, ['mv', '--', source, `${target}/${box}`])).exitCode !== 0) {
+      return fail(`cannot move ${source} into ${target}`)
+    }
+  }
   const worktree = await findWorktreeRoot(port.processes, plan.branch)
   if (worktree && await readGitOutput(port.processes, ['worktree', 'remove', '--force', worktree]) === null) return fail(`cannot remove worktree ${worktree}`)
   if (await readGitOutput(port.processes, ['branch', '-D', plan.branch]) === null) return fail(`cannot delete branch ${plan.branch}`)

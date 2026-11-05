@@ -8,19 +8,19 @@ import type { World } from '../support/world'
 
 const configFile = `${root}/.claude/working-agreement.json`
 
-/**
- * Reads the Config note of the pane's latest view.
- * @param world - The test world.
- * @returns The note's text, or undefined without one.
- */
-const readConfigNote = (world: World): string | undefined => world.views.at(-1)?.notes.find(note => note.key === 'Config')?.value
-
 const invalid: [string, string, string][] = [
   ['an old config with the retired verify field', JSON.stringify({ verify: [['make', 'test']] }), 'verify: retired field'],
   ['an old config with the retired full field', JSON.stringify({ full: [['make', 'test']] }), 'full: retired field'],
   ['an unknown field', JSON.stringify({ always: [], extra: true }), 'extra: unknown field'],
   ['malformed JSON', '{ "always": [', '$: invalid JSON'],
 ]
+
+/**
+ * Reads the Config note of the pane's latest view.
+ * @param world - The test world.
+ * @returns The note's text, or undefined without one.
+ */
+const readConfigNote = (world: World): string | undefined => world.views.at(-1)?.notes.find(note => note.key === 'Config')?.value
 
 for (const [name, text, error] of invalid) {
   test(`${name} opens the pane at session start with a short notice, and the prompt and /flow status carry the full error`, async ($, on) => {

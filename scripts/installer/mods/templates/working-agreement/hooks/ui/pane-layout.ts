@@ -17,7 +17,7 @@ const factMarkColumns = 2
 /** The columns of the ` · ` between a step's label and its fact. */
 const factSeparatorColumns = 3
 
-/** The longest step label, `Integrate` or a five-digit `PR #12345`. */
+/** The longest step label, `Integrate` or `PR #<n>` with a five-digit number. */
 const longestLabelColumns = 'PR #12345'.length
 
 /** The columns reserved before a fact: the mark and its space, the longest label, and ` · `. */

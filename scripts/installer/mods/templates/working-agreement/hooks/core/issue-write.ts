@@ -5,8 +5,9 @@ import { readGraphql, readMarkedComments, runGh } from '../lib/github'
 import { isRecord } from '../lib/guards'
 import { filterRecords, toStringOrEmpty } from '../lib/json'
 import type { ProcessPort } from '../lib/process'
-import { fail, succeed } from '../lib/result'
+import { fail, formatErrorLine, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
+import { recordDecision } from './delegated-step'
 import type { EnginePort } from './engine-port'
 import { readRepositoryRoot } from './repository'
 import { isVerifyApproved } from './verify'
@@ -200,11 +201,13 @@ export async function editIssue(port: EnginePort, config: IssuesConfig, input: I
   const added = checked.value.labels.filter(label => !current.value.labels.includes(label))
   const removed = current.value.labels.filter(label => !checked.value.labels.includes(label))
   const type = nativeType(config, facts.value, input.type)
-  const edited = await runGh(port.processes, ['issue', 'edit', String(input.number),
+  const flags = [
     ...(input.title ? ['--title', input.title] : []), ...(checked.value.body === undefined ? [] : ['--body', checked.value.body]),
     ...repeat('--add-label', added), ...repeat('--remove-label', removed), ...repeat('--add-assignee', input.assignees ?? []),
     ...(input.milestone ? ['--milestone', input.milestone] : []), ...(input.project ? ['--add-project', input.project] : []), ...(type ? ['--type', type] : []),
-    ...(input.parent ? ['--parent', String(input.parent)] : []), ...repeat('--add-blocked-by', input.blockedBy ?? [])])
+    ...(input.parent ? ['--parent', String(input.parent)] : []), ...repeat('--add-blocked-by', input.blockedBy ?? [])]
+  // why: gh issue edit refuses an empty flag list when not interactive, which must not block a bare reopen.
+  const edited = flags.length ? await runGh(port.processes, ['issue', 'edit', String(input.number), ...flags]) : succeed('')
   if (!edited.isOk) return refuse(`gh issue edit failed: ${edited.error}`)
   if (input.state === 'open') {
     const reopened = await runGh(port.processes, ['issue', 'reopen', String(input.number)])
@@ -258,6 +261,9 @@ export async function commentIssue(port: EnginePort, input: IssueInput): Promise
   if (!posted.isOk) return fail(`gh issue comment failed: ${posted.error}`)
   const url = posted.value.trim().split('\n').pop() ?? ''
   if (!url.includes('#issuecomment-')) return fail(`gh issue comment printed no comment URL: ${posted.value.trim()}`)
+  // why: a coordinator's step tools rest only on a decision its own mod saw posted, so the record is written once the post succeeded.
+  const unrecorded = kind === 'decision' ? await recordDecision(port, input.number, url, input.body).then(() => '', (error: unknown) => formatErrorLine(error)) : ''
+  if (unrecorded) return fail(`Commented ${url}, but its provenance record was not written (${unrecorded}), so no step tool can rest on it — tell the user.`)
   const flag = kind === 'decision' ? '--add-label'
     : kind === 'review' && !listUnreviewed([...before.value, { url, body: input.body }]).length ? '--remove-label' : undefined
   if (!flag) return succeed(`Commented ${url}`)

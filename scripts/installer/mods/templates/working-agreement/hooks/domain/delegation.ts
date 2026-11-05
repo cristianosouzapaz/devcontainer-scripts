@@ -85,7 +85,7 @@ export function composeDelegatePrompt(issues: number[], instructions: string): s
     'and an issue another one blocks only once its blocker\'s unit has a commit, so its unit starts from that branch. Spawn refuses an issue that is not ready-for-agent: leave it until it is. ' +
     'Give each unit its rules in spawn\'s instructions, so its first turn starts with them: a unit_prompt sent after spawn waits behind that turn. ' +
     `Answer each unit's question through the delegated-decision path: post the decision on its issue with ${modToolPrefix}issue_comment ` +
-    `in a body whose first line is "## Delegated decision", then send the choice to the unit with ${modToolPrefix}unit_prompt.`, instructions)
+    `in a body whose first line is "## Delegated decision", then send the choice to the unit with ${modToolPrefix}send, an answer in reply to its question.`, instructions)
 }
 
 /**
@@ -123,10 +123,11 @@ export const coversIssues = (scope: DelegationScope, issues: number[]): boolean 
 /**
  * Names what a scope delegates, as the coordinator's pane and status show it.
  * @param scope - The scope.
+ * @param isRulesetShown - Whether the missing ruleset is named too.
  * @returns The issues, the created ones while the scope covers them, and `no signed-commit ruleset` without one.
  */
-export function describeScope(scope: DelegationScope): string {
+export function describeScope(scope: DelegationScope, isRulesetShown = true): string {
   const named = formatIssueReferences(scope.issues, ' ')
   const triage = scope.triage && formatIssueReferences(scope.triage, ' ')
-  return [named, scope.coversCreated ? 'issues it creates' : '', triage ? `triage ${triage}` : '', scope.isPushUnguarded ? 'no signed-commit ruleset' : ''].filter(Boolean).join(' · ')
+  return [named, scope.coversCreated ? 'issues it creates' : '', triage ? `triage ${triage}` : '', isRulesetShown && scope.isPushUnguarded ? 'no signed-commit ruleset' : ''].filter(Boolean).join(' · ')
 }

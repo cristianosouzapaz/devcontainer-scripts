@@ -10,6 +10,6 @@
     "skills/local/index.js"
   ],
   "project": ["**/*.js"],
-  "ignoreDependencies": ["@inquirer/testing"],
+  "ignoreDependencies": ["@inquirer/testing", "eslint", "eslint-plugin-jsdoc", "eslint-plugin-unicorn", "globals", "typescript-eslint"],
   "ignore": ["**/templates/**"]
 }

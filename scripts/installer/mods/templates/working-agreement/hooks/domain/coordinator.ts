@@ -1,19 +1,22 @@
 import { suggestDelegateTool } from './delegation'
 import { appendInstructions, markForAgent, modToolPrefix } from './messages'
 
+/** The `/flow` subcommands only the user runs, from the prompt; the inbox moves the user's mail and answers as the user, so no agent may run any form of it. */
+export const humanOnlyFlowCommands = ['coordinate', 'delegate', 'retire', 'setup-labels', 'trivial', 'follow-up', 'approve', 'handoff', 'skip', 'lift', 'inbox']
+
 /** The mod tool that proposes `/flow coordinate` in the prompt box. */
 export const suggestCoordinateTool = `${modToolPrefix}suggest_coordinate`
 /** The issue tools, by the name after the mod's prefix. */
 export const issueTools = ['issue_create', 'issue_edit', 'issue_close', 'issue_comment'] as const
-/** The coordinator's tools that start, message, escalate and retire unit sessions, by the name after the mod's prefix. */
-export const unitTools = ['spawn', 'unit_prompt', 'unit_read', 'retire_unit', 'escalate_unit'] as const
+/** The coordinator's tools that start, message, escalate, retire and unblock unit sessions, by the name after the mod's prefix. */
+export const unitTools = ['spawn', 'unit_prompt', 'unit_read', 'approve_unit', 'skip_unit', 'follow_up_unit', 'retire_unit', 'escalate_unit', 'dismiss_dialog'] as const
 
 // why: These tools write nothing in the repository but the engine does not mark them read-only; Agent is safe here
 // because every call of the subagent it starts is checked again under its agentId. The issue tools are the coordinator's
-// only GitHub write channel, spawn starts the unit sessions that do write, unit_prompt is its only channel to them, retire_unit
-// removes a delegated unit only after the mod archived its work and posted the decision, escalate_unit only resumes a unit's own session on a higher level, and
-// merge_child is its one repository write, which the mod itself runs only for a delegated child/parent pair it knows; plan only reads.
-const modTools = [suggestCoordinateTool, suggestDelegateTool, ...[...issueTools, ...unitTools, 'merge_child', 'plan'].map(name => `${modToolPrefix}${name}`)]
+// only GitHub write channel, spawn starts the unit sessions that do write, unit_prompt and send are its only channels to them, approve_unit, skip_unit and follow_up_unit send a unit only a step whose delegated decision they checked, retire_unit
+// removes a delegated unit only after the mod archived its work and posted the decision, escalate_unit only resumes a unit's own session on a higher level, dismiss_dialog sends only Esc and only to a dialog its catalogue allows it on, and
+// send only writes a reply into a mailbox under the legal-reply map, and merge_child is its one repository write, which the mod itself runs only for a delegated child/parent pair it knows; plan only reads.
+const modTools = [suggestCoordinateTool, suggestDelegateTool, ...[...issueTools, ...unitTools, 'send', 'merge_child', 'plan'].map(name => `${modToolPrefix}${name}`)]
 const allowedTools = ['Agent', 'Skill', 'ToolSearch', 'AskUserQuestion', 'TodoWrite', ...modTools]
 
 // why: Reads the engine cannot recognize as read-only; each is matched as an exact argv prefix, so a write subcommand never matches.

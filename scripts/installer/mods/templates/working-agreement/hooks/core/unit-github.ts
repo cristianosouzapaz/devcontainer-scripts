@@ -20,6 +20,26 @@ interface Cached<T> { at: number; result: Result<T> }
 /** The GitHub facts used to judge delivery independently of local evidence. */
 type Delivery = Pick<Evidence, 'checks' | 'pullRequest' | 'prFact' | 'prDetail' | 'prFactCode' | 'isConcluded'>
 
+/** The latest answer for each pair whose comparison is not cached as immutable, which a cache-only observation reuses. */
+const unsettledComparisons = new Map<string, Result<Comparison | null>>()
+/** Marks the error a cache-only observation throws on a GitHub fact its cache lacks. */
+const cacheMissMark = 'GitHub fact not cached'
+
+/**
+ * Tells whether an error is a cache-only observation's refusal to read GitHub.
+ * @param error - The thrown value.
+ * @returns Whether the observation needs a full read.
+ */
+export const isGithubCacheMiss = (error: unknown): boolean => error instanceof Error && error.message === cacheMissMark
+
+/**
+ * Refuses a GitHub read in a cache-only observation, before any cache entry is written.
+ * @param port - The observation's port.
+ */
+function refuseUncached(port: EnginePort): void {
+  if (port.isGithubCacheOnly) throw new Error(cacheMissMark)
+}
+
 /**
  * Identifies one lifetime of a unit for absorbing conclusions.
  * @param identity - The branch and issues.
@@ -42,6 +62,7 @@ export async function readCandidates(port: EnginePort, branch: string, isLocal =
   const now = await port.now()
   const held = readCached(cached, now, isLocal, isForced)
   if (held) return held
+  refuseUncached(port)
   const result = await readGithubStatus(port, isForced) === 'connected' ? await listPullRequests(port.processes, branch) : fail('GitHub unreachable')
   sessionMemory.candidates.set(key, { at: now, result })
   return result
@@ -59,6 +80,7 @@ export async function readIssueState(port: EnginePort, issue: number, isLocal = 
   const now = await port.now()
   const held = readCached(sessionMemory.issueStates.get(issue), now, isLocal, isForced)
   if (held) return held
+  refuseUncached(port)
   const read = await readGithubStatus(port, isForced) === 'connected' ? await readIssue(port.processes, issue) : fail('GitHub unreachable')
   const result = read.isOk ? succeed(read.value.state) : read
   sessionMemory.issueStates.set(issue, { at: now, result })
@@ -105,9 +127,13 @@ async function compare(port: EnginePort, from: string, to: string): Promise<Resu
   const key = JSON.stringify([from, to])
   const cached = sessionMemory.comparisons.get(key)
   if (cached) return succeed(cached)
+  const unsettled = unsettledComparisons.get(key)
+  if (unsettled && port.isGithubCacheOnly) return unsettled
+  refuseUncached(port)
   const result = await compareCommits(port.processes, from, to)
   // A 404 can become readable after the user pushes; only actual SHA comparisons are immutable.
   if (result.isOk && result.value) sessionMemory.comparisons.set(key, result.value)
+  else unsettledComparisons.set(key, result)
   return result
 }
 
@@ -237,8 +263,11 @@ async function readCi(port: EnginePort, sha: string, base: string, isLocal: bool
   const rules = sessionMemory.rules.get(base)
   // Only GitHub can finish a pending check, so nothing local triggers the read that would show it.
   const isStale = isForced || judgeCi(checks?.result, rules?.result).checks === 'pending'
-  if (!readCached(checks, now, isLocal, isStale)) sessionMemory.checks.set(sha, { at: now, result: await readCommitChecks(port.processes, sha) })
-  if (!readCached(rules, now, isLocal, isStale)) sessionMemory.rules.set(base, { at: now, result: await readRequiredChecks(port.processes, base) })
+  const isChecksHeld = !!readCached(checks, now, isLocal, isStale)
+  const isRulesHeld = !!readCached(rules, now, isLocal, isStale)
+  if (!isChecksHeld || !isRulesHeld) refuseUncached(port)
+  if (!isChecksHeld) sessionMemory.checks.set(sha, { at: now, result: await readCommitChecks(port.processes, sha) })
+  if (!isRulesHeld) sessionMemory.rules.set(base, { at: now, result: await readRequiredChecks(port.processes, base) })
   return judgeCi(sessionMemory.checks.get(sha)?.result, sessionMemory.rules.get(base)?.result)
 }
 

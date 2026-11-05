@@ -54,9 +54,10 @@ test('a queued Verify shows its place everywhere and runs when the holder finish
   seedVerifyHolder(world)
   const run = $.tool.call(verify)
   await world.clock.settle()
-  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Verify', value: 'queued, 2nd of 2', tone: 'warn' })
+  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Verify', value: 'queued, 2nd of 2', tone: 'text' })
   expect(world.runs.some(command => command.startsWith('herdr ') && command.includes('· Verify queued, 2nd of 2'))).toBe(true)
-  expect(await readFlowStatus($)).toContain('queued, 2nd of 2')
+  // The wait is another session's run, so nobody has to act: the note keeps the plain tone, and status shows it once.
+  expect(((await readFlowStatus($)) ?? '').split('\n').filter(line => line.includes('queued, 2nd of 2'))).toEqual(['Verify      queued, 2nd of 2'])
   expect(world.sessions.get('sid')?.units[0]?.verifyRuns ?? []).toEqual([])
   releaseHolder(world)
   await world.clock.advance(1000)
@@ -195,7 +196,7 @@ test('a Verify waits for a CI job on its runner and runs in queue order when it 
   const world = createWorld(on, { ...changed }, options)
   const run = $.tool.call(verify)
   await world.clock.settle()
-  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Verify', value: 'queued: CI running', tone: 'warn' })
+  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Verify', value: 'queued: CI running', tone: 'text' })
   expect(world.runs.some(command => command.startsWith('herdr ') && command.includes('· Verify queued: CI running'))).toBe(true)
   expect(await readFlowStatus($)).toContain('queued: CI running')
   await world.clock.advance(1)
@@ -243,10 +244,11 @@ test('a Verify queued past the hook budget behind another session still runs', {
   seedVerifyHolder(world)
   const run = $.tool.call(verify)
   // The engine counts a hook's clock waits against its ten-second budget in real time, so the queue moves for longer than that.
-  for (const _second of Array.from({ length: 22 })) {
+  await Array.from({ length: 22 }).reduce(async (previous: Promise<void>) => {
+    await previous
     await world.clock.advance(1000)
     await new Promise<void>(resolve => setTimeout(resolve, 500))
-  }
+  }, Promise.resolve())
   releaseHolder(world)
   await world.clock.advance(1000)
   const answer = await run

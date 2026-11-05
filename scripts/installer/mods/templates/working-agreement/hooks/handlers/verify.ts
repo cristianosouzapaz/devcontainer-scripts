@@ -5,14 +5,17 @@ import { minuteMs } from '../core/timing'
 import { hasCodeChange } from '../domain/step-states'
 import { readCommonDir, readSession, readUnit } from '../core/record-store'
 import { bestEffort } from '../core/best-effort'
+import { describeEscalationStop } from '../core/escalation'
 import { describeParentConflicts } from '../core/parent-merge'
 import { refreshView } from '../core/pane-view'
 import { readGit, readWorkingTreeKey } from '../core/repository'
 import { finishRunView, runStatus, updateRunCommand, withRunView } from '../core/run-view'
 import { describeTail } from '../core/run-command'
 import { readUnitSlice } from '../core/unit-slice'
-import { isVerifyApproved, verifyOutcome, writeVerifyEvidence } from '../core/verify'
+import { composeApprovalCommand, isVerifyApproved, verifyOutcome, writeVerifyEvidence } from '../core/verify'
+import { sessionMemory } from '../core/session-memory'
 import { changedPaths, readVerifyConfig, selectVerify } from '../core/verify-config'
+import { describeStoppedWait, watchCancels } from '../core/cancel-gate'
 import { holdVerifyTurn, isTurnHeld, leaveVerifyQueue, waitCiIdle, waitVerifyTurn } from '../core/verify-queue'
 import { findWorktreeRoot } from '../lib/git'
 import { executeCommand, prepareRunLog, recordToolRun, withToolRun } from '../core/tool-run'
@@ -42,6 +45,8 @@ async function verify(port: EnginePort, signal: AbortSignal, sid: string): Promi
   const session = await readSession(port)
   if (!session.unit) return 'No unit declared in this chat.'
   const identity = session.unit
+  const escalation = await describeEscalationStop(port)
+  if (escalation) return escalation
   const git = await readGit(port)
   const unit = await readUnit(port, identity)
   const slice = git ? await readUnitSlice(port, identity, unit, git) : null
@@ -53,7 +58,14 @@ async function verify(port: EnginePort, signal: AbortSignal, sid: string): Promi
   const tree = slice.tree
   const loaded = await readVerifyConfig(port, tree)
   if (loaded.kind !== 'valid') return loaded.fact
-  if (!await isVerifyApproved(port, loaded.blob)) return 'Config not approved. Stop and ask the user to run /flow approve verify from the composer, then confirm its blob id.'
+  if (!await isVerifyApproved(port, loaded.blob)) {
+    // The unit asked for Verify, so it now waits for the user: the pane shows the wait.
+    sessionMemory.verifyAskedBlob = loaded.blob
+    await bestEffort(port, 'approval wait view refresh', () => refreshView(port, { isQuiet: true }), undefined)
+    return `Config not approved. Stop, end your turn and ask the user to approve it from their own terminal, never from a session: ${await composeApprovalCommand(port, loaded.blob)}`
+  }
+  // A run on an approved config is the step the approval follow-up pointed to.
+  sessionMemory.approvalWait = null
   const selection = await selectVerify(port, loaded.config, slice.baseTree, tree)
   if (await readWorkingTreeKey(port, root) !== tree) return 'The worktree content differs from the unit tree; Verify cannot run on this slice.'
   const prepared = await prepareRunLog(port, sid)
@@ -64,14 +76,20 @@ async function verify(port: EnginePort, signal: AbortSignal, sid: string): Promi
   // The wait for another session's Verify and for CI gets the same bound as the run, so a queued call never outlives two runs.
   const queueDeadline = await port.now() + loaded.config.timeoutMinutes * minuteMs
   const onMove = () => bestEffort(port, 'queue view refresh', () => refreshView(port, { isQuiet: true, isSynced: true }), undefined)
-  const wait = await waitVerifyTurn(port, common, sid, queueDeadline, signal, onMove)
+  // why: a cancel stops only the waits, through their own signal; a command that runs keeps the dispatch's and finishes.
+  const watch = watchCancels(port, signal)
+  const wait = await waitVerifyTurn(port, common, sid, queueDeadline, watch.signal, onMove, watch.check)
+  const queueCancel = watch.cancelId()
+  if (queueCancel) return describeStoppedWait('the Verify queue', queueCancel)
   if (wait.kind !== 'acquired') return wait.kind === 'cancelled' ? cancelled
     : `Verify queued, timed out after ${loaded.config.timeoutMinutes} min behind another session's Verify; no record written.`
   const { turn } = wait
   const stop = holdVerifyTurn(port, turn)
   try {
     const labels = loaded.config.waitForCiLabels
-    const ci = labels.length ? await waitCiIdle(port, turn, labels, queueDeadline, signal, onMove) : 'idle'
+    const ci = labels.length ? await waitCiIdle(port, turn, labels, queueDeadline, watch.signal, onMove, watch.check) : 'idle'
+    const ciCancel = watch.cancelId()
+    if (ciCancel) return describeStoppedWait('CI', ciCancel)
     if (ci === 'cancelled') return cancelled
     const ciFact = ci === 'unknown' ? 'CI state unknown' : ci === 'timeout' ? `CI still running after ${loaded.config.timeoutMinutes} min, ran anyway` : null
     const deadline = await port.now() + loaded.config.timeoutMinutes * minuteMs
@@ -103,12 +121,12 @@ async function verify(port: EnginePort, signal: AbortSignal, sid: string): Promi
       if (signal.aborted) return cancelled
       if (!await isTurnHeld(port, turn)) return `Verify lock lost: another session broke it as stale while these commands ran; no record written. Log: ${log}`
       const record: VerifyRecord = { tree, base: slice.base, configBlob: loaded.blob, commands: selection.commands, outcome: outcome.value, runId, at: await port.now() }
-      const recorded = await recordToolRun(port, identity, unit, signal, () => ({ verifyRuns: [record] }))
+      const recorded = await recordToolRun(port, identity, unit, signal, own => ({ verifyRuns: [record], redVerifies: record.outcome.kind === 'pass' ? 0 : (own.redVerifies ?? 0) + 1 }))
       if (!recorded) return cancelled
       await bestEffort(port, 'verify evidence write', () => writeVerifyEvidence(port, record, identity), undefined)
       await finishRunView(port, sid, { status: runStatus(outcome.value) }, signal)
       return outcome.failure ?? `Verify passed on tree ${tree.slice(0, 12)}: ${summaries.join(', ') || 'no command run'}. Selection: ${selection.description}.`
-    })
+    }, slice.base)
     return ciFact && reply !== cancelled ? `${ciFact}.\n${reply}` : reply
   } finally {
     await stop()

@@ -8,7 +8,8 @@ readonly _ENV_LOADER_SH_LOADED=1
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
-_ENV_FILE_PATH="${_ENV_FILE_PATH:-/tmp/.env}"
+# why: under root's 0700 home, so the dependency install's user cannot reach it (lib/install-user.sh)
+_ENV_FILE_PATH="${_ENV_FILE_PATH:-/root/.config/devcontainer/.env}"
 _ETC_ENVIRONMENT_PATH="${_ETC_ENVIRONMENT_PATH:-/etc/environment}"
 _MODULE_SECRET_FILE="${_MODULE_SECRET_FILE:-}"
 declare -ga MODULE_SECRET_PATTERNS=()
@@ -108,6 +109,7 @@ remove_module_secret_file() {
 }
 
 # persist_environment_file: writes the current environment file while replacing persisted entries
+# Stdout: the new environment file: the current lines without the persisted keys, then one KEY=value line per persisted key
 persist_environment_file() {
 	local line key stripped
 	if [[ -f "$_ETC_ENVIRONMENT_PATH" ]]; then

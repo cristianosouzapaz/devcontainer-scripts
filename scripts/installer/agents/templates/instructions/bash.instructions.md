@@ -12,7 +12,7 @@ applyTo: "**/*.{sh,bash,bats}"
 - **S2:** Bats test files MUST begin with `#!/usr/bin/env bats`.
 - **S3:** Files intended solely for sourcing MUST NOT declare a shebang.
 - **S4:** Bash entry scripts MUST declare `set -euo pipefail` immediately after their shebang.
-- **S5:** Bash libraries MUST NOT change shell options.
+- **S5:** A Bash library MUST NOT leave the caller's shell options changed: it may change an option only inside a subshell, or save it and restore it within the same function.
 
 ## Naming
 
@@ -26,7 +26,7 @@ applyTo: "**/*.{sh,bash,bats}"
 - **C1:** Bash functions MUST use `name() { }` declaration syntax.
 - **C2:** Function-local variables MUST use `local` declarations.
 - **C3:** Functions MUST declare local variables before non-declaration statements.
-- **C4:** Functions that return data through standard output MUST emit only that data to standard output.
+- **C4:** Functions that return data through standard output MUST declare it in a `# Stdout: <what it prints>` header line, between the purpose line and `# Returns:` (exit statuses only), and emit only that data to standard output.
 - **C5:** Array declarations MUST specify an indexed or associative type.
 - **C6:** Command substitutions MUST use `$()` syntax.
 - **C7:** Conditional tests MUST use `[[ ]]` syntax.

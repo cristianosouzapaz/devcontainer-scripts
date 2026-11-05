@@ -52,7 +52,7 @@ export async function locatePosition(port: EnginePort, session: Session, isLocal
     ? candidates.isOk ? await readConclusion(port, session.unit, unit, candidates.value, git.base, false, deliverableEnd(slice)) : candidates : null
   if (conclusion?.isOk && conclusion.value) return finish({ ...empty, pullRequest: conclusion.value })
   const queued = await readVerifyQueue(port)
-  const verify = { ...await readVerifyState(port, slice, unit), ...(queued ? { queued } : {}) }
+  const verify = { ...await readVerifyState(port, slice, unit, session.unit), ...(queued ? { queued } : {}) }
   // why: Only a Close out's PR closes the children's issues; any other unit needs no more than whether the branch is an integration branch.
   const children = git && session.unit && !located.isChild
     ? await readBranchChildren(port, session.unit.branch, git, { isLocal, isForced, isUntilIntegrated: session.flow !== 'close-out' }) : null

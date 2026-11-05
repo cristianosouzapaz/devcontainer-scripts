@@ -8,7 +8,11 @@ import { atomicReplace, readCommonDir, readSession, updateSession, recordsPath }
 import { withRecordLock } from './session-memory'
 
 /** Attribution shared by facts observed in one window. */
-export interface WindowAttribution { toolUseId: string; agentId: string | undefined; start: number; end: number }
+export interface WindowAttribution {
+  toolUseId: string; agentId: string | undefined; start: number; end: number
+  /** Why the call's reads failed, logged with its unchecked fact and never stored, so the fact's identity stays stable. */
+  errors?: string[]
+}
 
 /**
  * Reads every valid shared dismissal, retaining them independently of session lifetimes.
@@ -44,7 +48,7 @@ export async function dismissViolations(port: EnginePort, factIds: string[]): Pr
 }
 
 /**
- * Merges fact attribution under the session lock, retaining only the latest unchecked call and its accumulated count.
+ * Merges fact attribution under the session lock, retaining, for each set of unchecked reasons, only its latest call and accumulated count.
  * @param port - The engine calls.
  * @param facts - The independently judged facts.
  * @param window - The call and its time interval.
@@ -59,12 +63,13 @@ export async function recordViolations(port: EnginePort, facts: ViolationFact[],
   }))
   const written = await withRecordLock(() => updateSession(port, async session => {
     const unchecked = added.find(record => record.kind === 'unchecked')
-    const previous = unchecked ? session.violations?.findLast(record => record.kind === 'unchecked') : undefined
+    const sameReasons = (record: Violation): boolean => record.kind === 'unchecked' && unchecked?.kind === 'unchecked' && (record.fact.reasons ?? []).join() === (unchecked.fact.reasons ?? []).join()
+    const previous = unchecked ? session.violations?.findLast(sameReasons) : undefined
     const continuing = previous && !(await readDismissals(port)).has(previous.factId) ? previous : undefined
     const observed = added.map(record => record.kind === 'unchecked' ? {
       ...record, count: continuing ? (continuing.count ?? 1) + 1 : 1, start: continuing?.start ?? record.start,
     } : record)
-    const violations = (session.violations ?? []).filter(record => !unchecked || record.kind !== 'unchecked')
+    const violations = (session.violations ?? []).filter(record => !sameReasons(record))
     for (const record of observed) {
       const index = violations.findIndex(held => held.factId === record.factId)
       const held = violations[index]
@@ -75,6 +80,7 @@ export async function recordViolations(port: EnginePort, facts: ViolationFact[],
     }
     return { ...session, violations }
   }))
-  if (written) for (const record of added) logEvent(port, written.session, 'violation', { action: 'recorded', factId: record.factId, kind: record.kind })
+  if (written) for (const record of added) logEvent(port, written.session, 'violation', { action: 'recorded', factId: record.factId, kind: record.kind,
+    ...(record.kind === 'unchecked' && window.errors?.length ? { errors: window.errors } : {}) })
   return added.flatMap(record => written?.session.violations?.find(held => held.factId === record.factId) ?? [])
 }

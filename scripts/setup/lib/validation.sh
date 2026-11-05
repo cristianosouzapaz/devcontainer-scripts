@@ -34,6 +34,7 @@ check_env_var() {
 # collect_numbered_vars <nameref> <prefix> [fallback_var]: appends <prefix>_1, <prefix>_2, … up to the first unset or empty one to the array <nameref>
 # Notes: when none is set, appends the value of fallback_var instead, if given and non-empty.
 collect_numbered_vars() {
+	# shellcheck disable=SC2178 # why: ShellCheck reads binding a nameref as assigning a string to the caller's array
 	local -n _out_vals="$1"
 	local prefix="$2" fallback_var="${3:-}"
 	local i=1 val var
@@ -62,6 +63,7 @@ collect_numbered_extra_folders() {
 }
 
 # repo_entry_folder_name <url>: prints the URL's last path segment without .git (https://gitlab.com/org/my-app.git → my-app)
+# Stdout: the folder name, one line
 repo_entry_folder_name() {
 	local url="${1##*/}"
 	echo "${url%.git}"

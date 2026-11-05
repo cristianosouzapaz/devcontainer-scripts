@@ -1,5 +1,6 @@
 import type { FlowRow, FlowStep, FlowView } from '../../types'
 import { drawRule } from './pane-layout'
+import type { KeyLabel } from './theme'
 import { inlineGap, keyWidth, pillGap, sectionGap, statusColumns } from './theme'
 
 /**
@@ -8,7 +9,7 @@ import { inlineGap, keyWidth, pillGap, sectionGap, statusColumns } from './theme
  * @param value - The complete displayed value.
  * @returns The padded label followed by the value.
  */
-export function keyedLine(key: string, value: string): string {
+export function keyedLine(key: KeyLabel, value: string): string {
   return `${key.padEnd(keyWidth)}${value}`
 }
 
@@ -18,7 +19,8 @@ export function keyedLine(key: string, value: string): string {
  * @returns The aligned row including its optional suffix.
  */
 function rowLine(row: FlowRow): string {
-  return keyedLine(row.key, `${row.value}${row.suffix ? ` · ${row.suffix.text}` : ''}`)
+  // why: the view's contract types a key as a string, so the row is padded as keyedLine pads, without narrowing it to KeyLabel.
+  return `${row.key.padEnd(keyWidth)}${row.value}${row.suffix ? ` · ${row.suffix}` : ''}`
 }
 
 /**

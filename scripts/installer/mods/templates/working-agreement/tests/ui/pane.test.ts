@@ -2,7 +2,7 @@ import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
 import type { Engine } from 'claude-code/testing'
 import type { FlowView } from '../../types'
-import { sectionGap } from '../../hooks/ui/theme'
+import { keyWidth, sectionGap } from '../../hooks/ui/theme'
 import { buildWriteCall, buildPullRequest, noFlow, pushedCloseOut, twoIssueCloseOut } from '../support/builders'
 import { declareFlow, endTurn, mountPane, readFlowStatus, readPromptContext, runFlowCommand, serveDisplayed, textOf } from '../support/helpers'
 import { createWorld } from '../support/world'
@@ -73,7 +73,7 @@ for (const [count, labels] of [[1, oneRow], [2, twoRows], [3, threeRows]] as con
     const branch = lines.findIndex(line => line.startsWith('Branch'))
     expect(lines[branch - 1]).toBe('')
     expect(lines[branch - 2]).not.toBe('')
-    expect(lines.slice(first, branch - 1)).toEqual(['Labels'.padEnd(11) + labels.map(label => ` ${label} `).join('  ')])
+    expect(lines.slice(first, branch - 1)).toEqual(['Labels'.padEnd(keyWidth) + labels.map(label => ` ${label} `).join('  ')])
   })
 }
 
@@ -105,7 +105,7 @@ test('the mounted pane draws the label rows /flow status prints', async ($, on) 
 test('every keyed Flow button draws only its clean label, keeps its hotkey and fits the footer inline once the labels fit', async ($, on) => {
   createWorld(on, { branch: 'feat' })
   const value: FlowView = {
-    flow: 'Small feature', progress: '0/1', issues: [{ number: 1, title: 'First' }, { number: 2, title: 'Second' }], pending: null,
+    flow: 'Small feature', progress: '0/1', issues: [{ number: 1, title: 'First', url: '' }, { number: 2, title: 'Second', url: '' }], pending: null,
     meta: [], labels: [], steps: [], notes: [], footer: { action: 'continue', isRunning: false }, hasRunLog: true,
     violations: [{ factId: 'fact', text: 'needs attention', tone: 'warn' }],
   }
@@ -143,7 +143,7 @@ for (const [count, labels] of [[1, oneRow], [2, twoRows], [3, threeRows]] as con
   })
 }
 
-for (const [columns, pill] of [[32, ' ready-for-agent '], [31, ' ready-for-age… '], [30, ' ready-for-ag… ']] as const) {
+for (const [columns, pill] of [[33, ' ready-for-agent '], [32, ' ready-for-age… '], [31, ' ready-for-ag… ']] as const) {
   test(`the mounted pane draws the ready-for-agent pill as ${pill.trim()} on one row at ${columns} columns`, async ($, on) => {
     createWorld(on, { branch: 'feat', ahead: 1 }, labelsOf(['ready-for-agent']))
     await readFlowStatus($)

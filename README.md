@@ -36,7 +36,7 @@ The script prompts for project type, optional features, secrets file location, a
 
 ### 2. Configure Secrets
 
-Create `%USERPROFILE%\.config\.env` on your machine to store credentials that the container needs at startup. This file is mounted read-only inside the container and never committed to source control.
+Create `%USERPROFILE%\.config\.env` on your machine to store credentials that the container needs at startup. This file is mounted read-only inside the container at `/root/.config/devcontainer/.env`, out of reach of the dependency install, and never committed to source control. Projects generated before 4.3.0 mount it at `/tmp/.env`: regenerate `devcontainer.json` with the script, or setup skips the dependency install and names the file.
 
 If Docker runs on another machine, the file has to live on that machine instead — Docker resolves a mount source on the daemon's filesystem, not on yours. The script asks where it is during initialization and defaults to the local path above; set `DEVCONTAINER_SECRETS_PATH` on your Windows machine to have your usual remote location offered as a second option, one keypress away. It is never selected for you — a one-off setup step to redo if you rebuild that machine.
 
@@ -76,6 +76,7 @@ These sensitive variables should be set in your local `.config/.env` file only:
 | `GIT_SIGNING_KEY`        | SSH public key for commit signing (e.g. `ssh-ed25519 AAAA...`). Required for SSH commit signing.                                                                                                                                                                                                                                                                                                                                                                                      | -       |
 | `NGROK_AUTHTOKEN`        | Token to configure ngrok tunneling                                                                                                                                                                                                                                                                                                                                                                                                                                                    | -       |
 | `PERSIST_<NAME>`         | Variables prefixed with `PERSIST_` are written to `/etc/environment` with the prefix stripped — `PERSIST_FOO` becomes `FOO` for all container processes.                                                                                                                                                                                                                                                                                                                                                                                          | -       |
+| `INSTALL_ENV_<NAME>`     | Variables prefixed with `INSTALL_ENV_` reach the dependency install with the prefix stripped — `INSTALL_ENV_FOO` becomes `FOO`. The install otherwise gets only `PATH`, the locale, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, the HTTP(S) proxies and `NODE_EXTRA_CA_CERTS`. | -       |
 
 ### Configuration Variables
 
@@ -98,7 +99,7 @@ variables differs (`AUTO_UPDATE` falls back to `false` and `LOG_FILE` to stderr 
 | `DUMP_ERROR_STACK`  | Print error stack trace when exiting (true/false)                                                                                                                                                                                                            | `true`           |
 | `EXTRA_FOLDER_N`    | Numbered extra workspace folder names: `EXTRA_FOLDER_1`, `EXTRA_FOLDER_2`, … Each is already bind-mounted at `/workspace/<name>`; used to add it as a root in the generated `.code-workspace`. Set automatically by `project-init.ps1`.                      | -                |
 | `GIT_EMAIL`         | Email for git configuration (required)                                                                                                                                                                                                                       | -                |
-| `GIT_TOKEN_DURING_INSTALL` | Let dependency installation use the git clone token (true/false). Only for dependencies that are private git repositories fetched with that token: when `true`, every lifecycle script of the project and of its dependencies can read the token. When `false`, the credential store and `credential.helper` are out of reach during the install; the `.env` file mounted read-only at `/tmp/.env` stays readable. | `false` |
+| `GIT_TOKEN_DURING_INSTALL` | Let dependency installation use the git clone token (true/false). Only for dependencies that are private git repositories fetched with that token: when `true`, every lifecycle script of the project and of its dependencies can read the token. When `false`, the install runs as the unprivileged `dep-install` account and is skipped, with the reason logged, if that account could reach any setup secret. | `false` |
 | `GIT_USER`          | Git username for git configuration and repository URLs (required)                                                                                                                                                                                            | -                |
 | `LOG_FILE`          | Path to log file (if empty, logs to stderr only)                                                                                                                                                                                                      | `/tmp/setup.log` |
 | `LOG_LEVEL`         | Minimum log level: `DEBUG`, `INFO`, `SUCCESS`, `WARNING`, `ERROR`, `FATAL`                                                                                                                                                                                   | `INFO`           |
@@ -223,6 +224,14 @@ The **GitHub CLI** feature is always installed. Its authentication (`/root/.conf
 - **First use**: run `gh auth login` once inside any container.
 - **Subsequent rebuilds**: the session is automatically available — no re-login required.
 - **Reset**: run `devcontainer-data reset github` to force re-authentication.
+
+### Opening URLs in the Browser
+
+`gh … --web` and other tools that open a browser go through `devcontainer-browser`, which
+finds the live VS Code connection at each call. So a long-lived session (Herdr, tmux, a
+background agent) keeps opening URLs on the host after VS Code reconnects or updates. With no
+VS Code window connected, it prints the URL and an error instead. A shell or session started
+before this change keeps its old `BROWSER` and needs one restart.
 
 ### Global Agent Assets
 

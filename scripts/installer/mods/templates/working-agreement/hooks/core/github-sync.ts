@@ -37,13 +37,14 @@ const ghConcurrency = 4
  *
  * @param port - The engine calls.
  * @param isForced - Whether to probe even with a fresh answer cached.
+ * @param isFresh - Whether to probe even when another probe just ran or still runs, as a retry after a failed one needs.
  * @returns The status.
  */
-export async function readGithubStatus(port: EnginePort, isForced = false): Promise<GithubStatus> {
+export async function readGithubStatus(port: EnginePort, isForced = false, isFresh = false): Promise<GithubStatus> {
   const now = await port.now()
   const age = sessionMemory.githubProbe ? now - sessionMemory.githubProbe.at : Infinity
   // A clock that moved back makes the last probe's age unknown, so it is not reused.
-  if (sessionMemory.githubProbe && age >= 0 && age < (isForced ? probeReuseMs : githubTtlMs)) return sessionMemory.githubProbe.status
+  if (!isFresh && sessionMemory.githubProbe && age >= 0 && age < (isForced ? probeReuseMs : githubTtlMs)) return sessionMemory.githubProbe.status
   // Stored before the probe settles, so a read that starts meanwhile shares it.
   const status: Promise<GithubStatus> = probeGithub(port.processes).then(probe => {
     // A probe that a newer one replaced while it ran leaves the newer answer in place.
@@ -90,7 +91,7 @@ export function mergeIssue(previous: IssueInfo | undefined, answer: IssueAnswer)
   const { comments, subIssues, issue: { value: issue } } = answer
   const failed = [comments, subIssues].find(read => read && !read.isOk)
   return {
-    info: { state: issue.state, title: issue.title, labels: issue.labels,
+    info: { state: issue.state, title: issue.title, url: issue.url, labels: issue.labels,
       ...(comments ? { comments: keepList(comments, kept?.comments) } : {}), ...(subIssues ? { subIssues: keepList(subIssues, kept?.subIssues) } : {}) },
     error: failed && !failed.isOk ? failed.error : null,
   }

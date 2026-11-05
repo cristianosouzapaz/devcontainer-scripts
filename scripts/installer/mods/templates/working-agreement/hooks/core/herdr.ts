@@ -7,6 +7,7 @@ import type { Position } from '../domain/step-states'
 import { formatErrorLine } from '../lib/result'
 import { symbol } from '../ui/symbols'
 import type { EnginePort } from './engine-port'
+import { nameViolationKind } from './guarantees'
 import { sessionMemory, holdError } from './session-memory'
 import { tickMs } from './timing'
 import { isCoordinatorSession } from '../domain/coordinator'
@@ -36,7 +37,10 @@ export function reportHerdr(port: EnginePort, session: Session, position: Positi
     : position?.current ?? position?.states.findLast(state => state.state === 'done')
   const step = shown && position ? `${symbol[markStep(shown, position, isTreeChanged).mark]} ${formatStepLabel(shown.step, position.pullRequest)}${position.verify.queued ? ` · Verify ${position.verify.queued}` : ''}` : ''
   const violations = (session.violations ?? []).filter(record => record.kind !== 'unchecked' && !dismissed.has(record.factId)).sort((a, b) => b.end - a.end)
-  const alert = violations[0] ? `${symbol.failed} ${violations[0].kind} by agent${violations.length > 1 ? ` +${violations.length - 1}` : ''}` : ''
+  const newest = violations[0]
+  // why: the sidebar has no key to say a violation, so the mark does; the words are the pane's, which cannot tell whose call it was.
+  const alert = newest && newest.kind !== 'unchecked'
+    ? `${symbol.failed} ${nameViolationKind(newest.kind)} during an agent call${violations.length > 1 ? ` +${violations.length - 1}` : ''}` : ''
   const report = async (): Promise<void> => {
     try {
       const { environment, paneId } = await port.readHerdrEnv()

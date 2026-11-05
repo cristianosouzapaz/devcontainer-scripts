@@ -4,7 +4,7 @@ import { constants } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { select } from "@inquirer/prompts";
-import { PROMPT_THEME } from "./lib/theme.js";
+import { promptTheme } from "./lib/theme.js";
 import { setupConsola } from "./lib/utils.js";
 
 /**
@@ -15,10 +15,10 @@ import { setupConsola } from "./lib/utils.js";
 
 const consola = setupConsola();
 const here = dirname(fileURLToPath(import.meta.url));
-const USAGE = "Usage: devcontainer-install {skills|configs|agents|agent-md|sync|interactive}";
-const INSTALLERS = ["skills", "configs", "agents", "agent-md"];
+const usage = "Usage: devcontainer-install {skills|configs|agents|agent-md|sync|interactive}";
+const installers = ["skills", "configs", "agents", "agent-md"];
 
-export const MENU_CHOICES = [
+export const menuChoices = [
     { name: "Skills", value: "skills" },
     { name: "Config templates", value: "configs" },
     { name: "Agent templates", value: "agents" },
@@ -31,13 +31,13 @@ export const MENU_CHOICES = [
  * Prompt for which installer to run.
  * @param {unknown} _config
  * @param {Record<string, unknown>} [context]
- * @returns {Promise<string>} A MENU_CHOICES value.
+ * @returns {Promise<string>} A menuChoices value.
  * @throws {Error} Rejects with `ExitPromptError` when the prompt is cancelled (Ctrl+C).
  */
 export const selectInstallAction = (_config, context) => select({
     message: "Select what to install",
-    choices: MENU_CHOICES,
-    theme: PROMPT_THEME,
+    choices: menuChoices,
+    theme: promptTheme,
 }, context);
 
 /**
@@ -85,7 +85,7 @@ const releaseSha = (dir) => {
  * @property {(command: string, args: string[]) => Promise<number>} [run] - Spawn seam; resolves to an exit code.
  * @property {boolean} [isTTY]
  * @property {NodeJS.ProcessEnv} [env]
- * @property {() => Promise<string>} [menu] - Resolves to a MENU_CHOICES value.
+ * @property {() => Promise<string>} [menu] - Resolves to a menuChoices value.
  * @property {string} [dir] - Directory holding the installer folders.
  */
 
@@ -106,9 +106,9 @@ export const main = async (argv, deps = {}) => {
         menu = selectInstallAction, dir = here,
     } = deps;
     const [command, ...extra] = argv;
-    const known = [...INSTALLERS, "sync", "interactive"];
+    const known = [...installers, "sync", "interactive"];
     if (!known.includes(command) || extra.length) {
-        console.error(USAGE);
+        console.error(usage);
         return 1;
     }
     if (command !== "sync" && !isTTY) {

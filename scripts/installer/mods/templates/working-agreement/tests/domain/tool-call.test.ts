@@ -6,18 +6,15 @@ import { endTurn, readPaneCurrentStep } from '../support/helpers'
 import { createWorld } from '../support/world'
 
 for (const tool of ['Write', 'Edit'] as const) {
-  test(`${tool} leaves the pane unchanged until turn end catches up with worktree edits`, async ($, on) => {
+  test(`${tool} catches the pane up with its worktree edit once the call ends, before the turn ends`, async ($, on) => {
     const checkout = { branch: 'feature', isDirty: false }
     const { views, clock } = createWorld(on, checkout, { afterTool: () => { checkout.isDirty = true } })
     await endTurn($)
-    const before = [...views]
-    expect(before.at(-1)?.steps.find(step => step.label === 'Code')?.state).toBe('current')
+    expect(views.at(-1)?.steps.find(step => step.label === 'Code')?.state).toBe('current')
     const input = tool === 'Write' ? buildWriteCall('src/a.ts')
       : { tool: 'Edit' as const, file_path: '/repo/src/a.ts', old_string: 'before', new_string: 'after' }
     expect((await $.tool.call(input)).deny).toBeUndefined()
     await clock.settle()
-    expect(views).toEqual(before)
-    await endTurn($)
     expect(views.at(-1)?.steps.find(step => step.label === 'Code')?.state).toBe('done')
     expect(readPaneCurrentStep(views)).toBe('Verify')
   })

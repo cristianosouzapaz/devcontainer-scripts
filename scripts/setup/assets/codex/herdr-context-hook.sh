@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # why: no set -e and always exit 0, a Stop hook must never fail or print anything Codex could parse
 
 # Reports this pane's context usage to the Herdr sidebar from the Codex Stop hook payload on

@@ -8,11 +8,11 @@ import { composeInstruction } from '../../../hooks/domain/instruction'
 import { buildParentGraph, buildParentPullRequest, buildPullRequest } from '../../support/builders'
 import { readFlowStatus, readPromptContext, runFlowCommand } from '../../support/helpers'
 import { parChild, readObservedEndFile, seedGeneration, seedObservedEnd, withCommit, withoutBranch } from '../../support/parallel-worktrees'
-import { createTestPort, createWorld } from '../../support/world'
+import { createTestPort, createWorld, seedDelegation } from '../../support/world'
 import type { Checkout, Options, World } from '../../support/world'
 
 
-/** The parent's PR #9 into the default branch, merged at `pp`, without child `a`'s commits. */
+/** The parent's PR 9 into the default branch, merged at `pp`, without child `a`'s commits. */
 const strandingPullRequest = buildParentPullRequest({ number: 9, headRefOid: 'pp' })
 
 /** Child `a`'s identity. */
@@ -56,6 +56,14 @@ test('a child after Commit has Integrate current in place of PR, with the merge 
   expect(context).toContain('current step: Integrate. Next action: the user\'s step: stop and ask them to run git -C /par merge --no-ff a to merge this unit into par (never merge yourself).')
 })
 
+test('a delegated child at Integrate is told the coordinator integrates it with merge_child, never handed a merge command', async ($, on) => {
+  const world = createWorld(on, childCheckout(), parChild())
+  seedDelegation(world, 'coord', [1], { spawned: [1] })
+  const context = await readPromptContext($)
+  expect(context).toContain('current step: Integrate. Next action: the coordinator\'s step: reply done to its assignment; the coordinator integrates this unit into par with merge_child')
+  expect(context).not.toContain('git -C /par')
+})
+
 test('a parent checked out in no worktree gets a merge naming both branches, never a path', async ($, on) => {
   createWorld(on, childCheckout({}, false), parChild())
   expect(await readFlowStatus($)).toContain('git switch par && git merge --no-ff a')
@@ -81,7 +89,7 @@ test('after a --no-ff merge into the parent the child is integrated: every step 
 test('after a fast-forward of the parent onto the child the child keeps its slice and is integrated', async ($, on) => {
   createWorld(on, childCheckout({ par: 'a2' }), parChild())
   const status = await readFlowStatus($)
-  expect(status).toContain('Slice      p1..a2')
+  expect(status).toContain('Slice       p1..a2')
   expect(status).toContain("✓ Integrate · awaiting par's PR")
   expect(status).not.toContain('▸')
 })
@@ -184,7 +192,7 @@ async function createChildWorld(on: On, checkout: Checkout, options: Options = {
 test('a child deleted before its end was observed is a definite fact: Integrate is current and the agent is told to stop', async ($, on) => {
   const world = await createChildWorld(on, deletedCheckout())
   const status = await readFlowStatus($)
-  expect(status).toContain('Branch     a · deleted')
+  expect(status).toContain('Branch      a · deleted')
   expect(status).toContain('▸ Integrate · branch deleted, end never observed')
   // why: Nothing proves the work before Integrate, so it is set aside, never shown done.
   expect(status).toContain('↷ Commit · branch deleted')
@@ -347,7 +355,7 @@ test("a new commit on the child after its parent's PR merged: Integrate is curre
 
 test('branch names that hold shell characters are quoted in the merge command', async ($, on) => {
   const graph = buildParentGraph()
-  const { a: _a, par: _par, ...refs } = graph.refs
+  const { a, par, ...refs } = graph.refs
   const checkout: Checkout = { branch: 'a;x', graph: { ...graph, refs: { ...refs, 'a;x': 'a2', 'p$(x)': 'p1' } }, worktrees: { '/repo': { branch: 'a;x' } } }
   createWorld(on, checkout, { unit: { ...parChild().unit, baseBranch: 'p$(x)' } })
   expect(await readPromptContext($)).toContain("run git switch 'p$(x)' && git merge --no-ff 'a;x' to merge this unit")

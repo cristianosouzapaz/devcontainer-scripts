@@ -8,12 +8,14 @@ readonly _GLOBAL_AGENT_ASSETS_SH_LOADED=1
 # ----- INSTALLER SOURCE -------------------------------------------------------
 
 # resolve_assets_ref: prints the requested global-assets ref: AGENT_ASSETS_REF, else the stable release channel
+# Stdout: the ref, one line
 # Notes: this is deliberately not persisted: refs are mutable input, while the resolved SHA is state.
 resolve_assets_ref() {
 	printf '%s\n' "${AGENT_ASSETS_REF:-stable}"
 }
 
 # resolve_assets_repo: prints the explicitly requested installer repository, defaulting to the public release source
+# Stdout: the owner/name repository, one line
 resolve_assets_repo() {
 	local scripts_repo="${SCRIPTS_REPO:-cristianosouzapaz/devcontainer-scripts}"
 	[[ "${scripts_repo}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,38}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$ ]] || return 1
@@ -21,6 +23,7 @@ resolve_assets_repo() {
 }
 
 # resolve_assets_sha <ref>: resolves a requested ref once to the immutable SHA used by every installer download
+# Stdout: the 40-character SHA, one line
 resolve_assets_sha() {
 	local requested_ref="$1" scripts_repo response sha
 
@@ -54,6 +57,7 @@ resolve_assets_source() {
 # ----- SYNC STATE -------------------------------------------------------------
 
 # global_agent_assets_metadata_path: prints the private metadata file in the agents category
+# Stdout: the metadata file path, one line
 # Notes: state lives with the global assets it describes, rather than in a project root.
 global_agent_assets_metadata_path() {
 	local agents_path

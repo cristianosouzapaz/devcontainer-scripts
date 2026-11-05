@@ -4,7 +4,7 @@ import { readJson } from '../lib/json'
 import { isRecord } from '../lib/guards'
 import { bestEffort } from './best-effort'
 import type { ErrorWindow } from './session-memory'
-import { labelViolation } from './guarantees'
+import { describeViolation } from './guarantees'
 import type { EnginePort } from './engine-port'
 import { readGithubFailure, readGithubStatus } from './github-sync'
 import { reread } from './pane-view'
@@ -12,15 +12,18 @@ import { locatePosition } from './position'
 import { readGit, readRepositoryRoot } from './repository'
 import { readSession, unitLogPath } from './record-store'
 import { sessionMemory } from './session-memory'
-import { describeLevel, readSpawnLevel, readSpawnMode } from './spawn'
-import { isVerifyApproved } from './verify'
+import { describeLevel, readSpawnStart } from './spawn'
+import { composeApprovalCommand, isVerifyApproved } from './verify'
 import { configPath, readRepositoryConfig, readVerifyConfig, selectVerify } from './verify-config'
 import { readBranchProtection, readBranchRulesets } from '../lib/github'
 import { findWorktreeRoot } from '../lib/git'
 import { describeBaseMismatch, readCandidates, selectBasePullRequest } from './unit-github'
 import { readDismissals } from './violation-store'
 import { fail } from '../lib/result'
+import { describeGuardChecks } from './check-retry'
 import { keyedLine } from '../ui/status-text'
+import { handoffNotes } from '../ui/view-model'
+import type { KeyLabel } from '../ui/theme'
 import { formatLocalTime } from '../lib/time'
 
 /**
@@ -43,7 +46,7 @@ const time = (at: number | null): string => at === null ? 'never' : formatLocalT
  * @param window - The accumulated failure window, if any.
  * @returns The aligned failure row, or null without failures.
  */
-function formatErrorWindow(label: string, operation: string, window: ErrorWindow | null): string | null {
+function formatErrorWindow(label: KeyLabel, operation: string, window: ErrorWindow | null): string | null {
   return window ? keyedLine(label, `${operation} · ${time(window.lastSeen)} · since ${time(window.firstSeen)} · ×${window.failures} · ${window.error}`) : null
 }
 
@@ -105,11 +108,9 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
     const root = await findWorktreeRoot(statusPort.processes, session.unit.branch) ?? null
     if (root) rows.push(keyedLine('Worktree', root))
     if (candidate) rows.push(keyedLine('PR', candidate.url))
-    if (position.verify.queued) rows.push(keyedLine('Verify', position.verify.queued))
     if (position.verify.run) rows.push(keyedLine('Run', position.verify.run))
-    const mode = await readSpawnMode(statusPort, session.issues)
-    const level = await readSpawnLevel(statusPort, session.issues)
-    if (mode) rows.push(keyedLine('Spawned', `in ${mode} mode${level ? `, ${describeLevel(level)}` : ''}`))
+    const spawned = await readSpawnStart(statusPort, session.issues)
+    if (spawned?.mode) rows.push(keyedLine('Spawned', `in ${spawned.mode} mode, ${describeLevel(spawned.level)}`))
     rows.push(keyedLine('Log', await unitLogPath(statusPort, session.unit)))
     const checks = slice ? sessionMemory.checks.get(slice.end)?.result : undefined
     if (slice && checks?.isOk && checks.value.length) rows.push(keyedLine('CI', `${short(slice.end)} · ${checks.value.map(check => `${check.name}: ${check.state}`).join(' · ')}`))
@@ -120,7 +121,7 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
       const selection = await selectVerify(statusPort, config.config, slice?.baseTree ?? null, slice?.tree ?? '')
       // Code spans keep a glob's `**` from reading as markdown bold.
       const reason = selection.paths.length ? `rules ${selection.paths.map(path => `\`${path}\``).join(', ')}` : selection.description
-      groups.push([keyedLine('Config', `${configPath} @ blob ${short(config.blob)} · ${approved ? 'approved' : 'needs /flow approve verify'}`), keyedLine('Selection', selection.commands.length ? `${selection.commands.map(command => command.join(' ')).join(' · ')} · ${reason}` : `none: ${reason}`)])
+      groups.push([keyedLine('Config', `${configPath} @ blob ${short(config.blob)} · ${approved ? 'approved' : `needs approval from your own terminal: ${await composeApprovalCommand(port, config.blob)}`}`), keyedLine('Selection', selection.commands.length ? `${selection.commands.map(command => command.join(' ')).join(' · ')} · ${reason}` : `none: ${reason}`)])
     } else groups.push([keyedLine('Config', `${configPath} · ${config.kind === 'missing' ? 'not found in the unit tree' : `invalid: ${config.fact}`}`), keyedLine('Selection', 'none: verify refuses until a config exists')])
   }
   const root = await readRepositoryRoot(statusPort)
@@ -128,7 +129,7 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
   // The working tree's file, which the pane flags with or without a unit; the unit tree's copy is the Config row above.
   if (repository.kind === 'invalid') groups.push([keyedLine('Config', `${configPath} in the working tree · invalid: ${repository.fact} · fix that field, or update the mod to the version the file was written for`)])
   else if (repository.kind === 'valid' && !await isVerifyApproved(port, repository.blob)) {
-    groups.push([keyedLine('Issues', `${configPath} in the working tree is not approved · issue writes use the built-in defaults until /flow approve verify`)])
+    groups.push([keyedLine('Issues', `${configPath} in the working tree is not approved · issue writes use the built-in defaults until it is approved · /flow approve verify shows it and the command that approves it`)])
   }
   const lastOk = `last ok ${time(sessionMemory.githubLastOk)}`
   const failure = timedOut ? null : readGithubFailure(result.github)
@@ -141,18 +142,23 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
   groups.push([keyedLine('GitHub', github), ...(rules.isOk ? (rules.value.length ? rules.value.map(rule => keyedLine('Rulesets', `${base} · ${rule.types.join(', ')} · you can bypass: ${rule.bypass ?? 'unknown'}`)) : [keyedLine('Rulesets', `${base} · no active rules`)]) : [keyedLine('Rulesets', `not read: ${rules.error}`)]), keyedLine('Classic', classic.isOk ? `${base} · protection ${classic.value ? 'on' : 'off'}` : `not read: ${classic.error}`)])
   const dismissed = await readDismissals(port)
   const violations = [...(session.violations ?? [])].sort((left, right) => Number(dismissed.has(left.factId) || left.kind === 'unchecked') - Number(dismissed.has(right.factId) || right.kind === 'unchecked') || right.end - left.end)
-  if (violations.length) groups.push(violations.map(record => keyedLine('Violation', `${labelViolation(record, root ?? undefined)} · ${time(record.end)} · ${[...record.toolUseIds, ...(record.agentIds ?? [])].join(', ')} · ${dismissed.has(record.factId) ? 'dismissed' : record.kind === 'unchecked' ? 'unchecked' : 'open'}`)))
+  if (violations.length) groups.push(violations.map(record => keyedLine(record.kind === 'unchecked' ? 'Unchecked' : 'Violation',
+    `${describeViolation(record, 'user', root ?? undefined)} · ${time(record.end)} · ${[...record.toolUseIds, ...(record.agentIds ?? [])].join(', ')}`
+    + `${dismissed.has(record.factId) ? ' · dismissed' : record.kind === 'unchecked' ? '' : ' · open'}`)))
+  // why: /flow status prints the pane's rows above these, so the pane's Handoff note is shown here only when no pane is printed.
+  const isPaneShown = !!session.flow && !!await port.readView()
+  const handoff = isPaneShown ? [] : handoffNotes(session).map(row => keyedLine(row.key, row.value))
   const errors = [formatErrorWindow('herdr', 'report-metadata', sessionMemory.herdrError),
     formatErrorWindow('herdr', 'worktree create', sessionMemory.worktreeError),
     formatErrorWindow('Records', 'record write', sessionMemory.recordError),
-    formatErrorWindow('Log', 'log append', sessionMemory.logError),
-    session.handoff?.state === 'failed' ? keyedLine('Handoff', `handoff not completed · ${session.handoff.reason}`) : null].filter((value): value is string => value !== null)
+    formatErrorWindow('Log', 'log append', sessionMemory.logError), ...handoff].filter((value): value is string => value !== null)
   if (errors.length) groups.push(errors)
   // why: A missing or unreadable manifest shows the version unknown, the safe direction for a display-only record; bestEffort logs a failure.
   const manifest = await bestEffort(port, 'manifest read', async () => readJson(port.files, `${await port.readPluginRoot()}/.claude-plugin/plugin.json`), undefined)
   const ahead = sessionMemory.modulesAhead
   groups.push([keyedLine('Mod', isRecord(manifest) && typeof manifest.version === 'string' ? manifest.version : 'unknown'),
     keyedLine('Guards', ahead === null ? 'module order unknown after a plugin refresh · coordinator and delegation refused until the session restarts'
-      : ahead.length ? `overridden by ${ahead.join(', ')}, hooks modules ahead · coordinator and delegation refused` : 'outermost hooks module')])
+      : ahead.length ? `overridden by ${ahead.join(', ')}, hooks modules ahead · coordinator and delegation refused` : 'outermost hooks module'),
+    keyedLine('Checks', describeGuardChecks())])
   return groups.map(group => group.join('\n')).join('\n\n')
 }

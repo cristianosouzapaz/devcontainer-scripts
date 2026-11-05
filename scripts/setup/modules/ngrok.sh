@@ -1,5 +1,4 @@
-#!/bin/bash
-set -euo pipefail
+# shellcheck shell=bash
 
 # MODULE_NAME="ngrok"
 # MODULE_DESCRIPTION="Configures ngrok authentication token if NGROK_AUTHTOKEN is set"

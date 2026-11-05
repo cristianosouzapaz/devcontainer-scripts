@@ -2,7 +2,7 @@ import { readFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadJsonObject, loadValidatedCatalog } from "../lib/catalog.js";
-import { TOOLS } from "../lib/constants.js";
+import { toolTargets } from "../lib/constants.js";
 import { readGlobalSkillSet } from "../lib/global-skill-set.js";
 import { claudeRuleAdapter, claudeSkillAdapter, getArtifactVersion, readLockFile, reconcileArtifactAdapters, recordArtifact, writeLockFile } from "../lib/lock-file.js";
 import { pickAssets } from "../lib/pick-assets.js";
@@ -21,11 +21,11 @@ import { ensureClaudeRuleSymlink, ensureClaudeSkillSymlink } from "../skills/loc
 
 const consola = setupConsola();
 
-const BASE_CATALOG_KEYS = ["name", "filename", "version", "templateFile"];
-const INSTRUCTIONS_FILE_URL = new URL("./instructions.json", import.meta.url);
-const PROMPTS_FILE_URL = new URL("./prompts.json", import.meta.url);
-const GLOBAL_MANIFEST_URL = new URL("./agents.global.json", import.meta.url);
-const TEMPLATES_URL = new URL("./templates/", import.meta.url);
+const baseCatalogKeys = ["name", "filename", "version", "templateFile"];
+const instructionsFileUrl = new URL("./instructions.json", import.meta.url);
+const promptsFileUrl = new URL("./prompts.json", import.meta.url);
+const globalManifestUrl = new URL("./agents.global.json", import.meta.url);
+const templatesUrl = new URL("./templates/", import.meta.url);
 
 /**
  * Parse YAML frontmatter from markdown content.
@@ -110,7 +110,7 @@ const appliesToAllFiles = (applyTo) => stripQuotes(applyTo) === "**";
  * @returns {string}
  */
 const readTemplateDescription = (templateFile) => {
-    const { raw } = parseFrontmatter(readFileSync(new URL(templateFile, TEMPLATES_URL), "utf8"));
+    const { raw } = parseFrontmatter(readFileSync(new URL(templateFile, templatesUrl), "utf8"));
     return stripQuotes(raw.description ?? "");
 };
 
@@ -159,7 +159,7 @@ const installCanonicalSkill = async (destRoot, skillName, content, version, inst
  * @throws Will throw an error if the catalog is invalid or cannot be read.
  */
 const loadCatalog = (url, extraKeys, catalogName) => loadValidatedCatalog(url, catalogName, {
-    strings: [...BASE_CATALOG_KEYS, ...extraKeys],
+    strings: [...baseCatalogKeys, ...extraKeys],
     stringArrays: ["tags"],
     safeRelativePaths: ["templateFile"],
 });
@@ -169,7 +169,7 @@ const loadCatalog = (url, extraKeys, catalogName) => loadValidatedCatalog(url, c
  * The type-specific descriptor contains only the naming and adapter differences.
  * @param {object[]} entries - Selected catalog entries.
  * @param {string} destRoot - Project root directory.
- * @param {Set<string>} tools - Selected values from TOOLS.
+ * @param {Set<string>} tools - Selected values from toolTargets.
  * @param {object} lock - Parsed template-lock.json.
  * @param {{ writer?: typeof writeWithConflict }} options - File writer override for tests.
  * @param {object} spec - Type-specific skill and adapter operations.
@@ -181,7 +181,7 @@ const installAgentAssets = async (entries, destRoot, tools, lock, options, spec)
     const writer = options.writer ?? writeWithConflict;
     const templates = new Map(entries.map((entry) => [
         entry.templateFile,
-        readFileSync(new URL(entry.templateFile, TEMPLATES_URL), "utf8"),
+        readFileSync(new URL(entry.templateFile, templatesUrl), "utf8"),
     ]));
     const managedPaths = new Set(entries
         .map((entry) => join(".agents", "skills", spec.skillName(entry), "SKILL.md"))
@@ -245,7 +245,7 @@ const installAgentAssets = async (entries, destRoot, tools, lock, options, spec)
  */
 const createCopilotAdapter = (directory) => ({
     name: "copilot",
-    tool: TOOLS.copilot,
+    tool: toolTargets.copilot,
     prepare: (destRoot) => mkdirSync(join(destRoot, directory), { recursive: true }),
     install: async ({ destRoot, entry, template, writer, version, installedVersion }) => {
         const relPath = join(directory, entry.filename);
@@ -260,7 +260,7 @@ const createCopilotAdapter = (directory) => ({
  */
 const claudeSkillSymlinkAdapter = () => ({
     name: "claude",
-    tool: TOOLS.claude,
+    tool: toolTargets.claude,
     install: ({ destRoot, skillName }) => {
         ensureClaudeSkillSymlink(destRoot, skillName);
         return claudeSkillAdapter(skillName);
@@ -280,7 +280,7 @@ const instructionSpec = () => ({
     adapters: [
         {
             name: "claude",
-            tool: TOOLS.claude,
+            tool: toolTargets.claude,
             install: ({ destRoot, entry, skillName }) => {
                 const filename = toClaudeRuleFilename(entry.filename);
                 ensureClaudeRuleSymlink(destRoot, skillName, filename);
@@ -310,7 +310,7 @@ const promptSpec = () => ({
  * Install selected instruction skills and their native adapters, updating the lock manifest.
  * @param {object[]} instructions - Selected instruction catalog entries.
  * @param {string} destRoot - Project root directory.
- * @param {Set<string>} tools - Selected values from TOOLS.
+ * @param {Set<string>} tools - Selected values from toolTargets.
  * @param {object} lock - Parsed template-lock.json.
  * @param {{ writer?: typeof writeWithConflict }} [options] - File writer override for tests.
  * @returns {Promise<{ changed: boolean, lock: object }>} Whether the lock changed and updated lock data.
@@ -322,7 +322,7 @@ export const installInstructions = (instructions, destRoot, tools, lock, options
  * Install selected prompt (command) skills and their native adapters, updating the lock manifest.
  * @param {object[]} prompts - Selected prompt catalog entries.
  * @param {string} destRoot - Project root directory.
- * @param {Set<string>} tools - Selected values from TOOLS.
+ * @param {Set<string>} tools - Selected values from toolTargets.
  * @param {object} lock - Parsed template-lock.json.
  * @param {{ writer?: typeof writeWithConflict }} [options] - File writer override for tests.
  * @returns {Promise<{ changed: boolean, lock: object }>} Whether the lock changed and updated lock data.
@@ -337,7 +337,7 @@ export const installPrompts = (prompts, destRoot, tools, lock, options = {}) =>
  * @throws If a section is missing or is not an array of non-empty strings.
  */
 const loadGlobalAgentManifest = () => {
-    const manifest = loadJsonObject(GLOBAL_MANIFEST_URL);
+    const manifest = loadJsonObject(globalManifestUrl);
     for (const key of ["instructions", "prompts"]) {
         const list = Object.hasOwn(manifest, key) ? manifest[key] : null;
         if (!Array.isArray(list) || !list.every((name) => typeof name === "string" && name.length > 0)) {
@@ -363,9 +363,9 @@ export const installGlobal = async (options = {}) => {
     const wantInstructions = new Set(manifest.instructions);
     const wantPrompts = new Set(manifest.prompts);
 
-    const instructions = loadCatalog(INSTRUCTIONS_FILE_URL, [], "instructions")
+    const instructions = loadCatalog(instructionsFileUrl, [], "instructions")
         .filter((entry) => wantInstructions.has(toSkillName(entry.filename)));
-    const prompts = loadCatalog(PROMPTS_FILE_URL, ["commandFilename"], "prompts")
+    const prompts = loadCatalog(promptsFileUrl, ["commandFilename"], "prompts")
         .filter((entry) => wantPrompts.has(toSkillName(entry.commandFilename)));
 
     const resolvedInstructions = instructions.map((entry) => toSkillName(entry.filename));
@@ -379,7 +379,7 @@ export const installGlobal = async (options = {}) => {
     const destRoot = homedir();
     const lockRoot = join(destRoot, ".agents");
     const lock = readLockFile(lockRoot);
-    const tools = new Set([TOOLS.claude]);
+    const tools = new Set([toolTargets.claude]);
     const opts = { writer: options.writer ?? writeOverwrite };
 
     const instructionResult = instructions.length > 0 ? await installAgentAssets(instructions, destRoot, tools, lock, opts, instructionSpec()) : { changed: false, lock };
@@ -396,8 +396,8 @@ export const installGlobal = async (options = {}) => {
  */
 const askUser = async () => {
     try {
-        const instructions = loadCatalog(INSTRUCTIONS_FILE_URL, [], "instructions");
-        const prompts = loadCatalog(PROMPTS_FILE_URL, ["commandFilename"], "prompts");
+        const instructions = loadCatalog(instructionsFileUrl, [], "instructions");
+        const prompts = loadCatalog(promptsFileUrl, ["commandFilename"], "prompts");
         const destRoot = process.cwd();
         const lock = readLockFile(destRoot);
         const globalSet = readGlobalSkillSet();

@@ -1,6 +1,6 @@
 {
   "name": "working-agreement",
-  "version": "2.5.11",
+  "version": "2.6.0",
   "description": "Enforces and shows the AGENTS.md work flows",
   "author": {
     "name": "cristianosouzapaz"
@@ -18,6 +18,12 @@
       "title": "Spawned unit limit",
       "description": "How many units the coordinator's spawn tool may run at once",
       "default": 4
+    },
+    "continueAtUsageLimit": {
+      "type": "boolean",
+      "title": "Continue units at a usage limit",
+      "description": "Whether spawned unit sessions wait for a usage limit to reset and continue on their own instead of stopping on its dialog",
+      "default": false
     }
   }
 }

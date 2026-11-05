@@ -6,8 +6,8 @@ interface GithubSample {
 /** Representative GitHub responses shared by the test fakes and the manual shape check. */
 export const githubSamples = {
   issue: [
-    { status: null, body: { data: { repository: { issue: { state: 'OPEN', title: 't', labels: { nodes: [{ name: 'ready-for-agent' }] } } } } } },
-    { status: null, body: { data: { repository: { issue: { state: 'CLOSED', title: 't', labels: { nodes: [{ name: 'ready-for-agent' }] } } } } } },
+    { status: null, body: { data: { repository: { issue: { state: 'OPEN', title: 't', url: 'https://github.com/o/r/issues/1', labels: { nodes: [{ name: 'ready-for-agent' }] } } } } } },
+    { status: null, body: { data: { repository: { issue: { state: 'CLOSED', title: 't', url: 'https://github.com/o/r/issues/1', labels: { nodes: [{ name: 'ready-for-agent' }] } } } } } },
   ] satisfies [GithubSample, GithubSample],
   'sub-issues': [{ status: null, body: [{ state: 'open', labels: ['ready-for-agent'] }] }] satisfies [GithubSample],
   'issue-comments': [{ status: null, body: [{ url: 'https://github.com/o/r/issues/1#issuecomment-1', createdAt: '1970-01-01T00:00:00.003Z' }] }] satisfies [GithubSample],

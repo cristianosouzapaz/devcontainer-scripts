@@ -5,6 +5,9 @@ import { markForAgent } from './messages'
 /** A delegated decision as the coordinator's report lists it. */
 export interface DecisionFact { url: string; question: string; cost: string }
 
+/** The sections of a delegated decision that carry its reasoning. */
+export interface DecisionReasoning { choice: string; reason: string }
+
 /** A comment's record kind, read from its first line. */
 type RecordKind = 'decision' | 'review' | undefined
 
@@ -73,6 +76,17 @@ export function findDecisionDefect(body: string): string | undefined {
 }
 
 /**
+ * Reads the Choice and Reason of a well-formed delegated decision, the sections that carry its reasoning.
+ * @param body - The comment's markdown.
+ * @returns The two sections' texts, or undefined when the comment is no well-formed delegated decision.
+ */
+export function readDecisionReasoning(body: string): DecisionReasoning | undefined {
+  if (readRecordKind(body) !== 'decision' || findDecisionDefect(body)) return undefined
+  const texts = readFields(body, decisionMarker, decisionFields, 'delegated decision') as string[]
+  return { choice: texts[decisionFields.indexOf('Choice')]!, reason: texts[decisionFields.indexOf('Reason')]! }
+}
+
+/**
  * Reads the decision a well-formed review comment reviews.
  * @param body - The review comment's markdown.
  * @returns The decision comment's URL.
@@ -111,8 +125,8 @@ export function listDecisions(comments: MarkedComment[]): DecisionFact[] {
  */
 export function composeDelegatedLine(issues: number[]): string {
   const references = formatIssueReferences(issues, ' or ')
-  return markForAgent('This unit is delegated: never stop for a user decision. Route each decision to the coordinator instead — end the turn with the question, ' +
-    'the alternatives and your proposal; it answers in this session. Record each answer as one issue_comment on ' +
+  return markForAgent('This unit is delegated: never stop for a user decision. Route each decision to the coordinator instead — send it with send, kind question: the question, ' +
+    'the alternatives and your proposal, then end the turn; its answer arrives in this session\'s mailbox, never through herdr. Record each answer as one issue_comment on ' +
     `${references} whose body is ${decisionMarker} then ${decisionFields.map(field => `### ${field}`).join(', ')} (low, medium or high). ` +
     `In a grilling, propose the decision tree to the coordinator instead of interviewing the user; the spec then carries a ${decisionsSection} section ` +
     '(question → choice → reason → cost of going back). The PR body lists every high-cost delegated decision under High-cost delegated decisions.')

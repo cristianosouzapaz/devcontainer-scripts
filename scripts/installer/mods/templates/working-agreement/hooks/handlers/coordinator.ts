@@ -1,6 +1,6 @@
-import type { Args, EventResult, Frozen, Next } from 'claude-code'
+import type { Args, EventResult, Frozen } from 'claude-code'
 
-import { mergeChild } from '../core/child-merge'
+import { maxBatchChildren, mergeChildren } from '../core/child-merge'
 import { composePlan } from '../core/plan'
 import type { EnginePort } from '../core/engine-port'
 import { readSession } from '../core/record-store'
@@ -25,7 +25,7 @@ async function isCoordinator(port: EnginePort): Promise<boolean> {
  * @param next - The rest of the chain, which decides any other call.
  * @returns The deny, or what the chain decides.
  */
-export async function handleToolCheck(port: EnginePort, event: Frozen<Args<'tool.check'>>, next: Next<'tool.check'>): Promise<EventResult<'tool.check'>> {
+export async function handleToolCheck(port: EnginePort, event: Frozen<Args<'tool.check'>>, next: (event: Frozen<Args<'tool.check'>>) => Promise<EventResult<'tool.check'>>): Promise<EventResult<'tool.check'>> {
   if (event.isReadOnly || !await isCoordinator(port) || isAllowedForCoordinator(event.tool, event.input)) return next(event)
   return { decision: 'deny', reason: explainCoordinatorDeny(event.tool, event.input) }
 }
@@ -48,7 +48,7 @@ export async function denyCoordinatorCall(port: EnginePort, event: Frozen<Args<'
  * @param next - The rest of the chain, which starts the agent.
  * @returns The deny, or the started agent.
  */
-export async function handleAgentSpawn(port: EnginePort, event: Frozen<Args<'agent.spawn'>>, next: Next<'agent.spawn'>): Promise<EventResult<'agent.spawn'>> {
+export async function handleAgentSpawn(port: EnginePort, event: Frozen<Args<'agent.spawn'>>, next: (event: Frozen<Args<'agent.spawn'>>) => Promise<EventResult<'agent.spawn'>>): Promise<EventResult<'agent.spawn'>> {
   if (event.isTeammate && await isCoordinator(port)) return { deny: coordinatorDeny }
   return next(event)
 }
@@ -88,16 +88,26 @@ export async function handleSuggestDelegateCall(port: EnginePort, event: Frozen<
 }
 
 /**
- * Runs the coordinator's merge of a finished child unit into its parent branch, which the mod refuses for any pair it does not know.
+ * Tells a git branch name from anything else a tool call may carry.
+ * @param name - The untrusted value.
+ * @returns Whether it is a branch name; one starting with a dash would reach git as an option.
+ */
+const isBranchName = (name: unknown): name is string => typeof name === 'string' && /^[\w.][\w./-]*$/.test(name)
+
+/**
+ * Runs the coordinator's merge of finished child units into their parent branch, which the mod refuses for any pair it does not know.
  * @param port - The engine calls.
- * @param event - The tool call, whose `child` is the child branch.
+ * @param event - The tool call, whose `child` is one child branch, or whose `children` are up to three stacked in order.
+ * @param signal - The call's cancellation signal.
  * @returns The merge, or the refusal the agent reports to the user.
  */
-export async function handleMergeChildCall(port: EnginePort, event: Frozen<Args<'tool.call'>>): Promise<EventResult<'tool.call'>> {
-  const child: unknown = ({ ...event } as Record<string, unknown>).child
-  // why: A name starting with a dash would reach git as an option.
-  if (typeof child !== 'string' || !/^[\w.][\w./-]*$/.test(child)) return { result: markForAgent('child must be a branch name.'), isError: true }
-  const merged = await mergeChild(port, child)
+export async function handleMergeChildCall(port: EnginePort, event: Frozen<Args<'tool.call'>>, signal: AbortSignal): Promise<EventResult<'tool.call'>> {
+  const input = { ...event } as Record<string, unknown>
+  const children: unknown = input.children ?? (input.child === undefined ? undefined : [input.child])
+  if ((input.child !== undefined) === (input.children !== undefined) || !Array.isArray(children) || !children.every(isBranchName)) {
+    return { result: markForAgent(`give child, one branch name, or children, 1 to ${maxBatchChildren} branch names.`), isError: true }
+  }
+  const merged = await mergeChildren(port, children, signal)
   return answerTool('merge_child', merged)
 }
 

@@ -13,6 +13,10 @@ ENV PNPM_HOME=/root/.local/share/pnpm \
     PATH=/root/.local/share/pnpm:$PATH \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
+# gh reads GH_BROWSER before BROWSER, and VS Code never sets it, so gh --web reaches the stable
+# wrapper even in terminals where VS Code overrides BROWSER.
+ENV GH_BROWSER=/usr/local/bin/devcontainer-browser
+
 ENV CLAUDE_CONFIG_DIR=/root/.claude \
     CODEX_HOME=/root/.codex \
     PI_CODING_AGENT_DIR=/root/.pi/agent

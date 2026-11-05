@@ -30,7 +30,7 @@ export async function judgeToolCall(engine: EnginePort, args: Record<string, unk
   // Folding a missing tail's '..' may enter a different existing checkout.
   const placed = resolved.path === input ? resolved : await placePath(port, resolved.path)
   if (toRepoRelative(placed.path, records) !== null) {
-    return deny("the agent cannot write the mod's records", "Verify config approval is the user's, via /flow approve")
+    return deny("the agent cannot write the mod's records", "Verify config approval is the user's, from their own terminal")
   }
   const run = await runGit(port.processes, ['-C', placed.directory, 'rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel'])
   // Outside a checkout (including inside git metadata) has no top level to judge.

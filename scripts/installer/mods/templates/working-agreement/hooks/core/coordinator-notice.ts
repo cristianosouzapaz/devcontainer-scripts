@@ -1,13 +1,13 @@
 import { composePermissionNotice, composeTurnNotice, isNoticeOwed, parseNoticeRecord, recordNotice } from '../domain/notice'
 import type { Notice, NoticeRecord, UnitTurn } from '../domain/notice'
 import type { Session } from '../domain/records'
-import { facts } from '../domain/facts'
 import { readJson } from '../lib/json'
-import { formatErrorLine } from '../lib/result'
+import { fail, formatErrorLine } from '../lib/result'
+import { coordinatorAddress, userAddress } from '../domain/mail'
 import { findLiveDelegation } from './delegation'
 import type { EnginePort } from './engine-port'
 import { logEvent } from './flow-log'
-import { isInsideHerdr, runHerdrText } from './herdr-worktrees'
+import { sendMail } from './mailbox'
 import { locatePosition } from './position'
 import { atomicReplace, readCommonDir, readSession, recordsPath } from './record-store'
 import { withRecordLock } from './session-memory'
@@ -35,18 +35,17 @@ export async function readNotices(port: EnginePort, branch: string): Promise<Not
 }
 
 /**
- * Tells the coordinator holding this delegated unit's scope what its turn ended on, once per changed state;
+ * Reports what a delegated unit's turn ended on, once per changed state: to the coordinator holding its scope, or to the user at one of the user's steps;
  * a failed send stays owed and is sent again at the next turn end.
  * @param port - The engine calls.
  * @param turn - How the turn ended.
  * @returns Once the notice is sent, skipped or held.
  */
-export function noticeTurnEnd(port: EnginePort, turn: Pick<UnitTurn, 'reason' | 'answer'>): Promise<void> {
+export function noticeTurnEnd(port: EnginePort, turn: Pick<UnitTurn, 'reason'>): Promise<void> {
   return notify(port, async session => {
     const position = await locatePosition(port, session)
     const current = position?.current?.step
-    return record => composeTurnNotice({ ...turn, issues: session.issues, step: current ? { id: current.id, label: current.label, isHuman: !!current.isHuman } : null,
-      tree: position?.slice?.tree ?? null, verifyFact: position?.verify.isVerified ? null : position?.verify.fact || facts.verifyNotRun, last: record })
+    return composeTurnNotice({ ...turn, issues: session.issues, step: current ? { id: current.id, label: current.label, isHuman: !!current.isHuman } : null })
   })
 }
 
@@ -57,30 +56,40 @@ export function noticeTurnEnd(port: EnginePort, turn: Pick<UnitTurn, 'reason' | 
  * @returns Once the notice is sent, skipped or held.
  */
 export function noticePermission(port: EnginePort, message: string): Promise<void> {
-  return notify(port, async session => () => composePermissionNotice(session.issues, message))
+  return notify(port, session => Promise.resolve(composePermissionNotice(session.issues, message)))
 }
 
 /**
- * Sends a delegated unit's owed notice to its coordinator's pane and records the outcome.
+ * Sends a delegated unit's owed notice as a mod-written inform, to its coordinator's mailbox or the user's, and records the outcome.
  * @param port - The engine calls.
- * @param compose - Reads the unit's session state, off the lock, into a composer of the notice from its last notice record.
- * @returns Once done; nothing is sent outside a delegated unit, outside herdr, or to a scope that names no pane.
+ * @param compose - Composes the notice from the unit's session state, or null when none is owed.
+ * @returns Once done; nothing is sent outside a delegated unit.
  */
-async function notify(port: EnginePort, compose: (session: Session) => Promise<(record: NoticeRecord | null) => Notice | null>): Promise<void> {
+async function notify(port: EnginePort, compose: (session: Session) => Promise<Notice | null>): Promise<void> {
   const session = await readSession(port)
   const branch = session.unit?.branch
   const common = await readCommonDir(port)
-  if (!branch || !common || !await isInsideHerdr(port)) return
-  const paneId = (await findLiveDelegation(port, session.issues))?.paneId
-  if (!paneId) return
-  const composeFrom = await compose(session)
-  await withRecordLock(async () => {
-    const record = await readNotices(port, branch)
-    const notice = composeFrom(record)
-    if (!notice || !isNoticeOwed(record, notice)) return
-    // herdr 0.9.5 takes the text as a positional argument and rejects `--` before it.
-    const error = await runHerdrText(port, ['agent', 'prompt', paneId, notice.text]).then(() => null, formatErrorLine)
-    await atomicReplace(port, noticePath(common, branch), JSON.stringify(recordNotice(record, notice, error === null)))
-    logEvent(port, session, 'notice', { text: notice.text, ...error === null ? {} : { error } })
-  })
+  if (!branch || !common) return
+  const scope = await findLiveDelegation(port, session.issues)
+  if (!scope) return
+  const notice = await compose(session)
+  // why: the mail send takes the record lock itself, so only the record write is under it; a unit's turn ends one at a time.
+  const record = await readNotices(port, branch)
+  if (!notice || !isNoticeOwed(record, notice)) return
+  const error = await sendNoticeMail(port, notice.to === 'user' ? userAddress : coordinatorAddress(scope.sessionId), session.issues, notice.text)
+  await withRecordLock(() => atomicReplace(port, noticePath(common, branch), JSON.stringify(recordNotice(record, notice, error === null))))
+  logEvent(port, session, 'notice', { text: notice.text, ...error === null ? {} : { error } })
+}
+
+/**
+ * Sends a notice the agent cannot report as a mod-written inform, which opens no conversation, so it is never retried or dead-lettered.
+ * @param port - The engine calls.
+ * @param to - The coordinator's address, or the user's.
+ * @param issues - The unit's issues; the first is the conversation key.
+ * @param text - The notice.
+ * @returns Null once sent, else why not.
+ */
+async function sendNoticeMail(port: EnginePort, to: string, issues: number[], text: string): Promise<string | null> {
+  const sent = await sendMail(port, { kind: 'inform', author: 'mod', to, issue: issues[0]!, body: text }).catch((error: unknown) => fail(formatErrorLine(error)))
+  return sent.isOk ? null : sent.error
 }

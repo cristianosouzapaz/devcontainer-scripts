@@ -11,8 +11,9 @@ import { handlePaneClose, handlePaneRender } from '../../hooks/handlers/pane-ren
 import type { PaneElements } from '../../hooks/ui/pane-sections'
 import { summarizeCommand } from '../../hooks/ui/run-log'
 import { diagnosed, diagnosisComment } from '../support/builders'
-import { checkTheme, expectText, mountPane, readFlowStatus, readPromptContext, serveDisplayed, textOf } from '../support/helpers'
+import { checkTheme, expectText, mountPane, readFlowStatus, readKeyLabels, readPromptContext, serveDisplayed, textOf } from '../support/helpers'
 import type { DrawnNode } from '../support/helpers'
+import { keyWidth } from '../../hooks/ui/theme'
 import { configBlob, createTestPort, createWorld, records } from '../support/world'
 import type { World, Gate, Options } from '../support/world'
 
@@ -81,7 +82,7 @@ function seedRun(on: On, run: RunView, options: Options = {}): World {
 }
 
 for (const columns of [30, 60]) {
-  test(`a Verify re-run on a verified tree keeps Commit current on one row at ${columns} columns`, async ($, on) => {
+  test(`a Verify re-run on a verified tree makes Verify current on one row at ${columns} columns`, async ($, on) => {
     const gate: Gate = {}
     const run = savedRun({ status: 'passed', commands: [
       { ...command('passed', 'exit 0'), argv: ['./lint'] },
@@ -100,11 +101,12 @@ for (const columns of [30, 60]) {
     const pending = $.tool.call({ tool: 'mcp__working-agreement__verify' })
     await clock.settle()
     const pane = await mountPane($, { columns })
-    await expectOneRow(pane, commitRow)
+    // The live run holds the verified tree, so the older pass no longer decides Verify.
+    await expectOneRow(pane, '▸ Verify')
     const liveText = textOf(await pane.drawn())
-    expect(liveText).toContain('✓ Verify')
-    expect(liveText).not.toContain('▸ Verify')
-    await expectText(pane, 'Commit', { color: 'text' })
+    expect(liveText).toContain('▸ Verify')
+    expect(liveText).not.toContain('✓ Verify')
+    expect(liveText).toContain('○ Commit')
 
     gate.open?.()
     await clock.settle()
@@ -221,9 +223,9 @@ test('timeout clears the live section and leaves the short Verify fact', async (
   const pending = $.tool.call({ tool: 'mcp__working-agreement__verify' })
   await clock.settle()
   const flow = await mountPane($)
-  expect(textOf(await flow.drawn())).toContain('▸ Code')
+  expect(textOf(await flow.drawn())).toContain('✓ Code')
   expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('already in flight')
-  expect(textOf(await flow.drawn())).toContain('○ Verify')
+  expect(textOf(await flow.drawn())).toContain('▸ Verify')
   await clock.advance(600)
   await pending
   const ended = textOf(await flow.drawn())
@@ -441,9 +443,9 @@ test('resize stacks whole footer buttons above the primary, while identifiers yi
 })
 
 test('a live Verify command reads as its runner and the buckets it runs, flags kept', () => {
-  expect(summarizeCommand(['test/runners/bash.sh', 'test/bats/mods', 'test/bats/runners', 'test/bats/conventions/'])).toBe('bash: mods, runners, conventions')
-  expect(summarizeCommand(['test/runners/bash.sh', 'test/bats/conventions/mod-tests.test.bats', '--jobs'])).toBe('bash: mod-tests, --jobs')
-  expect(summarizeCommand(['test/runners/mods.sh'])).toBe('mods')
+  expect(summarizeCommand(['scripts/test.sh', 'tests/unit', 'tests/e2e', 'tests/lint/'])).toBe('test: unit, e2e, lint')
+  expect(summarizeCommand(['scripts/test.sh', 'tests/lint/style.test.sh', '--jobs'])).toBe('test: style, --jobs')
+  expect(summarizeCommand(['scripts/check.sh'])).toBe('check')
   expect(summarizeCommand(['npm', 'test', 'test'])).toBe('npm: test')
 })
 
@@ -503,7 +505,7 @@ test('Run log summary, keyed rows and command blocks match variant D spacing, co
   await expectText(log, run.log, { color: 'inactive', wrap: 'wrap' })
   for (const key of ['Selection', 'Tree', 'Cwd', 'File']) {
     await expectText(log, key, { color: 'inactive' })
-    expect((await log.findAll({ type: 'Box' })).some(box => box.props['width'] === 11 && box.props['flexShrink'] === 0 && textOf(box) === key)).toBe(true)
+    expect((await log.findAll({ type: 'Box' })).some(box => box.props['width'] === keyWidth && box.props['flexShrink'] === 0 && textOf(box) === key)).toBe(true)
   }
   await expectText(log, '✓ ', { color: 'success' })
   await expectText(log, '✗ ', { color: 'error' })
@@ -574,9 +576,20 @@ for (const [status, label, color] of [['passed', 'passed', 'text'], ['timed out'
   })
 }
 
+test('every label the Run log draws is shorter than the key column, so a space always follows it', async ($, on) => {
+  seedRun(on, savedRun({ status: 'tree changed', commands: [command('passed', 'exit 0', '', 65)], changed: ['src/a.ts'], cwd: '/w', selection: 'lint', log: '/l' }))
+  await readFlowStatus($)
+  const pane = await mountPane($)
+  await pane.press({ key: 'l' })
+  const labels = await readKeyLabels(pane)
+  expect(labels).toContain('Changed')
+  expect(labels.filter(label => label.length >= keyWidth)).toEqual([])
+  await pane.unmount()
+})
+
 test('step rows keep fixed names and symbols, and fit current facts and skipped reasons to the row', async ($, on) => {
   createWorld(on, { branch: 'feat' })
-  const value: FlowView = { flow: 'Small feature', progress: '3/7', issues: [{ number: 1, title: 'A long issue title' }], pending: null, meta: [], labels: [], notes: [], footer: { action: 'continue', isRunning: false },
+  const value: FlowView = { flow: 'Small feature', progress: '3/7', issues: [{ number: 1, title: 'A long issue title', url: '' }], pending: null, meta: [], labels: [], notes: [], footer: { action: 'continue', isRunning: false },
     steps: [
       { isError: false, isMerged: false, isRewritten: false, id: 'verify', symbol: '✓', label: 'Verify', state: 'done' },
       { isError: false, isMerged: false, isRewritten: false, id: 'commit', symbol: '▸', label: 'Commit', state: 'current', detail: 'a fact to act on that wraps' },

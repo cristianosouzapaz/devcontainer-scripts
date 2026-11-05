@@ -4,6 +4,8 @@ import { bestEffort } from '../core/best-effort'
 import { findLiveDelegation } from '../core/delegation'
 import type { EnginePort } from '../core/engine-port'
 import { escalateIdleUnits } from '../core/escalation'
+import { hasUnreadMail } from '../core/mailbox'
+import { closeIdleUnits } from '../core/unit-close'
 import { createReadPort } from '../core/read-port'
 import { readWorkingTreeConfig } from '../core/verify-config'
 import { syncIssues } from '../core/github-sync'
@@ -11,6 +13,7 @@ import { locatePosition } from '../core/position'
 import { readVersionedSession } from '../core/record-store'
 import { composeDelegatedLine } from '../domain/delegated-decision'
 import { composeFlowLine, composeStart, readStartLead } from '../domain/instruction'
+import { doorbellText } from '../domain/mail'
 import { markForAgent } from '../domain/messages'
 import { isUnitFinished, withStates } from '../domain/step-states'
 import { armHandoff } from '../features/handoff'
@@ -22,9 +25,13 @@ const noFlowLine = markForAgent('No flow is declared. Reading and talking need n
 const coordinatorLine = markForAgent('This session is the coordinator: it and its subagents never write in the repository — read, plan and route; ' +
   'every write happens in a unit session in its own herdr worktree. The mod\'s issue tools are its only way to write to GitHub. ' +
   'If the user says they delegate, call suggest_delegate with the issues they named; delegation is set only when they submit /flow delegate. ' +
-  'A delegated unit session ends its turn on each decision it meets: answer it with unit_prompt (read its question with unit_read) with the choice, the reason and the cost of going back (low/medium/high).')
+  'A delegated unit session sends each decision it meets as a question, and each stop only you or the user can lift as a blocked: answer it with send, kind answer and in_reply_to its id, with the choice, the reason and the cost of going back (low/medium/high). ' +
+  'A question only the user can answer, such as a ⛳, you forward with send, to user and forward its id, never answer yourself: the user answers it in /flow inbox, and the answer goes to the unit. ' +
+  'Take a user\'s step for a unit only with its tool, after a delegated decision you posted with issue_comment that names the step in its Choice: approve_unit (/flow approve; ' +
+  'its Choice or Reason cites the diagnosis comment URL and the unit\'s red command), skip_unit (/flow skip <step>; it cites the reason) or follow_up_unit (/flow follow-up #n). ' +
+  'A prose approval records nothing, unit_prompt refuses every slash command, and no agent types a /flow step through herdr.')
 const delegatedLine = markForAgent('This unit is delegated: the user\'s steps /to-spec, /to-tickets, /flow approve <comment URL>, /flow skip and /flow follow-up are the coordinator\'s — ' +
-  'where the flow says to ask the user for one, ask the coordinator through herdr agent prompt to type it here. The Verify config approval (/flow approve verify) stays the user\'s. ' +
+  'where the flow says to ask the user for one, ask the coordinator for it with send; it relays the step with its own tools, and this session\'s mod checks the delegated decision and applies it itself, so you never type it. The commit tool waits for a diagnosis approval. The Verify config approval stays the user\'s, from their own terminal with the command the pane names. ' +
   'At Commit, once Verify passes on the tip tree, stage the finished work with git add and commit it with the commit tool, without stopping; never push. ' +
   'This overrides the Commit step\'s and AGENTS.md\'s rule that commits are the user\'s.')
 
@@ -39,6 +46,7 @@ const composeConfigLine = (error: string): string => markForAgent(`The repositor
 /**
  * Adds the flow's instruction or declaration reminder to a prompt, and a delegated unit's decision routing; rebuilds the mod's
  * start prompt from its lead, and adds the coordinator's escalation lines. A finished unit's prompt carries only an invalid config's notice; a line the text already carries is not added again.
+ * The mod's own doorbell prompt enters nothing when no unread mail is left for it to carry.
  *
  * @param engine - The engine calls.
  * @param event - The submitted prompt.
@@ -46,6 +54,9 @@ const composeConfigLine = (error: string): string => markForAgent(`The repositor
  * @returns What the chain answers.
  */
 export async function handlePromptSubmit(engine: EnginePort, event: Frozen<Args<'prompt.submit'>>, next: Next<'prompt.submit'>): Promise<EventResult<'prompt.submit'>> {
+  // why: an injection point that ran after the ring delivered the mail already; answering without next enters no prompt and starts no
+  // turn, where the classic hook's block would show an expected outcome in the error colour.
+  if (event.origin?.kind === 'plugin' && event.origin.name === 'working-agreement' && event.text === doorbellText && !await hasUnreadMail(engine)) return { text: event.text }
   const port = createReadPort(engine)
   armHandoff(event.origin, event.text)
   const config = await readWorkingTreeConfig(port)
@@ -70,5 +81,6 @@ export async function handlePromptSubmit(engine: EnginePort, event: Frozen<Args<
   const start = lead && position ? composeStart(position, session, lead, isDelegated) : null
   // why: a unit's turn-end notice arrives here as a prompt, the first moment its coordinator's process sees it idle.
   const escalated = !position && isCoordinatorSession(session) ? await bestEffort(engine, 'escalation', () => escalateIdleUnits(engine), []) : []
-  return pass([line, ...escalated.map(markForAgent), ...(isDelegated ? [delegatedLine, composeDelegatedLine(session.issues)] : []), ...configLines], start ?? undefined)
+  const closed = !position && isCoordinatorSession(session) ? await bestEffort(engine, 'unit close', () => closeIdleUnits(engine), []) : []
+  return pass([line, ...[...escalated, ...closed].map(markForAgent), ...(isDelegated ? [delegatedLine, composeDelegatedLine(session.issues)] : []), ...configLines], start ?? undefined)
 }

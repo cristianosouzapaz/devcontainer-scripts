@@ -1,6 +1,6 @@
-import type { ElementTable, RenderElement, ThemeKey } from 'claude-code'
+import type { ElementTable, RenderElement, RenderSurface, ThemeKey } from 'claude-code'
 
-import type { FlowFooter, FlowIssue, FlowRow, FlowStep } from '../../types'
+import type { FlowFooter, FlowIssue, FlowRow, FlowStep, MergeCopy, OpenFailure } from '../../types'
 import { drawRule, fitFact, measureFactWidth, measureLabelWidth, wrapWords } from './pane-layout'
 import { issueGap, keyWidth, labelColor, panePadding, pillGap, pillRowGap, symbolColor, toneColor } from './theme'
 
@@ -14,10 +14,11 @@ interface HeaderProps {
   columns: number
 }
 
-/** The pending text, the issues and what pressing `open` does. */
+/** The pending text, the issues, why the last `open` failed and what pressing `open` does. */
 interface IssueListProps {
   pending: string | null
   issues: FlowIssue[]
+  openFailure?: OpenFailure
   openIssue: (issueNumber: number) => void
 }
 
@@ -30,6 +31,12 @@ interface LabelRowsProps {
 interface KeyedRowsProps {
   rows: FlowRow[]
   columns: number
+}
+
+/** The notes, with what the `Merge` note's copy button does and answered. */
+interface NotesProps extends KeyedRowsProps {
+  mergeCopy?: MergeCopy
+  copyMerge: (surface: RenderSurface) => void
 }
 
 /** The steps of the flow and the body's width. */
@@ -94,11 +101,12 @@ export function drawHeader({ Box, Text }: PaneElements, props: HeaderProps): Ren
  * many issues never push the steps off screen.
  *
  * @param elements - The element table.
- * @param props - The pending text, the issues and what pressing `open` does.
+ * @param props - The pending text, the issues, why the last `open` failed and what pressing `open` does.
  * @returns The issue list.
  */
 export function drawIssueList({ Box, Text, Button }: PaneElements, props: IssueListProps): RenderElement {
   const [issue] = props.issues
+  const failure = issue && props.openFailure?.issue === issue.number ? props.openFailure : undefined
   return (
     <Box flexDirection="column">
       {props.pending && <Text color="inactive">{props.pending}</Text>}
@@ -108,6 +116,7 @@ export function drawIssueList({ Box, Text, Button }: PaneElements, props: IssueL
             <Box flexShrink={0}><Text color="suggestion">#{issue.number}</Text></Box>
             <Box flexShrink={0}><Button key={`open-${issue.number}`} label="open" hotkey="o" onPress={() => props.openIssue(issue.number)} /></Box>
           </Box>
+          {failure && <Text color={toneColor.warn}>{failure.url ? `${failure.reason} · ${failure.url}` : failure.reason}</Text>}
           {issue.title && <Text color="inactive" wrap="truncate-end">{issue.title}</Text>}
         </Box>
       )}
@@ -151,7 +160,7 @@ function drawWrappedValue({ Box, Text }: PaneElements, value: string, columns: n
 }
 
 /**
- * Keeps metadata values aligned while preserving suffix tone and branch truncation.
+ * Keeps metadata values aligned and the branch truncated, toned as a note is: the key carries the tone, the value and suffix stay plain.
  * @param elements - The pane's render elements.
  * @param row - The metadata row.
  * @param columns - The body's width.
@@ -162,12 +171,12 @@ function drawMetaRow(elements: PaneElements, row: FlowRow, columns: number): Ren
   return (
     <Box>
       <Box width={keyWidth} flexShrink={0}>
-        <Text color="inactive">{row.key}</Text>
+        <Text color={toneColor[row.tone]}>{row.key}</Text>
       </Box>
       {row.key === 'Branch' || row.suffix
-        ? <Text wrap={row.key === 'Branch' ? 'truncate-middle' : 'wrap'} color={toneColor[row.tone]}>{row.value}</Text>
-        : drawWrappedValue(elements, row.value, columns, toneColor[row.tone])}
-      {row.suffix && <Box flexShrink={0}><Text color="inactive"> · </Text><Text color={toneColor[row.suffix.tone]}>{row.suffix.text}</Text></Box>}
+        ? <Text wrap={row.key === 'Branch' ? 'truncate-middle' : 'wrap'} color="text">{row.value}</Text>
+        : drawWrappedValue(elements, row.value, columns, 'text')}
+      {row.suffix && <Box flexShrink={0}><Text color="inactive"> · </Text><Text color="text">{row.suffix}</Text></Box>}
     </Box>
   )
 }
@@ -176,17 +185,23 @@ function drawMetaRow(elements: PaneElements, row: FlowRow, columns: number): Ren
  * Emphasizes a note's label without truncating its explanation.
  * @param elements - The pane's render elements.
  * @param row - The note row.
- * @param columns - The body's width.
+ * @param props - The notes' props: the body's width and the `Merge` copy button.
  * @returns The rendered note row.
  */
-function drawNoteRow(elements: PaneElements, row: FlowRow, columns: number): RenderElement {
-  const { Box, Text } = elements
+function drawNoteRow(elements: PaneElements, row: FlowRow, props: NotesProps): RenderElement {
+  const { Box, Text, Button } = elements
   return (
     <Box>
       <Box width={keyWidth} flexShrink={0}>
         <Text color={toneColor[row.tone]} weight="semibold">{row.key}</Text>
       </Box>
-      {drawWrappedValue(elements, row.value, columns, 'text')}
+      {row.key === 'Merge'
+        // The command stays out of the pane, where it would wrap over several lines; the button copies it.
+        ? <Box flexShrink={0}>
+          <Button key="copy" label="copy" hotkey="m" onPress={press => props.copyMerge(press.surface)} />
+          {props.mergeCopy && <Text color={props.mergeCopy.isCopied ? 'text' : toneColor.warn}>{props.mergeCopy.isCopied ? '  copied' : `  ${props.mergeCopy.reason}`}</Text>}
+        </Box>
+        : drawWrappedValue(elements, row.value, props.columns, 'text')}
     </Box>
   )
 }
@@ -233,11 +248,11 @@ export function drawStepList({ Box, Text }: PaneElements, props: StepListProps):
  * Draws blocked writes and a failed handoff.
  *
  * @param elements - The element table.
- * @param props - The rows and the body's width.
+ * @param props - The rows, the body's width and the `Merge` note's copy button.
  * @returns The notes.
  */
-export function drawNotes(elements: PaneElements, props: KeyedRowsProps): RenderElement {
-  return <elements.Box flexDirection="column">{props.rows.map(row => drawNoteRow(elements, row, props.columns))}</elements.Box>
+export function drawNotes(elements: PaneElements, props: NotesProps): RenderElement {
+  return <elements.Box flexDirection="column">{props.rows.map(row => drawNoteRow(elements, row, props))}</elements.Box>
 }
 
 /**

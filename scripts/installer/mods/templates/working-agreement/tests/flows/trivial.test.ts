@@ -23,13 +23,13 @@ test('a Trivial change unit runs from Code to a merged PR', async ($, on) => {
   const graph = linearGraph({ feat: 0 }, verifyFile, 1)
   const git: Checkout = { branch: 'feat', graph }
   const options: Options = { session: noFlow, verifyFile }
-  const { clock, views } = createWorld(on, git, options)
+  const { clock, views, approveConfig } = createWorld(on, git, options)
   expect((await runFlowCommand($, 'trivial')).text).toContain('current step: Code')
   git.isDirty = true
   git.changed = ['src/a.ts']
   git.tree = 'tree'
   expect(await readCurrentStep($)).toBe('Verify')
-  await completeDelivery($, { git, options, clock, views }, { closingIssuesReferences: [] })
+  await completeDelivery($, { git, options, clock, views, approveConfig }, { closingIssuesReferences: [] })
 })
 
 test('a tick with a fresh candidate cache and no slice does not reread pull requests', async ($, on) => {

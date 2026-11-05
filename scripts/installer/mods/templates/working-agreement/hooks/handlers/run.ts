@@ -7,12 +7,14 @@ import { bestEffort } from '../core/best-effort'
 import { refreshView } from '../core/pane-view'
 import { readCommonDir, readSession, readUnit } from '../core/record-store'
 import { readWorkingTreeKey } from '../core/repository'
+import { readDelegatedUnit } from '../core/delegated-commits'
 import { finishRunView, runStatus, withRunView } from '../core/run-view'
 import { findWorktreeRoot } from '../lib/git'
 import { executeCommand, prepareRunLog, recordToolRun, withToolRun } from '../core/tool-run'
 import { describeTail, readFailingLines } from '../core/run-command'
 import { masksExitStatus, wrapperRefusal } from '../domain/run-argv'
 import { verifyOutcome } from '../core/verify'
+import { describeStoppedWait, watchCancels } from '../core/cancel-gate'
 import { holdVerifyTurn, isTurnHeld, leaveVerifyQueue, waitVerifyTurn } from '../core/verify-queue'
 import { changedPaths, defaultVerifyTimeoutMinutes, readVerifyConfig } from '../core/verify-config'
 import { findFlow, hasDiagnoseStep } from '../domain/flow-definitions'
@@ -23,12 +25,12 @@ import { hasOnlyKeys, isNonEmptyString, isRecord, isStringArray } from '../lib/g
 
 interface RunInput { argv: string[] }
 
-interface RunJob { argv: string[]; sid: string; identity: Identity; inherited: Unit; root: string; tree: string; log: string; runId: string; minutes: number; turn: VerifyTurn }
+interface RunJob { argv: string[]; isEvidence: boolean; sid: string; identity: Identity; inherited: Unit; root: string; tree: string; log: string; runId: string; minutes: number; turn: VerifyTurn }
 
 const cancelled = 'Run cancelled; no record written.'
 
 /**
- * Runs a Diagnose argv, recording only completed runs on unchanged worktree content.
+ * Runs a Diagnose argv, or a delegated unit's test argv in any flow, recording Diagnose evidence only for completed runs on unchanged worktree content.
  * @param port - The engine calls.
  * @param input - The untrusted tool arguments.
  * @param signal - The dispatch's cancellation signal.
@@ -62,7 +64,9 @@ async function run(port: EnginePort, argv: string[], signal: AbortSignal, sid: s
   const session = await readSession(port)
   if (!session.unit) return 'No unit declared in this chat.'
   const flow = findFlow(session.flow)
-  if (!hasDiagnoseStep(flow)) return 'The declared flow has no Diagnose step; run is unavailable.'
+  // why: a delegated unit's only queued targeted test run is this one, whatever its flow; outside Diagnose it is no evidence.
+  const isEvidence = hasDiagnoseStep(flow)
+  if (!isEvidence && !await readDelegatedUnit(port).catch(() => null)) return 'The declared flow has no Diagnose step; run is unavailable.'
   const identity = session.unit
   const inherited = await readUnit(port, identity)
   const root = await findWorktreeRoot(port.processes, identity.branch)
@@ -79,13 +83,17 @@ async function run(port: EnginePort, argv: string[], signal: AbortSignal, sid: s
   if (!common) return 'Cannot locate the repository metadata.'
   // A Diagnose run waits in the Verify queue, so no two heavy runs share the machine and a red never reflects a neighbour's load.
   const onMove = () => bestEffort(port, 'queue view refresh', () => refreshView(port, { isQuiet: true, isSynced: true }), undefined)
-  const wait = await waitVerifyTurn(port, common, sid, await port.now() + minutes * minuteMs, signal, onMove)
+  // why: a cancel stops only the wait, through its own signal; the command, once it runs, keeps the dispatch's and finishes.
+  const watch = watchCancels(port, signal)
+  const wait = await waitVerifyTurn(port, common, sid, await port.now() + minutes * minuteMs, watch.signal, onMove, watch.check)
+  const stopped = watch.cancelId()
+  if (stopped) return describeStoppedWait('the Verify queue', stopped)
   if (wait.kind !== 'acquired') return wait.kind === 'cancelled' ? cancelled
     : `Run queued, timed out after ${minutes} min behind another session's Verify or run; no record written.`
   const { turn } = wait
   const stop = holdVerifyTurn(port, turn)
   try {
-    return await execute(port, { argv, sid, identity, inherited, root, tree, log, runId, minutes, turn }, signal)
+    return await execute(port, { argv, isEvidence, sid, identity, inherited, root, tree, log, runId, minutes, turn }, signal)
   } finally {
     await stop()
     await leaveVerifyQueue(port, turn)
@@ -93,14 +101,14 @@ async function run(port: EnginePort, argv: string[], signal: AbortSignal, sid: s
 }
 
 /**
- * Runs the Diagnose argv under a held queue turn and records its outcome.
+ * Runs the argv under a held queue turn and records its outcome as Diagnose evidence when the flow has a Diagnose step.
  * @param port - The engine calls.
  * @param job - The run's command, unit, worktree, log and turn.
  * @param signal - The dispatch's cancellation signal.
  * @returns The cancellation, refusal or recorded run summary.
  */
 async function execute(port: EnginePort, job: RunJob, signal: AbortSignal): Promise<string> {
-  const { argv, sid, identity, inherited, root, tree, log, runId, minutes, turn } = job
+  const { argv, isEvidence, sid, identity, inherited, root, tree, log, runId, minutes, turn } = job
   return withRunView(port, sid, identity, inherited.generation, {
     runId, kind: 'Run', status: 'running', selection: '', tree, cwd: root, log, duration: 0, at: await port.now(),
     commands: [{ argv, status: 'running', duration: 0, outcome: '', output: '' }],
@@ -115,6 +123,13 @@ async function execute(port: EnginePort, job: RunJob, signal: AbortSignal): Prom
     }
     if (!await isTurnHeld(port, turn)) return `Verify lock lost: another session broke it as stale while this command ran; no record written. Log: ${log}`
     const record: RunRecord = { argv, tree, outcome: verifyOutcome(result, minutes), runId, at: await port.now() }
+    const failing = await readFailingLines(port, log)
+    const failures = failing.length ? `failing test lines (first ${failing.length}):\n${failing.join('\n')}\noutput tail:\n` : ''
+    const summary = `Run ${record.outcome.kind}: ${status}.\n${failures}${describeTail(tail, log)}`
+    if (!isEvidence) {
+      await finishRunView(port, sid, { kind: record.outcome.kind === 'pass' ? 'green' : 'red', status: runStatus(record.outcome) }, signal)
+      return `${summary}\nno Diagnose evidence recorded: the declared flow has no Diagnose step`
+    }
     const recorded = await recordToolRun(port, identity, inherited, signal, own => ({ runs: retainRuns([record, ...own.runs]) }))
     if (!recorded) return cancelled
     await finishRunView(port, sid, { kind: record.outcome.kind === 'pass' ? 'green' : 'red', status: runStatus(record.outcome) }, signal)
@@ -130,8 +145,6 @@ async function execute(port: EnginePort, job: RunJob, signal: AbortSignal): Prom
       : !judgement.done ? `this pass does not count: ${need}`
       : pinned ? `this pass is not the fix green: that is the approved red's argv ${JSON.stringify(pinned.argv)} passing on a different tree`
       : 'this pass pairs with no earlier red of the same argv on a different tree'
-    const failing = await readFailingLines(port, log)
-    const failures = failing.length ? `failing test lines (first ${failing.length}):\n${failing.join('\n')}\noutput tail:\n` : ''
-    return `Run ${record.outcome.kind}: ${status}.\n${failures}${describeTail(tail, log)}\n${progress}`
+    return `${summary}\n${progress}`
   })
 }

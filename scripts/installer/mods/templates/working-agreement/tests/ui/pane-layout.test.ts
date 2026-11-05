@@ -2,6 +2,7 @@ import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
 import { layoutLabelRows, measureLabelWidth } from '../../hooks/ui/pane-layout'
+import { keyWidth, panePadding } from '../../hooks/ui/theme'
 
 // A pill is ` label ` wide, two columns apart: `aa` and `bbb` take 4 + 2 + 5 = 11 columns.
 test('labels that fit share one row', () => {
@@ -31,6 +32,6 @@ test('no labels make no rows', () => {
 })
 
 test('the label column is the body less its padding and the key column, at least one', () => {
-  expect(measureLabelWidth(40)).toBe(25)
+  expect(measureLabelWidth(40)).toBe(40 - 2 * panePadding.x - keyWidth)
   expect(measureLabelWidth(5)).toBe(1)
 })

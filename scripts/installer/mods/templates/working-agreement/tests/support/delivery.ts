@@ -10,17 +10,18 @@ interface DeliveryFixture {
   options: Options
   clock: MockClock
   views: World['views']
+  approveConfig: World['approveConfig']
 }
 
 /**
  * Drives approved verification through an open, green PR and its merged conclusion.
  * @param $ - The test engine.
- * @param fixture - The checkout and GitHub responses to mutate, clock and published pane views.
+ * @param fixture - The checkout and GitHub responses to mutate, clock, published pane views and the user's terminal approval.
  * @param prFields - Fields that vary from the default PR closing the declared issues.
  * @returns Once every delivery transition and the merged conclusion are asserted.
  */
 export async function completeDelivery($: Engine, fixture: DeliveryFixture, prFields: Parameters<typeof buildPullRequest>[0] = {}): Promise<void> {
-  await approveVerify($)
+  approveVerify(fixture)
   expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('Verify passed')
   expect(readPaneCurrentStep(fixture.views)).toBe('Commit')
   const committed = { ...fixture.git.graph!, refs: { ...fixture.git.graph!.refs, feat: 'c1' } }

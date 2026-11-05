@@ -3,7 +3,7 @@ import { expect } from 'claude-code/testing'
 import { coordinator, noFlow } from '../support/builders'
 import { callModTool, runFlowCommand } from '../support/helpers'
 import { test } from '../support/kit'
-import { delegationCheckout, seedDelegatedChild } from '../support/parallel-worktrees'
+import { delegationCheckout, gatedCheckout, gateOptions, seedDelegatedChild } from '../support/parallel-worktrees'
 import { createWorld, delegatedFile } from '../support/world'
 
 /**
@@ -19,18 +19,24 @@ const decision = (question: string, cost: string, id: number): { url: string; bo
 })
 
 test('/flow report is the rendered report itself: each issue\'s step, commits, merge, decisions high-cost first and notices, then the signing commands', async ($, on) => {
-  const world = createWorld(on, delegationCheckout(), { session: coordinator, comments: { 2: [decision('Which store?', 'low', 1), decision('Which branch?', 'high', 2)] } as never })
+  const world = createWorld(on, gatedCheckout(), { session: coordinator, ...gateOptions, comments: { 2: [decision('Which store?', 'low', 1), decision('Which branch?', 'high', 2)] } as never })
   await seedDelegatedChild(world)
   await callModTool($, 'merge_child', { child: 'a' })
   const result = await runFlowCommand($, 'report')
-  expect(result.text?.replace(/'[^']*'/, '<re-sign>')).toBe([
-    '#1 · par', 'Step       PR', 'Verify     no verify command configured', 'Commits    none', 'Merge      none', 'Decision   none', 'Notice     none', '',
-    '#2 · a', 'Step       finished', 'Verify     no verify command configured', 'Commits    a1 a2', 'Merge      into par',
-    'Decision   high · Which branch? · https://github.com/o/r/issues/2#issuecomment-2',
-    'Decision   low · Which store? · https://github.com/o/r/issues/2#issuecomment-1', 'Notice     none', '',
-    'Delegated commits are unsigned and local — sign and push them, in this order (each re-sign moves no ref unless the tree is unchanged and every commit carries a signature):',
-    '  bash -c <re-sign> resign /par origin/main par a',
-    '  git -C /par push -u origin par',
+  expect(result.text?.replace(/\S+\/sign\/par\.sh/g, '<script>')).toBe([
+    '#1 · par', 'Step        PR', 'Verify      no local check selected — left to CI', 'Commits     none', 'Merge       none', 'Decision    none', 'Notice      none', '',
+    '#2 · a', 'Step        finished', 'Verify      no local check selected — left to CI', 'Commits     a1 a2', 'Merge       into par',
+    'Decision    high · Which branch? · https://github.com/o/r/issues/2#issuecomment-2',
+    'Decision    low · Which store? · https://github.com/o/r/issues/2#issuecomment-1', 'Notice      none', '',
+    'To sign  par',
+    '  Commits      3 above origin/main (3 unsigned, 0 signed)',
+    '  Child refs   1 move with it (a)',
+    '  Checks       tree unchanged · every commit signed · verify: off (no keyring)',
+    '  Pre-check    ✔ every child is inside the head',
+    '', 'Run',
+    '  1. bash <script> --dry-run    # lists, moves nothing',
+    '  2. bash <script>',
+    '  3. git -C /par push -u origin par',
   ].join('\n'))
   expect(world.prompts).toEqual([])
 })
@@ -58,7 +64,7 @@ test('/flow report gives no signing commands when no delegated commit is left', 
   for (const sha of ['a1', 'a2']) world.files.delete(delegatedFile(sha))
   const text = (await runFlowCommand($, 'report')).text ?? ''
   expect(text).toMatch(/#2 · a\n[^#]*Commits\s+none/)
-  expect(text).not.toContain('sign and push')
+  expect(text).not.toContain('To sign')
 })
 
 test('/flow report lists the issues by number, byte-identical on every run over the same records', async ($, on) => {

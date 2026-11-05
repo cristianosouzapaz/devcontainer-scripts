@@ -14,6 +14,7 @@ _PERSISTENT_DATA_LOCKS_HELD=''
 # ----- FUNCTIONS --------------------------------------------------------------
 
 # persistent_data_lock_path <shared|project>: prints the lock file path of a scope
+# Stdout: the lock file path, one line
 persistent_data_lock_path() {
 	local root
 

@@ -1,4 +1,5 @@
-import type { DelegationScope, FlowRow, FlowView, GithubFailure } from '../../types'
+import type { DelegationScope, FlowView, GithubFailure } from '../../types'
+import type { KeyedRow } from './theme'
 import type { Session } from '../domain/records'
 import { formatLocalTime } from '../lib/time'
 import { formatStepLabel, isUnitFinished, listDeclaredLabels, markStep, projectDisplayStates } from '../domain/step-states'
@@ -7,10 +8,13 @@ import { facts } from '../domain/facts'
 import { symbol } from './symbols'
 import { pluralize } from '../domain/messages'
 
+/** Holds the user's open questions, the answers not yet recorded on their issues, and the dead letters. */
+interface InboxCounts { open: number; unrecorded: number; deadLetters: number }
+
 /**
  * Lists issue numbers, a run of three or more consecutive ones as a range, so a wide scope stays a few pane lines.
  * @param issues - The issue numbers, ascending.
- * @returns The numbers, `#3–#9` for a run.
+ * @returns The numbers, `#<first>–#<last>` for a run.
  */
 function formatIssueRanges(issues: number[]): string {
   const runs = issues.reduce<number[][]>((found, issue) => {
@@ -25,10 +29,22 @@ function formatIssueRanges(issues: number[]): string {
  * @param scope - The coordinator's scope.
  * @returns The Delegating row, and a Triage row while triage is handed over.
  */
-export function scopeRows(scope: DelegationScope): FlowRow[] {
+export function scopeRows(scope: DelegationScope): KeyedRow[] {
   const value = [formatIssueRanges(scope.issues), scope.coversCreated ? 'issues it creates' : '', scope.isPushUnguarded ? 'no signed-commit ruleset' : ''].filter(Boolean).join(' · ')
   return [{ key: 'Delegating', value, tone: 'text' },
-    ...scope.triage?.length ? [{ key: 'Triage', value: formatIssueRanges(scope.triage), tone: 'text' as const }] : []]
+    ...scope.triage?.length ? [{ key: 'Triage' as const, value: formatIssueRanges(scope.triage), tone: 'text' as const }] : []]
+}
+
+/**
+ * Words a coordinator's inbox row: the questions waiting for the user, which never expire, the issue comments not yet recorded, and the
+ * messages about its issues dead-lettered to the user.
+ * @param counts - The open questions, the unrecorded comments and the dead letters.
+ * @returns The Inbox row.
+ */
+export function inboxRow(counts: InboxCounts): KeyedRow {
+  const value = [`${pluralize(counts.open, 'open question')} for you`, ...counts.open ? ['/flow inbox'] : [],
+    ...counts.unrecorded ? [`${counts.unrecorded} not recorded on the issue`] : [], ...counts.deadLetters ? [pluralize(counts.deadLetters, 'dead letter')] : []].join(' · ')
+  return { key: 'Inbox', value, tone: counts.open || counts.unrecorded || counts.deadLetters ? 'warn' : 'text' }
 }
 
 /**
@@ -36,8 +52,8 @@ export function scopeRows(scope: DelegationScope): FlowRow[] {
  * @param session - The current session.
  * @returns The failure note, or no notes after success.
  */
-export function handoffNotes(session: Session): FlowRow[] {
-  return session.handoff?.state === 'failed' ? [{ key: 'Handoff', value: `not completed — ${session.handoff.reason}.`, tone: 'error' }] : []
+export function handoffNotes(session: Session): KeyedRow[] {
+  return session.handoff?.state === 'failed' ? [{ key: 'Handoff', value: `not completed · ${session.handoff.reason}`, tone: 'error' }] : []
 }
 
 /**
@@ -45,11 +61,11 @@ export function handoffNotes(session: Session): FlowRow[] {
  * @param session - The current session.
  * @returns One note per finding, one for a pending audit, or none.
  */
-export function auditNotes(session: Session): FlowRow[] {
+export function auditNotes(session: Session): KeyedRow[] {
   const result = session.audit?.result
-  if (result?.state === 'pending') return [{ key: 'Issue audit', value: `pending — ${result.reason}`, tone: 'warn' }]
+  if (result?.state === 'pending') return [{ key: 'Issue audit', value: `pending · ${result.reason}`, tone: 'warn' }]
   return result?.state === 'violations'
-    ? result.findings.map((finding): FlowRow => ({ key: `Issue #${finding.issue}`, value: `${finding.field}: expected ${finding.expected}, has ${finding.actual}`, tone: 'error' }))
+    ? result.findings.map((finding): KeyedRow => ({ key: `Issue #${finding.issue}`, value: `${finding.field}: expected ${finding.expected}, has ${finding.actual}`, tone: 'error' }))
     : []
 }
 
@@ -72,13 +88,13 @@ function formatGithubFailure(failure: GithubFailure): string {
  * @returns The pane's view.
  */
 export function buildView(session: Session, position: Position, githubFailure: GithubFailure | null, isTreeChanged: boolean): FlowView {
-  const meta: FlowRow[] = []
-  const notes: FlowRow[] = []
+  const meta: KeyedRow[] = []
+  const notes: KeyedRow[] = []
   if (session.unit || position.git) {
-    const suffix = position.slice?.isRewritten ? { text: 'rewritten', tone: 'error' as const }
-      : position.integration?.state === 'unknown-end' || position.integration?.state === 'deleted-unmerged' ? { text: 'deleted', tone: 'warn' as const }
-      : position.slice?.isFrozen ? { text: 'frozen', tone: 'inactive' as const } : undefined
-    meta.push({ key: 'Branch', value: session.unit?.branch ?? position.git?.branch ?? '', tone: 'text', ...(suffix ? { suffix } : {}) })
+    const state = position.slice?.isRewritten ? { suffix: 'rewritten', tone: 'error' as const }
+      : position.integration?.state === 'unknown-end' || position.integration?.state === 'deleted-unmerged' ? { suffix: 'deleted', tone: 'warn' as const }
+      : position.slice?.isFrozen ? { suffix: 'frozen', tone: 'inactive' as const } : { tone: 'text' as const }
+    meta.push({ key: 'Branch', value: session.unit?.branch ?? position.git?.branch ?? '', ...state })
   }
   if (session.unit && position.git && session.unit.branch !== position.git.branch) {
     notes.push({ key: 'Checkout', value: `${position.git.branch}, not this unit's branch`, tone: 'warn' })
@@ -90,7 +106,10 @@ export function buildView(session: Session, position: Position, githubFailure: G
   }
   const merge = position.current?.step.observe === 'integrated' && position.integration?.state === 'pending' ? position.integration.command : undefined
   if (merge) notes.push({ key: 'Merge', value: merge, tone: 'text' })
-  if (position.verify.queued) notes.push({ key: 'Verify', value: position.verify.queued, tone: 'warn' })
+  // A queued Verify waits only for another session's run, so nobody has to act and it keeps the plain tone.
+  if (position.verify.queued) notes.push({ key: 'Verify', value: position.verify.queued, tone: 'text' })
+  // The approval is the user's, in their own terminal: the note names the command, and warns once the unit waits for it.
+  if (position.verify.approval) notes.push({ key: 'Approve', value: position.verify.approval, tone: position.verify.isWaitingApproval && !position.isWorking ? 'warn' : 'text' })
   notes.push(...handoffNotes(session), ...auditNotes(session))
   const isFinished = !position.slice?.isRewritten && isUnitFinished(position)
   const states = projectDisplayStates(position.states)
@@ -99,10 +118,10 @@ export function buildView(session: Session, position: Position, githubFailure: G
   const settled = currentIndex >= 0 ? currentIndex : states.filter(entry => entry.state !== 'pending').length
   return {
     flow: position.flow.label,
-    progress: `${position.slice?.isRewritten ? symbol.rewritten : settled}/${states.length}`,
+    progress: `${settled}/${states.length}`,
     issues: session.issues.map(issueNumber => {
       const info = session.info[issueNumber]
-      return { number: issueNumber, title: info && 'title' in info ? info.title : '' }
+      return info && 'title' in info ? { number: issueNumber, title: info.title, url: info.url ?? '' } : { number: issueNumber, title: '', url: '' }
     }),
     pending: !session.issues.length && position.flow.issue === 'produced' ? 'issue not yet created' : null,
     meta,

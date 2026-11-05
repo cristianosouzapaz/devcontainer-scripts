@@ -122,7 +122,20 @@ export async function runHerdrText(port: EnginePort, args: string[], timeoutMs =
   const parsed = parseJson(result.stdout)
   const reply = parsed.isOk ? readField(parsed.value, 'error', 'message') : undefined
   const detail = stderr || (typeof reply === 'string' ? reply : '')
-  throw new Error(`herdr ${args.slice(0, 2).join(' ')}: exit ${result.exitCode}${detail ? `: ${detail}` : ''}`)
+  // why: herdr prints its JSON error on stderr or stdout; its code, not its wording, is what a caller may branch on.
+  const replied = [parseJson(stderr ?? ''), parsed].map(json => json.isOk ? readField(json.value, 'error', 'code') : undefined).find(code => typeof code === 'string')
+  throw new HerdrError(`herdr ${args.slice(0, 2).join(' ')}: exit ${result.exitCode}${detail ? `: ${detail}` : ''}`, typeof replied === 'string' ? replied : undefined)
+}
+
+/** A failed herdr command, carrying the error code of herdr's JSON reply when it printed one. */
+export class HerdrError extends Error {
+  /**
+   * @param message - The command and what it reported.
+   * @param code - herdr's error code, such as `agent_not_idle`.
+   */
+  constructor(message: string, readonly code?: string) {
+    super(message)
+  }
 }
 
 /**

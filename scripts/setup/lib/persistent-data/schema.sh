@@ -7,6 +7,7 @@ readonly _PERSISTENT_DATA_SCHEMA_SH_LOADED=1
 # ----- FUNCTIONS --------------------------------------------------------------
 
 # persistent_data_schema_marker <shared|project>: prints the schema marker path of a scope
+# Stdout: the marker file path, one line
 persistent_data_schema_marker() {
 	local root
 
@@ -19,6 +20,7 @@ persistent_data_schema_marker() {
 }
 
 # persistent_data_schema_state <shared|project>: prints the compatibility state of a scope: empty, data, valid or invalid
+# Stdout: the state word, one line
 # Notes: empty holds nothing beyond the marker directory and lock file; data holds
 #   content without a marker; valid and invalid carry a marker that does or does not
 #   match the layout version.

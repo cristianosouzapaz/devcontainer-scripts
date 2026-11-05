@@ -1,8 +1,8 @@
 import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
-import { diagnoseRuns, diagnosisComment, noFlow, trivialFlow, verifyFile, verifyId } from '../support/builders'
+import { approvalCommand, diagnoseRuns, diagnosisComment, noFlow, trivialFlow, verifyFile, verifyId } from '../support/builders'
 import { readCurrentStep, runFlowCommand } from '../support/helpers'
-import { createWorld, root } from '../support/world'
+import { createWorld, records, root } from '../support/world'
 
 const userOnly = ['trivial', 'follow-up #1', 'handoff', 'skip code reviewed']
 test('the user-only /flow subcommands are refused unless typed at the prompt', async ($, on) => {
@@ -98,14 +98,11 @@ test('a successful /flow approve starts the new current step after its reply', a
   expect(prompts[0]).toContain('current step: Code')
 })
 
-test('a successful /flow approve verify <id> starts Verify, the step its approval unblocked, after its reply', async ($, on) => {
+test('/flow approve verify with the current id approves nothing and starts no step', async ($, on) => {
   const id = verifyId()
-  const { clock, prompts } = createWorld(on, { branch: 'feat', isDirty: true, changed: ['src/a.ts'], tree: 'tree' }, { session: trivialFlow(), verifyFile })
-  expect((await runFlowCommand($, `approve verify ${id}`)).text).toBe(`Verify config ${id} approved.`)
-  expect(prompts).toEqual([])
+  const { clock, prompts, files } = createWorld(on, { branch: 'feat', isDirty: true, changed: ['src/a.ts'], tree: 'tree' }, { session: trivialFlow(), verifyFile })
+  expect((await runFlowCommand($, `approve verify ${id}`)).text).toContain(approvalCommand())
   await clock.settle()
-  expect(prompts).toHaveLength(1)
-  expect(prompts[0]).toStartWith(`Verify config ${id} approved. Start the current step (Verify). [working-agreement] `)
-  expect(prompts[0]).toContain('Next action: call the verify tool')
-  expect(await readCurrentStep($)).toBe('Verify')
+  expect(prompts).toEqual([])
+  expect([...files.keys()].some(path => path.startsWith(`${records}/ok/`))).toBe(false)
 })

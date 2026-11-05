@@ -21,9 +21,9 @@ test('a Close out unit runs from Verify to a merged PR', async ($, on) => {
   const graph = linearGraph({ feat: 0 }, verifyFile, 1)
   const git: Checkout = { branch: 'feat', graph, isDirty: true }
   const options: Options = { session: noFlow, verifyFile }
-  const { clock, views } = createWorld(on, git, options)
+  const { clock, views, approveConfig } = createWorld(on, git, options)
   expect((await declareFlow($, 'close-out', [1])).result).toContain('current step: Verify')
-  await completeDelivery($, { git, options, clock, views })
+  await completeDelivery($, { git, options, clock, views, approveConfig })
 })
 
 test('a Close out on an integration branch requires a child merged later until its PR closes that issue too', async ($, on) => {
