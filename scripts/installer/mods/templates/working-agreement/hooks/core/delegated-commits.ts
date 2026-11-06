@@ -113,7 +113,7 @@ export async function denyDelegatedCommand(port: EnginePort, command: string): P
     + 'which commits unsigned on this unit\'s branch and records it as delegated.')
   const heavy = findHeavyTestRun(command, await readApprovedRunners(port))
   if (heavy) return markForAgent(`Under delegation a test run from Bash is refused before it runs (${heavy}): it would load the host outside the Verify queue `
-    + 'and slow another unit\'s Verify past its timeouts. Run a targeted test through the run tool, which waits its turn in the queue, and the full check through the verify tool.')
+    + 'and slow another unit\'s Verify past its timeouts. Run a targeted test through the run tool, which waits its turn in the queue, and the unit\'s own check through the verify tool.')
   const aliases = await runGit(port.processes, ['config', '--get-regexp', '^alias\\.'])
   // git config exits 1 when no alias is set.
   const names = aliases.exitCode === 0 ? aliases.stdout.split('\n').filter(Boolean).map(line => line.split(' ')[0]?.slice('alias.'.length) ?? '')

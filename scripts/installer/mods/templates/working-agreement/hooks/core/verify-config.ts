@@ -1,3 +1,4 @@
+import type { VerifyStage } from '../../types'
 import { parseIssuesConfig } from '../domain/issue-fields'
 import type { IssuesConfig } from '../domain/issue-fields'
 import { diffPaths, hashObject, runGit } from '../lib/git'
@@ -9,7 +10,9 @@ import type { EnginePort } from './engine-port'
 import { readRepositoryRoot } from './repository'
 import { facts } from '../domain/facts'
 
-interface VerifyRule { paths: string[]; run: string[] }
+/** A rule's stage: which Verify runs it, both when the config leaves it out. */
+type RuleStage = VerifyStage | 'both'
+interface VerifyRule { paths: string[]; run: string[]; stage: RuleStage }
 /** The validated config: Verify's argv and git pathspecs, and the issue-write rules. */
 interface VerifyConfig { always: string[][]; rules: VerifyRule[]; timeoutMinutes: number; waitForCiLabels: string[]; issues: IssuesConfig }
 interface ValidConfig { kind: 'valid'; blob: string; config: VerifyConfig }
@@ -17,9 +20,14 @@ interface MissingConfig { kind: 'missing'; fact: string }
 interface InvalidConfig { kind: 'invalid'; fact: string }
 /** A config as read: valid with its blob id, missing, or invalid with the error naming the field. */
 type ConfigResult = ValidConfig | MissingConfig | InvalidConfig
-/** The commands selected for this exact slice, with the selected rules' path globs, each once. */
-interface VerifySelection { commands: string[][]; description: string; isLeftToCi: boolean; paths: string[] }
+/**
+ * The commands selected for this exact slice at one stage, with the selected rules' path globs, each once; `stageNote` names the stage
+ * and the matching rules of the other stage it leaves out.
+ */
+interface VerifySelection { commands: string[][]; description: string; isLeftToCi: boolean; paths: string[]; stageNote: string }
 
+/** The stages a rule may name. */
+const ruleStages: readonly RuleStage[] = ['unit', 'gate', 'both']
 /** The timeout used when a Verify config does not specify one. */
 export const defaultVerifyTimeoutMinutes = 30
 /** Where the config lives, relative to the repository root. */
@@ -73,8 +81,10 @@ function parseConfig(text: string): VerifyConfig {
   const rules = (data.rules ?? []).map((rule, index) => {
     const path = `rules[${index}]`
     if (!isRecord(rule)) throw new Error(`${path}: expected an object`)
-    rejectUnknownFields(rule, ['paths', 'run'], path)
-    return { paths: globs(rule.paths, `${path}.paths`), run: argv(rule.run, `${path}.run`) }
+    rejectUnknownFields(rule, ['paths', 'run', 'stage'], path)
+    const stage = rule.stage === undefined ? 'both' : rule.stage
+    if (!ruleStages.includes(stage as RuleStage)) throw new Error(`${path}.stage: expected unit, gate or both, got ${JSON.stringify(stage)}`)
+    return { paths: globs(rule.paths, `${path}.paths`), run: argv(rule.run, `${path}.run`), stage: stage as RuleStage }
   })
   const timeoutMinutes = data.timeoutMinutes === undefined ? defaultVerifyTimeoutMinutes : data.timeoutMinutes
   if (!isFiniteNumber(timeoutMinutes) || timeoutMinutes <= 0) throw new Error('timeoutMinutes: expected a positive finite number')
@@ -201,19 +211,25 @@ export function coversSelection(ran: string[][], selected: string[][]): boolean 
 }
 
 /**
- * Selects `always` plus every rule matching a changed path; full suites are CI's, so nothing falls back to them.
+ * Selects `always` plus every rule matching a changed path whose stage runs at this one; full suites are CI's, so nothing falls back
+ * to them. A matching rule of the other stage is named as left out, so a reader sees what did not run and where it runs instead.
  * @param port - Engine calls.
  * @param config - Validated config.
  * @param base - Base tree, or null for a unit without a base, whose change set no rule can match.
  * @param tree - Unit tree.
+ * @param stage - The Verify selecting: a unit's own, or the merge_child gate's.
  * @returns One argv per runner in config order and the selection reason.
  */
-export async function selectVerify(port: EnginePort, config: VerifyConfig, base: string | null, tree: string): Promise<VerifySelection> {
+export async function selectVerify(port: EnginePort, config: VerifyConfig, base: string | null, tree: string, stage: VerifyStage): Promise<VerifySelection> {
   const isUnchanged = base !== null && !(await changedPaths(port, base, tree)).length
   const matches = await Promise.all(config.rules.map(rule => base && !isUnchanged && rule.paths.length ? changedPaths(port, base, tree, rule.paths) : []))
-  const selected = config.rules.filter((_rule, index) => matches[index]!.length)
+  const matched = config.rules.filter((_rule, index) => matches[index]!.length)
+  const selected = matched.filter(rule => rule.stage === 'both' || rule.stage === stage)
+  const leftOut = [...new Set(matched.filter(rule => !selected.includes(rule)).map(rule => rule.run.join(' ')))]
   const commands = mergeByRunner([...config.always, ...selected.map(rule => rule.run)])
-  const isLeftToCi = !isUnchanged && !selected.length
+  const isLeftToCi = !isUnchanged && !matched.length
   const paths = [...new Set(selected.flatMap(rule => rule.paths))]
-  return { commands, isLeftToCi, paths, description: isUnchanged ? 'no change from the base' : isLeftToCi ? facts.leftToCi : `rules ${paths.join(', ')}` }
+  const stageNote = `${stage} stage${!leftOut.length ? '' : `${stage === 'unit' ? ' · left to the gate: ' : ' · left out as unit-only: '}${leftOut.join(', ')}`}`
+  const reason = isUnchanged ? 'no change from the base' : isLeftToCi ? facts.leftToCi : paths.length ? `rules ${paths.join(', ')}` : 'no rule of this stage'
+  return { commands, isLeftToCi, paths, stageNote, description: `${reason} · ${stageNote}` }
 }

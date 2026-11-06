@@ -271,7 +271,7 @@ install_dependencies() {
 	return 0
 }
 
-# install_dependencies_without_tokens: runs install_dependencies with every package-manager call as the install user, out of reach of every clone token
+# install_dependencies_without_tokens: runs install_dependencies with every package-manager call as the install user, out of reach of the clone token unless GIT_TOKEN_DURING_INSTALL hands it a copy
 # Returns: install_dependencies' status; a boundary that cannot be established counts
 #   as a failed install, fatal only when REQUIRE_DEPENDENCY_INSTALL is true.
 # Notes: a lifecycle script from the cloned repository is arbitrary code, and setup runs
@@ -358,7 +358,7 @@ setup_repository() {
 		return 1
 	fi
 
-	# why: no --force, so existing local config files are never overwritten
+	# why: the workspace may already hold local config files the clone also tracks; a plain checkout refuses to overwrite them, and the warning sends the user to resolve it
 	if checkout_output=$(git checkout "$DEFAULT_BRANCH" 2>&1); then
 		log_debug "${checkout_output}"
 		log_item_success "Repository initialized"

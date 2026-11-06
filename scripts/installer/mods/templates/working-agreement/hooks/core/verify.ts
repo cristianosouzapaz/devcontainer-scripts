@@ -2,7 +2,7 @@ import { readJson } from '../lib/json'
 import { formatIssueReferences } from '../domain/messages'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
-import type { Identity, VerifyEvidence, VerifyRecord } from '../../types'
+import type { Identity, VerifyEvidence, VerifyRecord, VerifyStage } from '../../types'
 import { parseVerifyEvidence, sameIdentity } from '../domain/records'
 import type { Unit } from '../domain/records'
 import type { Evidence, UnitSlice } from '../domain/step-states'
@@ -19,6 +19,9 @@ import { approvalScript } from '../domain/bash-guards'
 import { quoteIfNeeded } from '../lib/shell'
 import { facts } from '../domain/facts'
 import { isOwnTurnLive } from './verify-queue'
+
+/** Binds shared evidence to content and to the stage it ran at, so a pass at one stage never stands for the other. */
+interface EvidenceKey extends Pick<VerifyRecord, 'tree' | 'configBlob' | 'commands'> { stage: VerifyStage }
 
 /** The content of an approval record; any other content approves nothing. */
 const approvalText = '{"v":1}'
@@ -111,14 +114,15 @@ export async function previewVerify(port: EnginePort): Promise<Result<string>> {
 }
 
 /**
- * Names the repository-wide evidence file of one content key, so a run counts for every unit on the same tree, config and selection.
+ * Names the repository-wide evidence file of one content key, so a run counts for every unit on the same tree, config, selection and
+ * stage.
  * @param port - Engine calls.
  * @param common - The git common directory.
- * @param key - The tree, config blob and selected commands the run is bound to.
+ * @param key - The tree, config blob, selected commands and stage the run is bound to.
  * @returns The evidence file path.
  */
-async function evidencePath(port: EnginePort, common: string, key: Pick<VerifyRecord, 'tree' | 'configBlob' | 'commands'>): Promise<string> {
-  const run = await hashObject(port.processes, JSON.stringify([key.tree, key.configBlob, key.commands]))
+async function evidencePath(port: EnginePort, common: string, key: EvidenceKey): Promise<string> {
+  const run = await hashObject(port.processes, JSON.stringify([key.tree, key.configBlob, key.commands, key.stage]))
   if (run.exitCode !== 0 || !run.stdout.trim()) throw new Error(run.stderr || 'cannot hash the Verify key')
   return recordsPath(common, 'v', `${run.stdout.trim()}.json`)
 }
@@ -129,7 +133,7 @@ async function evidencePath(port: EnginePort, common: string, key: Pick<VerifyRe
  * @param run - The recorded run.
  * @param origin - The unit the run ran in.
  */
-export async function writeVerifyEvidence(port: EnginePort, run: VerifyRecord, origin: Identity): Promise<void> {
+export async function writeVerifyEvidence(port: EnginePort, run: VerifyRecord & EvidenceKey, origin: Identity): Promise<void> {
   const common = await readCommonDir(port)
   if (!common) return
   const evidence: VerifyEvidence = { v: 1, run, origin }
@@ -139,10 +143,10 @@ export async function writeVerifyEvidence(port: EnginePort, run: VerifyRecord, o
 /**
  * Reads the latest run of any unit on a content key.
  * @param port - Engine calls.
- * @param key - The tree, config blob and selected commands.
+ * @param key - The tree, config blob, selected commands and stage.
  * @returns The evidence, or null when none is recorded or readable.
  */
-export async function readVerifyEvidence(port: EnginePort, key: Pick<VerifyRecord, 'tree' | 'configBlob' | 'commands'>): Promise<VerifyEvidence | null> {
+export async function readVerifyEvidence(port: EnginePort, key: EvidenceKey): Promise<VerifyEvidence | null> {
   const common = await readCommonDir(port)
   return common ? parseVerifyEvidence(await evidencePath(port, common, key).then(path => readJson(port.files, path)).catch(() => null)) : null
 }
@@ -179,8 +183,8 @@ export async function readVerifyState(port: EnginePort, slice: UnitSlice | null,
   if (!slice?.tree) return { isVerified: false, isReached: false }
   // why: A started run records nothing until it ends, yet it already holds the change; older records on its tree no longer decide.
   if (await isLiveVerifyOn(port, slice, unit, identity)) return { isVerified: false, isReached: true, isRunning: true }
-  const selection = await selectVerify(port, loaded.config, slice.baseTree, slice.tree)
-  const shared = await readVerifyEvidence(port, { tree: slice.tree, configBlob: loaded.blob, commands: selection.commands })
+  const selection = await selectVerify(port, loaded.config, slice.baseTree, slice.tree, 'unit')
+  const shared = await readVerifyEvidence(port, { tree: slice.tree, configBlob: loaded.blob, commands: selection.commands, stage: 'unit' })
   const isOwn = (run: VerifyRecord): boolean => unit.verifyRuns.some(own => own.runId === run.runId)
   const foreign = shared && !isOwn(shared.run) ? shared : null
   // Any outcome, config or selection on this tree and base ends Code, and so does another unit's run on this content; whether it

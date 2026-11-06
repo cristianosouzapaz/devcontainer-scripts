@@ -10,7 +10,7 @@ set -euo pipefail
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
-# why: readlink -f, so the /usr/local/bin copy or a symlink still finds the script tree
+# why: readlink -f, so a symlink on PATH still finds the script tree
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 BOOTSTRAP_LIB_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")/../setup/lib" && pwd)"
 source "$BOOTSTRAP_LIB_DIR/loader.sh"

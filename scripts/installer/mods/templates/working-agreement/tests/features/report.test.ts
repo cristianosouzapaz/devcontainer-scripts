@@ -24,8 +24,9 @@ test('/flow report is the rendered report itself: each issue\'s step, commits, m
   await callModTool($, 'merge_child', { child: 'a' })
   const result = await runFlowCommand($, 'report')
   expect(result.text?.replace(/\S+\/sign\/par\.sh/g, '<script>')).toBe([
-    '#1 · par', 'Step        PR', 'Verify      no local check selected — left to CI', 'Commits     none', 'Merge       none', 'Decision    none', 'Notice      none', '',
-    '#2 · a', 'Step        finished', 'Verify      no local check selected — left to CI', 'Commits     a1 a2', 'Merge       into par',
+    // The gate's pass on the merged tree is a gate-stage pass, which never stands for a unit's own Verify.
+    '#1 · par', 'Step        PR', 'Verify      not run', 'Commits     none', 'Merge       none', 'Decision    none', 'Notice      none', '',
+    '#2 · a', 'Step        finished', 'Verify      not run', 'Commits     a1 a2', 'Merge       into par',
     'Decision    high · Which branch? · https://github.com/o/r/issues/2#issuecomment-2',
     'Decision    low · Which store? · https://github.com/o/r/issues/2#issuecomment-1', 'Notice      none', '',
     'To sign  par',

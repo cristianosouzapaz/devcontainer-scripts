@@ -118,9 +118,9 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
     const config = await readVerifyConfig(statusPort, slice?.tree ?? null)
     if (config.kind === 'valid') {
       const approved = await isVerifyApproved(port, config.blob)
-      const selection = await selectVerify(statusPort, config.config, slice?.baseTree ?? null, slice?.tree ?? '')
+      const selection = await selectVerify(statusPort, config.config, slice?.baseTree ?? null, slice?.tree ?? '', 'unit')
       // Code spans keep a glob's `**` from reading as markdown bold.
-      const reason = selection.paths.length ? `rules ${selection.paths.map(path => `\`${path}\``).join(', ')}` : selection.description
+      const reason = selection.paths.length ? `rules ${selection.paths.map(path => `\`${path}\``).join(', ')} · ${selection.stageNote}` : selection.description
       groups.push([keyedLine('Config', `${configPath} @ blob ${short(config.blob)} · ${approved ? 'approved' : `needs approval from your own terminal: ${await composeApprovalCommand(port, config.blob)}`}`), keyedLine('Selection', selection.commands.length ? `${selection.commands.map(command => command.join(' ')).join(' · ')} · ${reason}` : `none: ${reason}`)])
     } else groups.push([keyedLine('Config', `${configPath} · ${config.kind === 'missing' ? 'not found in the unit tree' : `invalid: ${config.fact}`}`), keyedLine('Selection', 'none: verify refuses until a config exists')])
   }

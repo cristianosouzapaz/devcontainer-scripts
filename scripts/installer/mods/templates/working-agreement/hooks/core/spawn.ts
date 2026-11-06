@@ -55,7 +55,7 @@ const namespace = '6ba7b8119dad11d180b400c04fd430c8'
 const lockWaitMs = 30000
 // why: a spawn's model check, host start and ack wait add up to a few minutes; a lock this much older belongs to a process that died holding it.
 const staleLockMs = 600000
-// why: a unit acks its assign at its first session-start injection, which a loaded machine can bring later than the host's own start wait.
+// why: a unit acks its assign in the first turn a ring or the tick starts after its session start, which a loaded machine can bring later than the host's own start wait.
 /** How long after its send, which follows its session's host start, a unit's start assignment must get its transport ack. */
 const assignAckMs = 120000
 // why: bypassPermissions would lift every engine check in a session nobody watches; plan would stall it; anything unknown fails closed.

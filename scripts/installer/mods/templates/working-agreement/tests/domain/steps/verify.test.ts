@@ -33,6 +33,7 @@ for (const [file, path] of [
   ['{"rules":[{"paths":["a\\\\b"],"run":["x"]}]}', 'rules[0].paths[0]'],
   ['{"rules":[{"paths":[],"run":[""]}]}', 'rules[0].run[0]'],
   ['{"rules":[{"paths":[],"run":["x"],"extra":1}]}', 'rules[0].extra'],
+  ['{"rules":[{"paths":[],"run":["x"],"stage":"merge"}]}', 'rules[0].stage'], ['{"rules":[{"paths":[],"run":["x"],"stage":null}]}', 'rules[0].stage'],
   ['{"timeoutMinutes":0}', 'timeoutMinutes'], ['{"timeoutMinutes":1e999}', 'timeoutMinutes'], ['{"timeoutMinutes":null}', 'timeoutMinutes'],
   ['{"waitForCiLabels":"home"}', 'waitForCiLabels'], ['{"waitForCiLabels":[""]}', 'waitForCiLabels'],
 ]) {
@@ -82,6 +83,32 @@ test('a rule selection is ordered, deduplicated, and runs only the matching rule
   expect(await readFlowStatus($)).toContain('✓ Verify')
 })
 
+test('an unknown rule stage names the rule and the allowed stages', async ($, on) => {
+  const file = '{"rules":[{"paths":["docs/**"],"run":["x"]},{"paths":["docs/**"],"run":["y"],"stage":"merge"}]}'
+  createWorld(on, { ...changed }, { approvedConfig: file, verifyFile: file })
+  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('rules[1].stage: expected unit, gate or both, got "merge"')
+})
+
+test('a unit Verify runs the unit and both rules and names the gate rules it leaves to the gate', async ($, on) => {
+  const file = JSON.stringify({ always: [['lint']], rules: [{ paths: ['docs/**'], run: ['gate-only'], stage: 'gate' },
+    { paths: ['docs/**'], run: ['unit-only'], stage: 'unit' }, { paths: ['docs/**'], run: ['both'], stage: 'both' }, { paths: ['docs/**'], run: ['default'] }] })
+  const world = createWorld(on, { ...changed, changed: ['docs/a.md'] }, { verifyFile: file })
+  approveVerify(world, file)
+  const result = await $.tool.call({ tool: 'mcp__working-agreement__verify' })
+  expect(result.result).toContain('Selection: rules docs/** · unit stage · left to the gate: gate-only.')
+  expect(world.sessions.get('sid')?.units[0]?.verifyRuns[0]).toEqual(expect.objectContaining({ commands: [['lint'], ['unit-only'], ['both'], ['default']], stage: 'unit' }))
+  expect(await readFlowStatus($)).toContain('Selection   lint · unit-only · both · default · rules `docs/**` · unit stage · left to the gate: gate-only')
+})
+
+test('a change only gate rules match runs only always at the unit and is not left to CI', async ($, on) => {
+  const file = JSON.stringify({ always: [['lint']], rules: [{ paths: ['docs/**'], run: ['gate-only'], stage: 'gate' }] })
+  const world = createWorld(on, { ...changed, changed: ['docs/a.md'] }, { verifyFile: file })
+  approveVerify(world, file)
+  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('Selection: no rule of this stage · unit stage · left to the gate: gate-only.')
+  expect(world.sessions.get('sid')?.units[0]?.verifyRuns[0]?.commands).toEqual([['lint']])
+  expect(await readFlowStatus($)).not.toContain(facts.leftToCi)
+})
+
 test('rules sharing a runner run it once with every path', async ($, on) => {
   const rules = [{ paths: ['docs/**'], run: ['t/bats.sh', 'mods'] }, { paths: ['docs/**'], run: ['sh', '-c', 'a'] },
     { paths: ['docs/**'], run: ['t/bats.sh', 'conventions'] }, { paths: ['docs/**'], run: ['t/bats.sh', 'mods/one.bats', 'mods'] },
@@ -118,7 +145,7 @@ test('a change no rule selects passes with nothing run, left to CI, and accepts 
   const file = JSON.stringify({ $schema: 'schema.json', rules: [{ paths: ['nothing/**'], run: ['never'] }], timeoutMinutes: 0.5 })
   const world = createWorld(on, { ...changed }, { verifyFile: file })
   approveVerify(world, file)
-  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain(`Verify passed on tree one: no command run. Selection: ${facts.leftToCi}.`)
+  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain(`Verify passed on tree one: no command run. Selection: ${facts.leftToCi} · unit stage.`)
   expect(world.sessions.get('sid')?.units[0]?.verifyRuns[0]?.commands).toEqual([])
   expect(await readCurrentStep($)).toBe('Commit')
   expect(await readFlowStatus($)).toContain(facts.leftToCi)
@@ -204,10 +231,11 @@ for (const [scenario, run, step] of [
   ['the same tree, config and selection', {}, 'Commit'],
   ['another config', { configBlob: 'other' }, 'Code'],
   ['another command set', { commands: [['partial']] }, 'Code'],
+  ['another stage: a gate pass never counts as a unit pass', { stage: 'gate' }, 'Code'],
 ] as const satisfies [string, Partial<VerifyRecord>, string][]) {
   test(`a pass in another unit counts only for ${scenario}`, async ($, on) => {
     const world = createWorld(on, { ...changed }, { approvedConfig: verifyFile, verifyFile })
-    const pass = { tree: 'one', base: 'c9', configBlob: configBlob(verifyFile), commands: [['./scripts/check.sh']], outcome: { kind: 'pass' as const }, runId: 'r460', at: 1, ...run }
+    const pass = { tree: 'one', base: 'c9', configBlob: configBlob(verifyFile), commands: [['./scripts/check.sh']], outcome: { kind: 'pass' as const }, runId: 'r460', at: 1, stage: 'unit' as const, ...run }
     await writeVerifyEvidence(createTestPort(world), pass, { branch: 'other', issues: [460] })
     expect(await readCurrentStep($)).toBe(step)
   })
@@ -216,7 +244,7 @@ for (const [scenario, run, step] of [
 test('the step fact and /flow status name the unit a borrowed pass ran in', async ($, on) => {
   const file = JSON.stringify(config)
   const world = createWorld(on, { ...changed, changed: ['docs/a.md'] }, { approvedConfig: file, verifyFile: file })
-  const pass = { tree: 'one', base: 'c9', configBlob: configBlob(file), commands: [['lint'], ['docs'], ['second']], outcome: { kind: 'pass' as const }, runId: 'r460', at: 1 }
+  const pass = { tree: 'one', base: 'c9', configBlob: configBlob(file), commands: [['lint'], ['docs'], ['second']], outcome: { kind: 'pass' as const }, runId: 'r460', at: 1, stage: 'unit' as const }
   const port = createTestPort(world)
   await writeVerifyEvidence(port, pass, { branch: 'other', issues: [460] })
   const unit = world.sessions.get('sid')!.units[0]!
@@ -226,7 +254,7 @@ test('the step fact and /flow status name the unit a borrowed pass ran in', asyn
 })
 
 test('the latest matching run decides across units: a later failure elsewhere undoes an own pass', async ($, on) => {
-  const pass = { tree: 'one', base: 'c0', configBlob: configBlob(verifyFile), commands: [['./scripts/check.sh']], outcome: { kind: 'pass' as const }, runId: 'r1', at: 1 }
+  const pass = { tree: 'one', base: 'c0', configBlob: configBlob(verifyFile), commands: [['./scripts/check.sh']], outcome: { kind: 'pass' as const }, runId: 'r1', at: 1, stage: 'unit' as const }
   const world = createWorld(on, { ...changed }, { approvedConfig: verifyFile, verifyFile, unit: { verifyRuns: [pass] } })
   await writeVerifyEvidence(createTestPort(world), { ...pass, outcome: { kind: 'fail', code: 1, signal: null }, runId: 'r2', at: 2 }, { branch: 'other', issues: [460] })
   expect(await readCurrentStep($)).toBe('Verify')

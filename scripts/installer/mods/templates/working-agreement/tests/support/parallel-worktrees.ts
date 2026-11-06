@@ -175,12 +175,13 @@ export const delegationCheckout = (change: (git: Graph) => Graph = git => git): 
  * Checks out the delegation workflow with the gate config committed in every commit, as the world's working trees hold it under `gateOptions`;
  * a config only in the working tree reads as an uncommitted change, which refuses merge_child before any Verify.
  * @param change - Rewrites the reference workflow's history before the config is committed.
+ * @param config - The committed config, `gateOptions`' unless a test approves another one.
  * @returns The checkout.
  */
-export const gatedCheckout = (change: (git: Graph) => Graph = git => git): Checkout => delegationCheckout(git => {
+export const gatedCheckout = (change: (git: Graph) => Graph = git => git, config = gateConfig): Checkout => delegationCheckout(git => {
   const changed = change(git)
   return { ...changed, commits: Object.fromEntries(Object.entries(changed.commits).map(([sha, commit]) =>
-    [sha, { ...commit, files: { ...commit.files, '.claude/working-agreement.json': configBlob(gateConfig) } }])) }
+    [sha, { ...commit, files: { ...commit.files, '.claude/working-agreement.json': configBlob(config) } }])) }
 })
 
 /**

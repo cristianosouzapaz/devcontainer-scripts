@@ -16,7 +16,6 @@ _SCOPE_OUTCOME='ok'
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 
-# why: the loader publishes the script tree anchors this script reads
 source "${_SCRIPT_DIR}/setup/lib/loader.sh"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------

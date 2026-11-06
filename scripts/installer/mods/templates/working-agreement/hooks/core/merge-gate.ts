@@ -32,7 +32,7 @@ interface MergeGate {
 
 /**
  * Verifies the exact tree a parent branch would move to, through the repository's Verify queue, in a temporary detached worktree
- * removed afterwards; a pass already recorded on that tree, config and selection counts without a new run.
+ * removed afterwards; a gate-stage pass already recorded on that tree, config and selection counts without a new run.
  * @param port - The engine calls.
  * @param gate - The commit, its base, the parent's worktree and the child unit.
  * @param signal - The call's cancellation signal.
@@ -45,9 +45,9 @@ export async function verifyMergeTarget(port: EnginePort, gate: MergeGate, signa
   const loaded = await readVerifyConfig(port, tree)
   if (loaded.kind !== 'valid') return fail(`tree ${short} cannot be verified: ${loaded.fact}`)
   if (!await isVerifyApproved(port, loaded.blob)) return fail(`the Verify config of tree ${short} is not approved; the user approves it from their own terminal with ${await composeApprovalCommand(port, loaded.blob)}`)
-  const selection = await selectVerify(port, loaded.config, baseTree, tree)
-  const earlier = await readVerifyEvidence(port, { tree, configBlob: loaded.blob, commands: selection.commands })
-  if (earlier?.run.outcome.kind === 'pass') return succeed(`Verify ${earlier.run.runId} already passed on tree ${short}`)
+  const selection = await selectVerify(port, loaded.config, baseTree, tree, 'gate')
+  const earlier = await readVerifyEvidence(port, { tree, configBlob: loaded.blob, commands: selection.commands, stage: 'gate' })
+  if (earlier?.run.outcome.kind === 'pass') return succeed(`Verify ${earlier.run.runId} already passed on tree ${short}. Selection: ${selection.description}`)
   const sid = await port.readSessionId()
   const common = await readCommonDir(port)
   if (!common) return fail('cannot locate the repository metadata')
@@ -83,9 +83,9 @@ export async function verifyMergeTarget(port: EnginePort, gate: MergeGate, signa
     }
     if (await readWorkingTreeKey(port, path) !== tree) return fail(`the Verify commands changed tree ${short}, so nothing counts; log: ${log}`)
     if (!await isTurnHeld(port, wait.turn)) return fail(`Verify lock lost: another session broke it as stale while the commands ran; log: ${log}`)
-    const record: VerifyRecord = { tree, base: gate.base, configBlob: loaded.blob, commands: selection.commands, outcome: outcome.failed?.value ?? { kind: 'pass' }, runId, at: await port.now() }
+    const record = { tree, base: gate.base, configBlob: loaded.blob, commands: selection.commands, outcome: outcome.failed?.value ?? { kind: 'pass' }, runId, at: await port.now(), stage: 'gate' } satisfies VerifyRecord
     await bestEffort(port, 'verify evidence write', () => writeVerifyEvidence(port, record, gate.origin), undefined)
-    return outcome.failed ? fail(outcome.failed.text) : succeed(`Verify ${runId} passed on tree ${short}; log: ${log}`)
+    return outcome.failed ? fail(`${outcome.failed.text}\nSelection: ${selection.description}`) : succeed(`Verify ${runId} passed on tree ${short}; log: ${log}. Selection: ${selection.description}`)
   } finally {
     await runGit(port.processes, ['worktree', 'remove', '--force', path]).catch(() => null)
     await stop()

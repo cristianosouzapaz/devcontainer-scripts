@@ -285,14 +285,26 @@ valid_scripts_repo() {
 	[[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,38}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$ ]]
 }
 
-# resolve_scripts_sha scripts_repo requested_ref: resolves a ref to an immutable commit SHA
+# resolve_scripts_sha scripts_repo requested_ref: resolves a full SHA, tag or branch to an immutable commit SHA
+# Stdout: the commit SHA
 resolve_scripts_sha() {
-	local scripts_repo="$1" requested_ref="$2" response sha
-	response="$(curl "${_CURL_OPTS[@]}" "https://api.github.com/repos/${scripts_repo}/commits/${requested_ref}")" \
+	local scripts_repo="$1" requested_ref="$2" refs sha="" wanted
+	# why: a SHA needs no lookup, and every caller in the scripts tree passes one, the gitless image build included; only a run by hand looks one up
+	if [[ "${requested_ref}" =~ ^[a-f0-9]{40}$ ]]; then
+		printf '%s\n' "${requested_ref}"
+		return 0
+	fi
+	command -v git >/dev/null 2>&1 || fail "git is required but was not found on PATH"
+	# why: the git protocol spares the host's unauthenticated API budget; bounded like curl and never prompting, so a private or missing repo fails fast
+	refs="$(GIT_TERMINAL_PROMPT=0 timeout --kill-after=2s 120s git ls-remote "https://github.com/${scripts_repo}.git" \
+		"refs/tags/${requested_ref}^{}" "refs/tags/${requested_ref}" "refs/heads/${requested_ref}")" \
 		|| fail "could not resolve ${scripts_repo}@${requested_ref}"
-	sha="$(node -e 'try { const sha = JSON.parse(require("node:fs").readFileSync(0, "utf8")).sha; process.stdout.write(typeof sha === "string" ? sha : ""); } catch { process.exit(1); }' <<<"${response}")" \
-		|| fail "could not parse immutable SHA for ${scripts_repo}@${requested_ref}"
-	[[ "${sha}" =~ ^[a-f0-9]{40}$ ]] || fail "invalid immutable SHA for ${scripts_repo}@${requested_ref}"
+	# why: an annotated tag's own SHA names the tag object, so its peeled entry, the commit, comes first
+	for wanted in "refs/tags/${requested_ref}^{}" "refs/tags/${requested_ref}" "refs/heads/${requested_ref}"; do
+		sha="$(awk -v ref="${wanted}" '$2 == ref { print $1; exit }' <<<"${refs}")"
+		[[ -z "${sha}" ]] || break
+	done
+	[[ "${sha}" =~ ^[a-f0-9]{40}$ ]] || fail "could not resolve ${scripts_repo}@${requested_ref}"
 	printf '%s\n' "${sha}"
 }
 
@@ -327,7 +339,7 @@ clear_stale_owner_markers() {
 # cleanup_stale_candidates releases_dir: removes old candidates whose owners are dead
 cleanup_stale_candidates() {
 	local releases_dir="$1" candidate
-	# why: candidates without a dead attributable owner are conservatively left for a later promoter.
+	# why: a candidate whose owner may still be alive could be mid-install, so only one with every owner provably dead is removed.
 	while IFS= read -r -d '' candidate; do
 		owner_markers_are_gone "${candidate}" || continue
 		rm -rf -- "${candidate}"
@@ -375,7 +387,7 @@ activate_release() {
 		current_target="$(readlink -- "${current_path}")"
 		if [[ "${current_target}" =~ ^releases/([a-f0-9]{40})$ ]]; then previous_sha="${BASH_REMATCH[1]}"; fi
 	fi
-	# why: successful exclusive creation makes this PID-labelled root symlink unique and recoverable after owner death.
+	# why: ln refuses an existing name, so concurrent installers never share a link, and the PID lets a later run remove one a dead owner left.
 	while [[ "${attempt}" -lt 32 ]]; do
 		current_new="${installer_root}/.current.promote.$$.${RANDOM}"
 		if ln -sT -- "releases/${sha}" "${current_new}" 2>/dev/null && [[ -L "${current_new}" ]]; then

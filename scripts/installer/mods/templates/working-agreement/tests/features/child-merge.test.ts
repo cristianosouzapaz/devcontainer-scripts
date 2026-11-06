@@ -6,8 +6,10 @@ import { coordinator, noFlow } from '../support/builders'
 import { callModTool, declareFlow, runFlowCommand } from '../support/helpers'
 import { test } from '../support/kit'
 import { childCheckout, coveredSkips, delegationCheckout, gatedCheckout, gateOptions, readDelegated, seedDelegatedChild, seedUnit } from '../support/parallel-worktrees'
-import { buildScope, createWorld, delegatedFile, placedFile, scopeFile, seedDelegation } from '../support/world'
+import { buildScope, createTestPort, createWorld, delegatedFile, placedFile, records, scopeFile, seedDelegation } from '../support/world'
 import type { Checkout, Graph, Options, World } from '../support/world'
+import type { VerifyEvidence } from '../../types'
+import { writeVerifyEvidence } from '../../hooks/core/verify'
 
 /** A gated checkout with two finished children, and the world options whose gate command fails on chosen trees. */
 interface TwoChildren { live: Checkout; options: Options }
@@ -136,6 +138,34 @@ test('a merged tree Verify already passed on moves the parent without another ru
   expect(again.text).toMatch(/Verify \S+ already passed on tree/)
   expect(live.graph?.refs.par).toBe('merge-a2')
   expect(spawns.count).toBe(1)
+})
+
+test('a unit-stage pass on the merged tree does not let the gate skip its Verify', async ($, on) => {
+  const live = gatedCheckout(advancePar({ 'src/par.ts': 'p3' }))
+  const spawns = { count: 0 }
+  const world = createWorld(on, live, { session: coordinator, ...gateOptions, afterSpawn: () => { spawns.count += 1 } })
+  await seedDelegatedChild(world)
+  await callModTool($, 'merge_child', { child: 'a' })
+  const [path, text] = [...world.files].find(([file]) => file.startsWith(`${records}/v/`))!
+  const gatePass = JSON.parse(text) as VerifyEvidence
+  world.files.delete(path)
+  await writeVerifyEvidence(createTestPort(world), { ...gatePass.run, stage: 'unit' }, gatePass.origin)
+  live.graph = { ...live.graph!, refs: { ...live.graph!.refs, par: 'p3' } }
+  const again = await callModTool($, 'merge_child', { child: 'a' })
+  expect(again.text).not.toContain('already passed')
+  expect(spawns.count).toBe(2)
+})
+
+test('the gate runs the gate and both rules and names the unit-only rules it leaves out', async ($, on) => {
+  const config = JSON.stringify({ always: [['./check']], rules: [{ paths: ['src/**'], run: ['./unit-only'], stage: 'unit' },
+    { paths: ['src/**'], run: ['./gate-only'], stage: 'gate' }, { paths: ['src/**'], run: ['./default'] }] })
+  const live = gatedCheckout(advancePar({ 'src/par.ts': 'p3' }), config)
+  const world = createWorld(on, live, { session: coordinator, verifyFile: config, approvedConfig: config })
+  await seedDelegatedChild(world)
+  const merged = await callModTool($, 'merge_child', { child: 'a' })
+  expect(merged.text).toContain('Selection: rules src/** · gate stage · left out as unit-only: ./unit-only')
+  const stored = [...world.files].filter(([file]) => file.startsWith(`${records}/v/`)).map(([, json]) => (JSON.parse(json) as VerifyEvidence).run)
+  expect(stored).toEqual([expect.objectContaining({ commands: [['./check'], ['./gate-only'], ['./default']], stage: 'gate' })])
 })
 
 test('a parent tip that moves while the merged tree is verified stays where it moved, and merge_child is to be run again', async ($, on) => {

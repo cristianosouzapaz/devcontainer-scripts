@@ -46,8 +46,11 @@ RUN bash /tmp/dc-init/scripts/image-bootstrap.sh /tmp/dc-init
 # installer, which the Bash test runner also runs. Its path is an interface between this
 # Dockerfile and the scripts tree. HERDR_VERSION is the one herdr pin: the test runners read
 # the release they install from this default too.
+# The release lookup goes through the GitHub REST API, whose unauthenticated budget the whole
+# host IP shares; an optional github_token build secret authenticates it without entering a layer.
 ARG HERDR_VERSION="v0.9.5"
-RUN bash /opt/devcontainer/herdr-install.sh /usr/local/lib/herdr/herdr
+RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN \
+    bash /opt/devcontainer/herdr-install.sh /usr/local/lib/herdr/herdr
 
 # Pre-create the workspace folder and its schema marker in the image so a freshly
 # created project volume already has them before any lifecycle command runs.

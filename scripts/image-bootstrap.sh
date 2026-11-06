@@ -16,7 +16,7 @@ source "$BOOTSTRAP_LIB_DIR/loader.sh"
 
 # ----- FUNCTIONS --------------------------------------------------------------
 
-# main <checkout>: moves the checkout's scripts tree into place, seeds its installer release at the checkout's commit and installs the bin/ commands
+# main <checkout>: moves the checkout's scripts tree into place, seeds its installer release at the checkout's commit and links the bin/ commands
 main() {
 	local checkout="${1:?Usage: image-bootstrap.sh <checkout>}" sha=""
 	local scripts_root="${IMAGE_BOOTSTRAP_SCRIPTS_ROOT:-/opt/devcontainer}"
@@ -30,9 +30,8 @@ main() {
 		|| log_fatal "Could not seed the installer release for $sha"
 	find "$scripts_root" -name "*.sh" -exec chmod +x {} +
 	chmod +x "$scripts_root"/bin/*
-	install -m 0755 "$scripts_root"/bin/* "$bin_dir/"
-	ln -sf "$scripts_root/bin/devcontainer-data" "$bin_dir/devcontainer-data"
-	ln -sf "$scripts_root/bin/devcontainer-install" "$bin_dir/devcontainer-install"
+	# why: links, not copies: a bin/ script finds its library through readlink -f of its own path
+	ln -sf "$scripts_root"/bin/* "$bin_dir/"
 	rm -rf -- "$checkout"
 	log_success "Installed the scripts tree at $scripts_root from commit $sha"
 }

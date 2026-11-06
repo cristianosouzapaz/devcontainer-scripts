@@ -101,8 +101,8 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
     registerSurface: async () => {
       await $.command.register({
         name: 'flow',
-        description: 'Working agreement: open the pane; status | report | inbox [answer <id> <letter|no> [words]] | coordinate | delegate [#n …|stop] | retire #n [id] | setup-labels | handoff [cancel] | trivial | follow-up #n | skip <step> <reason> | lift | approve <comment-url> | approve verify (shows the config and its terminal approval command)',
-        argumentHint: '[status|report|inbox [answer <id> <letter|no> [words]]|coordinate|delegate [#n …|stop]|retire #n [id]|setup-labels|handoff [cancel]|trivial|follow-up #n|skip <step> <reason>|lift|approve <comment-url>|approve verify [id]]',
+        description: 'Working agreement: open the pane; status | report | inbox [answer <id> <letter|no> [words]] | coordinate | delegate [#n …|triage #n …|stop] | retire #n [id] | setup-labels | handoff [cancel] | trivial | follow-up #n | skip <step> <reason> | lift | approve <comment-url> | approve verify (shows the config and its terminal approval command)',
+        argumentHint: '[status|report|inbox [answer <id> <letter|no> [words]]|coordinate|delegate [#n …|triage #n …|stop]|retire #n [id]|setup-labels|handoff [cancel]|trivial|follow-up #n|skip <step> <reason>|lift|approve <comment-url>|approve verify [id]]',
       })
       await $.tool.register({
         name: 'run',
@@ -157,7 +157,7 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
         isDeferred: false,
         description: 'Coordinator only, under delegation: merges finished child units\' branches (child, or children: up to 3 sharing one parent, stacked in order) into the parent branch they were cut from — '
           + 'each child onto the commit below it by fast-forward when that commit is on the child\'s first-parent chain, else by a merge commit, refused on conflict — '
-          + 'moving the parent only after Verify passes on that exact tree through the Verify queue (a pass already recorded on that tree counts). One Verify gates the whole stack; '
+          + 'moving the parent only after Verify passes on that exact tree through the Verify queue (a gate pass already recorded on that tree, config and commands counts; a unit\'s own pass does not). One Verify gates the whole stack; '
           + 'a red one is bisected by prefix: the parent moves to the longest green prefix, and the culprit is named with the failing command, its output tail and its log, '
           + 'for the coordinator to relay to that child\'s unit. Records the merges as delegated. Refused for a pair the mod does not know; a merge into the default branch is always the user\'s.',
         inputSchema: { type: 'object', properties: {

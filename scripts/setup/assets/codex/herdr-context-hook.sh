@@ -10,10 +10,10 @@ input=$(cat)
 # why: outside a Herdr pane there is no sidebar to report to
 if [[ "${HERDR_ENV:-}" == "1" ]] && [[ -n "${HERDR_PANE_ID:-}" ]] && command -v herdr >/dev/null 2>&1; then
     transcript=$(printf '%s' "${input}" | jq -r '.transcript_path // empty' 2>/dev/null)
-    # why: reading the rollout from the end finds the last event without parsing a long session
     if [[ -n "${transcript}" ]] && [[ -r "${transcript}" ]]; then
+        # why: reading the rollout from the end lets head stop at the last event without parsing a long session
         # why: info is null in a token_count event that carries only rate limits
-        # why: matches key order and spacing only loosely, jq checks the event itself
+        # why: grep only spares jq the lines that cannot match; it also hits the word elsewhere, so jq checks the payload type itself
         usage=$(tac "${transcript}" 2>/dev/null | grep '"token_count"' \
             | jq -r 'select(.payload.type == "token_count" and .payload.info != null) | .payload.info | "\(.last_token_usage.total_tokens // empty) \(.model_context_window // empty)"' 2>/dev/null | head -n1)
         read -r tokens window <<<"${usage}"

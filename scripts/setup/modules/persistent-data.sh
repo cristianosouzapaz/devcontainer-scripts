@@ -8,9 +8,9 @@
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
-# Runs before every other module: initializes the persistent-data storage layout
-# and the managed home-directory links, so later modules write straight into the
-# persistent volumes.
+# Runs before every module that touches persistent storage: initializes the
+# persistent-data storage layout and the managed home-directory links, so later
+# modules write straight into the persistent volumes.
 
 # ----- SHARED UTILITIES LOADING -----------------------------------------------
 

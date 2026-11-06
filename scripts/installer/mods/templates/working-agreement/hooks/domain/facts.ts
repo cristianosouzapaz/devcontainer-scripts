@@ -4,8 +4,8 @@ import { pluralize } from './messages'
  * Every fact a step shows after its dot, in one vocabulary: lowercase, no trailing period, the state only: the step's
  * label names the subject and its mark says whose turn it is. A template takes only bounded values, such as a PR or issue number; a branch, path, command or GitHub error
  * goes in the step's `detail`, which `/flow status` and the agent read. A step whose next move is the unit's own on the normal
- * path has no fact; every fact here names a move that belongs to someone else or a unit off that path, as the step-states
- * wiki page's table lists.
+ * path has no fact; every fact here names a move that belongs to someone else or a unit off that path, as the pane-facts
+ * wiki page's table classifies.
  */
 export const facts = {
   // Grill, Spec, Triage, Map, Tickets

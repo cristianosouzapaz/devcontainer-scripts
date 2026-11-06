@@ -19,14 +19,14 @@ readonly _INSTALL_USER_NAME="dep-install"
 readonly _INSTALL_USER_HOME="/home/${_INSTALL_USER_NAME}"
 readonly _INSTALL_USER_FIRST_ID=1990
 readonly _INSTALL_USER_LOCK="/run/lock/devcontainer-install-user.lock"
-# why: all the install keeps of the setup environment (toolchain, locale, registry auth, proxies, CA); INSTALL_ENV_<NAME> adds NAME
+# why: an allowlist, so only what an install needs of the setup environment (toolchain, locale, registry auth, proxies, CA) reaches it; INSTALL_ENV_<NAME> adds NAME
 readonly -a _INSTALL_USER_ENV_DEFAULTS=(
 	PATH LANG LC_ALL LC_CTYPE TERM COREPACK_ENABLE_DOWNLOAD_PROMPT GIT_TERMINAL_PROMPT
 	NPM_TOKEN NODE_AUTH_TOKEN NODE_EXTRA_CA_CERTS
 	HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy
 )
 
-# why: set by ensure_install_user, and by install_user_session for as_install_user
+# why: empty until ensure_install_user and install_user_session fill them, so as_install_user refuses to run outside a session
 _INSTALL_USER_UID=""
 _INSTALL_USER_GID=""
 _INSTALL_USER_SESSION_DIR=""

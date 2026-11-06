@@ -45,3 +45,4 @@ applyTo: "**/*.{sh,bash,bats}"
 
 - **D1:** Comments MUST describe constraints or reasons not expressed by the code.
 - **D2:** Comments MUST NOT paraphrase adjacent code.
+- **D3:** An own-line comment that explains code MUST be a single `# why: <reason>` line.

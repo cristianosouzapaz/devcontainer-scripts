@@ -131,8 +131,8 @@ async function mergeStack(port: EnginePort, parent: string, ready: ReadyChild[],
   const verify = (index: number) => verifyMergeTarget(port, { target: stack[index]!.target, base: parentTip, root, origin: stack[index]!.child.unit }, signal)
   const top = await verify(stack.length - 1)
   if (top.isOk) return moveParent(port, parent, root, before, stack, top.value)
-  // why: prefixes are tried bottom up, so the first red one names the child that broke the stack; a prefix of one fast-forward
-  // child is its own verified tip, which a recorded pass answers without a run.
+  // why: prefixes are tried bottom up, so the first red one names the child that broke the stack; a prefix whose tree a
+  // gate already passed is answered from that record without a run, but a unit's own pass never answers a gate.
   const passed: string[] = []
   const failure = { text: top.error }
   for (const index of stack.keys()) {

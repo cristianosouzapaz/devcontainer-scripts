@@ -8,7 +8,7 @@ readonly _PERSISTENT_DATA_LOCKS_SH_LOADED=1
 
 _PERSISTENT_DATA_LOCK_TIMEOUT="${PERSISTENT_DATA_LOCK_TIMEOUT:-30}"
 
-# why: tracks the scopes this shell holds, to enforce the shared-before-project order
+# why: taking the shared lock while holding the project lock can deadlock against a shell that takes them in order, so this shell's held scopes are kept to refuse it
 _PERSISTENT_DATA_LOCKS_HELD=''
 
 # ----- FUNCTIONS --------------------------------------------------------------

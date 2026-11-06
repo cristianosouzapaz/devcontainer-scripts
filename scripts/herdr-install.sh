@@ -42,13 +42,13 @@ main() {
 		auth=(--header "Authorization: Bearer ${GITHUB_TOKEN}")
 	fi
 	WORK_DIR="$(mktemp -d)"
-	curl --fail --location --silent --show-error "${auth[@]}" "$release_url" --output "$WORK_DIR/release.json" \
+	curl --fail --location --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 "${auth[@]}" "$release_url" --output "$WORK_DIR/release.json" \
 		|| log_fatal "Could not read the herdr release: $release_url"
 	url="$(jq -r --arg asset "$asset" '.assets[] | select(.name == $asset) | .browser_download_url' "$WORK_DIR/release.json")"
 	digest="$(jq -r --arg asset "$asset" '.assets[] | select(.name == $asset) | .digest' "$WORK_DIR/release.json")"
 	[[ -n "$url" && "$url" != null ]] || log_fatal "The herdr release has no $asset asset"
 	[[ "$digest" == sha256:* ]] || log_fatal "The herdr release publishes no sha256 digest for $asset"
-	curl --fail --location --silent --show-error "$url" --output "$WORK_DIR/herdr" || log_fatal "Could not download $url"
+	curl --fail --location --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 "$url" --output "$WORK_DIR/herdr" || log_fatal "Could not download $url"
 	printf '%s  %s\n' "${digest#sha256:}" "$WORK_DIR/herdr" | sha256sum --check --status \
 		|| log_fatal "The downloaded $asset does not match its published digest"
 	mkdir -p -- "$(dirname -- "$target")"

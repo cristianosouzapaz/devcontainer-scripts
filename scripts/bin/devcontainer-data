@@ -561,7 +561,7 @@ cli_health_identity() {
 				provider_rc=0
 				output=$(cli_health_probe pi auth check --provider "$provider" --json --no-refresh 2>/dev/null) || provider_rc=$?
 				if [[ "$provider_rc" -ne 0 ]]; then
-					# why: Preserve a deadline/read failure even if another provider is ready.
+					# why: a timed-out probe must surface as a retryable warning even if another provider is ready; a plain failure only fills an empty status.
 					if [[ "$provider_rc" -eq 124 || "$provider_rc" -eq 137 || "$provider_rc" -eq 125 || "$rc" -eq 0 ]]; then rc="$provider_rc"; fi
 					continue
 				fi

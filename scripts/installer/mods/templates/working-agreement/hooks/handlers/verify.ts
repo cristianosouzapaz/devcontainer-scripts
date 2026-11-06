@@ -66,7 +66,7 @@ async function verify(port: EnginePort, signal: AbortSignal, sid: string): Promi
   }
   // A run on an approved config is the step the approval follow-up pointed to.
   sessionMemory.approvalWait = null
-  const selection = await selectVerify(port, loaded.config, slice.baseTree, tree)
+  const selection = await selectVerify(port, loaded.config, slice.baseTree, tree, 'unit')
   if (await readWorkingTreeKey(port, root) !== tree) return 'The worktree content differs from the unit tree; Verify cannot run on this slice.'
   const prepared = await prepareRunLog(port, sid)
   if ('error' in prepared) return prepared.error
@@ -120,7 +120,7 @@ async function verify(port: EnginePort, signal: AbortSignal, sid: string): Promi
       }
       if (signal.aborted) return cancelled
       if (!await isTurnHeld(port, turn)) return `Verify lock lost: another session broke it as stale while these commands ran; no record written. Log: ${log}`
-      const record: VerifyRecord = { tree, base: slice.base, configBlob: loaded.blob, commands: selection.commands, outcome: outcome.value, runId, at: await port.now() }
+      const record = { tree, base: slice.base, configBlob: loaded.blob, commands: selection.commands, outcome: outcome.value, runId, at: await port.now(), stage: 'unit' } satisfies VerifyRecord
       const recorded = await recordToolRun(port, identity, unit, signal, own => ({ verifyRuns: [record], redVerifies: record.outcome.kind === 'pass' ? 0 : (own.redVerifies ?? 0) + 1 }))
       if (!recorded) return cancelled
       await bestEffort(port, 'verify evidence write', () => writeVerifyEvidence(port, record, identity), undefined)

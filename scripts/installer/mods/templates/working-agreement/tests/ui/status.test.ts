@@ -225,10 +225,10 @@ test('status joins an in-flight reread without queuing another refresh', async (
 })
 
 for (const [always, changed, selection] of [
-  [[], [], 'Selection   none: no change from the base'],
-  [[['lint']], [], 'Selection   lint · no change from the base'],
-  [[], ['src/a.ts'], 'Selection   none: no local check selected — left to CI'],
-  [[['lint']], ['docs/a.md'], 'Selection   lint · docs · md · rules `docs/**`, `**/*.md`'],
+  [[], [], 'Selection   none: no change from the base · unit stage'],
+  [[['lint']], [], 'Selection   lint · no change from the base · unit stage'],
+  [[], ['src/a.ts'], 'Selection   none: no local check selected — left to CI · unit stage'],
+  [[['lint']], ['docs/a.md'], 'Selection   lint · docs · md · rules `docs/**`, `**/*.md` · unit stage'],
 ] as [string[][], string[], string][]) {
   test(`status separates the Verify commands from the selection: ${selection}`, async ($, on) => {
     const file = JSON.stringify({ always, rules: [{ paths: ['docs/**'], run: ['docs'] }, { paths: ['docs/**', '**/*.md'], run: ['md'] }] })

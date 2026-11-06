@@ -53,8 +53,8 @@ function isIdentity(value: unknown): value is Identity {
  * @returns Whether the verification record is valid.
  */
 function isVerifyRecord(value: unknown): value is VerifyRecord {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['tree', 'base', 'configBlob', 'commands', 'outcome', 'runId', 'at'])
-    || !hasRunStamp(value) || !(value.base === null || (typeof value.base === 'string' && !!value.base))
+  if (!isRecord(value) || !hasOnlyKeys(value, ['tree', 'base', 'configBlob', 'commands', 'outcome', 'runId', 'at', 'stage'])
+    || !(value.stage === undefined || value.stage === 'unit' || value.stage === 'gate') || !hasRunStamp(value) || !(value.base === null || (typeof value.base === 'string' && !!value.base))
     || typeof value.configBlob !== 'string' || !value.configBlob || !Array.isArray(value.commands)
     || !value.commands.every(command => isStringArray(command) && command.length > 0 && command.every(arg => !!arg.length)) || !isRecord(value.outcome)) return false
   return isOutcome(value.outcome)

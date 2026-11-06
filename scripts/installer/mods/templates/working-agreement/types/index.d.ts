@@ -199,8 +199,12 @@ export interface VerifyRecord {
   outcome: VerifyOutcome
   runId: string
   at: number
+  /** Where the run verified: a unit's own Verify, or the merge_child gate's; absent on a record written before stages existed. */
+  stage?: VerifyStage
 }
-/** Holds the latest Verify run on one content key (tree, config blob, commands), repository-wide, and the unit it ran in. */
+/** Names where a Verify runs: a unit's own Verify, or the merge_child gate's on the merged tree. */
+export type VerifyStage = 'unit' | 'gate'
+/** Holds the latest Verify run on one content key (tree, config blob, commands, stage), repository-wide, and the unit it ran in. */
 export interface VerifyEvidence { v: 1; run: VerifyRecord; origin: Identity }
 /** Names how a recorded command run ended. */
 export type VerifyOutcome = VerifyPass | VerifyFailure | VerifyTimeout

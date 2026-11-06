@@ -24,13 +24,24 @@ resolve_assets_repo() {
 
 # resolve_assets_sha <ref>: resolves a requested ref once to the immutable SHA used by every installer download
 # Stdout: the 40-character SHA, one line
+# Notes: a full SHA is used as is; any other ref is resolved with git ls-remote, peeled tag first,
+#   because the GitHub REST API's unauthenticated budget is shared by the whole host IP. The lookup
+#   never prompts for credentials, so a missing or private repository fails instead of hanging.
 resolve_assets_sha() {
-	local requested_ref="$1" scripts_repo response sha
+	local requested_ref="$1" scripts_repo refs sha="" wanted
 
+	if [[ "$requested_ref" =~ ^[a-f0-9]{40}$ ]]; then
+		printf '%s\n' "$requested_ref"
+		return 0
+	fi
 	scripts_repo="$(resolve_assets_repo)" || return 1
-	response=$(timeout --kill-after=2s 10s curl --fail --silent --show-error --location \
-		"https://api.github.com/repos/${scripts_repo}/commits/${requested_ref}") || return 1
-	sha=$(jq -r '.sha // empty' <<<"$response") || return 1
+	command -v git >/dev/null 2>&1 || return 1
+	refs=$(GIT_TERMINAL_PROMPT=0 timeout --kill-after=2s 10s git ls-remote "https://github.com/${scripts_repo}.git" \
+		"refs/tags/${requested_ref}^{}" "refs/tags/${requested_ref}" "refs/heads/${requested_ref}") || return 1
+	for wanted in "refs/tags/${requested_ref}^{}" "refs/tags/${requested_ref}" "refs/heads/${requested_ref}"; do
+		sha=$(awk -v ref="$wanted" '$2 == ref { print $1; exit }' <<<"$refs")
+		[[ -z "$sha" ]] || break
+	done
 	[[ "$sha" =~ ^[a-f0-9]{40}$ ]] || return 1
 	printf '%s\n' "$sha"
 }
