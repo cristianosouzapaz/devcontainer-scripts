@@ -2,6 +2,9 @@
 name: documentation-sync
 description: Use when editing any file in the project's documentation tree or the README, or when a change affects documented behavior (API, package, toolchain, structure) — checks those docs against the codebase and keeps them from contradicting it. Run `/documentation-sync audit` for a full docs + README review.
 argument-hint: "[audit]"
+metadata:
+  kit-version: "2.1.0"
+  kit-tags: docs workflow
 ---
 
 Documentation states the *shape and why* of a system so a reader reaches the right file

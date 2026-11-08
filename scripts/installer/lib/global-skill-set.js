@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { loadAgentPacks } from "./agent-packs.js";
 
 /**
  * @fileoverview The machine-wide asset lookup: which Agent Skills and commands are already
@@ -16,23 +17,25 @@ const isUnavailableGlobalSource = (error) => error instanceof Error && "code" in
  * Assets" task, so an interactive per-project picker can render them as a non-selectable
  * `disabled` row instead of offering a redundant reinstall.
  *
- * Three optional sources are unioned, so a name counts as global no matter which path
+ * Optional sources are unioned, so a name counts as global no matter which path
  * installed it: `~/.agents/template-lock.json` (first-party instruction / prompt / local-skill
  * artifacts — the recorded version is kept), plus the directory listings of `~/.agents/skills`
- * and `<CLAUDE_CONFIG_DIR|~/.claude>/skills` (any skill the external `skills` CLI materialized
- * with `-g`). A missing file or directory contributes nothing and never throws.
+ * and `~/<skills.path>` of every pack that exposes skills by symlink (any skill the external
+ * `skills` CLI materialized with `-g`). A missing file or directory contributes nothing and
+ * never throws.
  *
+ * @param {{ skills: { mode: string, path?: string } }[]} [packs] - Coding-agent packs; loaded when omitted.
  * @returns {Map<string, string|null>} name → recorded version, or null when the name is only
  *   known from a directory listing.
- * @throws {Error} If an existing global source cannot be inspected.
- * @effects Reads the global `.agents` and `.claude` directories and optional lock file below the current user home directory.
+ * @throws {Error} If an existing global source cannot be inspected, or the packs cannot be loaded.
+ * @effects Reads the global `.agents` directory, each pack's skills directory and the optional lock file below the current user home directory.
  */
-export const readGlobalSkillSet = () => {
+export const readGlobalSkillSet = (packs = loadAgentPacks()) => {
     const agentsRoot = join(homedir(), ".agents");
-    const claudeRoot = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+    const packSkillDirs = packs.filter((pack) => pack.skills.mode === "symlink").map((pack) => join(homedir(), pack.skills.path));
     const found = new Map();
 
-    for (const dir of [join(agentsRoot, "skills"), join(claudeRoot, "skills")]) {
+    for (const dir of [join(agentsRoot, "skills"), ...packSkillDirs]) {
         try {
             for (const entry of readdirSync(dir, { withFileTypes: true })) {
                 if (!entry.name.startsWith(".") && (entry.isDirectory() || entry.isSymbolicLink()) && !found.has(entry.name)) {

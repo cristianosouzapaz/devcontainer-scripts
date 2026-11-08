@@ -33,6 +33,7 @@
     {
         "name": "Caveman",
         "skill": "caveman",
+        "global": true,
         "category": "Productivity & Communication",
         "description": "Ultra-compressed communication mode — cuts token usage ~75% while keeping full technical accuracy.",
         "tags": [
@@ -43,6 +44,7 @@
     {
         "name": "Find Skills",
         "skill": "find-skills",
+        "global": true,
         "category": "Discovery & Tooling",
         "description": "CLI to discover, install, and manage reusable agent skills across 70+ coding agents.",
         "tags": [
@@ -93,6 +95,7 @@
     {
         "name": "Skill Creator",
         "skill": "skill-creator",
+        "global": true,
         "category": "Discovery & Tooling",
         "description": "Create, edit, and iteratively improve agent skills, including running evals and benchmarking performance.",
         "tags": [
@@ -145,6 +148,7 @@
     {
         "name": "Grill Me",
         "skill": "grill-me",
+        "global": true,
         "category": "Planning & Workflow",
         "description": "Interviews you relentlessly about a plan or design, one question at a time, until reaching shared understanding.",
         "tags": [
@@ -158,6 +162,7 @@
     {
         "name": "Grill With Docs",
         "skill": "grill-with-docs",
+        "global": true,
         "category": "Planning & Workflow",
         "description": "Interview that builds your project's domain model while updating CONTEXT.md and ADRs.",
         "tags": [
@@ -173,6 +178,7 @@
     {
         "name": "Handoff",
         "skill": "handoff",
+        "global": true,
         "category": "Planning & Workflow",
         "description": "Compresses the current conversation into a document so another agent can seamlessly continue the work.",
         "tags": [
@@ -183,6 +189,7 @@
     {
         "name": "Wayfinder",
         "skill": "wayfinder",
+        "global": true,
         "category": "Planning & Workflow",
         "description": "Maps complex efforts on the issue tracker via 'decision tickets' — resolves key decisions rather than executing work directly.",
         "tags": [
@@ -193,6 +200,7 @@
     {
         "name": "Ponytail",
         "skill": "ponytail",
+        "global": true,
         "category": "Productivity & Communication",
         "description": "Makes agents write minimal necessary code via a 'laziness ladder' — reuse or stdlib before writing anything new.",
         "tags": [
@@ -239,5 +247,53 @@
             "docs"
         ],
         "url": "https://github.com/kepano/obsidian-skills"
+    },
+    {
+        "name": "diagnosing-bugs",
+        "skill": "diagnosing-bugs",
+        "global": true,
+        "url": "https://github.com/mattpocock/skills"
+    },
+    {
+        "name": "domain-modeling",
+        "skill": "domain-modeling",
+        "global": true,
+        "url": "https://github.com/mattpocock/skills"
+    },
+    {
+        "name": "grilling",
+        "skill": "grilling",
+        "global": true,
+        "url": "https://github.com/mattpocock/skills"
+    },
+    {
+        "name": "prototype",
+        "skill": "prototype",
+        "global": true,
+        "url": "https://github.com/mattpocock/skills"
+    },
+    {
+        "name": "research",
+        "skill": "research",
+        "global": true,
+        "url": "https://github.com/mattpocock/skills"
+    },
+    {
+        "name": "to-spec",
+        "skill": "to-spec",
+        "global": true,
+        "url": "https://github.com/mattpocock/skills"
+    },
+    {
+        "name": "to-tickets",
+        "skill": "to-tickets",
+        "global": true,
+        "url": "https://github.com/mattpocock/skills"
+    },
+    {
+        "name": "triage",
+        "skill": "triage",
+        "global": true,
+        "url": "https://github.com/mattpocock/skills"
     }
 ]

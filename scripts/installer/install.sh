@@ -9,7 +9,7 @@ set -euo pipefail
 readonly -a _RUNTIME_DEPS=("@inquirer/core" "@inquirer/prompts" "chalk" "consola")
 readonly -a _CURL_OPTS=(
 	--fail --location --show-error --silent
-	--retry 5 --retry-delay 2 --retry-connrefused --retry-all-errors
+	--retry 6 --retry-max-time 180 --retry-connrefused --retry-all-errors
 	--connect-timeout 15 --max-time 120
 )
 readonly _STALE_CANDIDATE_MINUTES=60
@@ -61,19 +61,63 @@ stop_on_sigterm() { cleanup; exit 143; }
 
 # ----- ARCHIVE ---------------------------------------------------------------
 
-# download_archive scripts_repo sha: downloads one immutable repository archive
+# download_archive scripts_repo sha archive: downloads one immutable repository archive, from codeload when github.com fails
 download_archive() {
 	local scripts_repo="$1" sha="$2" archive="$3"
-	local url="https://github.com/${scripts_repo}/archive/${sha}.tar.gz" err rc=0
-	err="$(curl "${_CURL_OPTS[@]}" "${url}" -o "${archive}" 2>&1)" || rc=$?
-	[[ "${rc}" -eq 0 && -s "${archive}" ]] || fail "archive download failed: ${url}${err:+ — ${err##*$'\n'}}"
+	local url err rc failures=""
+	# why: codeload serves the same commit archive with the same root folder, and stays up when the github.com redirect front does not
+	local -a urls=("https://github.com/${scripts_repo}/archive/${sha}.tar.gz" "https://codeload.github.com/${scripts_repo}/tar.gz/${sha}")
+	for url in "${urls[@]}"; do
+		rc=0
+		err="$(curl "${_CURL_OPTS[@]}" "${url}" -o "${archive}" 2>&1)" || rc=$?
+		[[ "${rc}" -ne 0 || ! -s "${archive}" ]] || return 0
+		log "archive download failed: ${url}"
+		failures+="${failures:+; }${url}${err:+ — ${err##*$'\n'}}"
+	done
+	fail "archive download failed: ${failures}"
 }
 
-# extract_installer_archive archive scripts_repo sha stage_dir: verifies and extracts only the installer subtree
+# stage_local_source scripts_dir stage_dir: stages the installer subtree and the coding-agent packs' agent.json files from a local scripts tree
+stage_local_source() {
+	local scripts_dir="$1" stage_dir="$2" source_dir="$1/installer" entry pack pack_dir
+	[[ -d "${source_dir}" && ! -L "${source_dir}" ]] || fail "local installer source is missing installer: ${scripts_dir}"
+	# why: the same no-link rule as the archive, so the source cannot steer a copy outside the stage; the pruned entries are this installer's own state
+	entry="$(find "${source_dir}" -mindepth 1 \( -path "${source_dir}/releases" -o -path "${source_dir}/current" \
+		-o -path "${source_dir}/.install.lock" -o -path "${source_dir}/.current.promote.*" \) \
+		-prune -o ! -type f ! -type d -print -quit)" || fail "could not inspect the local installer source"
+	[[ -z "${entry}" ]] || fail "local installer source contains a link or special file: ${entry}"
+	tar --create --file=- --directory="${source_dir}" --exclude=./releases --exclude=./current \
+		--exclude=./.install.lock --exclude='./.current.promote.*' . \
+		| tar --extract --file=- --directory="${stage_dir}" --no-same-owner --no-same-permissions \
+		|| fail "could not copy the local installer source"
+	[[ -f "${stage_dir}/install.sh" && -f "${stage_dir}/package.json" && -f "${stage_dir}/pnpm-lock.yaml" ]] \
+		|| fail "local installer source is missing required installer files"
+	for pack in "${scripts_dir}"/setup/core/coding-agents/*/agent.json; do
+		pack_dir="${pack%/agent.json}"
+		[[ -e "${pack}" || -L "${pack}" ]] || continue
+		[[ -f "${pack}" && ! -L "${pack}" && ! -L "${pack_dir}" ]] \
+			|| fail "local installer source contains a link or special file: ${pack}"
+		mkdir -p -- "${stage_dir}/packs/${pack_dir##*/}"
+		cp -- "${pack}" "${stage_dir}/packs/${pack_dir##*/}/agent.json"
+	done
+}
+
+# assert_plain_entries archive slash_mode pattern: fails unless every archive entry matching the pattern is a regular file or directory
+assert_plain_entries() {
+	local archive="$1" slash_mode="$2" pattern="$3" links entry entry_type
+	links="$(tar --list --verbose --gzip --file="${archive}" --quoting-style=escape --wildcards "${slash_mode}" \
+		-- "${pattern}")" || fail "could not inspect installer archive entries"
+	while IFS= read -r entry; do
+		entry_type="${entry:0:1}"
+		[[ "${entry_type}" == '-' || "${entry_type}" == 'd' ]] || fail "installer archive contains a link or special file: ${entry}"
+	done <<< "${links}"
+}
+
+# extract_installer_archive archive scripts_repo sha stage_dir: verifies and extracts the installer subtree and the coding-agent packs' agent.json files
 extract_installer_archive() {
 	local archive="$1" scripts_repo="$2" sha="$3" stage_dir="$4"
 	local archive_root="" expected_root="${scripts_repo##*/}-${sha}"
-	local entry_root listing links entry entry_type found=0
+	local entry_root listing entry found=0 has_packs=0
 	local -A seen_entries=()
 	listing="$(tar --list --gzip --file="${archive}" --quoting-style=escape)" || fail "invalid or truncated installer archive"
 	while IFS= read -r entry; do
@@ -89,20 +133,23 @@ extract_installer_archive() {
 			|| fail "installer archive has an unexpected root or SHA"
 		case "/${entry}/" in *'/../'*|*'/./'*|*'//'*) fail "installer archive contains an unsafe path" ;; esac
 		[[ "${entry}" == "${archive_root}/scripts/installer" || "${entry}" == "${archive_root}/scripts/installer/"* ]] && found=1
+		[[ "${entry}" =~ ^[^/]+/scripts/setup/core/coding-agents/[^/]+/agent\.json$ ]] && has_packs=1
 	done <<< "${listing}"
 	[[ "${found}" -eq 1 ]] || fail "installer archive is missing scripts/installer"
 	# why: rejecting links in this source subtree avoids any archive-controlled extraction path escape.
-	links="$(tar --list --verbose --gzip --file="${archive}" --quoting-style=escape --wildcards --wildcards-match-slash \
-		-- "${archive_root}/scripts/installer/*")" || fail "could not inspect installer archive entries"
-	while IFS= read -r entry; do
-		entry_type="${entry:0:1}"
-		[[ "${entry_type}" == '-' || "${entry_type}" == 'd' ]] || fail "installer archive contains a link or special file"
-	done <<< "${links}"
+	assert_plain_entries "${archive}" --wildcards-match-slash "${archive_root}/scripts/installer/*"
 	tar -xzf "${archive}" --directory "${stage_dir}" --strip-components=3 --wildcards --wildcards-match-slash \
 		--no-same-owner --no-same-permissions -- "${archive_root}/scripts/installer/*" \
 		|| fail "could not extract scripts/installer from archive"
 	[[ -f "${stage_dir}/install.sh" && -f "${stage_dir}/package.json" && -f "${stage_dir}/pnpm-lock.yaml" ]] \
 		|| fail "installer archive is missing required installer files"
+	# why: the installer routes on the coding-agent packs, so the release carries their agent.json files as packs/<id>/agent.json; a commit older than the packs has none and an installer that needs none
+	[[ "${has_packs}" -eq 1 ]] || return 0
+	assert_plain_entries "${archive}" --no-wildcards-match-slash "${archive_root}/scripts/setup/core/coding-agents/*/agent.json"
+	mkdir -p -- "${stage_dir}/packs"
+	tar -xzf "${archive}" --directory "${stage_dir}/packs" --strip-components=5 --wildcards --no-wildcards-match-slash \
+		--no-same-owner --no-same-permissions -- "${archive_root}/scripts/setup/core/coding-agents/*/agent.json" \
+		|| fail "could not extract the coding-agent packs from archive"
 }
 
 # ----- VERIFICATION -----------------------------------------------------------
@@ -232,7 +279,8 @@ install_dependencies() {
 	log_file="$(mktemp "${installer_dir}/.pnpm.XXXXXX")"
 	pnpm_home="${installer_dir}/.pnpm-home"
 	pnpm_store="${installer_dir}/.pnpm-store"
-	if ! (cd "${installer_dir}" && PNPM_HOME="${pnpm_home}" corepack pnpm install --store-dir="${pnpm_store}" --prod --frozen-lockfile --ignore-scripts) >"${log_file}" 2>&1; then
+	# why: pnpm reads its fetch retry policy only from the lowercase npm_config_ names; more and longer retries outlast a registry hiccup
+	if ! (cd "${installer_dir}" && PNPM_HOME="${pnpm_home}" npm_config_fetch_retries=5 npm_config_fetch_retry_maxtimeout=120000 corepack pnpm install --store-dir="${pnpm_store}" --prod --frozen-lockfile --ignore-scripts) >"${log_file}" 2>&1; then
 		cat "${log_file}" >&2
 		rm -f -- "${log_file}"
 		fail "pnpm install failed"
@@ -485,7 +533,8 @@ main() {
 	_INSTALLER_RESOLVED_SHA="${sha}"
 	_INSTALLER_SCRIPTS_REPO="${scripts_repo}"
 	base_url="$(installer_base_url "${scripts_repo}" "${sha}")"
-	self_update "${base_url}" "${installer_root}"
+	# why: a local source is the checkout this install.sh came from, so the published copy at the same SHA is this file
+	[[ -n "${_INSTALLER_SOURCE_DIR:-}" ]] || self_update "${base_url}" "${installer_root}"
 	if [[ -z "${_BOOTSTRAP_DIR}" ]]; then
 		_BOOTSTRAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/devcontainer-bootstrap.XXXXXX")"
 	fi
@@ -503,10 +552,15 @@ main() {
 	_STAGE_DIR="$(mktemp -d "${installer_root}/releases/.candidate-${sha}.XXXXXX")"
 	_PREPARING_MARKER="${_STAGE_DIR}/.preparing.$$"
 	touch "${_PREPARING_MARKER}"
-	log "fetching installer from ${scripts_repo}@${sha}"
-	archive="${_BOOTSTRAP_DIR}/scripts.tar.gz"
-	download_archive "${scripts_repo}" "${sha}" "${archive}"
-	extract_installer_archive "${archive}" "${scripts_repo}" "${sha}" "${_STAGE_DIR}"
+	if [[ -n "${_INSTALLER_SOURCE_DIR:-}" ]]; then
+		log "staging installer from ${_INSTALLER_SOURCE_DIR} at ${sha}"
+		stage_local_source "${_INSTALLER_SOURCE_DIR}" "${_STAGE_DIR}"
+	else
+		log "fetching installer from ${scripts_repo}@${sha}"
+		archive="${_BOOTSTRAP_DIR}/scripts.tar.gz"
+		download_archive "${scripts_repo}" "${sha}" "${archive}"
+		extract_installer_archive "${archive}" "${scripts_repo}" "${sha}" "${_STAGE_DIR}"
+	fi
 	verify_stage "${_STAGE_DIR}"
 	install_dependencies "${_STAGE_DIR}"
 	write_release_proof "${_STAGE_DIR}" "${sha}"
@@ -518,7 +572,7 @@ main() {
 	log "installer ready: ${installer_root}/current -> releases/${sha}"
 }
 
-export -f log warn fail cleanup download_archive extract_installer_archive stage_valid verify_stage \
+export -f log warn fail cleanup download_archive stage_local_source assert_plain_entries extract_installer_archive stage_valid verify_stage \
 	release_entries release_entry_hash safe_release_link write_release_proof validate_release install_dependencies self_update valid_scripts_repo resolve_scripts_sha \
 	installer_base_url owner_markers_are_gone clear_stale_owner_markers cleanup_stale_candidates promotion_artifact_owner_is_gone cleanup_stale_promotion_artifacts retain_releases activate_release reuse_existing_release promote_release main
 

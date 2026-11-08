@@ -4,11 +4,14 @@ set -euo pipefail
 # Refreshes the machine-wide agent skills, commands and working agreement shared by every
 # devcontainer on this host, the agents category of the devcontainer-shared-data volume
 # linked at ~/.agents: re-fetches the installer, then runs each installer's --global
-# entry, which reads its own *.global.json manifest. Safe to re-run.
+# entry, which installs the items marked global. Safe to re-run.
 
 # ----- PATH AND STRUCTURE VARIABLES -------------------------------------------
 
 _SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# why: its own file, never the setup log, which holds exactly one setup run; an empty _LOG_FILE (as the test suite sets it) still means stderr only
+_LOG_FILE="${_LOG_FILE-/tmp/agent-assets.log}"
 
 _CAPTURED=""
 _SCOPE_COUNT=0
@@ -156,40 +159,42 @@ sync_file_if_changed() {
 	printf 'updated\n'
 }
 
-# claude_md_with_import <import_line> <claude_md>: prints the import line, a blank line, then the CLAUDE.md content
-claude_md_with_import() {
+# file_with_import <import_line> <file>: prints the import line, a blank line, then the file's content
+# Stdout: the import line, a blank line, then the file's content
+file_with_import() {
 	printf '%s\n\n' "$1"
 	cat -- "$2"
 }
 
-# sync_claude_adapter <claude_md>: makes CLAUDE.md import the working agreement, keeping its content, and prints "created", "updated" or "unchanged"
-# Notes: Claude Code does not read AGENTS.md; it reads CLAUDE.md and expands @path
-#   imports at session start.
-sync_claude_adapter() {
-	local claude_md="$1" import_line="@~/.agents/AGENTS.md"
+# sync_import_adapter <file>: makes an agent's instructions file import the working agreement, keeping its content, and prints "created", "updated" or "unchanged"
+# Stdout: created, updated or unchanged, one line
+# Notes: for an agent that does not read AGENTS.md but expands @path imports in its own
+#   instructions file at session start.
+sync_import_adapter() {
+	local file="$1" import_line="@~/.agents/AGENTS.md"
 
-	if [[ ! -f "${claude_md}" ]]; then
-		atomic_write "${claude_md}" printf '%s\n' "${import_line}"
+	if [[ ! -f "${file}" ]]; then
+		atomic_write "${file}" printf '%s\n' "${import_line}"
 		printf 'created\n'
 		return 0
 	fi
 
-	if grep -qF -- "${import_line}" "${claude_md}"; then
+	if grep -qF -- "${import_line}" "${file}"; then
 		printf 'unchanged\n'
 		return 0
 	fi
 
-	atomic_write "${claude_md}" claude_md_with_import "${import_line}" "${claude_md}"
+	atomic_write "${file}" file_with_import "${import_line}" "${file}"
 	printf 'updated\n'
 }
 
-# sync_working_agreement: installs the working agreement to ~/.agents/AGENTS.md and each supported agent adapter, and sets _SCOPE_COUNT to the number of destinations changed
+# sync_working_agreement: installs the working agreement to ~/.agents/AGENTS.md and each selected agent pack's instructions adapter, and sets _SCOPE_COUNT to the number of destinations changed
 # Notes: the source is the installer tree sync_installer just refreshed, not the image
 #   copy, so an edit takes effect on the next sync without an image rebuild. An adapter
 #   under a managed persistent-data link is written only when its parent directory
 #   exists: creating it here would replace the managed symlink with a plain directory.
 sync_working_agreement() {
-	local canonical="${DEVCONTAINER_INSTALLER_DIR}/agents/templates/global/AGENTS.md" codex_dir="${HOME}/.codex" pi_agent_dir="${HOME}/.pi/agent" result
+	local canonical="${DEVCONTAINER_INSTALLER_DIR}/agents/templates/global/AGENTS.md" result adapters label mode path
 	_SCOPE_COUNT=0
 
 	log_detail "Personal working agreement"
@@ -202,37 +207,27 @@ sync_working_agreement() {
 		_SCOPE_COUNT=$(( _SCOPE_COUNT + 1 ))
 	fi
 
-	result="$(sync_claude_adapter "${HOME}/.claude/CLAUDE.md")"
-	if [[ "${result}" == "unchanged" ]]; then
-		log_item_success "Claude adapter (~/.claude/CLAUDE.md) already up to date"
-	else
-		log_item_success "Claude adapter (~/.claude/CLAUDE.md) ${result}"
-		_SCOPE_COUNT=$(( _SCOPE_COUNT + 1 ))
-	fi
-
-	if [[ -e "${codex_dir}" ]]; then
-		result="$(sync_file_if_changed "${canonical}" "${codex_dir}/AGENTS.md")"
-		if [[ "${result}" == "unchanged" ]]; then
-			log_item_success "Codex adapter (~/.codex/AGENTS.md) already up to date"
+	adapters=$(inventory_read_selected -r '.agents[] | select((.instructions.mode // "none") != "none")
+		| [.label, .instructions.mode, .instructions.path] | join("\u001f")') || log_fatal 'Could not read the agent packs'
+	while IFS=$'\x1f' read -r label mode path; do
+		[[ -n "${label}" ]] || continue
+		if [[ ! -d "$(dirname "${HOME}/${path}")" ]]; then
+			log_item_warning "${label} adapter skipped — ~/$(dirname "${path}") not present (${label} not configured in this container)"
+			continue
+		fi
+		if [[ "${mode}" == import ]]; then
+			result="$(sync_import_adapter "${HOME}/${path}")"
 		else
-			log_item_success "Codex adapter (~/.codex/AGENTS.md) installed"
+			result="$(sync_file_if_changed "${canonical}" "${HOME}/${path}")"
+		fi
+		if [[ "${result}" == "unchanged" ]]; then
+			log_item_success "${label} adapter (~/${path}) already up to date"
+		else
+			[[ "${mode}" == import ]] || result='installed'
+			log_item_success "${label} adapter (~/${path}) ${result}"
 			_SCOPE_COUNT=$(( _SCOPE_COUNT + 1 ))
 		fi
-	else
-		log_item_warning "Codex adapter skipped — ~/.codex not present (Codex not configured in this container)"
-	fi
-
-	if [[ -d "${pi_agent_dir}" ]]; then
-		result="$(sync_file_if_changed "${canonical}" "${pi_agent_dir}/AGENTS.md")"
-		if [[ "${result}" == "unchanged" ]]; then
-			log_item_success "Pi adapter (~/.pi/agent/AGENTS.md) already up to date"
-		else
-			log_item_success "Pi adapter (~/.pi/agent/AGENTS.md) installed"
-			_SCOPE_COUNT=$(( _SCOPE_COUNT + 1 ))
-		fi
-	else
-		log_item_warning "Pi adapter skipped — ~/.pi/agent not present (Pi not configured in this container)"
-	fi
+	done <<<"${adapters}"
 }
 
 # mod_differs <src> <dest>: succeeds when the mod folders differ, ignoring the .claude-plugin/types path Claude Code writes on every load
@@ -244,7 +239,13 @@ mod_differs() {
 	[[ -n "${report}" ]]
 }
 
-# sync_working_agreement_mod: installs the working-agreement mod to ~/.agents/mods/working-agreement, links it from ~/.claude/skills, and sets _SCOPE_COUNT to the number of changes
+# symlinked_skills_dirs: prints the label and home-relative skills directory of each selected agent pack that exposes skills through symlinks
+# Stdout: one "<label>\x1f<skills path>" line per such pack
+symlinked_skills_dirs() {
+	inventory_read_selected -r '.agents[] | select(.skills.mode == "symlink") | [.label, .skills.path] | join("\u001f")'
+}
+
+# sync_working_agreement_mod <skills_dirs>: installs the working-agreement mod to ~/.agents/mods/working-agreement, links it from each symlink-exposed skills directory, and sets _SCOPE_COUNT to the number of changes
 # Notes: a changed copy is staged beside the destination and swapped in by rename, so a
 #   partial copy is never visible there. A missing source is fatal, like a missing
 #   installer. An entry at the link path that is not the expected link is warned about and
@@ -252,7 +253,7 @@ mod_differs() {
 #   enable state lives there.
 sync_working_agreement_mod() {
 	local src="${DEVCONTAINER_INSTALLER_DIR}/mods/templates/working-agreement" dest="${HOME}/.agents/mods/working-agreement"
-	local link="${HOME}/.claude/skills/working-agreement" stage old version
+	local links="$1" link label skills_path stage old version
 	_SCOPE_COUNT=0
 
 	log_detail "Working-agreement mod"
@@ -275,23 +276,28 @@ sync_working_agreement_mod() {
 		_SCOPE_COUNT=$(( _SCOPE_COUNT + 1 ))
 	fi
 
-	if [[ -L "${link}" && "$(readlink -- "${link}")" == "${dest}" ]]; then
-		log_item_success "Claude mod link (~/.claude/skills/working-agreement) already up to date"
-	elif [[ -e "${link}" || -L "${link}" ]]; then
-		log_item_warning "Claude mod link skipped — ~/.claude/skills/working-agreement already exists and is not the expected link"
-	else
-		ln -s -- "${dest}" "${link}"
-		log_item_success "Claude mod link (~/.claude/skills/working-agreement) created"
-		_SCOPE_COUNT=$(( _SCOPE_COUNT + 1 ))
-	fi
+	while IFS=$'\x1f' read -r label skills_path; do
+		[[ -n "${label}" ]] || continue
+		link="${HOME}/${skills_path}/working-agreement"
+		if [[ -L "${link}" && "$(readlink -- "${link}")" == "${dest}" ]]; then
+			log_item_success "${label} mod link (~/${skills_path}/working-agreement) already up to date"
+		elif [[ -e "${link}" || -L "${link}" ]]; then
+			log_item_warning "${label} mod link skipped — ~/${skills_path}/working-agreement already exists and is not the expected link"
+		else
+			ln -s -- "${dest}" "${link}"
+			log_item_success "${label} mod link (~/${skills_path}/working-agreement) created"
+			_SCOPE_COUNT=$(( _SCOPE_COUNT + 1 ))
+		fi
+	done <<<"${links}"
 }
 
 # ----- CORE -------------------------------------------------------------------
 
 # sync_agent_assets_locked: mutates global assets while the shared-data lock serializes all containers on the host
 sync_agent_assets_locked() {
-	local assets_ref scripts_repo source_sha started n_cmd n_local n_ext n_agreement state='complete'
+	local assets_ref scripts_repo source_sha started n_cmd n_local n_ext n_agreement state='complete' skills_dirs label skills_path
 	setup_error_traps
+	log_file_start
 	started="$(date +%s)"
 
 	# why: Prerequisites are local checks: fail before resolving a ref over the network.
@@ -305,7 +311,11 @@ sync_agent_assets_locked() {
 	source_sha="${ASSETS_SHA}"
 	log_info "Syncing global agent assets · ${scripts_repo}@${source_sha}"
 
-	mkdir -p "${HOME}/.agents/skills" "${HOME}/.claude/skills"
+	mkdir -p "${HOME}/.agents/skills"
+	skills_dirs=$(symlinked_skills_dirs) || log_fatal 'Could not read the agent packs'
+	while IFS=$'\x1f' read -r label skills_path; do
+		if [[ -n "${label}" ]]; then mkdir -p "${HOME}/${skills_path}"; fi
+	done <<<"${skills_dirs}"
 
 	sync_installer "${source_sha}" "${scripts_repo}"
 	[[ -d "${DEVCONTAINER_INSTALLER_DIR}" ]] || log_fatal "Active installer release not found at ${DEVCONTAINER_INSTALLER_DIR}"
@@ -318,8 +328,11 @@ sync_agent_assets_locked() {
 	[[ "$_SCOPE_OUTCOME" == ok ]] || state='partial'
 	sync_working_agreement
 	n_agreement="${_SCOPE_COUNT}"
-	sync_working_agreement_mod
-	n_agreement=$(( n_agreement + _SCOPE_COUNT ))
+	# why: the mod loads only through a symlink-exposed skills directory, which no unlisted agent provides
+	if [[ -n "${skills_dirs}" ]]; then
+		sync_working_agreement_mod "${skills_dirs}"
+		n_agreement=$(( n_agreement + _SCOPE_COUNT ))
+	fi
 	global_agent_assets_metadata_write "$assets_ref" "$source_sha" "$state" || log_fatal 'Could not record global agent asset sync state'
 
 	log_success "Global agent assets synced in $(( $(date +%s) - started ))s · $(count_label "${n_cmd}" "agent command"), $(count_label "${n_local}" "local skill"), $(count_label "${n_ext}" "third-party skill"), $(count_label "${n_agreement}" "adapter update")"
@@ -332,7 +345,8 @@ sync_agent_assets() {
 
 export -f strip_ansi emit_captured run_captured report_warnings \
 	fail_with_captured report_names count_label sync_installer sync_scope \
-	sync_file_if_changed sync_claude_adapter sync_working_agreement mod_differs sync_working_agreement_mod sync_agent_assets_locked sync_agent_assets
+	sync_file_if_changed sync_import_adapter sync_working_agreement symlinked_skills_dirs mod_differs \
+	sync_working_agreement_mod sync_agent_assets_locked sync_agent_assets
 
 # ----- ENTRY POINT ------------------------------------------------------------
 

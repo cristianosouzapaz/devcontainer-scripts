@@ -90,6 +90,23 @@ function Test-PathCoherence {
     return $true
 }
 
+function Test-GitEmail {
+    <#
+    .SYNOPSIS
+        Validates that a git email has the shape local@domain.tld, without spaces.
+    .PARAMETER Email
+        The email address to validate.
+    .OUTPUTS
+        System.Boolean - $true if valid, $false otherwise.
+    #>
+    param([string]$Email)
+    if ($Email -notmatch '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$') {
+        Write-Message "Git email must look like name@example.com" -Level "Error"
+        return $false
+    }
+    return $true
+}
+
 function Test-ProjectName {
     <#
     .SYNOPSIS

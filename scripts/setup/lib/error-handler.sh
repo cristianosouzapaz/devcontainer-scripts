@@ -5,17 +5,12 @@ readonly _ERROR_HANDLER_SH_LOADED=1
 # Error stack, cleanup registries, and the ERR/EXIT/INT/TERM trap handlers that feed
 # and drain them.
 
-# ----- CONFIGURATION VARIABLES ------------------------------------------------
-
-# Documented in README.md#configuration-variables:
-# - DUMP_ERROR_STACK
-
 # ----- ERROR CODE CONSTANTS ---------------------------------------------------
 
 readonly DEVCONTAINER_FATAL_ERROR=1
-# shellcheck disable=SC2034 # consumed by modules/git.sh
+# shellcheck disable=SC2034 # consumed by core/git.sh
 readonly DEVCONTAINER_VALIDATION_ERROR=2
-# shellcheck disable=SC2034 # consumed by modules/git.sh
+# shellcheck disable=SC2034 # consumed by core/git.sh
 readonly DEVCONTAINER_AUTH_ERROR=4
 # shellcheck disable=SC2034 # consumed by modules/ngrok.sh
 readonly DEVCONTAINER_NETWORK_ERROR=8
@@ -158,7 +153,7 @@ on_sigterm() {
 	exit 143
 }
 
-# on_exit: EXIT trap handler; runs pending module cleanups, then process-wide cleanups, then logs the error stack when DUMP_ERROR_STACK is true
+# on_exit: EXIT trap handler; runs pending module cleanups, then process-wide cleanups, then logs the error stack when errors were recorded
 # Notes: module cleanups run here as a backstop: run_module normally runs them after
 #   the module subshell ends, which a signal or fatal exit mid-module skips. Always
 #   returns 0 so it never blocks the EXIT trap chain.
@@ -166,9 +161,7 @@ on_exit() {
 	run_module_cleanup_handlers || true
 	run_cleanup_handlers || true
 
-	if [[ "${DUMP_ERROR_STACK}" == "true" && "${#_ERROR_STACK[@]}" -gt 0 ]]; then
-		dump_error_stack
-	fi
+	dump_error_stack
 	return 0
 }
 

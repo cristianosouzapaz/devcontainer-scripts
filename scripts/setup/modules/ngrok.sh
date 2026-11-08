@@ -23,6 +23,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
 readonly -a _NGROK_CONFIG_COMMAND=(config add-authtoken)
+_NGROK_RETRY_BACKOFF="${_NGROK_RETRY_BACKOFF:-1}"
 
 # ----- CORE SETUP -------------------------------------------------------------
 
@@ -32,26 +33,28 @@ ngrok_setup() {
 	local exit_code
 
 	check_command ngrok || {
+		# why: the ngrok binary comes only from the picker's ngrok feature, so its absence means not selected
 		log_debug "ngrok not installed"
-		module_skip
+		module_skip 'not selected'
 		return 0
 	}
 
 	check_env_var NGROK_AUTHTOKEN || {
 		log_debug "NGROK_AUTHTOKEN not set"
-		module_skip
+		module_skip --action 'set NGROK_AUTHTOKEN, or deselect ngrok in the picker' 'NGROK_AUTHTOKEN not set'
 		return 0
 	}
 
-	start_spinner "Configuring ngrok with authtoken"
+	start_spinner "Configuring the ngrok authtoken"
 	exit_code=0
-	spinner_stream log_debug retry_command 3 1 "$(command -v ngrok || echo 'ngrok')" "${_NGROK_CONFIG_COMMAND[@]}" "${NGROK_AUTHTOKEN}" || exit_code=$?
+	retry_command --label 'ngrok authtoken' 3 "$_NGROK_RETRY_BACKOFF" \
+		spinner_stream log_debug ngrok "${_NGROK_CONFIG_COMMAND[@]}" "${NGROK_AUTHTOKEN}" || exit_code=$?
 	if [[ $exit_code -ne 0 ]]; then
 		push_error "$DEVCONTAINER_NETWORK_ERROR" "${LINENO}" "ngrok_setup" "ngrok ${_NGROK_CONFIG_COMMAND[*]}" "ngrok configuration failed after retries"
-		stop_spinner 1
+		stop_spinner 1 "ngrok authtoken not configured: ${RETRY_LAST_CAUSE:-the retries were cut short}"
 		return 1
 	fi
-	stop_spinner 0
+	stop_spinner 0 "ngrok authtoken configured$(retry_suffix)"
 }
 
 export -f ngrok_setup

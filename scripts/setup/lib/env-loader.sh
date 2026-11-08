@@ -28,7 +28,14 @@ env_loader_secret_matches() {
 	return 1
 }
 
-# load_env_file <patterns...>: exports ordinary key=value pairs and archives declared secrets
+# warn_if_env_file_missing: warns, naming the expected path and the remedy, when the mounted .env file is absent
+# Notes: only the setup run calls it, so a unit run on its own stays quiet.
+warn_if_env_file_missing() {
+	[[ ! -f "$_ENV_FILE_PATH" ]] || return 0
+	log_warning "No .env file at ${_ENV_FILE_PATH}: setup ran with defaults only; regenerate devcontainer.json with project-init to mount it"
+}
+
+# load_env_file: exports ordinary key=value pairs and archives declared secrets
 # Notes: a line splits at the first =; key and value are trimmed of surrounding
 #   whitespace, a trailing CR included, then one matching quote pair is removed from
 #   the value; the rest is literal, with no inline comments. Empty keys and # lines
@@ -52,7 +59,7 @@ load_env_file() {
 		done < <(env -0)
 	fi
 	[[ -f "$_ENV_FILE_PATH" ]] || {
-		log_info "No .env file found"
+		log_debug "No .env file at ${_ENV_FILE_PATH}"
 		for key in "${!secret_values[@]}"; do
 			printf '%s\0%s\0' "$key" "${secret_values[$key]}" >>"$_MODULE_SECRET_FILE"
 		done
@@ -62,7 +69,7 @@ load_env_file() {
 		return 0
 	}
 
-	log_info "Loading environment from .env file"
+	log_debug "Loading environment from ${_ENV_FILE_PATH}"
 
 	while IFS= read -r line || [[ -n "$line" ]]; do
 		[[ "$line" == *=* ]] || continue
@@ -148,7 +155,7 @@ persist_env_vars() {
 		log_debug "Persisted: ${key#PERSIST_}"
 	done
 
-	log_success "Persisted ${#persist_keys[@]} variable(s) to /etc/environment"
+	log_debug "Persisted ${#persist_keys[@]} variable(s) to ${_ETC_ENVIRONMENT_PATH}"
 }
 
-export -f load_env_file persist_env_vars remove_module_secret_file
+export -f warn_if_env_file_missing load_env_file persist_env_vars remove_module_secret_file

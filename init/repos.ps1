@@ -10,7 +10,7 @@ function Get-TokenVarName {
         Computes the GIT_CLONE_TOKEN_<HOST> variable name for a given repo host.
     .DESCRIPTION
         Normalises the host to uppercase, replacing every non-alphanumeric character
-        with "_". Mirrors token_env_var_name in public/scripts/setup/modules/git.sh -
+        with "_". Mirrors token_env_var_name in public/scripts/setup/core/git.sh -
         keep both in sync, since git.sh resolves the same variable name at runtime.
         Example: gitlab.example.com -> GIT_CLONE_TOKEN_GITLAB_EXAMPLE_COM
     .PARAMETER RepoHost
@@ -160,16 +160,6 @@ function New-ComposeWithRepoVolumes {
     .DESCRIPTION
         Performs placeholder substitution (project-name -> ProjectName), then
         keeps the project workspace volume mounted at /workspace in every mode.
-        For every selected entry that declares a named-volume mount
-        (source=X,target=Y,type=volume), appends
-        a matching top-level volume declaration if one isn't already present in the
-        template. This keeps docker-compose.yml's declared volumes in sync with
-        whichever optional features were actually selected, instead of requiring
-        every such feature to hardcode its volume into the static template.
-        For every selected entry that declares a bind mount (source=X,target=Y,type=bind
-        - e.g. the Docker socket), appends a matching entry to the primary service's
-        volumes list, so the mount is explicit in the generated docker-compose.yml
-        instead of relying solely on the devcontainer.json mounts/override mechanism.
         Extra workspace folders are intentionally NOT mounted here - they are only
         added to devcontainer.json's mounts array (see Add-ExtraFolderMountsToConfig),
         so a compose-mode project doesn't get a duplicate bind mount for the same
@@ -185,66 +175,11 @@ function New-ComposeWithRepoVolumes {
     .PARAMETER Destination
         Absolute path to the destination folder (the .devcontainer directory).
         The output file is written as docker-compose.yml inside this folder.
-    .PARAMETER SelectedEntries
-        Array of selected entry objects; entries without a .mount value, or whose
-        mount isn't a named volume (type=volume), are ignored.
-    .PARAMETER ExtraFolders
-        Array of extra workspace folder objects (as returned by Get-ExtraFolderList).
-        Only their presence matters here - see .DESCRIPTION for why. Optional -
-        when empty, single-repo behaves as before.
     #>
-    param([string]$TemplateFile, [string]$ProjectName, [string[]]$RepoList, [string]$Destination, [array]$SelectedEntries = @(), [array]$ExtraFolders = @())
+    param([string]$TemplateFile, [string]$ProjectName, [string[]]$RepoList, [string]$Destination)
 
     $content = (Get-Content -Path $TemplateFile -Raw) -replace '\r\n', "`n"
     $content = $content.Replace('project-name', $ProjectName)
-
-    $featureVolumeLines = [System.Collections.ArrayList]@()
-    foreach ($e in $SelectedEntries) {
-        if ([string]::IsNullOrWhiteSpace($e.mount)) { continue }
-        if ($e.mount -notmatch '^source=(?<name>[^,]+),target=[^,]+,type=volume$') { continue }
-
-        $volumeName = $Matches['name']
-        if ($content -notmatch "(?m)^  $([regex]::Escape($volumeName)):") {
-            [void]$featureVolumeLines.Add("  ${volumeName}:")
-            [void]$featureVolumeLines.Add("    name: $volumeName")
-        }
-    }
-    if ($featureVolumeLines.Count -gt 0) {
-        $content = $content.TrimEnd("`n") + "`n" + ($featureVolumeLines -join "`n") + "`n"
-    }
-
-    $bindMounts = [System.Collections.ArrayList]@()
-    foreach ($e in $SelectedEntries) {
-        if ([string]::IsNullOrWhiteSpace($e.mount)) { continue }
-        if ($e.mount -notmatch '^source=(?<source>[^,]+),target=(?<target>[^,]+),type=bind') { continue }
-
-        $bindLine = "      - $($Matches['source']):$($Matches['target'])"
-        if ($content -notmatch [regex]::Escape($bindLine)) {
-            [void]$bindMounts.Add($bindLine)
-        }
-    }
-    if ($bindMounts.Count -gt 0) {
-        $lines = [System.Collections.ArrayList]@($content -split "`n")
-
-        $match = $lines | Select-String -Pattern "^    container_name: $([regex]::Escape($ProjectName))$" | Select-Object -First 1
-        $serviceIdx = if ($match) { $match.LineNumber - 1 } else { $null }
-        if ($null -ne $serviceIdx) {
-            $volumesIdx = -1
-            for ($i = $serviceIdx; $i -lt $lines.Count; $i++) {
-                if ($lines[$i] -match '^    volumes:$') { $volumesIdx = $i; break }
-                if ($lines[$i] -match '^  \S') { break }
-            }
-            if ($volumesIdx -ge 0) {
-                $lastVolumeLineIdx = $volumesIdx
-                for ($i = $volumesIdx + 1; $i -lt $lines.Count; $i++) {
-                    if ($lines[$i] -match '^      - ') { $lastVolumeLineIdx = $i } else { break }
-                }
-                $lines.InsertRange($lastVolumeLineIdx + 1, $bindMounts)
-                $content = $lines -join "`n"
-            }
-        }
-    }
-
     $content = Sort-ComposeVolumeBlock -Content $content
 
     $outputPath = Join-Path -Path $Destination -ChildPath 'docker-compose.yml'

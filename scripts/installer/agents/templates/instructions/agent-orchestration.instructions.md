@@ -2,6 +2,9 @@
 name: "Agent Orchestration"
 description: "Use when planning or executing work that may need decomposition into subagents. Covers independence checks, batching, prompt contracts, and synthesis for audits, repeated transformations, and multi-module implementation."
 applyTo: "**"
+metadata:
+  kit-version: "1.2.1"
+  kit-tags: agents
 ---
 
 # Agent Orchestration

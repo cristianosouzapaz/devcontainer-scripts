@@ -7,11 +7,21 @@ readonly _GLOBAL_AGENT_ASSETS_SH_LOADED=1
 
 # ----- INSTALLER SOURCE -------------------------------------------------------
 
-# resolve_assets_ref: prints the requested global-assets ref: AGENT_ASSETS_REF, else the stable release channel
+# scripts_ref_is_release: succeeds when the image's SCRIPTS_REF is empty or a release tag (vX.Y.Z)
+scripts_ref_is_release() {
+	[[ -z "${SCRIPTS_REF:-}" || "${SCRIPTS_REF}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+# resolve_assets_ref: prints the requested global-assets ref: the stable release channel when SCRIPTS_REF is a release, else SCRIPTS_REF itself
 # Stdout: the ref, one line
 # Notes: this is deliberately not persisted: refs are mutable input, while the resolved SHA is state.
+#   Deriving it from SCRIPTS_REF keeps the image and the assets on one channel.
 resolve_assets_ref() {
-	printf '%s\n' "${AGENT_ASSETS_REF:-stable}"
+	if scripts_ref_is_release; then
+		printf '%s\n' stable
+	else
+		printf '%s\n' "${SCRIPTS_REF}"
+	fi
 }
 
 # resolve_assets_repo: prints the explicitly requested installer repository, defaulting to the public release source
@@ -49,14 +59,14 @@ resolve_assets_sha() {
 # resolve_assets_source: sets ASSETS_REF and ASSETS_SHA to the installer source, falling back to the image's SCRIPTS_REF when the stable channel does not resolve
 # Returns: 1 when no ref resolves; ASSETS_REF then names the last ref tried.
 # Notes: a fork without the stable channel still installs a released ref, the one its
-#   image was built from. An explicit AGENT_ASSETS_REF never falls back.
+#   image was built from. A non-release SCRIPTS_REF is followed as is and never falls back.
 resolve_assets_source() {
 	local scripts_repo sha
 
 	ASSETS_REF="$(resolve_assets_ref)"
 	scripts_repo="$(resolve_assets_repo)" || return 1
 	if ! sha="$(resolve_assets_sha "$ASSETS_REF")"; then
-		[[ -z "${AGENT_ASSETS_REF:-}" && -n "${SCRIPTS_REF:-}" ]] || return 1
+		[[ "$ASSETS_REF" == stable && -n "${SCRIPTS_REF:-}" ]] || return 1
 		log_warning "Could not resolve ${scripts_repo}@${ASSETS_REF}; falling back to the image's SCRIPTS_REF (${SCRIPTS_REF})"
 		ASSETS_REF="${SCRIPTS_REF}"
 		sha="$(resolve_assets_sha "$ASSETS_REF")" || return 1
@@ -134,5 +144,5 @@ global_agent_assets_metadata_read() {
 	cat -- "$metadata"
 }
 
-export -f resolve_assets_ref resolve_assets_repo resolve_assets_sha resolve_assets_source global_agent_assets_metadata_path global_agent_assets_metadata_validate_path \
+export -f scripts_ref_is_release resolve_assets_ref resolve_assets_repo resolve_assets_sha resolve_assets_source global_agent_assets_metadata_path global_agent_assets_metadata_validate_path \
 	global_agent_assets_metadata_valid global_agent_assets_metadata_write global_agent_assets_metadata_read

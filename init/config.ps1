@@ -70,29 +70,23 @@ function Add-MountsToConfig {
     .SYNOPSIS
         Injects the required bind mounts into devcontainer.json.
     .DESCRIPTION
-        Adds the secrets bind mount and selected feature mounts. The secrets source is
+        Adds the secrets bind mount. The secrets source is
         supplied by the caller via SecretsPath, defaulting to the Windows home location;
         pass a daemon-side POSIX path here (verbatim, unvalidated) when the Docker daemon
         runs on a remote host. Dockerfile/image configurations also mount the shared
         persistent-data volume; Compose owns that mount in docker-compose.yml.
     .PARAMETER FilePath
         Absolute path to the devcontainer.json file to update.
-    .PARAMETER SelectedEntries
-        Array of selected entry objects; entries without a .mount value are ignored.
     .PARAMETER SecretsPath
         Host- or daemon-side path to the secrets .env file, used verbatim as the mount's
         source. Defaults to the Windows home location.
     #>
-    param([string]$FilePath, [array]$SelectedEntries, [bool]$UseCompose = $false, [string]$SecretsPath = '${localEnv:USERPROFILE}\.config\.env')
+    param([string]$FilePath, [bool]$UseCompose = $false, [string]$SecretsPath = '${localEnv:USERPROFILE}\.config\.env')
 
-    # Listed alphabetically for readability; Write-MountsArray sorts the final array anyway.
     $mounts = [System.Collections.ArrayList]@()
     [void]$mounts.Add("source=$SecretsPath,target=/root/.config/devcontainer/.env,type=bind,consistency=cached,readonly")
     if (-not $UseCompose) {
         [void]$mounts.Add('source=devcontainer-shared-data,target=/var/lib/devcontainer,type=volume')
-    }
-    foreach ($e in ($SelectedEntries | Where-Object { -not [string]::IsNullOrWhiteSpace($_.mount) })) {
-        [void]$mounts.Add($e.mount)
     }
 
     Write-MountsArray -FilePath $FilePath -Mounts $mounts.ToArray() -LogMessage "Mounts injected ($($mounts.Count) total)"
@@ -138,9 +132,8 @@ function Update-RemoteEnvInConfig {
         sorted, and returns the updated config object (not yet written to disk).
     .DESCRIPTION
         Reads the existing remoteEnv, drops any RemoveKeys, applies Updates (added or
-        overwritten), and re-sorts once. Shared read-modify-sort path behind
-        Set-ExtraFoldersInConfig, Set-SshSigningFlag, and Set-RepoSourcesInConfig,
-        which only needed to differ in which keys they add/remove.
+        overwritten), and re-sorts once. Shared read-modify-sort path behind every
+        Set-*InConfig function that edits remoteEnv.
     .PARAMETER Config
         Config object as returned by Read-JsonFile.
     .PARAMETER Updates
@@ -189,6 +182,24 @@ function Set-ExtraFoldersInConfig {
     Write-LogEntry "Extra folders set ($($ExtraFolders.Count))" -Status Success
 }
 
+function Set-GitIdentityInConfig {
+    <#
+    .SYNOPSIS
+        Sets GIT_USER and GIT_EMAIL in remoteEnv to the identity the picker collected.
+    .PARAMETER FilePath
+        Absolute path to the devcontainer.json file to update.
+    .PARAMETER GitUser
+        The git user name.
+    .PARAMETER GitEmail
+        The git email.
+    #>
+    param([string]$FilePath, [string]$GitUser, [string]$GitEmail)
+
+    $config = Read-JsonFile -FilePath $FilePath
+    Write-JsonFile -FilePath $FilePath -Config (Update-RemoteEnvInConfig -Config $config -Updates @{ GIT_USER = $GitUser; GIT_EMAIL = $GitEmail })
+    Write-LogEntry "Git identity set ($GitUser)" -Status Success
+}
+
 function Copy-ConfigurationFiles {
     <#
     .SYNOPSIS
@@ -198,7 +209,7 @@ function Copy-ConfigurationFiles {
         Creates the destination and .devcontainer sub-folder if needed, copies the
         Dockerfile and .dockerignore, then selects the correct devcontainer.json
         template (standard vs. compose), applies project-name substitution, injects
-        features, mounts, the SSH signing flag, and the repo sources.
+        features, mounts, each entry's declared environment, and the repo sources.
         Multi-repo projects and projects with extra folders open the /workspace root;
         a single repository opens /workspace/<project>. All modes retain one project
         volume at /workspace, while Compose declares its mounts in docker-compose.yml.
@@ -212,6 +223,11 @@ function Copy-ConfigurationFiles {
         When $true, copies devcontainer.compose.json as devcontainer.json.
     .PARAMETER SelectedEntries
         Array of selected entry objects forwarded to the config injection functions.
+    .PARAMETER Entries
+        The whole entry manifest, so deselected entries can contribute their envOff.
+    .PARAMETER CodingAgents
+        Ids of the selected coding agents, written to remoteEnv as CODING_AGENTS.
+        Optional - when empty, the template's CODING_AGENTS is kept.
     .PARAMETER RepoList
         Array of fully normalised repository URLs. When more than one URL is supplied,
         multi-repo volume layout is applied.
@@ -222,6 +238,10 @@ function Copy-ConfigurationFiles {
     .PARAMETER SecretsPath
         Host- or daemon-side path to the secrets .env file, forwarded to
         Add-MountsToConfig. Defaults to the Windows home location.
+    .PARAMETER GitUser
+        Git user name written to remoteEnv.GIT_USER.
+    .PARAMETER GitEmail
+        Git email written to remoteEnv.GIT_EMAIL.
     #>
     param(
         [string]$Source,
@@ -229,9 +249,13 @@ function Copy-ConfigurationFiles {
         [string]$ProjectName,
         [bool]$UseCompose,
         [array]$SelectedEntries,
+        [array]$Entries = @(),
+        [string[]]$CodingAgents = @(),
         [string[]]$RepoList = @(),
         [array]$ExtraFolders = @(),
-        [string]$SecretsPath = '${localEnv:USERPROFILE}\.config\.env'
+        [string]$SecretsPath = '${localEnv:USERPROFILE}\.config\.env',
+        [string]$GitUser = '',
+        [string]$GitEmail = ''
     )
 
     $destDevContainerPath = Join-Path -Path $Destination -ChildPath $DevContainerFolderName
@@ -269,9 +293,11 @@ function Copy-ConfigurationFiles {
         Write-LogEntry $configLabel -Status Success
         Replace-ProjectNamePlaceholder -FilePath $destConfig -ProjectName $ProjectName
         Add-FeaturesToConfig           -FilePath $destConfig -SelectedEntries $SelectedEntries
-        Add-MountsToConfig             -FilePath $destConfig -SelectedEntries $SelectedEntries -UseCompose $UseCompose -SecretsPath $SecretsPath
-        Set-SshSigningFlag             -FilePath $destConfig -SelectedEntries $SelectedEntries
+        Add-MountsToConfig             -FilePath $destConfig -UseCompose $UseCompose -SecretsPath $SecretsPath
+        Set-EntryEnvInConfig           -FilePath $destConfig -Entries $Entries -SelectedEntries $SelectedEntries
+        Set-CodingAgentsInConfig       -FilePath $destConfig -CodingAgents $CodingAgents
         Set-RepoSourcesInConfig        -FilePath $destConfig -RepoList $RepoList
+        Set-GitIdentityInConfig        -FilePath $destConfig -GitUser $GitUser -GitEmail $GitEmail
 
         if ($RepoList.Count -gt 1 -or $ExtraFolders.Count -gt 0) {
             Set-WorkspaceMountInConfig -FilePath $destConfig -ProjectName $ProjectName -UseCompose $UseCompose
@@ -283,8 +309,7 @@ function Copy-ConfigurationFiles {
         if ($UseCompose) {
             $templateFile = Join-Path -Path $Source -ChildPath $DockerComposeYml
             New-ComposeWithRepoVolumes -TemplateFile $templateFile -ProjectName $ProjectName `
-                -RepoList $RepoList -Destination $destDevContainerPath -SelectedEntries $SelectedEntries `
-                -ExtraFolders $ExtraFolders
+                -RepoList $RepoList -Destination $destDevContainerPath
         }
     } else {
         Write-LogEntry "Template not found: $srcConfig" -Status Error
@@ -309,22 +334,56 @@ function Replace-ProjectNamePlaceholder {
     }
 }
 
-function Set-SshSigningFlag {
+function Set-EntryEnvInConfig {
     <#
     .SYNOPSIS
-        Sets the SSH_SIGNING environment variable in devcontainer.json to "true" or
-        "false" based on whether the ssh-signing entry was selected.
+        Merges each entry's declared environment into remoteEnv of devcontainer.json:
+        a selected entry's "env" pairs, a deselected entry's "envOff" pairs.
+    .DESCRIPTION
+        Entries without the matching field contribute nothing. The file is left
+        untouched when no entry declares anything.
     .PARAMETER FilePath
         Absolute path to the devcontainer.json file to update.
+    .PARAMETER Entries
+        The whole entry manifest; an entry absent from SelectedEntries is deselected.
     .PARAMETER SelectedEntries
-        Array of selected entry objects used to determine whether ssh-signing is active.
+        Array of selected entry objects.
     #>
-    param([string]$FilePath, [array]$SelectedEntries)
+    param([string]$FilePath, [array]$Entries = @(), [array]$SelectedEntries = @())
 
-    $enabled = if ($SelectedEntries | Where-Object { $_.key -eq 'ssh-signing' }) { 'true' } else { 'false' }
-    $config  = Read-JsonFile -FilePath $FilePath
-    Write-JsonFile -FilePath $FilePath -Config (Update-RemoteEnvInConfig -Config $config -Updates @{ SSH_SIGNING = $enabled })
-    Write-LogEntry "SSH_SIGNING set to $enabled" -Status Success
+    $selectedKeys = @($SelectedEntries | ForEach-Object { $_.key })
+    $declared = @($SelectedEntries | ForEach-Object { $_.env }) +
+                @($Entries | Where-Object { $_.key -notin $selectedKeys } | ForEach-Object { $_.envOff })
+    $updates = @{}
+    foreach ($pairs in ($declared | Where-Object { $null -ne $_ })) {
+        foreach ($p in $pairs.PSObject.Properties) { $updates[$p.Name] = [string]$p.Value }
+    }
+    if ($updates.Count -eq 0) { return }
+
+    $config = Read-JsonFile -FilePath $FilePath
+    Write-JsonFile -FilePath $FilePath -Config (Update-RemoteEnvInConfig -Config $config -Updates $updates)
+    Write-LogEntry "Entry environment set ($($updates.Count) variables)" -Status Success
+}
+
+function Set-CodingAgentsInConfig {
+    <#
+    .SYNOPSIS
+        Writes the selected coding agents into remoteEnv of devcontainer.json as
+        CODING_AGENTS, their ids separated by spaces.
+    .DESCRIPTION
+        No-ops when CodingAgents is empty, leaving remoteEnv unchanged.
+    .PARAMETER FilePath
+        Absolute path to the devcontainer.json file to update.
+    .PARAMETER CodingAgents
+        Ids of the selected coding agents, in the order to write them.
+    #>
+    param([string]$FilePath, [string[]]$CodingAgents = @())
+
+    if ($CodingAgents.Count -eq 0) { return }
+
+    $config = Read-JsonFile -FilePath $FilePath
+    Write-JsonFile -FilePath $FilePath -Config (Update-RemoteEnvInConfig -Config $config -Updates @{ CODING_AGENTS = ($CodingAgents -join ' ') })
+    Write-LogEntry "Coding agents set ($($CodingAgents -join ' '))" -Status Success
 }
 
 function Set-WorkspaceMountInConfig {

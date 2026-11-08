@@ -1,0 +1,72 @@
+#!/bin/bash
+set -euo pipefail
+
+# Opens files in the connected editor from any terminal, including a long-lived session whose
+# inherited editor socket is dead: the live connection is resolved at every call (see
+# setup/lib/editor.sh), and every argument but its own options goes to the editor CLI unchanged,
+# so it takes what `code` takes.
+#   devcontainer-editor [--editor <id>] [--wait] <file>...
+#   devcontainer-editor [--editor <id>] --status
+# --editor, or DEVCONTAINER_EDITOR, restricts the choice to one editor. Exit codes follow
+# xdg-open: 1 for a usage error, 3 when no live editor is found, 4 when it rejects the call.
+
+# ----- SHARED UTILITIES LOADING -----------------------------------------------
+
+# why: readlink -f, so a symlink on PATH still finds the script tree
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+BOOTSTRAP_LIB_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")/../setup/lib" && pwd)"
+source "$BOOTSTRAP_LIB_DIR/loader.sh"
+
+# ----- FUNCTIONS --------------------------------------------------------------
+
+# print_status <id>: prints the editor and socket a call would use and every candidate skipped on the way
+# Stdout: one "skipped <id> <socket>: <reason>" line per skipped candidate, then the editor, socket and
+#   CLI in use, or "editor: none"
+# Returns: 3 when the id is unknown or no live editor is found
+print_status() {
+	local selected resolved kind id sock detail found=false
+	local -a ids=()
+	selected=$(editor_select "$1") || return
+	mapfile -t ids <<< "$selected"
+	resolved=$(editor_resolve "${ids[@]}") && found=true
+	while IFS=$'\t' read -r kind id sock detail; do
+		case "$kind" in
+			skip) printf 'skipped %s %s: %s\n' "$id" "$sock" "$detail" ;;
+			use) printf 'editor: %s\nsocket: %s\ncli: %s\n' "$id" "$sock" "$detail" ;;
+		esac
+	done <<< "$resolved"
+	if [[ "$found" == false ]]; then
+		printf 'editor: none\n'
+		log_error "No live editor connection; looked at $(editor_search_places "${ids[@]}")"
+		return 3
+	fi
+}
+
+# main [--editor <id>] [--status] <arg...>: opens the arguments in the editor, or prints the status
+main() {
+	local editor="${DEVCONTAINER_EDITOR:-}" status=false
+	local -a args=()
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+			--editor)
+				if [[ $# -lt 2 ]]; then
+					log_error "--editor needs an editor id"
+					exit 1
+				fi
+				editor="$2"
+				shift 2
+				;;
+			--editor=*) editor="${1#*=}"; shift ;;
+			--status) status=true; shift ;;
+			--) args+=("$@"); break ;;
+			*) args+=("$1"); shift ;;
+		esac
+	done
+	if [[ "$status" == true ]]; then
+		print_status "$editor" || exit
+		return 0
+	fi
+	editor_run "$editor" '' "${args[@]}" || exit
+}
+
+main "$@"

@@ -18,18 +18,6 @@ export const loadJsonCatalog = (fileUrl) => {
 };
 
 /**
- * Read and parse a JSON object file.
- * @param {URL|string} fileUrl - URL or path of the JSON file to load.
- * @returns {Record<string, unknown>} Parsed object.
- * @throws {Error} If the file cannot be read, parsed, or is not an object.
- */
-export const loadJsonObject = (fileUrl) => {
-    const parsed = JSON.parse(readFileSync(fileUrl, "utf8"));
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Invalid JSON object in ${fileUrl}.`);
-    return parsed;
-};
-
-/**
  * Whether a catalog path remains beneath its designated template directory.
  * @param {unknown} value - Untrusted catalog field value.
  * @returns {boolean} True for a non-empty, relative path without traversal components.
@@ -50,15 +38,13 @@ const isSafeRelativePath = (value) => typeof value === "string"
  *   stringArrays?: string[],
  *   optionalStringArrays?: string[],
  *   safeRelativePaths?: string[],
- *   optionalSafeRelativePathArrays?: string[],
- * }} [schema] - Required string fields, non-empty string fields, string-array fields, and
- *   string-array fields that may also be absent, including optional arrays of safe relative
- *   template paths.
+ * }} [schema] - Required string fields, non-empty string fields, string-array fields,
+ *   string-array fields that may also be absent, and safe relative template paths.
  * @returns {object[]} The validated entries.
  * @throws If the file is not an array or any entry violates the schema.
  */
 export const loadValidatedCatalog = (fileUrl, catalogName, schema = {}) => {
-    const { strings = [], nonEmptyStrings = [], stringArrays = [], optionalStringArrays = [], safeRelativePaths = [], optionalSafeRelativePathArrays = [] } = schema;
+    const { strings = [], nonEmptyStrings = [], stringArrays = [], optionalStringArrays = [], safeRelativePaths = [] } = schema;
     const isStringArray = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
     const entries = loadJsonCatalog(fileUrl);
 
@@ -68,9 +54,7 @@ export const loadValidatedCatalog = (fileUrl, catalogName, schema = {}) => {
             && nonEmptyStrings.every((key) => Object.hasOwn(entry, key) && typeof entry[key] === "string" && entry[key].length > 0)
             && stringArrays.every((key) => Object.hasOwn(entry, key) && isStringArray(entry[key]))
             && optionalStringArrays.every((key) => !Object.hasOwn(entry, key) || isStringArray(entry[key]))
-            && safeRelativePaths.every((key) => Object.hasOwn(entry, key) && isSafeRelativePath(entry[key]))
-            && optionalSafeRelativePathArrays.every((key) => !Object.hasOwn(entry, key)
-                || (isStringArray(entry[key]) && entry[key].every(isSafeRelativePath)));
+            && safeRelativePaths.every((key) => Object.hasOwn(entry, key) && isSafeRelativePath(entry[key]));
         if (!valid) throw new Error(`Invalid ${catalogName} catalog entry at index ${index}.`);
     });
 

@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1
-ARG NODE_IMAGE="node:24.22.1-bookworm-slim"
+ARG NODE_IMAGE="node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c"
 FROM ${NODE_IMAGE}
 
 # python3 provides the stdlib the herdr Claude Code hook needs (the base image
 # ships only python3-minimal, which lacks json/socket). libatomic1 lets a Node feature
 # version newer than the base image's run: Node 26 links against libatomic.so.1.
 # hadolint ignore=DL3008
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates coreutils curl jq libatomic1 python3 \
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates coreutils curl jq libatomic1 python3 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PNPM_HOME=/root/.local/share/pnpm \
@@ -46,14 +46,19 @@ RUN bash /tmp/dc-init/scripts/image-bootstrap.sh /tmp/dc-init
 # installer, which the Bash test runner also runs. Its path is an interface between this
 # Dockerfile and the scripts tree. HERDR_VERSION is the one herdr pin: the test runners read
 # the release they install from this default too.
-# The release lookup goes through the GitHub REST API, whose unauthenticated budget the whole
-# host IP shares; an optional github_token build secret authenticates it without entering a layer.
+# The per-architecture sha256 pins of the release HERDR_SHA256_VERSION names let the installer
+# download the asset directly, with no lookup through the GitHub REST API, whose unauthenticated
+# budget the whole host IP shares; Renovate bumps them with the version. An overridden
+# HERDR_VERSION skips the pins and verifies against the digest GitHub publishes. An optional
+# github_token build secret authenticates any API call without entering a layer.
+ARG HERDR_SHA256_VERSION="v0.9.5"
+ARG HERDR_SHA256_X86_64="14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d"
+ARG HERDR_SHA256_AARCH64="17d7536f2da50859523680ef279dffcac8e4a235f4e46fe8da6c2ec44141897c"
 ARG HERDR_VERSION="v0.9.5"
 RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN \
     bash /opt/devcontainer/herdr-install.sh /usr/local/lib/herdr/herdr
 
-# Pre-create the workspace folder and its schema marker in the image so a freshly
-# created project volume already has them before any lifecycle command runs.
+# Pre-create the workspace folder in the image so a freshly created project volume already has
+# it before any lifecycle command runs; image-bootstrap.sh seeded the schema marker beside it.
 ARG PROJECT_NAME="project-name"
-RUN mkdir -p "/workspace/${PROJECT_NAME}" /workspace/.metadata \
-    && jq -r '.persistentDataLayoutVersion' /opt/devcontainer/inventory.json > /workspace/.metadata/.schema-version
+RUN mkdir -p "/workspace/${PROJECT_NAME}" /workspace/.metadata

@@ -1,5 +1,5 @@
 {
-    "extends": "../../../../installer/configs/templates/tsconfig.base.json",
+    "extends": "../../../../../../installer/configs/templates/tsconfig.base.json",
     "compilerOptions": {
         "incremental": false,
         "noEmit": true,

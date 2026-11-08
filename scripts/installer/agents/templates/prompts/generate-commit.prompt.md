@@ -3,6 +3,10 @@ name: "generate-commit"
 description: "Generate one or more Conventional Commit messages from current git changes, automatically splitting unrelated changes into separate logical commits, without staging or committing anything."
 argument-hint: "Optional scope hint or mode, for example: vscode, --staged, or --single"
 agent: "agent"
+metadata:
+  kit-version: "1.5.0"
+  kit-tags: git
+  kit-global: "true"
 ---
 
 # COMMIT MESSAGE SPECIFICATION

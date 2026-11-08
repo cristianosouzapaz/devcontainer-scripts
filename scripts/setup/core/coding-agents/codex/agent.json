@@ -1,0 +1,23 @@
+{
+  "label": "Codex CLI",
+  "default": true,
+  "command": "codex",
+  "npmPackage": "@openai/codex",
+  "herdrIntegration": true,
+  "loginHint": "codex login",
+  "credential": { "env": "CODEX_HOME", "dir": ".codex", "file": "auth.json" },
+  "skillsCliAgent": "codex",
+  "skills": { "mode": "none" },
+  "rules": { "mode": "none" },
+  "instructions": { "path": ".codex/AGENTS.md", "mode": "copy" },
+  "projectInstructions": { "mode": "none" },
+  "assets": [
+    {
+      "id": "config",
+      "type": "merge-toml",
+      "source": "config.toml",
+      "target": "config.toml",
+      "enforce": ["cli_auth_credentials_store = \"file\""]
+    }
+  ]
+}

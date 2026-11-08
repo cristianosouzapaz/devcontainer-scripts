@@ -1,10 +1,10 @@
 # shellcheck shell=bash
 
-# MODULE_NAME="workspaces"
-# MODULE_DESCRIPTION="Generates the VS Code .code-workspace file for multi-repo and/or extra-folder containers"
-# MODULE_ENTRY="workspaces_setup"
-# MODULE_AFTER="git"
-# MODULE_SECRETS=""
+# CORE_NAME="workspaces"
+# CORE_DESCRIPTION="Generates the VS Code .code-workspace file for multi-repo and/or extra-folder containers"
+# CORE_ENTRY="workspaces_setup"
+# CORE_AFTER="git"
+# CORE_SECRETS=""
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
@@ -30,6 +30,7 @@ _WORKSPACE_DIR="${_WORKSPACE_DIR:-/workspace}"
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
 # build_workspace_json <folder_name...>: prints a .code-workspace JSON document with one root folder per name, relative to the workspace root
+# Stdout: the .code-workspace JSON document
 build_workspace_json() {
 	jq -n --raw-input '{
 		folders: [ inputs | { name: ., path: . } ],
@@ -39,7 +40,7 @@ build_workspace_json() {
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# workspaces_setup: module entry; writes the .code-workspace file once, skipping for fewer than two repositories and no extra folder
+# workspaces_setup: core entry; writes the .code-workspace file once, skipping for fewer than two repositories and no extra folder
 # Notes: one repository clones into $PROJECT_NAME whichever REPO_SOURCE variant it
 #   came from, as in git_setup; only two or more use repo_entry_folder_name. The
 #   file is written atomically: a partial file would pass the already-exists check
@@ -55,13 +56,7 @@ workspaces_setup() {
 
 	if [[ "${#_entries[@]}" -le 1 && "${#_extra_folders[@]}" -eq 0 ]]; then
 		log_debug "Single-repo or no repos, and no extra folders — skipping workspace file generation"
-		module_skip
-		return 0
-	fi
-
-	if ! check_command "jq"; then
-		log_warning "jq not available — skipping workspace file generation"
-		module_skip
+		module_skip 'single repository, no extra folders'
 		return 0
 	fi
 
@@ -73,7 +68,7 @@ workspaces_setup() {
 	workspace_file="${_WORKSPACE_DIR}/${PROJECT_NAME}.code-workspace"
 
 	if [[ -f "$workspace_file" ]]; then
-		log_item_success "Workspace file already exists: ${workspace_file}"
+		log_item_success "Workspace file ${workspace_file##*/} already present"
 		return 0
 	fi
 
@@ -87,9 +82,9 @@ workspaces_setup() {
 	fi
 	_folders+=("${_extra_folders[@]}")
 
-	log_detail "Generating workspace file: ${workspace_file}"
+	log_debug "Generating workspace file: ${workspace_file}"
 	atomic_write "$workspace_file" build_workspace_json "${_folders[@]}"
-	log_item_success "Workspace file generated: ${workspace_file}"
+	log_item_success "Workspace file ${workspace_file##*/} generated"
 }
 
 export -f build_workspace_json workspaces_setup

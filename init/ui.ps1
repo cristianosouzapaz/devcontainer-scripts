@@ -175,6 +175,76 @@ function Get-DockerContextInput {
     return $entered.Trim()
 }
 
+function Get-HostGitConfigValue {
+    <#
+    .SYNOPSIS
+        Reads one key of the host's global git config.
+    .PARAMETER Key
+        The git config key, e.g. user.name.
+    .OUTPUTS
+        System.String - the trimmed value, or an empty string when git is missing
+        or the key is unset.
+    #>
+    param([string]$Key)
+    try {
+        $value = & git config --global --get $Key 2>$null
+    } catch {
+        return ''
+    }
+    if ($LASTEXITCODE -ne 0 -or $null -eq $value) { return '' }
+    return ([string]$value).Trim()
+}
+
+function Read-RequiredValue {
+    <#
+    .SYNOPSIS
+        Prompts until a non-blank value passes the given check; Enter accepts the default.
+    .PARAMETER Prompt
+        The prompt label; the default, when any, is shown in brackets after it.
+    .PARAMETER Default
+        The value a blank answer stands for. Empty means an answer is required.
+    .PARAMETER Validate
+        Script block taking the value and returning $true when it is acceptable.
+    .OUTPUTS
+        System.String - the accepted, trimmed value.
+    #>
+    param([string]$Prompt, [string]$Default = '', [scriptblock]$Validate = { $true })
+
+    $label = if ($Default) { "$Prompt [$Default]" } else { $Prompt }
+    while ($true) {
+        $entered = Read-Host $label
+        $value   = if ([string]::IsNullOrWhiteSpace($entered)) { $Default } else { $entered.Trim() }
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            Write-Message "$Prompt is required" -Level "Error"
+        } elseif (& $Validate $value) {
+            return $value
+        }
+    }
+}
+
+function Get-GitIdentityInput {
+    <#
+    .SYNOPSIS
+        Prompts for the git user name and email the container commits under.
+    .DESCRIPTION
+        Each prompt offers the host's global git config value as the default, so
+        Enter accepts it; with no host value an answer is required. The email
+        must pass Test-GitEmail.
+    .OUTPUTS
+        PSCustomObject with User and Email.
+    #>
+    Write-Section "Git Identity"
+    Write-Host "  The name and email the container's git commits are made under." -ForegroundColor "DarkGray"
+    Write-Host "  Press Enter to keep the value in brackets." -ForegroundColor "DarkGray"
+    Write-Host ""
+
+    $user  = Read-RequiredValue -Prompt "Git user name" -Default (Get-HostGitConfigValue -Key 'user.name')
+    $email = Read-RequiredValue -Prompt "Git email" -Default (Get-HostGitConfigValue -Key 'user.email') `
+        -Validate { param($v) Test-GitEmail -Email $v }
+
+    return [PSCustomObject]@{ User = $user; Email = $email }
+}
+
 function Select-Features {
     <#
     .SYNOPSIS
@@ -191,10 +261,14 @@ function Select-Features {
           13 - VK_RETURN : confirm selection and exit the loop
     .PARAMETER Manifest
         Array of entry objects loaded from the manifest (see Get-EntryManifest).
+    .PARAMETER Title
+        Heading shown above the checklist. Defaults to "Feature Selection".
+    .PARAMETER RequireOne
+        Refuses Enter while no optional entry is selected, so at least one is returned.
     .OUTPUTS
         Array of selected entry objects (mandatory + toggled-on optional).
     #>
-    param($Manifest)
+    param($Manifest, [string]$Title = "Feature Selection", [switch]$RequireOne)
 
     $mandatory = @($Manifest | Where-Object { $_.mandatory -eq $true })
     $optional  = @($Manifest | Where-Object { $_.mandatory -ne $true })
@@ -202,19 +276,22 @@ function Select-Features {
     $state  = @{}
     foreach ($f in $optional) { $state[$f.key] = [bool]$f.default }
 
-    $cursor = 0
-    $done   = $false
+    $cursor  = 0
+    $done    = $false
+    $refused = $false
 
     while (-not $done) {
         Clear-Host
         Write-Host ""
-        Write-Host "Feature Selection" -ForegroundColor $Colors['Header']
+        Write-Host $Title -ForegroundColor $Colors['Header']
         Write-Host ""
-        Write-Host "  Always included:" -ForegroundColor "DarkGray"
-        foreach ($f in $mandatory) {
-            Write-Host "    [*] $($f.label)" -ForegroundColor "DarkGray"
+        if ($mandatory.Count -gt 0) {
+            Write-Host "  Always included:" -ForegroundColor "DarkGray"
+            foreach ($f in $mandatory) {
+                Write-Host "    [*] $($f.label)" -ForegroundColor "DarkGray"
+            }
+            Write-Host ""
         }
-        Write-Host ""
         Write-Host "  Optional (Up/Down navigate, Space to toggle, Enter to confirm):" -ForegroundColor $Colors['Info']
         Write-Host ""
 
@@ -227,13 +304,20 @@ function Select-Features {
             $i++
         }
         Write-Host ""
+        if ($refused) {
+            Write-Host "  Select at least one." -ForegroundColor $Colors['Error']
+            Write-Host ""
+        }
 
         $key = _Get-RawKey
         switch ($key.VirtualKeyCode) {
             38 { if ($cursor -gt 0) { $cursor-- } }
             40 { if ($cursor -lt ($optional.Count - 1)) { $cursor++ } }
             32 { $k = $optional[$cursor].key; $state[$k] = -not $state[$k] }
-            13 { $done = $true }
+            13 {
+                $refused = $RequireOne -and -not ($state.Values -contains $true)
+                $done    = -not $refused
+            }
         }
     }
 

@@ -10,6 +10,8 @@ A template for bootstrapping isolated, reproducible development environments usi
 
 ## Overview
 
+The kit is **an isolated agentic development environment (ADE)**: several coding agents can work, in parallel if needed, each in its own worktree when useful, inside a container that protects the host. Working on one branch at a time in the main VS Code window stays a valid use.
+
 This starter kit creates a **Fully Isolated DevContainer** using Docker Volumes. It keeps your source code and development environment completely contained within Docker, ensuring no file system pollution on your local machine while providing a clean, disposable, and reproducible workspace.
 
 ## Requirements
@@ -34,6 +36,10 @@ Each run downloads the latest released `project-init.ps1` and all template files
 
 The script prompts for project type, optional features, secrets file location, an optional Docker context name, destination path, project name, repository URL(s) and any extra workspace folders.
 
+The optional features are the entries of `devcontainer.entries.json`. An entry may declare `env`, environment variables written to `remoteEnv` of the generated `devcontainer.json` when it is selected, and `envOff`, those written when it is not — for example, the SSH commit signing entry sets `SSH_SIGNING` to `true` or `false`.
+
+The **Docker** entry is off by default. It mounts the host's Docker socket into the container, and a process that can reach that socket can start a privileged container and become root on the host — so selecting it gives the coding agents root access to the Docker host and gives up the container's isolation. Turn it on only when the project needs Docker inside the container, such as `docker compose` or image builds. Without it, VS Code still creates the container through your Docker host or context as usual.
+
 ### 2. Configure Secrets
 
 Create `%USERPROFILE%\.config\.env` on your machine to store credentials that the container needs at startup. This file is mounted read-only inside the container at `/root/.config/devcontainer/.env`, out of reach of the dependency install, and never committed to source control. Projects generated before 4.3.0 mount it at `/tmp/.env`: regenerate `devcontainer.json` with the script, or setup skips the dependency install and names the file.
@@ -47,7 +53,11 @@ All other settings can be adjusted in `devcontainer.json` after the project is i
 1. Open the project folder (`C:\Projects\my-app`) in VS Code.
 2. When prompted, click **Reopen in Container** (or press `F1` > `Dev Containers: Reopen in Container`).
 
-On first launch, the setup script runs every setup module in dependency order — configuring Git, installing dependencies, and activating any optional features selected during initialization; a module whose inputs aren't configured skips itself.
+On first launch, the setup script runs in three phases, each opened by a `── <phase> ──` header:
+
+- **Core** — what the kit always sets up, never a choice: persistent data, Git (cloning the repositories and installing their dependencies), the VS Code workspace file, the coding agents and Herdr.
+- **Modules** — the optional features: each one selected during initialization is activated, and each one that was not reports `skipped: not selected`; a selected module whose inputs aren't configured warns `skipped: <reason>`, such as `skipped: NGROK_AUTHTOKEN not set`, and says what to set.
+- **Summary** — the names of the data volumes, every optional module as on or off with its reason, the sign-in state of each agent and tool, and, when there is anything to do, an *Action needed* list of every warning of the run and each missing sign-in with its login command.
 
 ### Pinning a Docker Context
 
@@ -67,55 +77,89 @@ The generated `devcontainer.json` also sets `"shutdownAction": "none"`: the cont
 
 ### Secret Variables
 
-These sensitive variables should be set in your local `.config/.env` file only:
+These sensitive variables should be set in your local `.config/.env` file only.
+
+#### Git access
 
 | Variable                 | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Default |
 | :----------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :------ |
 | `GIT_CLONE_TOKEN`        | Global fallback PAT for authenticating git clone/fetch (GitHub, GitLab, Gitea, Bitbucket, or any HTTP(S) git host). Used for any host without a more specific `GIT_CLONE_TOKEN_<HOST>` (see below).                                                                                                                                                                                                                                                                                   | -       |
 | `GIT_CLONE_TOKEN_<HOST>` | Per-host PAT override, for setups where `REPO_SOURCE_N` spans multiple git hosts each needing a different token. Falls back to `GIT_CLONE_TOKEN` when unset — see [Multi-repo](#multi-repo) for the naming rule.                                                                                                                                                                                                                                          | -       |
 | `GIT_SIGNING_KEY`        | SSH public key for commit signing (e.g. `ssh-ed25519 AAAA...`). Required for SSH commit signing.                                                                                                                                                                                                                                                                                                                                                                                      | -       |
-| `NGROK_AUTHTOKEN`        | Token to configure ngrok tunneling                                                                                                                                                                                                                                                                                                                                                                                                                                                    | -       |
+
+#### Modules
+
+| Variable          | Description                        | Default |
+| :---------------- | :--------------------------------- | :------ |
+| `NGROK_AUTHTOKEN` | Token to configure ngrok tunneling | -       |
+
+#### Conventions
+
+| Variable                 | Description | Default |
+| :----------------------- | :---------- | :------ |
 | `PERSIST_<NAME>`         | Variables prefixed with `PERSIST_` are written to `/etc/environment` with the prefix stripped — `PERSIST_FOO` becomes `FOO` for all container processes.                                                                                                                                                                                                                                                                                                                                                                                          | -       |
 | `INSTALL_ENV_<NAME>`     | Variables prefixed with `INSTALL_ENV_` reach the dependency install with the prefix stripped — `INSTALL_ENV_FOO` becomes `FOO`. The install otherwise gets only `PATH`, the locale, `TERM`, `COREPACK_ENABLE_DOWNLOAD_PROMPT`, `GIT_TERMINAL_PROMPT`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, the HTTP(S) proxies and `NODE_EXTRA_CA_CERTS`. | -       |
 
 ### Configuration Variables
 
-These variables control the behavior of the DevContainer setup. The defaults below are the
-values `project-init.ps1` writes into the generated `devcontainer.json` under `remoteEnv`. A
-row with no default is either filled in from your answers or not written there at all, and
-`SCRIPTS_REF`'s default comes from the Dockerfile build arg. Deleting a variable from
-`remoteEnv` doesn't disable it — setup falls back to its own built-in default, which for a few
-variables differs (`AUTO_UPDATE` falls back to `false` and `LOG_FILE` to stderr only, both in
-`scripts/setup/lib/loader.sh`; `AGENT_ASSETS_REF` is resolved in
-`scripts/setup/lib/global-agent-assets.sh`, used by both the sync task and `devcontainer-install`).
+Defaults come from setup; add a variable to `remoteEnv` in `devcontainer.json` only to change
+it, then rebuild. Each default below is the one setup applies (`scripts/setup/lib/loader.sh`).
 
-| Variable            | Description                                                                                                                                                                                                                                                  | Default          |
-| :------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------------- |
-| `AGENT_ASSETS_REF`  | Git ref the *Sync Global Agent Assets* task and `devcontainer-install` fetch machine-wide skills, commands and the installer from. Not set by `project-init.ps1`: unset, both follow the `stable` release channel, falling back to `SCRIPTS_REF`. Set `main` to follow unreleased code. | -                |
-| `AUTO_UPDATE`       | Automatically fetch and pull updates from remote repository (true/false)                                                                                                                                                                                     | `true`           |
-| `CLEAN_CREDENTIALS` | Remove git credentials after setup (true/false)                                                                                                                                                                                                              | `false`          |
-| `DEBUG_MODE`        | Enable debug-level logging output and UTC timestamps on the top-level step lines (true/false)                                                                                                                                                                | `false`          |
-| `DEFAULT_BRANCH`    | Git branch to checkout and work with                                                                                                                                                                                                                         | `main`           |
-| `DUMP_ERROR_STACK`  | Print error stack trace when exiting (true/false)                                                                                                                                                                                                            | `true`           |
-| `EXTRA_FOLDER_N`    | Numbered extra workspace folder names: `EXTRA_FOLDER_1`, `EXTRA_FOLDER_2`, … Each is already bind-mounted at `/workspace/<name>`; used to add it as a root in the generated `.code-workspace`. Set automatically by `project-init.ps1`.                      | -                |
-| `GIT_EMAIL`         | Email for git configuration (required)                                                                                                                                                                                                                       | -                |
-| `GIT_TOKEN_DURING_INSTALL` | Let dependency installation use the git clone token (true/false). The install always runs as the unprivileged `dep-install` account and does not run, with the reason logged, if that account could reach a setup secret (a failed install, fatal under `REQUIRE_DEPENDENCY_INSTALL`). `true` hands it a copy of the clone token, for dependencies that are private git repositories fetched with it; every lifecycle script of the project and of its dependencies can then read the token. | `false` |
-| `GIT_USER`          | Git username for git configuration and repository URLs (required)                                                                                                                                                                                            | -                |
-| `LOG_FILE`          | Path to log file (if empty, logs to stderr only)                                                                                                                                                                                                      | `/tmp/setup.log` |
-| `LOG_LEVEL`         | Minimum log level: `DEBUG`, `INFO`, `SUCCESS`, `WARNING`, `ERROR`, `FATAL`                                                                                                                                                                                   | `INFO`           |
-| `NO_COLOR`          | Set to any non-empty value to disable color in the log output; the status symbols (`⚙ → ✔ ⚠ ✖`) are kept. Log-file output is never colored regardless.                                                                                                | -                |
-| `PROJECT_NAME`      | Project identifier. Used as the target directory in single-repo mode and to name the generated `.code-workspace` file whenever one is generated (multi-repo, or any extra workspace folders). Set automatically by `project-init.ps1`, and also passed as a Dockerfile build arg so the image can pre-create `/workspace/<PROJECT_NAME>`.                                                                                     | -                |
-| `REPO_SOURCE`       | Clone URL for single-repo mode (`https://host/owner/repo.git`). Set automatically by `project-init.ps1`.                                                                                                                                                     | -                |
-| `REPO_SOURCE_N`     | Numbered clone URLs for multi-repo mode: `REPO_SOURCE_1`, `REPO_SOURCE_2`, … Repos may span multiple git hosts — each host resolves its own token via `GIT_CLONE_TOKEN_<HOST>` (falling back to `GIT_CLONE_TOKEN`). Set automatically by `project-init.ps1`. | -                |
-| `REQUIRE_DEPENDENCY_INSTALL` | Fail container setup if the project's dependencies can't be installed (true/false). When `false`, a failed install is only a warning.                                                                                                                       | `false`          |
-| `SCRIPTS_REF`       | Git ref the image fetches the setup scripts from. Set as a Dockerfile build arg and persisted as an env var; defaults to the release tag (`vX.Y.Z`) the Dockerfile ships in, and is the fallback of the *Sync Global Agent Assets* task and `devcontainer-install` when the `stable` channel does not resolve. | release tag      |
-| `SSH_SIGNING`       | Enable SSH commit signing via the forwarded host SSH agent (true/false). Set by `project-init.ps1` based on feature selection.                                                                                                                        | `true`           |
-| `STRUCTURED_LOGS`   | Output logs in JSON format (true/false)                                                                                                                                                                                                                      | `false`          |
-| `VALIDATE_TOKEN`    | Verify git token connectivity on startup (true/false)                                                                                                                                                                                                        | `true`           |
+#### Git identity
+
+| Variable    | Description                                                                                                                          | Default |
+| :---------- | :----------------------------------------------------------------------------------------------------------------------------------- | :------ |
+| `GIT_USER`  | Git user name for commits and credentials (required). Filled by `project-init.ps1`, which offers the host's `git config --global user.name`.  | -       |
+| `GIT_EMAIL` | Git email for commits (required). Filled by `project-init.ps1`, which offers the host's `git config --global user.email` and validates it. | -       |
+
+#### Credentials
+
+| Variable            | Description                                     | Default |
+| :------------------ | :---------------------------------------------- | :------ |
+| `CLEAN_CREDENTIALS` | Remove git credentials after setup (true/false) | `false` |
+
+#### Dependency install
+
+| Variable                     | Description | Default |
+| :--------------------------- | :---------- | :------ |
+| `GIT_TOKEN_DURING_INSTALL`   | Let dependency installation use the git clone token (true/false). The install always runs as the unprivileged `dep-install` account and does not run, with the reason logged, if that account could reach a setup secret (a failed install, fatal under `REQUIRE_DEPENDENCY_INSTALL`). `true` hands it a copy of the clone token, for dependencies that are private git repositories fetched with it; every lifecycle script of the project and of its dependencies can then read the token. | `false` |
+| `REQUIRE_DEPENDENCY_INSTALL` | Fail container setup if the project's dependencies can't be installed (true/false). When `false`, a failed install is only a warning. | `false` |
+
+#### Logging
+
+Setup writes each run to `/tmp/setup.log`, keeping the previous run as `setup.log.1`; the *Sync Global Agent Assets* task writes its own `/tmp/agent-assets.log` the same way. When setup fails, the recorded error stack is always printed before the closing line.
+
+| Variable          | Description | Default |
+| :---------------- | :---------- | :------ |
+| `LOG_LEVEL`       | Minimum log level: `DEBUG`, `INFO`, `SUCCESS`, `WARNING`, `ERROR`, `FATAL`. `DEBUG` (or `devcontainer-setup.sh --debug`) also adds UTC timestamps to the top-level step lines. | `INFO` |
+| `STRUCTURED_LOGS` | Output logs in JSON format (true/false); every record carries its setup phase (`core`, `modules`, `summary`, empty before the first) in a `phase` field instead of a header, and the setup unit that wrote it in a `module` field (empty outside a unit) | `false` |
+| `NO_COLOR`        | Honored as a standard: any non-empty value disables color in the log output; the status symbols (`⚙ → ✔ ⚠ ✖`) are kept. Log-file output is never colored regardless. | - |
+
+#### Release channel
+
+| Variable      | Description | Default |
+| :------------ | :---------- | :------ |
+| `SCRIPTS_REF` | Build arg, not `remoteEnv`: the git ref the image fetches the setup scripts from, persisted in the image as an env var. It also picks the ref the *Sync Global Agent Assets* task and `devcontainer-install` fetch from: a release tag (`vX.Y.Z`) follows the `stable` channel, falling back to the tag when `stable` does not resolve; any other ref (e.g. `main`) is followed as is. | release tag the Dockerfile ships in |
+
+#### Written by `project-init.ps1`
+
+Regenerate the project instead of editing these.
+
+| Variable                         | Description |
+| :------------------------------- | :---------- |
+| `PROJECT_NAME`                   | Project identifier. Used as the target directory in single-repo mode and to name the generated `.code-workspace` file whenever one is generated (multi-repo, or any extra workspace folders); also passed as a Dockerfile build arg so the image can pre-create `/workspace/<PROJECT_NAME>`. |
+| `REPO_SOURCE` / `REPO_SOURCE_N`  | Clone URL for single-repo mode (`https://host/owner/repo.git`), or numbered clone URLs for multi-repo mode (`REPO_SOURCE_1`, `REPO_SOURCE_2`, …). Repos may span multiple git hosts — each host resolves its own token via `GIT_CLONE_TOKEN_<HOST>` (falling back to `GIT_CLONE_TOKEN`). |
+| `EXTRA_FOLDER_N`                 | Numbered extra workspace folder names: `EXTRA_FOLDER_1`, `EXTRA_FOLDER_2`, … Each is already bind-mounted at `/workspace/<name>`; used to add it as a root in the generated `.code-workspace`. |
+| `SSH_SIGNING`                    | Enable SSH commit signing via the forwarded host SSH agent (true/false), from the feature selection. Setup defaults it to `true`. |
+| `CODING_AGENTS`                  | Space-separated IDs of the coding agents to install and configure, from the agent packs (`claude`, `codex`, `pi`), for example `"claude codex"`, written from the agents you pick; the template's `claude` is only its starting value. Only the listed agents get their CLI, settings, Herdr integration and global-asset adapters; the working-agreement mod is synced only when a listed agent loads skills through symlinks. Every agent's persistent-data category stays reachable through `devcontainer-data`, listed or not. An unknown ID stops the setup with an error naming the valid ones. A missing or empty variable means every agent, so existing projects are unchanged. |
+
+#### Automatic
+
+These need no variable. On a first clone, each repository checks out the branch its remote's HEAD points to, or an unborn `main` when the repository is empty; an existing repository keeps its branch and is always fast-forwarded (fast-forward only, with a warning on divergence or a detached HEAD). The clone token is always validated with `git ls-remote` when one resolves for the repository's host. The agent assets follow the channel `SCRIPTS_REF` picks.
 
 ### Following Unreleased `main`
 
-A project builds and syncs released code by default. To follow `main` instead, set both refs in its `devcontainer.json`: `"SCRIPTS_REF": "main"` under `build.args` (or `args:` in `docker-compose.yml`) for the image, and `"AGENT_ASSETS_REF": "main"` under `remoteEnv` for the *Sync Global Agent Assets* task. A project whose `remoteEnv` carries `"AGENT_ASSETS_REF": "main"` follows `main`; remove that line to follow releases.
+A project builds and syncs released code by default. To follow `main` instead, set `"SCRIPTS_REF": "main"` under `build.args` in its `devcontainer.json` (or `args:` in `docker-compose.yml`) and rebuild: the image and the *Sync Global Agent Assets* task then both follow `main`.
 
 ## Package Manager Detection
 
@@ -225,14 +269,19 @@ The **GitHub CLI** feature is always installed. Its authentication (`/root/.conf
 - **Subsequent rebuilds**: the session is automatically available — no re-login required.
 - **Reset**: run `devcontainer-data reset github` to force re-authentication.
 
-### Opening URLs in the Browser
+### Opening Files and URLs in the Editor
 
-`gh … --web` and other tools that open a browser go through `devcontainer-browser`, which
-finds the live VS Code connection at each call. So a long-lived session (Herdr, tmux, a
-background agent) keeps opening URLs on the host after VS Code reconnects or updates. With no
-VS Code window connected, it prints the URL and an error instead. A shell or session started
-before the container was rebuilt onto a release with `devcontainer-browser` keeps its old
-`BROWSER` and needs one restart.
+`code <file>`, in an interactive shell and every Bash process it starts, goes through
+`devcontainer-editor`, and `gh … --web` and other tools that open a browser go through
+`devcontainer-browser`; both find the live VS Code connection at each call.
+So a long-lived session (Herdr, tmux, a background agent) keeps opening files and URLs after
+VS Code reconnects or updates. `devcontainer-editor` takes the arguments `code` takes, plus
+`--editor <id>` (or `DEVCONTAINER_EDITOR`) to pick the editor and `--status` to show which
+connection it would use and why it skipped the others. With no VS Code window connected, both
+exit 3 with an error saying where they looked; `devcontainer-browser` also prints the URL. A
+shell or session started before the container was rebuilt onto a release with these commands
+keeps its old environment and needs one restart. `EDITOR`, `VISUAL` and `GIT_EDITOR` are left
+unset, so a `git commit` run by an agent never waits on an editor tab.
 
 ### Global Agent Assets
 
@@ -242,7 +291,7 @@ commands rather than credentials. It is populated by the `Framework: Sync Global
 Assets` task and shared by every project built from this template.
 
 - **First use**: run the task once inside any container.
-- **Update**: re-run the task; it re-fetches from the latest release (the `stable` channel), or from `AGENT_ASSETS_REF` when set.
+- **Update**: re-run the task; it re-fetches from the latest release (the `stable` channel), or from `SCRIPTS_REF` when that is not a release tag (see [Following Unreleased `main`](#following-unreleased-main)).
 - **Reset**: run `devcontainer-data reset agents` (follow it with a re-sync to repopulate).
 - **Working-agreement mod**: the task also installs the Claude Code mod that enforces the
   working agreement. It is on by default in every session; turn it off with
@@ -269,7 +318,7 @@ from a terminal inside the container; the image also ships VS Code task definiti
 devcontainer-install skills        # Skills
 devcontainer-install configs       # Config templates
 devcontainer-install agents        # Agent instruction/prompt templates
-devcontainer-install agent-md      # CLAUDE.md / AGENTS.md blocks
+devcontainer-install agent-md      # AGENTS.md blocks and pointers
 devcontainer-install interactive   # Menu over all of the above
 ```
 

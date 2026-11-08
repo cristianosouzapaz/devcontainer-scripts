@@ -15,9 +15,10 @@
         }
     },
     {
-        "label": "Docker (outside-of-docker)",
+        "label": "Docker (host socket: gives the agents root on the host)",
         "key": "docker",
-        "mandatory": true,
+        "default": false,
+        "mandatory": false,
         "feature": {
             "url": "ghcr.io/devcontainers/features/docker-outside-of-docker:1.10.1",
             "options": {
@@ -26,8 +27,7 @@
                 "mobyBuildxVersion": "0.38.1",
                 "version": "29.9.2"
             }
-        },
-        "mount": "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+        }
     },
     {
         "label": "Git",
@@ -92,7 +92,13 @@
         "key": "ssh-signing",
         "default": true,
         "mandatory": false,
-        "feature": null
+        "feature": null,
+        "env": {
+            "SSH_SIGNING": "true"
+        },
+        "envOff": {
+            "SSH_SIGNING": "false"
+        }
     },
     {
         "label": "uv (Python package manager)",

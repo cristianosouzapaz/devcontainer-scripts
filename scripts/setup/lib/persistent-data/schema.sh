@@ -2,9 +2,27 @@
 [[ -n "${_PERSISTENT_DATA_SCHEMA_SH_LOADED:-}" ]] && return 0
 readonly _PERSISTENT_DATA_SCHEMA_SH_LOADED=1
 
-# Schema version markers that tie each persistent-data root to the inventory layout version.
+# Schema version markers that tie each persistent-data root to the layout version
+# recorded in the layout-version file beside this library, which image-bootstrap.sh also seeds into the image.
+
+# ----- INTERNAL CONSTANTS -----------------------------------------------------
+
+_PERSISTENT_DATA_LAYOUT_VERSION_FILE="${PERSISTENT_DATA_LAYOUT_VERSION_FILE:-${DEVCONTAINER_LIB_DIR}/persistent-data/layout-version}"
 
 # ----- FUNCTIONS --------------------------------------------------------------
+
+# persistent_data_layout_version: prints the persistent-data layout version, failing when it is not a positive integer
+# Stdout: the layout version, one line
+persistent_data_layout_version() {
+	local version=''
+
+	[[ -r "$_PERSISTENT_DATA_LAYOUT_VERSION_FILE" ]] && version=$(<"$_PERSISTENT_DATA_LAYOUT_VERSION_FILE")
+	if [[ ! "$version" =~ ^[1-9][0-9]*$ ]]; then
+		log_error "Invalid persistent-data layout version in $_PERSISTENT_DATA_LAYOUT_VERSION_FILE"
+		return 1
+	fi
+	printf '%s\n' "$version"
+}
 
 # persistent_data_schema_marker <shared|project>: prints the schema marker path of a scope
 # Stdout: the marker file path, one line
@@ -32,7 +50,7 @@ persistent_data_schema_state() {
 	marker_dir=$(dirname "$marker")
 	lock_file=$(persistent_data_lock_path "$scope") || return 1
 	if [[ -f "$marker" ]]; then
-		version=$(inventory_layout_version) || return 1
+		version=$(persistent_data_layout_version) || return 1
 		if cmp -s <(printf '%s\n' "$version") "$marker"; then
 			printf '%s\n' 'valid'
 		else
@@ -70,8 +88,8 @@ persistent_data_schema_initialize() {
 	marker=$(persistent_data_schema_marker "$scope") || return 1
 	marker_dir=$(dirname "$marker")
 	mkdir -p "$marker_dir" || return 1
-	version=$(inventory_layout_version) || return 1
+	version=$(persistent_data_layout_version) || return 1
 	atomic_write "$marker" printf '%s\n' "$version"
 }
 
-export -f persistent_data_schema_marker persistent_data_schema_state persistent_data_schema_initialize
+export -f persistent_data_layout_version persistent_data_schema_marker persistent_data_schema_state persistent_data_schema_initialize

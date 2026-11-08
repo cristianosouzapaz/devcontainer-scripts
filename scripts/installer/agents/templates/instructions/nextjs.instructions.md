@@ -2,6 +2,9 @@
 name: "Next.js Rules"
 description: "Use when building Next.js pages, layouts, components, route handlers, and mutations. Covers rendering boundaries, streaming, Server Actions, HTTP routes, accessibility, and images."
 applyTo: "**/*.{ts,tsx}"
+metadata:
+  kit-version: "1.2.0"
+  kit-tags: framework
 ---
 
 # Next.js Rules

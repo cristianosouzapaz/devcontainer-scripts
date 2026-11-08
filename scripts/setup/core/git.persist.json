@@ -1,0 +1,17 @@
+{
+  "github": {
+    "scope": "shared",
+    "relativePath": "config/github",
+    "homeLink": ".config/gh",
+    "label": "GitHub CLI",
+    "identity": "github",
+    "binary": "gh",
+    "loginHint": "gh auth login"
+  },
+  "pnpm-store": {
+    "scope": "project",
+    "relativePath": ".cache/pnpm",
+    "homeLink": ".local/share/pnpm",
+    "label": "pnpm store"
+  }
+}

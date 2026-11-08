@@ -2,6 +2,9 @@
 name: "JavaScript Rules"
 description: "Use when writing or reviewing JavaScript or JSX. Covers modules, immutable bindings, validation, asynchronous failures, state, and documentation."
 applyTo: "**/*.{js,mjs,cjs,jsx}"
+metadata:
+  kit-version: "2.0.0"
+  kit-tags: language
 ---
 
 # JavaScript Rules

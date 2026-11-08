@@ -1,6 +1,10 @@
 ---
 name: vscode-tasks
 description: Use when creating or editing a project's .vscode/tasks.json — the VS Code 2.0.0 task schema, which fields to reach for, and how to decide whether a failing command should fail the task.
+metadata:
+  kit-version: "1.1.0"
+  kit-tags: workflow
+  kit-global: "true"
 ---
 
 `.vscode/tasks.json` runs shell commands from VS Code's Run Task picker. The goal is a task

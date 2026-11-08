@@ -3,6 +3,10 @@ name: "create-pr"
 description: "Create a pull request from one branch to another with a generated title/description, assigned to the current git user, and labeled to match its content; when an open PR already exists for the pair, update its description and labels instead. Never merges or squashes."
 argument-hint: "Source branch and target branch, for example: current main"
 agent: "agent"
+metadata:
+  kit-version: "1.2.0"
+  kit-tags: git
+  kit-global: "true"
 ---
 
 # PR CREATION SPECIFICATION

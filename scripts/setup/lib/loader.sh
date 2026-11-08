@@ -15,10 +15,11 @@ DEVCONTAINER_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly DEVCONTAINER_LIB_DIR
 readonly DEVCONTAINER_SETUP_DIR="${DEVCONTAINER_LIB_DIR%/*}"
 readonly DEVCONTAINER_SCRIPTS_DIR="${DEVCONTAINER_SETUP_DIR%/*}"
+# shellcheck disable=SC2034 # consumed by devcontainer-setup.sh, lib/herdr.sh and lib/inventory.sh
+readonly DEVCONTAINER_CORE_DIR="${DEVCONTAINER_SETUP_DIR}/core"
 # shellcheck disable=SC2034 # consumed by devcontainer-setup.sh
 readonly DEVCONTAINER_MODULES_DIR="${DEVCONTAINER_SETUP_DIR}/modules"
-# shellcheck disable=SC2034 # consumed by modules/coding-agents.sh and lib/herdr.sh
-readonly DEVCONTAINER_ASSETS_DIR="${DEVCONTAINER_SETUP_DIR}/assets"
+readonly DEVCONTAINER_AGENTS_DIR="${DEVCONTAINER_CORE_DIR}/coding-agents"
 # shellcheck disable=SC2034 # consumed by sync-agent-assets.sh
 readonly DEVCONTAINER_INSTALLER_ROOT="${DEVCONTAINER_SCRIPTS_DIR}/installer"
 # shellcheck disable=SC2034 # runtime consumers must never fall back to the mutable bootstrap root
@@ -28,6 +29,8 @@ readonly DEVCONTAINER_BIN_DIR="${DEVCONTAINER_SCRIPTS_DIR}/bin"
 
 # shellcheck source=public/scripts/setup/lib/atomic-write.sh
 source "$DEVCONTAINER_LIB_DIR/atomic-write.sh"
+# shellcheck source=public/scripts/setup/lib/editor.sh
+source "$DEVCONTAINER_LIB_DIR/editor.sh"
 # shellcheck source=public/scripts/setup/lib/env-loader.sh
 source "$DEVCONTAINER_LIB_DIR/env-loader.sh"
 # shellcheck source=public/scripts/setup/lib/error-handler.sh
@@ -64,44 +67,31 @@ source "$DEVCONTAINER_LIB_DIR/global-agent-assets.sh"
 # ----- CONFIGURATION VARIABLES ------------------------------------------------
 
 # Documented in README.md#configuration-variables:
-# - AGENT_ASSETS_REF
-# - AUTO_UPDATE
 # - CLEAN_CREDENTIALS
-# - DEBUG_MODE
-# - DEFAULT_BRANCH
-# - DUMP_ERROR_STACK
+# - CODING_AGENTS: read by inventory.sh, which defaults it to the packs marked default
 # - EXTRA_FOLDER_N
 # - GIT_CLONE_TOKEN
 # - GIT_SIGNING_KEY
 # - GIT_EMAIL
 # - GIT_TOKEN_DURING_INSTALL
 # - GIT_USER
-# - LOG_FILE
 # - LOG_LEVEL
 # - NGROK_AUTHTOKEN
 # - REPO_SOURCE
 # - REQUIRE_DEPENDENCY_INSTALL
 # - SSH_SIGNING
 # - STRUCTURED_LOGS
-# - VALIDATE_TOKEN
 # - PERSIST_<NAME>
 
-AGENT_ASSETS_REF="${AGENT_ASSETS_REF:-}"
-AUTO_UPDATE="${AUTO_UPDATE:-false}"
 CLEAN_CREDENTIALS="${CLEAN_CREDENTIALS:-false}"
-DEBUG_MODE="${DEBUG_MODE:-false}"
-DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
-DUMP_ERROR_STACK="${DUMP_ERROR_STACK:-true}"
 GIT_SIGNING_KEY="${GIT_SIGNING_KEY:-}"
 GIT_CLONE_TOKEN="${GIT_CLONE_TOKEN:-}"
 GIT_EMAIL="${GIT_EMAIL:-}"
 GIT_TOKEN_DURING_INSTALL="${GIT_TOKEN_DURING_INSTALL:-false}"
 GIT_USER="${GIT_USER:-}"
-LOG_FILE="${LOG_FILE:-}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 NGROK_AUTHTOKEN="${NGROK_AUTHTOKEN:-}"
 REPO_SOURCE="${REPO_SOURCE:-}"
 REQUIRE_DEPENDENCY_INSTALL="${REQUIRE_DEPENDENCY_INSTALL:-false}"
 SSH_SIGNING="${SSH_SIGNING:-true}"
 STRUCTURED_LOGS="${STRUCTURED_LOGS:-false}"
-VALIDATE_TOKEN="${VALIDATE_TOKEN:-true}"

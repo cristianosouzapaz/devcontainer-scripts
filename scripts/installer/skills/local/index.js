@@ -1,26 +1,24 @@
-import { lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadJsonCatalog, loadValidatedCatalog } from "../../lib/catalog.js";
-import { toolTargets } from "../../lib/constants.js";
-import { claudeSkillAdapter, getArtifactVersion, readLockFile, recordArtifact, writeLockFile } from "../../lib/lock-file.js";
+import { assertRelativePath, loadAgentPacks, selectAgentPacks } from "../../lib/agent-packs.js";
+import { getArtifactVersion, readLockFile, recordArtifact, skillSymlinkAdapter, writeLockFile } from "../../lib/lock-file.js";
+import { readKitMetadata, stripKitMetadata } from "../../lib/template-metadata.js";
 import { handleError, setupConsola } from "../../lib/utils.js";
 import { writeOverwrite, writeWithConflict } from "../../lib/write-file.js";
 
 /**
  * @fileoverview Local, first-party Agent Skills bundled with the installer package. See
- * `docs/wiki/installer/skills.md`. Claude instruction skills are linked only from
- * `.claude/rules` so they cannot load twice.
+ * `docs/wiki/installer/skills.md`. Each directory below `templates/` is one skill, described
+ * by its own SKILL.md frontmatter; no catalog lists them. Agent adapters are symlinks placed
+ * where each coding-agent pack's exposures say.
  *
  * Installed at /opt/devcontainer/installer/skills/local/ inside the container.
  */
 
 const consola = setupConsola();
 const templateRoot = fileURLToPath(new URL("./templates/", import.meta.url));
-
-const localSkillsFileUrl = new URL("./skills.json", import.meta.url);
-const globalManifestUrl = new URL("./skills.global.json", import.meta.url);
 
 /**
  * Assert that a value is an absolute project root path.
@@ -48,67 +46,7 @@ const assertPathSegment = (value, label) => {
 };
 
 /**
- * Assert that a catalog template path is a relative path without traversal segments.
- * @param {unknown} value - Candidate template file path.
- * @returns {asserts value is string} Nothing.
- * @throws {TypeError} If the template path is unsafe.
- */
-const assertTemplatePath = (value) => {
-    if (typeof value !== "string" || value.length === 0 || value.startsWith("/")
-        || value.split("/").some((segment) => segment.length === 0 || segment === "." || segment === ".." || segment.includes("\\"))) {
-        throw new TypeError("Template file must be a safe relative path.");
-    }
-};
-
-/**
- * Assert that a local skills catalog entry owns every field used by this module.
- * @param {unknown} entry - Candidate local skills catalog entry.
- * @returns {asserts entry is { key: string, name: string, version: string, description: string, tags: string[], templateFile: string, resources?: string[] }} Nothing.
- * @throws {TypeError} If the entry is malformed.
- */
-const assertLocalSkillEntry = (entry) => {
-    if (entry === null || typeof entry !== "object"
-        || !Object.hasOwn(entry, "key") || !Object.hasOwn(entry, "name")
-        || !Object.hasOwn(entry, "version") || !Object.hasOwn(entry, "description")
-        || !Object.hasOwn(entry, "tags") || !Object.hasOwn(entry, "templateFile")
-        || typeof entry.name !== "string" || typeof entry.version !== "string"
-        || typeof entry.description !== "string" || entry.description.length === 0
-        || !Array.isArray(entry.tags) || entry.tags.some((tag) => typeof tag !== "string")) {
-        throw new TypeError("Invalid local skills catalog entry.");
-    }
-    assertPathSegment(entry.key, "Local skill key");
-    assertTemplatePath(entry.templateFile);
-    const resources = entry.resources ?? [];
-    if (!Array.isArray(resources) || resources.some((resource) => typeof resource !== "string")
-        || new Set(resources).size !== resources.length || resources.includes(entry.templateFile)) {
-        throw new TypeError("Local skill resources must be distinct template paths.");
-    }
-    for (const resource of resources) {
-        assertTemplatePath(resource);
-        const destination = relative(dirname(entry.templateFile), resource);
-        if (destination.length === 0 || destination.startsWith("..") || isAbsolute(destination)) {
-            throw new TypeError("Local skill resources must stay inside their skill template directory.");
-        }
-    }
-};
-
-/**
- * Return the template files that make up one local skill and their destinations below its
- * installed skill directory. Resources are constrained to the primary template's directory,
- * preventing one catalog entry from writing into another skill.
- * @param {{ templateFile: string, resources?: string[] }} entry - Validated local skill entry.
- * @returns {{ source: string, destination: string }[]} Template source and installed relative path pairs.
- */
-const localSkillFiles = (entry) => {
-    const templateRoot = dirname(entry.templateFile);
-    return [entry.templateFile, ...(entry.resources ?? [])].map((source) => ({
-        source,
-        destination: relative(templateRoot, source),
-    }));
-};
-
-/**
- * Assert that selected local skill keys can safely identify catalog entries and paths.
+ * Assert that selected local skill keys can safely identify skill directories and paths.
  * @param {unknown} keys - Candidate local skill keys.
  * @returns {asserts keys is string[]} Nothing.
  * @throws {TypeError} If keys is not an array of safe path segments.
@@ -127,12 +65,17 @@ const isMissingPathError = (error) => error instanceof Error
     && Object.hasOwn(error, "code") && error.code === "ENOENT";
 
 /**
- * Build the former relative target used by Claude adapters. It is retained only to
- * migrate adapters created before ~/.claude became a managed symlink.
+ * Build the former relative target used by symlink adapters, e.g. `../../.agents/skills/<name>`
+ * from a two-level adapter directory, which the external `skills` CLI still writes. It is
+ * retained only to migrate adapters created before the agent's home directory became a
+ * managed symlink.
+ * @param {string} destRoot - Root holding both the adapter directory and `.agents`.
+ * @param {string} adapterDir - Root-relative directory holding the adapter symlink.
  * @param {string} skillName - Canonical `.agents/skills/<skillName>` directory name.
  * @returns {string} Legacy relative symlink target.
  */
-const relativeCanonicalSkill = (skillName) => join("..", "..", ".agents", "skills", skillName);
+export const relativeCanonicalSkill = (destRoot, adapterDir, skillName) =>
+    relative(join(destRoot, adapterDir), join(destRoot, ".agents", "skills", skillName));
 
 /**
  * Create a symlink when absent, validate its target, or replace a known legacy target.
@@ -161,84 +104,122 @@ const ensureSymlink = (linkPath, target, description, legacyTarget) => {
 };
 
 /**
- * Ensure Claude Code resolves the canonical project skills through its native discovery
- * path. Existing directories and links to another target are deliberately left untouched:
- * replacing them could discard an unmanaged Claude-only skill tree, which must be migrated
- * explicitly rather than silently by an installer run.
- * @param {string} destRoot - Project root directory.
+ * Ensure an agent resolves a canonical skill through its native skills directory, a pack's
+ * `skills.path`. Existing directories and links to another target are deliberately left
+ * untouched: replacing them could discard an unmanaged agent-only skill tree, which must be
+ * migrated explicitly rather than silently by an installer run.
+ * @param {string} destRoot - Project or home root directory.
+ * @param {string} skillsPath - Root-relative skills directory of the agent.
  * @param {string} skillName - Canonical `.agents/skills/<skillName>` directory name to link.
  * @returns {void} Nothing.
- * @throws {TypeError} If the root or skill name is unsafe.
- * @throws {Error} If the target contains a conflicting Claude skills entry.
- * @effects Creates directories and an absolute `.claude/skills/<skillName>` symlink beneath destRoot when absent; replaces only the known legacy relative target.
+ * @throws {TypeError} If the root, skills directory or skill name is unsafe.
+ * @throws {Error} If the target contains a conflicting skills entry.
+ * @effects Creates directories and an absolute `<skillsPath>/<skillName>` symlink beneath destRoot when absent; replaces only the known legacy relative target.
  */
-export const ensureClaudeSkillSymlink = (destRoot, skillName) => {
+export const ensureSkillSymlink = (destRoot, skillsPath, skillName) => {
     assertProjectRoot(destRoot);
+    assertRelativePath(skillsPath, "Skills directory");
     assertPathSegment(skillName, "Skill name");
     const canonicalSkillsDir = join(destRoot, ".agents", "skills");
-    const claudeDir = join(destRoot, ".claude");
-    const claudeSkillsPath = join(claudeDir, "skills");
+    const agentSkillsDir = join(destRoot, skillsPath);
 
     mkdirSync(canonicalSkillsDir, { recursive: true });
-    mkdirSync(claudeDir, { recursive: true });
+    mkdirSync(dirname(agentSkillsDir), { recursive: true });
 
     try {
-        const stats = lstatSync(claudeSkillsPath);
+        const stats = lstatSync(agentSkillsDir);
         if (!stats.isDirectory() || stats.isSymbolicLink()) {
             throw new Error(
-                ".claude/skills must be a directory for selective skill symlinks. "
+                `${skillsPath} must be a directory for selective skill symlinks. `
                 + "The legacy directory symlink must be migrated explicitly before installing shared assets.",
             );
         }
     } catch (error) {
         if (!isMissingPathError(error)) throw error;
-        mkdirSync(claudeSkillsPath, { recursive: true });
+        mkdirSync(agentSkillsDir, { recursive: true });
     }
 
-    ensureSymlink(join(claudeSkillsPath, skillName), join(canonicalSkillsDir, skillName), `.claude/skills/${skillName}`, relativeCanonicalSkill(skillName));
+    ensureSymlink(join(agentSkillsDir, skillName), join(canonicalSkillsDir, skillName), join(skillsPath, skillName), relativeCanonicalSkill(destRoot, skillsPath, skillName));
 };
 
 /**
- * Expose an instruction skill as a Claude path-scoped rule without copying its body.
- * @param {string} destRoot - Project root directory.
+ * Expose an instruction skill as a path-scoped rule in an agent's rules directory, a pack's
+ * `rules.path`, without copying its body.
+ * @param {string} destRoot - Project or home root directory.
+ * @param {string} rulesPath - Root-relative rules directory of the agent.
  * @param {string} skillName - Canonical `.agents/skills/<skillName>` directory name.
- * @param {string} ruleFilename - Native Claude rule filename.
+ * @param {string} ruleFilename - Rule filename.
  * @returns {void} Nothing.
  * @throws {TypeError} If an input path is unsafe.
  * @throws {Error} If the target rule path conflicts with another file or symlink.
- * @effects Creates the `.claude/rules/<ruleFilename>` directory and an absolute symlink beneath destRoot when absent; replaces only the known legacy relative target.
+ * @effects Creates the `<rulesPath>` directory and an absolute `<rulesPath>/<ruleFilename>` symlink beneath destRoot when absent; replaces only the known legacy relative target.
  */
-export const ensureClaudeRuleSymlink = (destRoot, skillName, ruleFilename) => {
+export const ensureRuleSymlink = (destRoot, rulesPath, skillName, ruleFilename) => {
     assertProjectRoot(destRoot);
+    assertRelativePath(rulesPath, "Rules directory");
     assertPathSegment(skillName, "Skill name");
     assertPathSegment(ruleFilename, "Rule filename");
-    const rulesDir = join(destRoot, ".claude", "rules");
+    const rulesDir = join(destRoot, rulesPath);
     mkdirSync(rulesDir, { recursive: true });
-    ensureSymlink(join(rulesDir, ruleFilename), join(destRoot, ".agents", "skills", skillName, "SKILL.md"), `.claude/rules/${ruleFilename}`, relativeCanonicalSkill(skillName) + "/SKILL.md");
+    ensureSymlink(join(rulesDir, ruleFilename), join(destRoot, ".agents", "skills", skillName, "SKILL.md"), join(rulesPath, ruleFilename), join(relativeCanonicalSkill(destRoot, rulesPath, skillName), "SKILL.md"));
 };
 
 /**
- * Load and validate the local skills catalog from skills.json.
- * @returns {object[]} Validated local skill entries.
- * @throws If the catalog file or any entry is invalid.
+ * List the files of one skill template directory as paths relative to it, SKILL.md first.
+ * @param {string} key - Skill directory name below the templates root.
+ * @returns {string[]} SKILL.md, then every other file of the directory in name order.
+ * @throws {Error} If the directory cannot be read.
+ * @effects Reads the directory tree of templates/<key>.
  */
-const loadLocalSkillsCatalog = () => loadValidatedCatalog(localSkillsFileUrl, "local skills", {
-    strings: ["key", "name", "version", "templateFile"],
-    nonEmptyStrings: ["description"],
-    stringArrays: ["tags"],
-    optionalStringArrays: ["resources"],
-    optionalSafeRelativePathArrays: ["resources"],
-}).map((entry) => {
-    assertLocalSkillEntry(entry);
-    return entry;
-});
+const listSkillFiles = (key) => {
+    const dir = join(templateRoot, key);
+    const resources = readdirSync(dir, { recursive: true, encoding: "utf8" })
+        .filter((path) => path !== "SKILL.md" && statSync(join(dir, path)).isFile())
+        .sort();
+    return ["SKILL.md", ...resources];
+};
 
 /**
- * Write the given local skills and their declared resources below `.agents/skills/<key>/`,
- * prompting to resolve a conflict with the primary SKILL.md. Resources are written only when
- * that primary file is accepted, so an interactive skip leaves the existing skill payload whole.
- * Unknown keys are ignored.
- * @param {string[]} keys - Catalog entry keys to install (typically the union of `skills`
+ * Discover the local skills by scanning the templates root: every directory below it must
+ * hold a SKILL.md whose frontmatter `name` is the directory name and whose `metadata` carries
+ * the kit's `kit-*` keys.
+ * @returns {{ key: string, version: string, tags: string[], global: boolean, files: string[] }[]}
+ *   One entry per skill, in directory-name order.
+ * @throws {Error} If a template cannot be read, its metadata is invalid, or its name differs
+ *   from its directory.
+ * @effects Reads every skill directory below the templates root.
+ */
+export const loadLocalSkills = () => readdirSync(templateRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort()
+    .map((key) => {
+        const label = `skills/local/templates/${key}/SKILL.md`;
+        const { name, version, tags, global } = readKitMetadata(readFileSync(join(templateRoot, key, "SKILL.md"), "utf8"), label);
+        if (name !== key) throw new Error(`${label}: name "${name}" must match its directory.`);
+        return { key, version, tags, global, files: listSkillFiles(key) };
+    });
+
+/**
+ * Read one file of a skill template as an installed file receives it: SKILL.md without the
+ * kit's `kit-*` metadata keys, any other file as written.
+ * @param {string} key - Skill directory name.
+ * @param {string} file - Path relative to the skill directory.
+ * @returns {string} The content to install.
+ * @throws {Error} If the template file cannot be read.
+ * @effects Reads templates/<key>/<file>.
+ */
+const readSkillFile = (key, file) => {
+    const content = readFileSync(join(templateRoot, key, file), "utf8");
+    return file === "SKILL.md" ? stripKitMetadata(content) : content;
+};
+
+/**
+ * Write the given local skills and their other files below `.agents/skills/<key>/`,
+ * prompting to resolve a conflict with the primary SKILL.md. The other files are written only
+ * when that primary file is accepted, so an interactive skip leaves the existing skill payload
+ * whole. Unknown keys are ignored.
+ * @param {string[]} keys - Skill keys to install (typically the union of `kit-skills`
  *   referenced by the agent-md blocks the user selected).
  * @param {string} destRoot - Project root directory.
  * @param {object} lock - Parsed template-lock.json, used to resolve each skill's currently
@@ -256,7 +237,7 @@ export const installLocalSkills = async (keys, destRoot, lock) => {
         || lock.artifacts === null || typeof lock.artifacts !== "object" || Array.isArray(lock.artifacts)) {
         throw new TypeError("Template lock must contain an artifacts object.");
     }
-    const catalog = loadLocalSkillsCatalog();
+    const catalog = loadLocalSkills();
     const written = {};
 
     for (const key of keys) {
@@ -265,18 +246,15 @@ export const installLocalSkills = async (keys, destRoot, lock) => {
 
         const skillDir = join(destRoot, ".agents", "skills", key);
         mkdirSync(skillDir, { recursive: true });
-        const files = localSkillFiles(entry);
-        const [primary, ...resources] = files;
-        const canonicalPath = join(".agents", "skills", key, primary.destination);
-        const content = readFileSync(join(templateRoot, primary.source), "utf8");
-        const ok = await writeWithConflict(join(skillDir, primary.destination), content, `${key}/${primary.destination}`, entry.version, getArtifactVersion(lock, canonicalPath));
+        const [primary, ...resources] = entry.files;
+        const canonicalPath = join(".agents", "skills", key, primary);
+        const ok = await writeWithConflict(join(skillDir, primary), readSkillFile(key, primary), `${key}/${primary}`, entry.version, getArtifactVersion(lock, canonicalPath));
         if (!ok) continue;
 
         for (const resource of resources) {
-            const resourcePath = join(skillDir, resource.destination);
+            const resourcePath = join(skillDir, resource);
             mkdirSync(dirname(resourcePath), { recursive: true });
-            const resourceContent = readFileSync(join(templateRoot, resource.source), "utf8");
-            await writeOverwrite(resourcePath, resourceContent, `${key}/${resource.destination}`);
+            await writeOverwrite(resourcePath, readSkillFile(key, resource), `${key}/${resource}`);
         }
         written[key] = entry.version;
     }
@@ -285,69 +263,49 @@ export const installLocalSkills = async (keys, destRoot, lock) => {
 };
 
 /**
- * Load and validate this installer's machine-wide manifest (`skills.global.json`): the flat
- * list of local skill catalog keys materialized into the shared `~/.agents` tree.
- * @returns {string[]}
- * @throws If the manifest is not an array of non-empty strings.
- */
-const loadGlobalLocalSkills = () => {
-    const keys = loadJsonCatalog(globalManifestUrl);
-    try {
-        assertSkillKeys(keys);
-    } catch (error) {
-        if (error instanceof TypeError) throw new Error("skills.global.json must be an array of local skill keys.", { cause: error });
-        throw error;
-    }
-    return keys;
-};
-
-/**
- * Non-interactive `--global` path: write the local skills named in `skills.global.json`
- * into the shared machine-wide tree — canonical `~/.agents/skills/<key>/SKILL.md` plus a
- * `~/.claude/skills/<key>` symlink — tracked in `~/.agents/template-lock.json`. Conflicts
- * are overwritten (the template owns a global asset) and only the Claude adapter is
- * materialized; Codex reads `~/.agents/skills` directly. Assumes `CLAUDE_CONFIG_DIR` is
- * `~/.claude`, as the devcontainer image sets it.
+ * Non-interactive `--global` path: write the local skills whose metadata sets
+ * `kit-global: "true"` into the shared machine-wide tree — canonical `~/.agents/skills/<key>/SKILL.md`
+ * plus a `~/<skills.path>/<key>` symlink for every pack that exposes skills by symlink — tracked
+ * in `~/.agents/template-lock.json`. Conflicts are overwritten (the template owns a global
+ * asset); a pack whose agent reads `~/.agents/skills` natively gets no adapter. Assumes each
+ * agent's config directory is the one under the home its pack names, as the devcontainer
+ * image sets it.
  * @param {{ writer?: typeof writeOverwrite }} [options] - Writer override for tests.
  * @returns {Promise<void>}
  * @throws {TypeError} If options are malformed.
- * @throws {Error} If the manifest names missing catalog entries, a template cannot be read, or
- *   the shared target cannot be updated.
- * @effects Writes the selected skill files and Claude symlinks below the user home directory, then writes its lock file.
+ * @throws {Error} If a template cannot be read or its metadata is invalid, the packs cannot
+ *   be loaded, or the shared target cannot be updated.
+ * @effects Reads the coding-agent packs and `CODING_AGENTS`, writes the selected skill files and the selected agents' symlinks below the user home directory, then writes its lock file.
  */
 export const installGlobalLocalSkills = async (options = {}) => {
     if (options === null || typeof options !== "object" || Array.isArray(options)
         || (Object.hasOwn(options, "writer") && typeof options.writer !== "function")) {
         throw new TypeError("Global local skills options must be an object with an optional writer function.");
     }
-    const catalog = loadLocalSkillsCatalog();
-    const keys = loadGlobalLocalSkills();
-    const missing = keys.filter((key) => !catalog.some((entry) => entry.key === key));
-    if (missing.length > 0) throw new Error(`skills.global.json keys absent from the catalog: ${missing.join(", ")}`);
+    const globalSkills = loadLocalSkills().filter((entry) => entry.global);
+    const keys = globalSkills.map((entry) => entry.key);
+    const symlinkPacks = selectAgentPacks(loadAgentPacks(), process.env.CODING_AGENTS).filter((pack) => pack.skills.mode === "symlink");
 
     const destRoot = homedir();
     const lockRoot = join(destRoot, ".agents");
     const write = Object.hasOwn(options, "writer") ? options.writer : writeOverwrite;
-    const result = await keys.reduce(async (pending, key) => {
+    const result = await globalSkills.reduce(async (pending, entry) => {
         const { lock, changes } = await pending;
-        const entry = catalog.find((candidate) => candidate.key === key);
-        if (entry === undefined) throw new Error(`Local skill catalog is missing ${key}.`);
+        const { key } = entry;
         const canonicalPath = join(".agents", "skills", key, "SKILL.md");
         const before = JSON.stringify(lock.artifacts[canonicalPath] ?? null);
 
-        const files = localSkillFiles(entry);
-        const writes = await files.reduce(async (pending, file) => {
+        const writes = await entry.files.reduce(async (pending, file) => {
             const changes = await pending;
-            const content = readFileSync(join(templateRoot, file.source), "utf8");
-            const changed = await write(join(destRoot, ".agents", "skills", key, file.destination), content, `${key}/${file.destination}`);
+            const changed = await write(join(destRoot, ".agents", "skills", key, file), readSkillFile(key, file), `${key}/${file}`);
             return [...changes, changed];
         }, Promise.resolve([]));
         const withArtifact = recordArtifact(lock, canonicalPath, { kind: "skill", version: entry.version });
 
-        ensureClaudeSkillSymlink(destRoot, key);
+        for (const pack of symlinkPacks) ensureSkillSymlink(destRoot, pack.skills.path, key);
         const updatedLock = recordArtifact(withArtifact, canonicalPath, {
             kind: "skill",
-            adapters: { [toolTargets.claude]: [claudeSkillAdapter(key)] },
+            adapters: Object.fromEntries(symlinkPacks.map((pack) => [pack.id, [skillSymlinkAdapter(pack.skills.path, key)]])),
         });
 
         return {
@@ -358,7 +316,7 @@ export const installGlobalLocalSkills = async (options = {}) => {
 
     if (result.changes.some(Boolean)) writeLockFile(lockRoot, result.lock);
     const synced = keys.slice().sort().join(", ");
-    consola.success(`Global local skills synced: ${synced || "(skills.global.json is empty)"}`);
+    consola.success(`Global local skills synced: ${synced || "(no local skill sets kit-global)"}`);
 };
 
 if (import.meta.url === `file://${process.argv[1]}`) {

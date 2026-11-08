@@ -1,0 +1,42 @@
+{
+  "label": "Pi",
+  "default": true,
+  "command": "pi",
+  "npmPackage": "@earendil-works/pi-coding-agent",
+  "herdrIntegration": true,
+  "loginHint": "pi",
+  "credential": { "env": "PI_CODING_AGENT_DIR", "dir": ".pi/agent", "file": "auth.json" },
+  "skills": { "mode": "none" },
+  "rules": { "mode": "none" },
+  "instructions": { "path": ".pi/agent/AGENTS.md", "mode": "copy" },
+  "projectInstructions": { "mode": "none" },
+  "assets": [
+    {
+      "id": "settings",
+      "type": "merge-json",
+      "source": "settings.json",
+      "target": "agent/settings.json"
+    },
+    {
+      "id": "pi-web-access",
+      "type": "package",
+      "source": "npm:pi-web-access"
+    },
+    {
+      "id": "pi-subagents",
+      "type": "package",
+      "source": "npm:pi-subagents"
+    },
+    {
+      "id": "pi-background-terminals",
+      "type": "package",
+      "source": "npm:@tian.zuo/pi-background-terminals"
+    },
+    {
+      "id": "herdr-summary",
+      "type": "managed-file",
+      "source": "extensions/herdr-summary.ts",
+      "target": "agent/extensions/herdr-summary.ts"
+    }
+  ]
+}

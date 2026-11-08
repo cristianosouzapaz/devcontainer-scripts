@@ -498,13 +498,6 @@ cli_health_retry_action() {
 	printf '%s\n' 'devcontainer-data status --health'
 }
 
-# cli_health_probe <command> [args...]: runs an executable diagnostic under its fixed deadline
-# Returns: the command output; callers classify its status so a timeout is never reported as auth failure.
-cli_health_probe() {
-	command -v timeout >/dev/null 2>&1 || return 125
-	timeout --kill-after=2s 10s "$@"
-}
-
 # cli_health_probe_detail <status>: prints a stable failure detail for a bounded executable probe
 cli_health_probe_detail() {
 	case "$1" in
@@ -522,7 +515,7 @@ cli_health_version() {
 		cli_health_add "agent.${agent_id}.binary" error 'command unavailable' 'Rebuild container'
 		return 1
 	fi
-	output=$(cli_health_probe "$agent_command" --version 2>&1) || rc=$?
+	output=$(agent_probe "$agent_command" --version 2>&1) || rc=$?
 	if [[ "$rc" -ne 0 ]]; then
 		cli_health_add "agent.${agent_id}.binary" error "$(cli_health_probe_detail "$rc")" 'Rebuild container'
 		return 1
@@ -536,42 +529,17 @@ cli_health_version() {
 
 # cli_health_identity <id> <login-hint>: bounded authentication probe that never changes persistent state
 cli_health_identity() {
-	local id="$1" login_hint="$2" output rc=0 identity='' provider ready='' provider_rc=0
+	local id="$1" login_hint="$2" output rc=0 identity=''
 
-	case "$id" in
-	claude)
-		output=$(cli_health_probe claude auth status --text 2>&1) || rc=$?
-		[[ "$rc" -eq 0 ]] && identity=$(sed -n 's/^Email: //p' <<<"$output" | head -n1)
-		;;
-	codex)
-		cli_health_probe codex login status >/dev/null 2>&1 || rc=$?
-		[[ "$rc" -eq 0 ]] && identity='authenticated'
-		;;
-	github)
-		output=$(cli_health_probe gh auth status 2>&1) || rc=$?
+	if [[ "$id" == github ]]; then
+		output=$(agent_probe gh auth status 2>&1) || rc=$?
 		[[ "$rc" -eq 0 ]] && identity=$(sed -n 's/.*Logged in to [^ ]* account \([^ ]*\).*/\1/p' <<<"$output" | head -n1)
-		;;
-	pi)
-		if [[ ! -f "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json" ]]; then
-			rc=1
-		elif ! command -v jq >/dev/null 2>&1; then
-			rc=1
-		else
-			while IFS= read -r provider; do
-				provider_rc=0
-				output=$(cli_health_probe pi auth check --provider "$provider" --json --no-refresh 2>/dev/null) || provider_rc=$?
-				if [[ "$provider_rc" -ne 0 ]]; then
-					# why: a timed-out probe must surface as a retryable warning even if another provider is ready; a plain failure only fills an empty status.
-					if [[ "$provider_rc" -eq 124 || "$provider_rc" -eq 137 || "$provider_rc" -eq 125 || "$rc" -eq 0 ]]; then rc="$provider_rc"; fi
-					continue
-				fi
-				ready=$(jq -r '.status // empty' <<<"$output" 2>/dev/null || true)
-				[[ "$ready" == ready ]] && identity+="${identity:+, }${provider}"
-			done < <(jq -r 'keys[]' "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json" 2>/dev/null)
-		fi
-		;;
-	*) cli_health_add "agent.${id}.identity" error 'unsupported identity probe'; return 1 ;;
-	esac
+	elif declare -F "agent_${id}_identity" >/dev/null; then
+		identity=$(agent_identity "$id") || rc=$?
+	else
+		cli_health_add "agent.${id}.identity" error 'unsupported identity probe'
+		return 1
+	fi
 	if [[ "$rc" -eq 124 || "$rc" -eq 137 || "$rc" -eq 125 ]]; then
 		cli_health_add "agent.${id}.identity" warning "$(cli_health_probe_detail "$rc")" 'Retry health check' "$(cli_health_retry_action)"
 	elif [[ -n "$identity" ]]; then
@@ -583,27 +551,29 @@ cli_health_identity() {
 
 # cli_health_asset <agent_id> <asset-json>: checks the inventory-defined state without overwriting adopted files
 cli_health_asset() {
-	local agent_id="$1" asset="$2" asset_id asset_type source target category_path source_hash stored_hash
+	local agent_id="$1" asset="$2" asset_id asset_type source target source_hash stored_hash
+	local label agent_command assets_dir missing line
 
 	asset_id=$(jq -r '.id' <<<"$asset")
 	asset_type=$(jq -r '.type' <<<"$asset")
 	if [[ "$asset_type" == package ]]; then
-		if [[ "$agent_id" != pi ]]; then
+		if ! declare -F "agent_${agent_id}_package_declared" >/dev/null; then
 			cli_health_add "agent.${agent_id}.asset.${asset_id}" warning 'package state is not inspectable'
 			return 0
 		fi
-		target="$(persistent_data_category_path pi)/agent/settings.json"
 		source=$(jq -r '.source' <<<"$asset")
-		if [[ -f "$target" ]] && jq -e --arg package "$source" '(.packages // []) | index($package) != null' "$target" >/dev/null 2>&1; then
+		label=$(inventory_fields agents "$agent_id" label) || return 1
+		agent_command=$(inventory_fields agents "$agent_id" command) || return 1
+		if "agent_${agent_id}_package_declared" "$source"; then
 			cli_health_add "agent.${agent_id}.asset.${asset_id}" ok 'package declared in settings'
 		else
-			cli_health_add "agent.${agent_id}.asset.${asset_id}" error 'package is not declared in settings' 'Install Pi package' "pi install ${source}"
+			cli_health_add "agent.${agent_id}.asset.${asset_id}" error 'package is not declared in settings' "Install ${label} package" "${agent_command} install ${source}"
 		fi
 		return 0
 	fi
-	category_path=$(persistent_data_category_path "$agent_id") || return 1
-	source="${DEVCONTAINER_ASSETS_DIR}/$(jq -r '.source' <<<"$asset")"
-	target="$category_path/$(jq -r '.target' <<<"$asset")"
+	assets_dir=$(inventory_fields agents "$agent_id" assetsDir) || return 1
+	source="${assets_dir}/$(jq -r '.source' <<<"$asset")"
+	target=$(asset_target "$agent_id" "$asset") || return 1
 	if [[ ! -f "$source" ]]; then
 		cli_health_add "agent.${agent_id}.asset.${asset_id}" error 'shipped source is missing' 'Rebuild container'
 		return 0
@@ -636,10 +606,20 @@ cli_health_asset() {
 		fi
 		;;
 	merge-toml)
-		if [[ -f "$target" ]] && grep -qE '^cli_auth_credentials_store[[:space:]]*=[[:space:]]*"file"' "$target"; then
-			cli_health_add "agent.${agent_id}.asset.${asset_id}" ok 'Codex credential storage configured'
+		label=$(inventory_fields agents "$agent_id" label) || return 1
+		missing=''
+		if [[ ! -f "$target" ]]; then
+			missing='file'
 		else
-			cli_health_add "agent.${agent_id}.asset.${asset_id}" error 'Codex credential storage is not configured' 'Rebuild container'
+			while IFS= read -r line; do
+				[[ -n "$line" ]] || continue
+				grep -qxF -- "$line" "$target" || missing='setting'
+			done < <(jq -r '.enforce // [] | .[]' <<<"$asset")
+		fi
+		if [[ -z "$missing" ]]; then
+			cli_health_add "agent.${agent_id}.asset.${asset_id}" ok "${label} enforced settings present"
+		else
+			cli_health_add "agent.${agent_id}.asset.${asset_id}" error "${label} enforced settings missing" 'Rebuild container'
 		fi
 		;;
 	*) cli_health_add "agent.${agent_id}.asset.${asset_id}" warning 'asset type is setup-only' ;;
@@ -717,7 +697,7 @@ cli_health_collect() {
 		if [[ "${CLI_HEALTH_CATEGORY_READY[$agent_id]}" != true ]]; then
 			cli_health_blocked "agent.${agent_id}.binary" 'agent storage unavailable'
 			cli_health_blocked "agent.${agent_id}.identity" 'agent storage unavailable'
-			while IFS= read -r asset; do [[ -n "$asset" ]] && cli_health_blocked "agent.${agent_id}.asset.$(jq -r .id <<<"$asset")" 'agent storage unavailable'; done < <(inventory_assets agents "$agent_id")
+			while IFS= read -r asset; do [[ -n "$asset" ]] && cli_health_blocked "agent.${agent_id}.asset.$(jq -r .id <<<"$asset")" 'agent storage unavailable'; done < <(inventory_assets "$agent_id")
 			continue
 		fi
 		if ! cli_health_version "$agent_id" "$command"; then
@@ -725,14 +705,14 @@ cli_health_collect() {
 		else
 			cli_health_identity "$agent_id" "$login_hint"
 		fi
-		while IFS= read -r asset; do [[ -n "$asset" ]] && cli_health_asset "$agent_id" "$asset"; done < <(inventory_assets agents "$agent_id")
-	done < <(inventory_ids agents)
+		while IFS= read -r asset; do [[ -n "$asset" ]] && cli_health_asset "$agent_id" "$asset"; done < <(inventory_assets "$agent_id")
+	done < <(inventory_selected_ids)
 
 	if ! command -v "$_HERDR_COMMAND" >/dev/null 2>&1; then
 		cli_health_add 'herdr.binary' error 'command unavailable' 'Rebuild container'
 		herdr_output=''
 	else
-		herdr_output=$(cli_health_probe "$_HERDR_COMMAND" --version 2>&1) || rc=$?
+		herdr_output=$(agent_probe "$_HERDR_COMMAND" --version 2>&1) || rc=$?
 		if [[ "$rc" -eq 0 ]]; then
 			herdr_available=true
 			cli_health_add 'herdr.binary' ok "$(awk 'NF { print; exit }' <<<"$herdr_output")"
@@ -751,7 +731,7 @@ cli_health_collect() {
 			cli_health_add 'herdr.config' warning 'configuration is missing' 'Initialize Herdr configuration' 'devcontainer-data update herdr'
 		elif [[ "$herdr_available" == true ]]; then
 			config_rc=0
-			cli_health_probe "$_HERDR_COMMAND" config check >/dev/null 2>&1 || config_rc=$?
+			agent_probe "$_HERDR_COMMAND" config check >/dev/null 2>&1 || config_rc=$?
 			if [[ "$config_rc" -ne 0 ]]; then
 				if [[ "$config_rc" -eq 124 || "$config_rc" -eq 137 || "$config_rc" -eq 125 ]]; then
 					cli_health_add 'herdr.config' warning "$(cli_health_probe_detail "$config_rc")" 'Retry health check' "$(cli_health_retry_action)"
@@ -778,10 +758,10 @@ cli_health_collect() {
 		while IFS= read -r integration; do
 			[[ "$(inventory_fields agents "$integration" herdrIntegration)" == true ]] || continue
 			cli_health_blocked "herdr.integration.${integration}" 'Herdr unavailable'
-		done < <(inventory_ids agents)
+		done < <(inventory_selected_ids)
 	else
 		integration_rc=0
-		herdr_output=$(cli_health_probe "$_HERDR_COMMAND" integration status 2>&1) || integration_rc=$?
+		herdr_output=$(agent_probe "$_HERDR_COMMAND" integration status 2>&1) || integration_rc=$?
 		while IFS= read -r integration; do
 			[[ "$(inventory_fields agents "$integration" herdrIntegration)" == true ]] || continue
 			if [[ "$integration_rc" -ne 0 ]]; then
@@ -791,7 +771,7 @@ cli_health_collect() {
 			else
 				cli_health_add "herdr.integration.${integration}" warning 'integration is not current' 'Install Herdr integration' "herdr integration install ${integration}"
 			fi
-		done < <(inventory_ids agents)
+		done < <(inventory_selected_ids)
 	fi
 
 	if [[ "${CLI_HEALTH_CATEGORY_READY[agents]}" != true ]]; then
@@ -832,7 +812,7 @@ cli_health_rows_json() {
 cli_health_json() {
 	local rows="$1" checks agent_ids
 	checks=$(cli_health_rows_json "$rows")
-	agent_ids=$(inventory_ids agents | jq -Rsc 'split("\n") | map(select(length > 0))')
+	agent_ids=$(inventory_selected_ids | jq -Rsc 'split("\n") | map(select(length > 0))')
 	jq -cn --argjson checks "$checks" --argjson agent_ids "$agent_ids" '
 		def health($items):
 			if any($items[]; .health == "error") then "error"
@@ -907,11 +887,7 @@ cli_health_table_agent() {
 		if [[ "$health" == error ]]; then overall=error; elif [[ "$health" == warning && "$overall" == ok ]]; then overall=warning; fi
 	done <<<"$rows"
 	if [[ "$overall" == ok ]]; then
-		if [[ "$identity_detail" == authenticated ]]; then
-			printf '  %s %-24s %-32s authenticated\n' "$(cli_status_symbol "$overall" "$color_enabled")" "$label" "$binary_detail"
-		else
-			printf '  %s %-24s %-32s authenticated (%s)\n' "$(cli_status_symbol "$overall" "$color_enabled")" "$label" "$binary_detail" "$identity_detail"
-		fi
+		printf '  %s %-24s %-32s authenticated (%s)\n' "$(cli_status_symbol "$overall" "$color_enabled")" "$label" "$binary_detail" "$identity_detail"
 		return 0
 	fi
 	printf '  %s %-24s %-32s\n' "$(cli_status_symbol "$overall" "$color_enabled")" "$label" "$binary_detail"
@@ -945,7 +921,7 @@ cli_health_table() {
 		cli_health_table_check "$health" "$label" "$detail" "$action_label" "$action_command" "$color_enabled"
 	done <<<"$rows"
 	printf '\nCoding agents\n'
-	while IFS= read -r id; do cli_health_table_agent "$rows" "$id" "$color_enabled"; done < <(inventory_ids agents)
+	while IFS= read -r id; do cli_health_table_agent "$rows" "$id" "$color_enabled"; done < <(inventory_selected_ids)
 	printf '\nHerdr\n'
 	while IFS=$'\x1f' read -r id health detail action_label action_command; do
 		[[ "$id" == herdr.* ]] || continue

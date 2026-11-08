@@ -18,3 +18,32 @@ function Get-EntryManifest {
     return @(Get-Content -Path $EntryManifestPath -Raw | ConvertFrom-Json)
 }
 
+function Get-CodingAgentEntries {
+    <#
+    .SYNOPSIS
+        Lists the coding agents from their packs, as entries Select-Features can show.
+    .DESCRIPTION
+        One entry per <id>/agent.json under $CodingAgentPacksPath, sorted by id: the
+        folder name is the key, the pack's label the label. A pack declaring
+        "default": true is pre-selected, the same packs setup installs when
+        CODING_AGENTS is unset.
+    .OUTPUTS
+        Array of PSCustomObject entries with key, label, mandatory and default.
+    #>
+    $packs = @(Get-ChildItem -Path $CodingAgentPacksPath -Filter "agent.json" -Recurse -Depth 1 -File -ErrorAction SilentlyContinue |
+        Sort-Object { $_.Directory.Name })
+    if ($packs.Count -eq 0) {
+        Write-Message "No coding agent packs found under: $CodingAgentPacksPath" -Level "Error"
+        throw "Missing coding agent packs"
+    }
+    return @($packs | ForEach-Object {
+        $pack = Get-Content -Path $_.FullName -Raw | ConvertFrom-Json
+        [PSCustomObject]@{
+            key       = $_.Directory.Name
+            label     = $pack.label
+            mandatory = $false
+            default   = ($pack.default -eq $true)
+        }
+    })
+}
+

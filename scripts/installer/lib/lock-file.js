@@ -102,16 +102,20 @@ export const reconcileArtifactAdapters = (lock, root, path) => {
 };
 
 /**
- * Describe the symlink that exposes a skill to Claude Code.
+ * Describe the symlink that exposes a skill in an agent's skills directory, a pack's
+ * `skills.path` (e.g. `<skillsPath>/<name>` → `.agents/skills/<name>`).
+ * @param {string} skillsPath - Root-relative skills directory of the agent.
  * @param {string} skillName - Skill directory name.
- * @returns {{ path: string, type: string, target: string }} Claude skill adapter.
+ * @returns {{ path: string, type: string, target: string }} Skill adapter record.
  */
-export const claudeSkillAdapter = (skillName) => ({ path: join(".claude", "skills", skillName), type: "symlink", target: join(".agents", "skills", skillName) });
+export const skillSymlinkAdapter = (skillsPath, skillName) => ({ path: join(skillsPath, skillName), type: "symlink", target: join(".agents", "skills", skillName) });
 
 /**
- * Describe the symlink that exposes a skill to Claude Code as a rule.
+ * Describe the symlink that exposes a skill's SKILL.md as a rule file in an agent's rules
+ * directory, a pack's `rules.path`.
+ * @param {string} rulesPath - Root-relative rules directory of the agent.
  * @param {string} skillName - Skill directory name.
- * @param {string} filename - Claude rule filename.
- * @returns {{ path: string, type: string, target: string }} Claude rule adapter.
+ * @param {string} filename - Rule filename.
+ * @returns {{ path: string, type: string, target: string }} Rule adapter record.
  */
-export const claudeRuleAdapter = (skillName, filename) => ({ path: join(".claude", "rules", filename), type: "symlink", target: join(".agents", "skills", skillName, "SKILL.md") });
+export const ruleSymlinkAdapter = (rulesPath, skillName, filename) => ({ path: join(rulesPath, filename), type: "symlink", target: join(".agents", "skills", skillName, "SKILL.md") });

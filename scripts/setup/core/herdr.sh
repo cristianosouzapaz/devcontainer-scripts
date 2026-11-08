@@ -1,10 +1,11 @@
 # shellcheck shell=bash
 
-# MODULE_NAME="herdr"
-# MODULE_DESCRIPTION="Initializes project Herdr configuration and agent integrations"
-# MODULE_ENTRY="herdr_setup"
-# MODULE_AFTER="persistent-data,coding-agents"
-# MODULE_SECRETS=""
+# CORE_NAME="herdr"
+# CORE_DESCRIPTION="Initializes project Herdr configuration and agent integrations"
+# CORE_ENTRY="herdr_setup"
+# CORE_AFTER="persistent-data,coding-agents"
+# CORE_SECRETS=""
+# CORE_PERSIST="herdr"
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
@@ -17,9 +18,10 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/loader.sh"
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# herdr_setup: module entry; runs herdr_apply
+# herdr_setup: core entry; writes the project's Herdr config and each selected agent's Herdr hook
 herdr_setup() {
 	herdr_apply
+	log_item_success "Herdr configured for the coding agents"
 }
 
 export -f herdr_setup

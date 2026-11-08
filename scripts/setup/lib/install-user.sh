@@ -30,6 +30,7 @@ readonly -a _INSTALL_USER_ENV_DEFAULTS=(
 _INSTALL_USER_UID=""
 _INSTALL_USER_GID=""
 _INSTALL_USER_SESSION_DIR=""
+_INSTALL_USER_SESSION_WORKDIR=""
 declare -ga _INSTALL_USER_SESSION_ENV=()
 
 # ----- FUNCTIONS --------------------------------------------------------------
@@ -39,19 +40,21 @@ declare -ga _INSTALL_USER_SESSION_ENV=()
 # Notes: the one list of what the self-check probes, each path resolved from the
 #   variable its tool reads. kind is token (a clone-token file, waived by
 #   --expose-clone-token), credential (an agent login, stronger than a clone token),
-#   socket (the Docker daemon) or proc (a setup process). A new tool with a login is
-#   one credential line here.
+#   socket (the Docker daemon) or proc (a setup process). A coding agent's login comes
+#   from its pack's credential field; another tool with a login is one credential line here.
 install_user_secret_paths() {
-	local pid
+	local pid credentials env_name dir file
+	credentials=$(inventory_read -r '.agents[] | .credential // empty | [.env, .dir, .file] | join("\u001f")') || return 1
 	printf 'token %s\n' "${_ENV_FILE_PATH:-/root/.config/devcontainer/.env}"
 	# why: the mount target before 4.3.0; a project still generating it exposes the .env file
 	printf 'token %s\n' /tmp/.env
 	[[ -z "${_MODULE_SECRET_FILE:-}" ]] || printf 'token %s\n' "$_MODULE_SECRET_FILE"
 	printf 'token %s\n' "$HOME/.git-credentials"
 	printf 'credential %s\n' "${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}/hosts.yml"
-	printf 'credential %s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
-	printf 'credential %s\n' "${CODEX_HOME:-$HOME/.codex}/auth.json"
-	printf 'credential %s\n' "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json"
+	while IFS=$'\x1f' read -r env_name dir file; do
+		[[ -n "$env_name" ]] || continue
+		printf 'credential %s/%s\n' "${!env_name:-$HOME/$dir}" "$file"
+	done <<<"$credentials"
 	printf 'socket %s\n' /var/run/docker.sock /var/run/docker-host.sock
 	[[ "${DOCKER_HOST:-}" != unix://* ]] || printf 'socket %s\n' "${DOCKER_HOST#unix://}"
 	for pid in "$@"; do
@@ -103,12 +106,25 @@ ensure_install_user() {
 }
 
 # install_user_self_check <expose_token>: probes, as dep-install, every path of install_user_secret_paths and fails when one is reachable
-# Returns: 1 when a secret is reachable, naming each one; a token path is only a
-#   warning when expose_token is true.
+# Returns: 1 when a secret is reachable, naming each one, when the paths cannot be
+#   listed, so an unreadable inventory never passes as isolated, or when the probe does
+#   not report every path checked; a token path is only a warning when expose_token is true.
 install_user_self_check() {
-	local expose_token="$1" kind path rc=0 caller="$BASHPID"
+	local expose_token="$1" kind path rc=0 caller="$BASHPID" paths checked=""
+	local -a sent
+	if ! paths=$(install_user_secret_paths "$$" "$caller"); then
+		log_error "Could not list the secrets ${_INSTALL_USER_NAME} must not reach: refusing to run the dependency install"
+		return 1
+	fi
+	mapfile -t sent <<<"$paths"
 	# shellcheck disable=SC2016 # why: the probe script expands its own variables, as the install user
 	while read -r kind path; do
+		# why: only the probe's final line, the count of paths it checked, proves it ran to the end as dep-install
+		if [[ "$kind" == checked ]]; then
+			checked="$path"
+			continue
+		fi
+		checked=""
 		[[ -n "$kind" ]] || continue
 		if [[ "$kind" == token && "$expose_token" == true ]]; then
 			log_item_warning "GIT_TOKEN_DURING_INSTALL=true: the install can read ${path}"
@@ -119,15 +135,20 @@ install_user_self_check() {
 			*) log_error "${path} (${kind}) is reachable by ${_INSTALL_USER_NAME}: the dependency install would see it" ;;
 		esac
 		rc=1
-	done < <(install_user_secret_paths "$$" "$caller" | install_user_exec_raw /bin/bash -c '
+	done < <(printf '%s\n' "$paths" | install_user_exec_raw /bin/bash -c '
+		n=0
 		while read -r kind path; do
+			n=$((n + 1))
 			case "$kind" in
 				socket) [[ -S "$path" && -w "$path" ]] ;;
-				proc) (exec 3<"$path") 2>/dev/null ;;
-				*) [[ -e "$path" ]] && head -c 1 -- "$path" >/dev/null 2>&1 ;;
+				*) [[ -r "$path" ]] || { : <"$path"; } 2>/dev/null ;;
 			esac && printf "%s %s\n" "$kind" "$path"
 		done
-		exit 0')
+		printf "checked %d\n" "$n"')
+	if [[ "$checked" != "${#sent[@]}" ]]; then
+		log_error "The isolation probe did not complete as ${_INSTALL_USER_NAME} (${checked:-0} of ${#sent[@]} paths checked): refusing to run the dependency install"
+		return 1
+	fi
 	return "$rc"
 }
 
@@ -150,7 +171,7 @@ install_user_handover() {
 	return "$rc"
 }
 
-# install_user_exec_raw <command...>: runs the command as dep-install with the session environment, no groups, no capabilities and no inherited descriptors above stderr
+# install_user_exec_raw <command...>: runs the command as dep-install in the session's directory, with the session environment, no groups, no capabilities and no inherited descriptors above stderr
 install_user_exec_raw() {
 	local fd
 	(
@@ -158,6 +179,8 @@ install_user_exec_raw() {
 			fd="${fd##*/}"
 			[[ "$fd" -le 2 ]] || eval "exec ${fd}>&-" 2>/dev/null || true
 		done
+		# why: the caller's working directory may be one dep-install cannot enter, and git fails to stat it
+		cd -- "${_INSTALL_USER_SESSION_WORKDIR:-/}" || exit 1
 		exec setpriv --reuid="$_INSTALL_USER_UID" --regid="$_INSTALL_USER_GID" --clear-groups \
 			--no-new-privs --inh-caps=-all --bounding-set=-all \
 			env -i "${_INSTALL_USER_SESSION_ENV[@]}" "$@"
@@ -174,7 +197,7 @@ as_install_user() {
 	install_user_exec_raw "$@"
 }
 
-# install_user_session [--expose-clone-token <store_file>] <dir> <command...>: runs the command in this shell with dir handed to dep-install, for its as_install_user calls
+# install_user_session [--expose-clone-token <store_file>] <dir> <command...>: runs the command in this shell with dir handed to dep-install, for its as_install_user calls, which run in dir
 # Returns: the command's status; 2, with nothing run, when the boundary cannot be
 #   established (account, self-check, handover); 1 when dir cannot be given back to root.
 # Notes: not a subshell, so the command can record failures in the shared error stack.
@@ -216,7 +239,7 @@ install_user_session() {
 	[[ "$rc" -ne 0 ]] || chown -R "$uid:$gid" -- "$session" || rc=2
 
 	if [[ "$rc" -eq 0 ]]; then
-		_INSTALL_USER_SESSION_DIR="$session"
+		_INSTALL_USER_SESSION_DIR="$session" _INSTALL_USER_SESSION_WORKDIR="$dir"
 		if ! install_user_self_check "$expose_token"; then
 			log_error "The dependency install would not be isolated from setup secrets; it is not run"
 			rc=2
@@ -228,7 +251,7 @@ install_user_session() {
 		fi
 	fi
 
-	_INSTALL_USER_SESSION_DIR=""
+	_INSTALL_USER_SESSION_DIR="" _INSTALL_USER_SESSION_WORKDIR=""
 	_INSTALL_USER_SESSION_ENV=()
 	rm -rf -- "$session"
 	if ! install_user_handover "$dir" 0 0; then

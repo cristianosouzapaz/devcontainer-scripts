@@ -1,0 +1,8 @@
+{
+  "id": "vscode",
+  "serverRoots": ["/vscode/vscode-server/bin", "~/.vscode-server/bin"],
+  "socketVariable": "VSCODE_IPC_HOOK_CLI",
+  "socketGlob": "/tmp/vscode-ipc-*.sock",
+  "cli": "bin/remote-cli/code",
+  "openUrlArgument": "--openExternal"
+}

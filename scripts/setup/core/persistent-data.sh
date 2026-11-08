@@ -1,10 +1,10 @@
 # shellcheck shell=bash
 
-# MODULE_NAME="persistent-data"
-# MODULE_DESCRIPTION="Initializes persistent-data storage and managed tool paths"
-# MODULE_ENTRY="persistent_data_setup"
-# MODULE_AFTER=""
-# MODULE_SECRETS=""
+# CORE_NAME="persistent-data"
+# CORE_DESCRIPTION="Initializes persistent-data storage and managed tool paths"
+# CORE_ENTRY="persistent_data_setup"
+# CORE_AFTER=""
+# CORE_SECRETS=""
 
 # ----- OVERVIEW ---------------------------------------------------------------
 #
@@ -42,18 +42,20 @@ persistent_data_initialize() {
 
 # ----- CORE SETUP -------------------------------------------------------------
 
-# persistent_data_setup: module entry; initializes storage, then ensures each category's managed link in document order
+# persistent_data_setup: core entry; initializes storage, then ensures each category's managed link in document order
 persistent_data_setup() {
 	local ids category_id
 	local -a category_ids=()
 
 	persistent_data_initialize
 	ids=$(inventory_ids all)
-	[[ -n "$ids" ]] || return 0
-	mapfile -t category_ids <<<"$ids"
-	for category_id in "${category_ids[@]}"; do
-		persistent_data_link_ensure "$category_id"
-	done
+	if [[ -n "$ids" ]]; then
+		mapfile -t category_ids <<<"$ids"
+		for category_id in "${category_ids[@]}"; do
+			persistent_data_link_ensure "$category_id"
+		done
+	fi
+	log_item_success "Agent and tool data linked to the persistent volumes"
 }
 
 export -f persistent_data_create_category_directories \

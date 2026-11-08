@@ -22,7 +22,7 @@ export const menuChoices = [
     { name: "Skills", value: "skills" },
     { name: "Config templates", value: "configs" },
     { name: "Agent templates", value: "agents" },
-    { name: "CLAUDE.md / AGENTS.md blocks", value: "agent-md" },
+    { name: "AGENTS.md blocks and pointers", value: "agent-md" },
     { name: "Sync global agent assets", value: "sync" },
     { name: "Quit", value: "quit" },
 ];

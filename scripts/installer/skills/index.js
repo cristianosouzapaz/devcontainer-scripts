@@ -1,19 +1,22 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { loadJsonCatalog, loadValidatedCatalog } from "../lib/catalog.js";
-import { agents, toolTargets } from "../lib/constants.js";
+import { loadAgentPacks, selectAgentPacks } from "../lib/agent-packs.js";
+import { loadJsonCatalog } from "../lib/catalog.js";
 import { readGlobalSkillSet } from "../lib/global-skill-set.js";
 import { pickAssets } from "../lib/pick-assets.js";
 import { restoreChecked, selectTargetTools, selectUntilConfirmed } from "../lib/prompts.js";
 import { handleError, setupConsola } from "../lib/utils.js";
 import { buildSkillChoices, readProjectSkillSet } from "./picker.js";
-import { ensureClaudeSkillSymlink } from "./local/index.js";
+import { ensureSkillSymlink, relativeCanonicalSkill } from "./local/index.js";
 
 /**
  * @fileoverview Interactive installer for third-party Agent Skills. See
  * `docs/wiki/installer/skills.md`. The external skills CLI owns source and integrity tracking.
+ * A remote skill has no local file to carry metadata, so `skills.json` stays its catalog: an
+ * entry with a `category` is offered in the picker, and `"global": true` adds it to the
+ * machine-wide set.
  *
  * Installed at /opt/devcontainer/installer/skills/ inside the container.
  */
@@ -21,51 +24,35 @@ import { ensureClaudeSkillSymlink } from "./local/index.js";
 const consola = setupConsola();
 
 const skillsFileUrl = new URL("./skills.json", import.meta.url);
-const globalManifestUrl = new URL("./skills.global.json", import.meta.url);
 
 /**
- * Assert that a catalog entry owns the fields used by the interactive installer.
+ * Assert that a catalog entry owns the fields its role needs: `name`, `skill` and `url`
+ * always; `category`, `description` and `tags` for a picker entry (one with a `category`);
+ * optional `requires` and a boolean `global`.
  * @param {unknown} entry - Candidate catalog entry.
- * @returns {asserts entry is { name: string, skill: string, url: string, category: string, description: string, tags: string[], requires?: string[] }} Nothing.
- * @throws {TypeError} If the entry is malformed.
+ * @returns {asserts entry is { name: string, skill: string, url: string, category?: string, description?: string, tags?: string[], requires?: string[], global?: boolean }} Nothing.
+ * @throws {TypeError} If the entry is malformed, or names no picker fields and is not global.
  */
 const assertSkillCatalogEntry = (entry) => {
-    const hasString = (key) => Object.hasOwn(entry, key) && typeof entry[key] === "string";
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) throw new TypeError("Invalid skills catalog entry.");
+    const hasString = (key) => Object.hasOwn(entry, key) && typeof entry[key] === "string" && entry[key].length > 0;
     const hasStringArray = (key) => Object.hasOwn(entry, key) && Array.isArray(entry[key]) && entry[key].every((value) => typeof value === "string");
-    if (entry === null || typeof entry !== "object"
-        || !hasString("name") || !hasString("skill") || !hasString("url")
-        || !hasString("category") || entry.category.length === 0
-        || !hasString("description") || entry.description.length === 0
-        || !hasStringArray("tags")
-        || (Object.hasOwn(entry, "requires") && (!Array.isArray(entry.requires) || entry.requires.some((value) => typeof value !== "string")))) {
+    const inPicker = Object.hasOwn(entry, "category");
+    const global = Object.hasOwn(entry, "global") ? entry.global : false;
+    if (!hasString("name") || !hasString("skill") || !hasString("url")
+        || typeof global !== "boolean" || (!inPicker && !global)
+        || (inPicker && (!hasString("category") || !hasString("description") || !hasStringArray("tags")))
+        || (Object.hasOwn(entry, "requires") && !hasStringArray("requires"))) {
         throw new TypeError("Invalid skills catalog entry.");
     }
 };
 
 /**
- * Assert that a manifest entry owns the fields required by the global installer.
- * @param {unknown} entry - Candidate global skills manifest entry.
- * @returns {asserts entry is { name: string, url: string, skill?: string }} Nothing.
- * @throws {TypeError} If the entry is malformed.
+ * Whether a validated catalog entry is offered in the interactive picker.
+ * @param {object} entry - Validated catalog entry.
+ * @returns {boolean} True when the entry has a category.
  */
-const assertGlobalManifestEntry = (entry) => {
-    if (entry === null || typeof entry !== "object"
-        || !Object.hasOwn(entry, "name") || typeof entry.name !== "string" || entry.name.length === 0
-        || !Object.hasOwn(entry, "url") || typeof entry.url !== "string" || entry.url.length === 0
-        || (Object.hasOwn(entry, "skill") && (typeof entry.skill !== "string" || entry.skill.length === 0))) {
-        throw new TypeError("Invalid skills.global.json entry.");
-    }
-};
-
-/**
- * Assert that a CLI runner is callable.
- * @param {unknown} run - Candidate CLI runner.
- * @returns {asserts run is (args: string[]) => void} Nothing.
- * @throws {TypeError} If the value is not a function.
- */
-const assertRunner = (run) => {
-    if (typeof run !== "function") throw new TypeError("Skills CLI runner must be a function.");
-};
+const isPickerEntry = (entry) => Object.hasOwn(entry, "category");
 
 /**
  * Return whether a caught value is an expected command execution failure.
@@ -76,16 +63,17 @@ const isCliFailure = (error) => error instanceof Error;
 
 /**
  * Load and validate the skills catalog from skills.json.
- * @returns {object[]} Validated skill entries.
- * @throws If the catalog file or any entry is invalid.
+ * @returns {object[]} Validated skill entries, picker and global-only alike.
+ * @throws {Error} If the catalog file cannot be read or an entry is invalid.
+ * @effects Reads skills.json next to this module.
  */
-const loadSkillsCatalog = () => loadValidatedCatalog(skillsFileUrl, "skills", {
-    strings: ["name", "skill", "url"],
-    nonEmptyStrings: ["category", "description"],
-    stringArrays: ["tags"],
-    optionalStringArrays: ["requires"],
-}).map((entry) => {
-    assertSkillCatalogEntry(entry);
+const loadSkillsCatalog = () => loadJsonCatalog(skillsFileUrl).map((entry, index) => {
+    try {
+        assertSkillCatalogEntry(entry);
+    } catch (error) {
+        if (error instanceof TypeError) throw new Error(`Invalid skills catalog entry at index ${index}.`, { cause: error });
+        throw error;
+    }
     return entry;
 });
 
@@ -95,10 +83,11 @@ const loadSkillsCatalog = () => loadValidatedCatalog(skillsFileUrl, "skills", {
  * as a side effect by the caller, so they only appear in the confirmation summary.
  * @param {object[]} skills - Validated skill catalog entries.
  * @param {Map<string, unknown>} globalSet - Skills already installed machine-wide.
+ * @param {Set<string>} [projectSet] - Skills already present in the project.
  * @returns {Promise<object[]|null|undefined>} Picked entries, null on cancel, undefined on
  *   an empty selection.
  */
-const selectSkills = (skills, globalSet = readGlobalSkillSet(), projectSet = readProjectSkillSet()) => {
+const selectSkills = (skills, globalSet, projectSet = readProjectSkillSet()) => {
     const choices = buildSkillChoices(skills, globalSet, projectSet);
     const alreadyGlobal = choices.filter((choice) => choice.disabled).map((choice) => choice.name);
 
@@ -123,14 +112,29 @@ const selectSkills = (skills, globalSet = readGlobalSkillSet(), projectSet = rea
 };
 
 /**
+ * The external skills CLI agent whose install target is the canonical `.agents/skills`
+ * directory alone: the first pack that reads that directory natively (`skills.mode` none) and
+ * names its `skillsCliAgent`.
+ * @param {{ skillsCliAgent: string|null, skills: { mode: string } }[]} packs - Coding-agent packs.
+ * @returns {string} The skills CLI `--agent` value.
+ * @throws {Error} If no pack qualifies.
+ */
+const canonicalCliAgent = (packs) => {
+    const pack = packs.find((candidate) => candidate.skills.mode === "none" && candidate.skillsCliAgent !== null);
+    if (!pack) throw new Error("No coding-agent pack reads .agents/skills natively and names a skillsCliAgent.");
+    return pack.skillsCliAgent;
+};
+
+/**
  * Install a skill into the canonical Agent Skills location.
  * @param {string} url - The URL of the skill repository.
  * @param {string} skill - The skill identifier.
+ * @param {string} cliAgent - Skills CLI agent that installs into `.agents/skills` only.
  * @returns {void} Nothing.
  * @throws {Error} If the external CLI cannot install the requested skill.
  * @effects Starts `npx skills add` for the supplied repository and skill.
  */
-const installCanonicalSkill = (url, skill) => execFileSync("npx", ["skills", "add", url, "--skill", skill, "--agent", agents.codex, "--yes"], {
+const installCanonicalSkill = (url, skill, cliAgent) => execFileSync("npx", ["skills", "add", url, "--skill", skill, "--agent", cliAgent, "--yes"], {
     stdio: "pipe",
 });
 
@@ -145,22 +149,15 @@ const installCanonicalSkill = (url, skill) => execFileSync("npx", ["skills", "ad
 const runSkillsCli = (args) => execFileSync("npx", args, { stdio: "pipe" });
 
 /**
- * Load and validate this installer's machine-wide skills manifest (`skills.global.json`):
- * the flat list of third-party skills added to the shared store by the `--global` path.
- * @returns {{ name: string, url: string, skill?: string }[]}
- * @throws Will throw if the manifest is missing, empty, or has a malformed entry.
+ * The machine-wide third-party skills: the skills.json entries marked `"global": true`,
+ * added to the shared store by the `--global` path.
+ * @returns {{ name: string, url: string, skill: string }[]} Global entries, in catalog order.
+ * @throws {Error} If the catalog is invalid or marks no entry global.
+ * @effects Reads skills.json next to this module.
  */
 export const loadGlobalSkillsManifest = () => {
-    const entries = loadJsonCatalog(globalManifestUrl);
-    if (entries.length === 0) throw new Error("skills.global.json manifest is empty.");
-    for (const [index, entry] of entries.entries()) {
-        try {
-            assertGlobalManifestEntry(entry);
-        } catch (error) {
-            if (error instanceof TypeError) throw new Error(`Invalid skills.global.json entry at index ${index}.`, { cause: error });
-            throw error;
-        }
-    }
+    const entries = loadSkillsCatalog().filter((entry) => entry.global === true);
+    if (entries.length === 0) throw new Error("skills.json marks no skill global.");
     return entries;
 };
 
@@ -168,52 +165,71 @@ export const loadGlobalSkillsManifest = () => {
  * Add one external skill to the machine-wide store. `skills add` is re-run on every sync
  * because `skills update -g` can report "No global skills tracked" and leave the skill
  * stale; a re-add is idempotent.
- * @param {{ url: string, skill?: string }} entry - Validated manifest entry to install.
+ * @param {{ url: string, skill: string }} entry - Validated catalog entry to install.
  * @param {(args: string[]) => void} run - CLI effect function.
  * @returns {void} Nothing.
- * @throws {TypeError} If the entry or runner is malformed.
  * @throws {Error} If the CLI cannot add the skill to the shared store.
  */
 const addGlobalSkill = (entry, run) => {
-    assertGlobalManifestEntry(entry);
-    assertRunner(run);
-    const { url } = entry;
-    const skill = Object.hasOwn(entry, "skill") ? entry.skill : undefined;
-    const args = ["skills", "add", url, "-g", "--yes"];
-    if (skill) args.push("--skill", skill);
-    run(args);
+    run(["skills", "add", entry.url, "-g", "--yes", "--skill", entry.skill]);
 };
 
 /**
- * Point the Claude adapter of one machine-wide third-party skill at an absolute canonical
- * path. The external CLI writes a `../../.agents/…` target, which resolves only while
- * `~/.claude` and `~/.agents` are physical siblings; in the devcontainer both are symlinks
- * into separate volume categories, so it dangles and Claude Code silently finds no global
- * skill. A skill the CLI did not materialize is left alone rather than linked to nothing.
- * @param {{ name: string, skill?: string }} entry - Validated manifest entry just added.
- * @returns {void} Nothing.
- * @throws {TypeError} If the entry is malformed.
- * @throws {Error} If the adapter path holds an unmanaged entry that must be migrated by hand.
- * @effects Reads `~/.agents/skills` and may replace the `~/.claude/skills/<name>` symlink below the current user home directory.
+ * Tell whether an adapter path holds the relative link the external CLI writes, the only
+ * link safe to repair for a pack this container does not select.
+ * @param {string} home - Home directory.
+ * @param {string} skillsPath - Home-relative skills directory of the agent.
+ * @param {string} skillName - Skill directory name.
+ * @returns {boolean} Whether the adapter is a symlink to the CLI's relative target.
+ * @throws {Error} If the path cannot be inspected for a reason other than its absence or not being a link.
+ * @effects Reads the adapter's link target.
  */
-const normalizeGlobalClaudeAdapter = (entry) => {
-    assertGlobalManifestEntry(entry);
-    const skillName = Object.hasOwn(entry, "skill") ? entry.skill : entry.name;
+const holdsCliLink = (home, skillsPath, skillName) => {
+    try {
+        return readlinkSync(join(home, skillsPath, skillName)) === relativeCanonicalSkill(home, skillsPath, skillName);
+    } catch (error) {
+        if (["ENOENT", "ENOTDIR", "EINVAL"].includes(error?.code)) return false;
+        throw error;
+    }
+};
+
+/**
+ * Point the symlink adapters of one machine-wide third-party skill at an absolute canonical
+ * path, one per pack that exposes skills by symlink. The external CLI writes a
+ * `../../.agents/…` target, which resolves only while the agent's home directory and
+ * `~/.agents` are physical siblings; in the devcontainer both are symlinks into separate
+ * volume categories, so it dangles and the agent silently finds no global skill. A skill the
+ * CLI did not materialize is left alone rather than linked to nothing. A pack outside the
+ * selection gets no new adapter, but the relative link the CLI wrote is still repaired: its home
+ * may be shared with containers that do select it, where it would dangle. Any other entry of
+ * an unselected pack is left alone, so a foreign link cannot stop the sync.
+ * @param {{ skill: string }} entry - Validated catalog entry just added.
+ * @param {{ id: string, skills: { mode: string, path?: string } }[]} packs - Every coding-agent pack.
+ * @param {Set<string>} selected - Ids of the packs this container's `CODING_AGENTS` selects.
+ * @returns {void} Nothing.
+ * @throws {Error} If an adapter path holds an unmanaged entry that must be migrated by hand, or cannot be inspected.
+ * @effects Reads `~/.agents/skills` and each adapter path, and may replace each `~/<skills.path>/<name>` symlink below the current user home directory.
+ */
+const normalizeGlobalAdapters = (entry, packs, selected) => {
+    const skillName = entry.skill;
     const home = homedir();
     if (!existsSync(join(home, ".agents", "skills", skillName))) return;
-    ensureClaudeSkillSymlink(home, skillName);
+    for (const pack of packs) {
+        if (pack.skills.mode !== "symlink") continue;
+        if (selected.has(pack.id) || holdsCliLink(home, pack.skills.path, skillName)) ensureSkillSymlink(home, pack.skills.path, skillName);
+    }
 };
 
 /**
- * Non-interactive `--global` path: add every manifest `external` skill to the shared store,
- * then refresh them, normalizing each skill's Claude adapter to an absolute canonical target.
+ * Non-interactive `--global` path: add every skills.json entry marked `global` to the shared store,
+ * then refresh them, normalizing each skill's symlink adapters to an absolute canonical target.
  * A single skill's failure is logged and skipped; a failed `skills update -g` is tolerated
  * because the per-skill re-add above is the real freshness guarantee.
  * @param {{ run?: (args: string[]) => void }} [options] - CLI runner override for tests.
  * @returns {void} Nothing.
  * @throws {TypeError} If options or its runner are malformed.
  * @throws {Error} If the manifest is invalid or a runner throws a non-Error value.
- * @effects Starts the supplied CLI runner for each manifest entry and the final update command, and may replace the Claude adapter symlinks below the current user home directory.
+ * @effects Reads the coding-agent packs and `CODING_AGENTS`, starts the supplied CLI runner for each manifest entry and the final update command, and may create the selected agents' adapter symlinks and repair any existing one below the current user home directory.
  */
 export const installGlobalSkills = (options = {}) => {
     if (options === null || typeof options !== "object" || Array.isArray(options)
@@ -221,17 +237,24 @@ export const installGlobalSkills = (options = {}) => {
         throw new TypeError("Global skills options must be an object with an optional runner function.");
     }
     const run = Object.hasOwn(options, "run") ? options.run : runSkillsCli;
-    assertRunner(run);
     const external = loadGlobalSkillsManifest();
+    const packs = loadAgentPacks();
+    const selected = new Set(selectAgentPacks(packs, process.env.CODING_AGENTS).map((pack) => pack.id));
     for (const entry of external) {
         consola.start(`Adding ${entry.name} to the shared skills store`);
         try {
             addGlobalSkill(entry, run);
-            normalizeGlobalClaudeAdapter(entry);
-            consola.success(`${entry.name} added`);
         } catch (error) {
             if (!isCliFailure(error)) throw error;
             consola.error(`Failed to add ${entry.name}: ${error.message}`);
+            continue;
+        }
+        try {
+            normalizeGlobalAdapters(entry, packs, selected);
+            consola.success(`${entry.name} added`);
+        } catch (error) {
+            if (!isCliFailure(error)) throw error;
+            consola.error(`${entry.name} added, but its agent adapters could not be linked: ${error.message}`);
         }
     }
     try {
@@ -245,29 +268,33 @@ export const installGlobalSkills = (options = {}) => {
 
 /**
  * Prompt the user to select skills and target tools, then install each selected skill into
- * the canonical Agent Skills location, adding Claude symlinks when Claude Code is selected.
+ * the canonical Agent Skills location, adding a symlink for every selected pack that exposes
+ * skills by symlink.
  * @returns {Promise<void>}
- * @throws {Error} If a prompt, skill installation, or Claude adapter update fails unexpectedly.
- * @effects Prompts the user, starts the skills CLI, and may create Claude adapter symlinks beneath the current project.
+ * @throws {Error} If a prompt, skill installation, or adapter update fails unexpectedly.
+ * @effects Prompts the user, reads the coding-agent packs, starts the skills CLI, and may create agent adapter symlinks beneath the current project.
  */
 const askUser = async () => {
     try {
-        const selectedSkills = await selectSkills(loadSkillsCatalog());
+        const packs = loadAgentPacks();
+        const selectedSkills = await selectSkills(loadSkillsCatalog().filter(isPickerEntry), readGlobalSkillSet(packs));
 
         if (!selectedSkills || selectedSkills.length === 0) {
             consola.info("No skills selected.");
             return;
         }
 
-        const selectedTools = await selectTargetTools();
+        const selectedTools = await selectTargetTools(packs);
+        const cliAgent = canonicalCliAgent(packs);
+        const symlinkPacks = packs.filter((pack) => selectedTools.includes(pack.id) && pack.skills.mode === "symlink");
         for (const { url, skill, requires = [] } of selectedSkills) {
             consola.start(`Installing ${skill}`);
             try {
-                installCanonicalSkill(url, skill);
-                for (const dependency of requires) installCanonicalSkill(url, dependency);
-                if (selectedTools.includes(toolTargets.claude)) {
-                    ensureClaudeSkillSymlink(process.cwd(), skill);
-                    for (const dependency of requires) ensureClaudeSkillSymlink(process.cwd(), dependency);
+                installCanonicalSkill(url, skill, cliAgent);
+                for (const dependency of requires) installCanonicalSkill(url, dependency, cliAgent);
+                for (const pack of symlinkPacks) {
+                    ensureSkillSymlink(process.cwd(), pack.skills.path, skill);
+                    for (const dependency of requires) ensureSkillSymlink(process.cwd(), pack.skills.path, dependency);
                 }
                 consola.success(`${skill} installed`);
             } catch (error) {

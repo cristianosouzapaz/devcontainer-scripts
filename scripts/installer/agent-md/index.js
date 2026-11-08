@@ -1,46 +1,46 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { loadValidatedCatalog } from "../lib/catalog.js";
-import { toolTargets } from "../lib/constants.js";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadAgentPacks } from "../lib/agent-packs.js";
 import { readGlobalSkillSet } from "../lib/global-skill-set.js";
-import { claudeSkillAdapter, readLockFile, reconcileArtifactAdapters, recordArtifact, writeLockFile } from "../lib/lock-file.js";
+import { readLockFile, reconcileArtifactAdapters, recordArtifact, skillSymlinkAdapter, writeLockFile } from "../lib/lock-file.js";
 import { pickAssets } from "../lib/pick-assets.js";
 import { formatVersionHint, restoreChecked, selectTargetTools, selectUntilConfirmed } from "../lib/prompts.js";
+import { scanTemplates } from "../lib/template-metadata.js";
 import { handleError, isPromptCancellation, setupConsola } from "../lib/utils.js";
-import { ensureClaudeSkillSymlink, installLocalSkills } from "../skills/local/index.js";
+import { ensureSkillSymlink, installLocalSkills } from "../skills/local/index.js";
 
 /**
  * @fileoverview Interactive installer for canonical AGENTS.md instruction blocks. See
- * `docs/wiki/installer/agent-md.md`. Blocks use markers for in-place upserts; `targets` is
- * metadata only, and the CLAUDE.md pointer is unversioned.
+ * `docs/wiki/installer/agent-md.md`. Each `templates/*.md` is one block, discovered by
+ * scanning and described by its own frontmatter, which never reaches AGENTS.md. Blocks use
+ * markers for in-place upserts; a pack's project instructions pointer to AGENTS.md is
+ * unversioned.
  *
  * Installed at /opt/devcontainer/installer/agent-md/ inside the container.
  */
 
 const consola = setupConsola();
 
-const agentMdFileUrl = new URL("./agent-md.json", import.meta.url);
-const templatesUrl = new URL("./templates/", import.meta.url);
-const pointerLine = "@AGENTS.md";
+const templatesDir = fileURLToPath(new URL("./templates/", import.meta.url));
 
 /**
- * Load and validate the agent-md catalog. An entry's optional `skills` array holds skill
- * catalog keys (from skills/local/skills.json) that the block links to.
- * @returns {object[]} Validated agent-md block entries.
- * @throws If the catalog file or any entry is invalid.
+ * Discover the agent-md blocks by scanning `templates/`. A block's key is its file name
+ * without `.md`; its `skills` are the local skill keys its `kit-skills` metadata names.
+ * @returns {{ key: string, name: string, description: string, version: string, tags: string[], skills: string[], body: string }[]}
+ *   One entry per block, in file-name order, with the block text after the frontmatter.
+ * @throws {Error} If a template cannot be read or its metadata is invalid.
+ * @effects Reads the templates directory and every block template in it.
  */
-const loadAgentMdCatalog = () => loadValidatedCatalog(agentMdFileUrl, "agent-md", {
-    strings: ["key", "name", "version", "templateFile"],
-    nonEmptyStrings: ["description"],
-    stringArrays: ["tags", "targets"],
-    optionalStringArrays: ["skills"],
-    safeRelativePaths: ["templateFile"],
-});
+export const loadAgentMdBlocks = () => scanTemplates(templatesDir, ".md")
+    .map(({ file, name, description, version, tags, skills, body }) => ({
+        key: file.replace(/\.md$/, ""), name, description, version, tags, skills, body,
+    }));
 
 /**
  * Build the opening and closing HTML markers that wrap a block's content.
- * @param {string} key - Catalog entry key.
- * @param {string} version - Catalog entry version.
+ * @param {string} key - Block key (template file name without `.md`).
+ * @param {string} version - Block version (`kit-version`).
  * @returns {{ open: string, close: string }}
  */
 const buildMarkers = (key, version) => ({
@@ -51,7 +51,7 @@ const buildMarkers = (key, version) => ({
 /**
  * Build a regex that matches an existing marked block for the given key, regardless
  * of the version recorded in its opening marker.
- * @param {string} key - Catalog entry key.
+ * @param {string} key - Block key (template file name without `.md`).
  * @returns {RegExp}
  */
 const buildBlockRegex = (key) =>
@@ -61,8 +61,8 @@ const buildBlockRegex = (key) =>
  * Upsert a single block into file content: replace the existing marked block in-place
  * if present, otherwise append it at the end.
  * @param {string} content - Current file content (may be empty).
- * @param {string} key - Catalog entry key.
- * @param {string} version - Catalog entry version.
+ * @param {string} key - Block key (template file name without `.md`).
+ * @param {string} version - Block version (`kit-version`).
  * @param {string} body - Rendered block body (markdown, without markers).
  * @returns {string} Updated file content.
  */
@@ -78,37 +78,40 @@ const upsertBlock = (content, key, version, body) => {
 };
 
 /**
- * Ensure CLAUDE.md exists and starts with the "@AGENTS.md" pointer line.
- * Creates the file with just the pointer line if missing; prepends the line if the file
- * exists without it. Logs every action taken via consola.info.
- * @param {string} claudeMdPath - Absolute path to CLAUDE.md.
- * @returns {string} The resulting CLAUDE.md content.
- * @throws {Error} If CLAUDE.md cannot be read or written.
- * @effects Reads and may create or overwrite claudeMdPath.
+ * Ensure a pack's project instructions file (`projectInstructions.path`, mode `import`) exists
+ * and holds an `@<path to AGENTS.md>` import line. Creates the file with just that line if
+ * missing; prepends the line if the file exists without it. Logs every action taken via
+ * consola.info.
+ * @param {string} destRoot - Project root holding AGENTS.md.
+ * @param {string} pointerPath - Root-relative path of the pack's instructions file.
+ * @returns {void} Nothing.
+ * @throws {Error} If the file cannot be read or written.
+ * @effects Reads and may create or overwrite the file below destRoot, creating its directory.
  */
-const ensureClaudePointer = (claudeMdPath) => {
-    if (!existsSync(claudeMdPath)) {
-        consola.info("CLAUDE.md not found — creating it as a pointer to AGENTS.md");
-        writeFileSync(claudeMdPath, `${pointerLine}\n`, "utf8");
-        return `${pointerLine}\n`;
+const ensureImportPointer = (destRoot, pointerPath) => {
+    const filePath = join(destRoot, pointerPath);
+    const pointerLine = `@${relative(dirname(filePath), join(destRoot, "AGENTS.md"))}`;
+    if (!existsSync(filePath)) {
+        consola.info(`${pointerPath} not found — creating it as a pointer to AGENTS.md`);
+        mkdirSync(dirname(filePath), { recursive: true });
+        writeFileSync(filePath, `${pointerLine}\n`, "utf8");
+        return;
     }
 
-    const content = readFileSync(claudeMdPath, "utf8");
-    if (content.split("\n").some((line) => line.trim() === pointerLine)) return content;
+    const content = readFileSync(filePath, "utf8");
+    if (content.split("\n").some((line) => line.trim() === pointerLine)) return;
 
-    consola.info("CLAUDE.md found without an AGENTS.md pointer — prepending it");
-    const updated = `${pointerLine}\n\n${content}`;
-    writeFileSync(claudeMdPath, updated, "utf8");
-    return updated;
+    consola.info(`${pointerPath} found without an AGENTS.md pointer — prepending it`);
+    writeFileSync(filePath, `${pointerLine}\n\n${content}`, "utf8");
 };
 
 /**
  * Split the skills referenced by the selected blocks into those to install into the project
  * and those already present machine-wide (installed once by the "Sync Global Agent Assets"
- * task). Order follows first appearance across the blocks in catalog order; duplicates are
+ * task). Order follows first appearance across the blocks in file-name order; duplicates are
  * removed. The block text itself is written to AGENTS.md either way — only the per-project
  * skill copy is skipped for a globally installed skill.
- * @param {object[]} blocks - Selected catalog entries, in catalog order.
+ * @param {object[]} blocks - Selected block entries, in file-name order.
  * @param {Map<string, unknown>} globalSkills - Result of {@link readGlobalSkillSet}.
  * @returns {{ toInstall: string[], alreadyGlobal: string[] }}
  */
@@ -121,24 +124,21 @@ export const partitionReferencedSkills = (blocks, globalSkills) => {
 };
 
 /**
- * Upsert the selected blocks into the given destination file, in catalog order.
+ * Upsert the selected blocks into the given destination file, in file-name order.
  * Creates the file if it does not exist.
- * @param {object[]} blocks - Selected catalog entries, in catalog order.
+ * @param {object[]} blocks - Selected block entries, in file-name order.
  * @param {string} destPath - Absolute path to the destination file.
  * @param {string} destFilename - Destination file name for logging.
  * @returns {Record<string, string>} Map of block key to installed version.
- * @throws {Error} If a selected template cannot be read or destPath cannot be written.
- * @effects Reads selected templates and overwrites destPath.
+ * @throws {Error} If destPath cannot be read or written.
+ * @effects Reads and overwrites destPath.
  */
 const installBlocks = (blocks, destPath, destFilename) => {
     const initialContent = existsSync(destPath) ? readFileSync(destPath, "utf8") : "";
-    const { content, written } = blocks.reduce((result, { key, version, templateFile }) => {
-        const body = readFileSync(new URL(templateFile, templatesUrl), "utf8");
-        return {
-            content: upsertBlock(result.content, key, version, body),
-            written: { ...result.written, [key]: version },
-        };
-    }, { content: initialContent, written: {} });
+    const { content, written } = blocks.reduce((result, { key, version, body }) => ({
+        content: upsertBlock(result.content, key, version, body),
+        written: { ...result.written, [key]: version },
+    }), { content: initialContent, written: {} });
 
     writeFileSync(destPath, content, "utf8");
     consola.success(`${destFilename} updated`);
@@ -147,24 +147,24 @@ const installBlocks = (blocks, destPath, destFilename) => {
 
 /**
  * Prompt the user to select agent-md blocks, then install them into canonical AGENTS.md.
- * A Claude Code selection additionally creates the CLAUDE.md pointer and skills adapter.
+ * Each selected pack additionally gets its project instructions pointer (when its
+ * `projectInstructions` mode is `import`) and its skill symlinks (when its `skills` mode is
+ * `symlink`).
  * A block's referenced skill is installed into the project only when it is not already
  * present machine-wide (see {@link readGlobalSkillSet}); the block text is written either way.
  * Updates template-lock.json's mdBlocks section on completion.
  * @returns {Promise<void>} Nothing.
- * @throws {Error} If a prompt, template, project artifact, or lock operation fails unexpectedly.
- * @effects Prompts the user and may write AGENTS.md, CLAUDE.md, skills, Claude adapters, and the lock below the current project.
+ * @throws {Error} If a prompt, template, pack, project artifact, or lock operation fails unexpectedly.
+ * @effects Prompts the user, reads the coding-agent packs, and may write AGENTS.md, pack pointer files, skills, agent adapters, and the lock below the current project.
  */
 const askUser = async () => {
     try {
-        const catalog = loadAgentMdCatalog();
+        const catalog = loadAgentMdBlocks();
         const destRoot = process.cwd();
         const lock = readLockFile(destRoot);
         const state = { lock: { ...lock, mdBlocks: { ...lock.mdBlocks } } };
-
-        // Skills already materialized machine-wide by the "Sync Global Agent Assets" task are
-        // not re-installed into the project; the block text in AGENTS.md is still written.
-        const globalSkills = readGlobalSkillSet();
+        const packs = loadAgentPacks();
+        const globalSkills = readGlobalSkillSet(packs);
 
         const choices = catalog.map((entry) => ({
             name: entry.name,
@@ -192,13 +192,15 @@ const askUser = async () => {
         }
         if (selectedBlocks === null) return;
 
-        const selectedTools = await selectTargetTools();
-        const claudeMdPath = join(destRoot, "CLAUDE.md");
+        const selectedTools = await selectTargetTools(packs);
+        const selectedPacks = packs.filter((pack) => selectedTools.includes(pack.id));
         const agentsMdPath = join(destRoot, "AGENTS.md");
         const written = installBlocks(selectedBlocks, agentsMdPath, "AGENTS.md");
         state.lock = { ...state.lock, mdBlocks: { ...state.lock.mdBlocks, "AGENTS.md": { ...state.lock.mdBlocks["AGENTS.md"], ...written } } };
 
-        if (selectedTools.includes(toolTargets.claude)) ensureClaudePointer(claudeMdPath);
+        for (const pack of selectedPacks) {
+            if (pack.projectInstructions.mode === "import") ensureImportPointer(destRoot, pack.projectInstructions.path);
+        }
 
         const { toInstall: skillKeys, alreadyGlobal } = partitionReferencedSkills(selectedBlocks, globalSkills);
 
@@ -213,14 +215,14 @@ const askUser = async () => {
             }
         }
 
-        if (selectedTools.includes(toolTargets.claude)) {
+        for (const pack of selectedPacks.filter((candidate) => candidate.skills.mode === "symlink")) {
             for (const key of skillKeys) {
                 const path = join(".agents", "skills", key, "SKILL.md");
                 if (!Object.hasOwn(state.lock.artifacts, path)) continue;
-                ensureClaudeSkillSymlink(destRoot, key);
+                ensureSkillSymlink(destRoot, pack.skills.path, key);
                 state.lock = recordArtifact(state.lock, path, {
                     kind: "skill",
-                    adapters: { claude: [claudeSkillAdapter(key)] },
+                    adapters: { [pack.id]: [skillSymlinkAdapter(pack.skills.path, key)] },
                 });
                 state.lock = reconcileArtifactAdapters(state.lock, destRoot, path).lock;
             }

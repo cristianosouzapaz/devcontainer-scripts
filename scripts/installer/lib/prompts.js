@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { checkbox, select, Separator } from "@inquirer/prompts";
-import { toolTargets } from "./constants.js";
+import { copilotTarget } from "./constants.js";
 import { formatSelectionSummary } from "./selection-summary.js";
 import { promptTheme } from "./theme.js";
 
@@ -100,20 +100,17 @@ export const formatVersionHint = (installedVersion, version) => {
 };
 
 /**
- * Prompt for one or more coding agents. Callers route on the returned set rather than
- * branching on every combination, so adding an agent needs no new branches here.
- * @returns {Promise<string[]>} Selected values from `toolTargets`.
+ * Prompt for one or more coding agents: GitHub Copilot, then every coding-agent pack. Callers
+ * route on the returned ids and each pack's exposures rather than on agent names, so adding a
+ * pack needs no code here.
+ * @param {{ id: string, label: string }[]} packs - Loaded coding-agent packs.
+ * @returns {Promise<string[]>} Selected target ids: `copilotTarget.id` or pack ids.
  * @throws {Error} If the interactive prompt cannot complete.
  * @effects Presents an interactive checkbox prompt on the current terminal.
  */
-export const selectTargetTools = () => checkbox({
+export const selectTargetTools = (packs) => checkbox({
     message: "Select target tool(s):",
-    choices: [
-        { name: "GitHub Copilot", value: toolTargets.copilot },
-        { name: "Claude Code", value: toolTargets.claude },
-        { name: "Codex", value: toolTargets.codex },
-        { name: "Pi", value: toolTargets.pi },
-    ],
+    choices: [copilotTarget, ...packs].map(({ id, label }) => ({ name: label, value: id })),
     validate: (selected) => selected.length > 0 || "Select at least one coding agent.",
     theme: promptTheme,
 }, clearOnDone);

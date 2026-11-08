@@ -1,6 +1,9 @@
 ---
 name: index-components
 description: Use when documenting React component folders anywhere in a workspace. Indexes components in one or more folders by reading local component files and summarizing each component's UI role.
+metadata:
+  kit-version: "1.0.0"
+  kit-tags: frontend docs
 ---
 Create or replace `index.md` in each folder that directly contains React component files (`.tsx`/`.jsx`).
 

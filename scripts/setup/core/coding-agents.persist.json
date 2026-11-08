@@ -1,0 +1,8 @@
+{
+  "agents": {
+    "scope": "shared",
+    "relativePath": "agents",
+    "homeLink": ".agents",
+    "label": "Agents"
+  }
+}

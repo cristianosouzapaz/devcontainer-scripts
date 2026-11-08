@@ -1,0 +1,22 @@
+{
+  "label": "Claude Code",
+  "default": true,
+  "command": "claude",
+  "npmPackage": "@anthropic-ai/claude-code",
+  "herdrIntegration": true,
+  "loginHint": "claude auth login",
+  "credential": { "env": "CLAUDE_CONFIG_DIR", "dir": ".claude", "file": ".credentials.json" },
+  "skillsCliAgent": "claude-code",
+  "skills": { "path": ".claude/skills", "mode": "symlink" },
+  "rules": { "path": ".claude/rules", "mode": "symlink" },
+  "instructions": { "path": ".claude/CLAUDE.md", "mode": "import" },
+  "projectInstructions": { "path": "CLAUDE.md", "mode": "import" },
+  "assets": [
+    {
+      "id": "statusline",
+      "type": "managed-file",
+      "source": "statusline-command.sh",
+      "target": "statusline-command.sh"
+    }
+  ]
+}

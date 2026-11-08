@@ -2,6 +2,9 @@
 name: "TypeScript Rules"
 description: "Use when writing or reviewing TypeScript or TSX code."
 applyTo: "**/*.{ts,tsx}"
+metadata:
+  kit-version: "2.2.0"
+  kit-tags: language
 ---
 
 # TypeScript Rules

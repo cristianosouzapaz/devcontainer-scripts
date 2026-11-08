@@ -1,18 +1,8 @@
 /**
- * @fileoverview Identifiers shared across every installer sub-command.
+ * @fileoverview Identifiers shared across every installer sub-command. The coding agents
+ * themselves come from their packs (`agent-packs.js`); GitHub Copilot is not a pack, so its
+ * target lives here.
  */
 
-/** Agent identifiers understood by the external `skills` CLI. */
-export const agents = {
-    copilot: "github-copilot",
-    claude: "claude-code",
-    codex: "codex",
-};
-
-/** Logical coding-agent targets installers route generated output to. */
-export const toolTargets = {
-    copilot: "copilot",
-    claude: "claude",
-    codex: "codex",
-    pi: "pi",
-};
+/** The GitHub Copilot target: its id keys Copilot adapters in the lock, its label names it in the picker. */
+export const copilotTarget = { id: "copilot", label: "GitHub Copilot" };

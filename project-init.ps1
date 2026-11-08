@@ -5,8 +5,8 @@
 
 .DESCRIPTION
     Copies .devcontainer files to the destination, substitutes the project name,
-    injects selected devcontainer features and mounts, sets SSH signing flag,
-    collects repository URLs, and configures single- or multi-repo volume layout.
+    injects the selected devcontainer features, the secrets and data mounts, each entry's
+    declared environment, the selected coding agents and the git identity, collects repository URLs, and configures single- or multi-repo volume layout.
 
 .PARAMETER DestinationPath
     Absolute path to the destination folder.
@@ -64,6 +64,7 @@ $DevContainerJson        = "devcontainer.json"
 $DevContainerJsonCompose = "devcontainer.compose.json"
 $DockerComposeYml        = "docker-compose.yml"
 $EntryManifestPath       = Join-Path -Path $PSScriptRoot -ChildPath "devcontainer.entries.json"
+$CodingAgentPacksPath    = Join-Path -Path $PSScriptRoot -ChildPath "scripts/setup/core/coding-agents"
 
 . "$PSScriptRoot/init/utils.ps1"
 . "$PSScriptRoot/init/ui.ps1"
@@ -81,6 +82,8 @@ if ($MyInvocation.InvocationName -ne '.') {
 $useCompose      = Get-ProjectTypeSelection
 $entryManifest   = Get-EntryManifest
 $selectedEntries = Select-Features -Manifest $entryManifest
+$codingAgents    = @(Select-Features -Manifest (Get-CodingAgentEntries) -Title "Coding Agents" -RequireOne |
+                        ForEach-Object { $_.key })
 
 # Runs before any output below: the selector clears the screen, so it must
 # happen while the terminal still has nothing worth preserving on it.
@@ -111,6 +114,7 @@ if (-not $ProjectName) {
     }
 }
 
+$gitIdentity  = Get-GitIdentityInput
 $repoList     = @(Get-RepoList)
 $extraFolders = @(Get-ExtraFolderList -ProjectName $ProjectName -RepoList $repoList)
 
@@ -127,8 +131,9 @@ Write-Section "DevContainer Configuration"
 
 try {
     Copy-ConfigurationFiles -Source $SourceDevContainerPath -Destination $DestinationPath `
-        -ProjectName $ProjectName -UseCompose $useCompose -SelectedEntries $selectedEntries `
-        -RepoList $repoList -ExtraFolders $extraFolders -SecretsPath $SecretsPath
+        -ProjectName $ProjectName -UseCompose $useCompose -SelectedEntries $selectedEntries -Entries $entryManifest `
+        -CodingAgents $codingAgents -RepoList $repoList -ExtraFolders $extraFolders -SecretsPath $SecretsPath `
+        -GitUser $gitIdentity.User -GitEmail $gitIdentity.Email
 
     # Not part of copying the devcontainer templates: this writes the editor's
     # own settings, outside .devcontainer, and must not inherit that step's
@@ -138,6 +143,7 @@ try {
     Write-Section "Setup Completed"
     Write-Message "Destination : $DestinationPath" -Level "Info"
     Write-Message "Project     : $ProjectName" -Level "Info"
+    Write-Message "Agents      : $($codingAgents -join ' ')" -Level "Info"
     Write-Message "DevContainer: $(Join-Path -Path $DestinationPath -ChildPath $DevContainerFolderName)" -Level "Info"
     Write-Message "Secrets     : $(Format-SecretsPathForDisplay -SecretsPath $SecretsPath)" -Level "Info"
 

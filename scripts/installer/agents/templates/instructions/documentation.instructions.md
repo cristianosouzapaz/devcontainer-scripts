@@ -2,6 +2,9 @@
 name: "Documentation Rules"
 description: "Use when writing or reviewing comments and JSDoc in TypeScript or TSX code."
 applyTo: "**/*.{ts,tsx}"
+metadata:
+  kit-version: "2.0.0"
+  kit-tags: docs
 ---
 
 # Documentation Rules

@@ -7,8 +7,8 @@ readonly _SPINNER_SH_LOADED=1
 # Animates whenever STRUCTURED_LOGS is off, with no TTY check for the reason in
 # use_color's Notes; STRUCTURED_LOGS is the escape hatch for clean, non-redraw
 # output. Needs logging.sh and error-handler.sh sourced first, and flock
-# (util-linux, on every targeted base image) to keep the draw loop and
-# spinner_stream's lines from interleaving.
+# (util-linux, on every targeted base image) to keep the draw loop and the lines
+# write_log prints meanwhile from interleaving.
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
 
@@ -18,7 +18,6 @@ _SPINNER_FRAME_DELAY=0.08
 # ----- INTERNAL STATE ---------------------------------------------------------
 
 _SPINNER_PID=""
-_SPINNER_MESSAGE=""
 _SPINNER_CLEANUP_REGISTERED=""
 _SPINNER_LOCK_FILE=""
 _SPINNER_EXIT_FILE=""
@@ -81,14 +80,14 @@ spinner_exit_file_cleanup() {
 	fi
 }
 
-# start_spinner <message>: starts the spinner in the background, or logs the message once when STRUCTURED_LOGS is on
-# Notes: stops a spinner still running first, so no draw loop leaks.
+# start_spinner <message>: starts the spinner in the background with a present-tense message, such as "Installing Codex CLI (@openai/codex)"; with STRUCTURED_LOGS on, logs the message at DEBUG instead
+# Notes: stops a spinner still running first, so no draw loop leaks. The running message
+#   is never written to the log file: only the outcome stop_spinner logs is.
 start_spinner() {
 	local message="$1"
 	spinner_cleanup
-	_SPINNER_MESSAGE="$message"
 	if ! spinner_active; then
-		log_info "$message"
+		log_debug "$message"
 		return 0
 	fi
 	_SPINNER_LOCK_FILE=$(mktemp)
@@ -103,36 +102,29 @@ start_spinner() {
 	fi
 }
 
-# stop_spinner [exit_code]: stops the spinner and logs its message as a success for 0 (the default), as an error otherwise
+# stop_spinner <exit_code> <outcome>: stops the spinner and logs the past-tense outcome, such as "Codex CLI installed", as a success item for 0, as an error otherwise
 stop_spinner() {
-	local exit_code="${1:-0}"
+	local exit_code="$1" outcome="$2"
 	spinner_cleanup
 	if [[ "$exit_code" -eq 0 ]]; then
-		log_item_success "$_SPINNER_MESSAGE"
+		log_item_success "$outcome"
 	else
-		log_error "$_SPINNER_MESSAGE"
+		log_error "$outcome"
 	fi
 }
 
 # spinner_stream <log_function> <command...>: runs the command and logs each line of its combined output through <log_function> as it arrives
 # Returns: the command's exit status.
-# Notes: the spinner keeps running: each visible line takes spinner_draw's flock,
-#   clears the frame and prints, so the animation steps aside only for that instant;
-#   the lock is skipped when the line would not be shown. The loop reads a process
+# Notes: the spinner keeps running: write_log takes spinner_draw's lock for each line it
+#   shows, so the animation steps aside only for that instant. The loop reads a process
 #   substitution, not a pipe: a pipe runs the loop body in a subshell, where a
 #   start_spinner would orphan its draw loop when the subshell exits. The command's stdin is
 #   /dev/null so a prompting CLI fails on EOF instead of blocking on the lifecycle
-#   hook's open, silent stdin.
+#   hook's open, silent stdin. Never call retry_command inside it: its retry lines would
+#   be re-logged through <log_function>; run spinner_stream inside retry_command instead.
 spinner_stream() {
-	local log_function="$1" line was_active will_log exit_file exit_code lock_file
+	local log_function="$1" line exit_file exit_code
 	shift
-
-	was_active="$_SPINNER_PID"
-	lock_file="$_SPINNER_LOCK_FILE"
-	will_log=false
-	if [[ "${DEBUG_MODE}" == "true" ]] || should_log "DEBUG"; then
-		will_log=true
-	fi
 
 	exit_file=$(mktemp)
 	_SPINNER_EXIT_FILE="$exit_file"
@@ -142,15 +134,7 @@ spinner_stream() {
 	fi
 
 	while IFS= read -r line; do
-		if [[ -n "$was_active" && "$will_log" == "true" ]]; then
-			{
-				flock 9
-				printf '\r\033[K' >&2
-				"$log_function" "$line"
-			} 9>"$lock_file"
-		else
-			"$log_function" "$line"
-		fi
+		"$log_function" "$line"
 	done < <(_cmd_exit_code=0; "$@" </dev/null 2>&1 || _cmd_exit_code=$?; echo "$_cmd_exit_code" >"$exit_file")
 
 	exit_code=$(<"$exit_file")

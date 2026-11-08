@@ -2,6 +2,9 @@
 name: "Bash Rules"
 description: "Use when writing or reviewing Bash scripts."
 applyTo: "**/*.{sh,bash,bats}"
+metadata:
+  kit-version: "2.3.0"
+  kit-tags: language
 ---
 
 # Bash Rules

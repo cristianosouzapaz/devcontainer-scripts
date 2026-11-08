@@ -3,7 +3,7 @@
 readonly _HERDR_SH_LOADED=1
 
 # Herdr configuration helpers: config path, initial config, pane XDG reset,
-# integration install, the Codex context hook seeding, and the locked apply sequence. They
+# integration install, the agent packs' Herdr hooks, and the locked apply sequence. They
 # live in lib/ because both the herdr setup module and bin/devcontainer-data run them.
 
 # ----- INTERNAL CONSTANTS -----------------------------------------------------
@@ -14,6 +14,7 @@ _HERDR_CONFIG_PATH="${HERDR_CONFIG_PATH:-}"
 _HERDR_XDG_RESET_ASSET="${HERDR_XDG_RESET_ASSET:-}"
 _HERDR_BASHRC_PATH="${HERDR_BASHRC_PATH:-}"
 _HERDR_XDG_RESET_MARKER='devcontainer-herdr-xdg-reset'
+_HERDR_ASSETS_DIR="${DEVCONTAINER_CORE_DIR}/herdr/assets"
 
 # ----- HELPER FUNCTIONS -------------------------------------------------------
 
@@ -27,18 +28,13 @@ herdr_config_path() {
 		return 0
 	fi
 	category_path=$(persistent_data_category_path herdr) || return 1
-	target=$(inventory_assets categories herdr | jq -r 'select(.id == "config") | .target' | head -n1)
-	printf '%s/%s\n' "$category_path" "${target:-config.toml}"
+	printf '%s/config.toml\n' "$category_path"
 }
 
 # herdr_template_path: resolves the config template shipped by Rebuild Container
 # Stdout: the template file path, one line
 herdr_template_path() {
-	local template="${_HERDR_TEMPLATE}"
-	if [[ -z "${template}" ]]; then
-		template=$(inventory_assets categories herdr | jq -r 'select(.id == "config") | .source' | head -n1)
-		template="${DEVCONTAINER_ASSETS_DIR}/${template}"
-	fi
+	local template="${_HERDR_TEMPLATE:-${_HERDR_ASSETS_DIR}/config.toml}"
 	if [[ ! -f "${template}" ]]; then
 		log_error "Herdr configuration template is missing: ${template}"
 		return 1
@@ -92,7 +88,7 @@ herdr_initialize_config() {
 	fi
 	template=$(herdr_template_path) || return 1
 	herdr_write_managed_config "$config_path" "$template" || return 1
-	log_detail "Initialized Herdr configuration"
+	log_debug "Initialized Herdr configuration at ${config_path}"
 }
 
 # herdr_bashrc_with_reset <bashrc_path> <asset>: prints the existing bashrc followed by the reset asset
@@ -109,15 +105,7 @@ herdr_bashrc_with_reset() {
 #   inside a pane. The snippet's marker is checked first, so a re-run never
 #   duplicates it.
 herdr_reset_xdg_config_home() {
-	local asset="${_HERDR_XDG_RESET_ASSET}" bashrc_path="${_HERDR_BASHRC_PATH}"
-	if [[ -z "${asset}" ]]; then
-		asset=$(inventory_assets categories herdr | jq -r 'select(.id == "xdg-reset") | .source' | head -n1)
-		asset="${DEVCONTAINER_ASSETS_DIR}/${asset}"
-	fi
-	if [[ -z "${bashrc_path}" ]]; then
-		bashrc_path=$(inventory_assets categories herdr | jq -r 'select(.id == "xdg-reset") | .target' | head -n1)
-	fi
-	bashrc_path="${bashrc_path:-/etc/bash.bashrc}"
+	local asset="${_HERDR_XDG_RESET_ASSET:-${_HERDR_ASSETS_DIR}/xdg-reset.sh}" bashrc_path="${_HERDR_BASHRC_PATH:-/etc/bash.bashrc}"
 	if [[ ! -f "${asset}" ]]; then
 		log_error "Herdr XDG_CONFIG_HOME reset asset is missing: ${asset}"
 		return 1
@@ -127,7 +115,7 @@ herdr_reset_xdg_config_home() {
 		return 0
 	fi
 	atomic_write "$bashrc_path" herdr_bashrc_with_reset "$bashrc_path" "$asset" || return 1
-	log_detail "Installed Herdr XDG_CONFIG_HOME pane reset"
+	log_debug "Installed Herdr XDG_CONFIG_HOME pane reset in ${bashrc_path}"
 }
 
 # herdr_require_command: succeeds when the Herdr CLI resolves, logging an error otherwise
@@ -139,25 +127,26 @@ herdr_require_command() {
 	return 1
 }
 
-# herdr_install_integrations: installs each catalog agent's Herdr integration that is not already current
+# herdr_integration_ids: prints the IDs of the selected agents whose pack declares a Herdr integration, failing when the inventory is unavailable
+# Stdout: one agent ID per line
+herdr_integration_ids() {
+	inventory_read_selected -r '.agents[] | select(.herdrIntegration == true) | .id'
+}
+
+# herdr_install_integrations: installs each selected agent's Herdr integration that is not already current
 # Notes: `herdr integration status` is read once and reports a current target as
 #   "<target>: current (vN) (<path>)"; a missing, outdated or unreadable status
 #   counts as not current, so the integration is (re)installed.
 herdr_install_integrations() {
-	local target herdr_integration ids status_output
+	local target ids status_output
 	local -a agent_ids=()
 
 	herdr_require_command || return 1
-	ids=$(inventory_ids agents)
+	ids=$(herdr_integration_ids) || return 1
 	[[ -n "$ids" ]] || return 0
 	status_output=$("$_HERDR_COMMAND" integration status 2>/dev/null) || status_output=''
 	mapfile -t agent_ids <<< "$ids"
 	for target in "${agent_ids[@]}"; do
-		herdr_integration=$(inventory_fields agents "$target" herdrIntegration)
-		if [[ "$herdr_integration" != 'true' ]]; then
-			log_debug "No Herdr integration declared for ${target}, skipping"
-			continue
-		fi
 		if grep -q "^${target}: current " <<<"$status_output"; then
 			log_debug "Herdr ${target} integration already current, skipping"
 			continue
@@ -166,49 +155,35 @@ herdr_install_integrations() {
 	done
 }
 
-# herdr_seed_codex_context_hook: adds the Codex Stop hook that reports the context row to Herdr's hooks.json, once
-# Notes: the entry names a script shipped in the assets dir, so editing the script never
-#   changes the hook definition (Codex trusts a hook by a hash of it). Every other key and
-#   entry, such as Herdr's SessionStart, is kept; a file that already carries the entry is
-#   not rewritten, and one that is not valid JSON is left as it is.
-herdr_seed_codex_context_hook() {
-	local hooks_file command current updated
+# herdr_apply_agent_hooks: runs the agent_<id>_herdr hook of each selected pack that declares a Herdr integration and ships one
+herdr_apply_agent_hooks() {
+	local agent_id hook ids
+	local -a agent_ids=()
 
-	if [[ "$(inventory_fields agents codex herdrIntegration)" != 'true' ]]; then
-		log_debug "No Herdr integration declared for codex, skipping the context hook"
-		return 0
-	fi
-	hooks_file="$(persistent_data_category_path codex)/hooks.json" || return 1
-	command="bash '${DEVCONTAINER_ASSETS_DIR}/codex/herdr-context-hook.sh'"
-	if [[ -f "$hooks_file" ]] && ! jq -e . "$hooks_file" >/dev/null 2>&1; then
-		log_error "Codex hooks file is not valid JSON: $hooks_file"
-		return 1
-	fi
-	if [[ -f "$hooks_file" ]] && jq -e --arg c "$command" '[.hooks.Stop[]?.hooks[]? | select(.command == $c)] | length > 0' "$hooks_file" >/dev/null; then
-		log_debug "Codex context hook already present, skipping"
-		return 0
-	fi
-	[[ -f "$hooks_file" ]] && current=$(<"$hooks_file") || current='{}'
-	updated=$(jq --arg c "$command" '.hooks.Stop += [{hooks: [{type: "command", command: $c, timeout: 10}]}]' <<<"$current") || return 1
-	mkdir -p "$(dirname "$hooks_file")" || return 1
-	atomic_write "$hooks_file" printf '%s\n' "$updated" || return 1
-	log_detail "Added the Codex context hook to $hooks_file"
+	ids=$(herdr_integration_ids) || return 1
+	[[ -n "$ids" ]] || return 0
+	mapfile -t agent_ids <<< "$ids"
+	for agent_id in "${agent_ids[@]}"; do
+		hook="agent_${agent_id}_herdr"
+		declare -F "$hook" >/dev/null || continue
+		"$hook" || return 1
+	done
 }
 
-# herdr_apply: installs the pane reset, the project config, the Herdr integrations and the Codex context hook under their locks
+# herdr_apply: installs the pane reset, the project config, the Herdr integrations and the agents' Herdr hooks under their locks
 # Notes: fails fast when the Herdr CLI is missing, before any lock is taken. The pane
 #   reset targets the system-wide bashrc, outside the persistent-data model, so it
 #   takes no lock; the config is project data, so it takes the project lock; the
-#   integrations and the Codex hook touch shared agent config, so they take the shared then
+#   integrations and the agent hooks touch shared agent config, so they take the shared then
 #   project lock order.
 herdr_apply() {
 	herdr_require_command || return 1
 	herdr_reset_xdg_config_home || return 1
 	with_project_data_lock herdr_initialize_config || return 1
 	with_shared_data_lock with_project_data_lock herdr_install_integrations || return 1
-	with_shared_data_lock with_project_data_lock herdr_seed_codex_context_hook
+	with_shared_data_lock with_project_data_lock herdr_apply_agent_hooks
 }
 
 export -f herdr_config_path herdr_template_path herdr_metadata_path herdr_validate_metadata_path herdr_write_managed_config \
 	herdr_require_command herdr_initialize_config \
-	herdr_install_integrations herdr_seed_codex_context_hook herdr_reset_xdg_config_home herdr_apply
+	herdr_integration_ids herdr_install_integrations herdr_apply_agent_hooks herdr_reset_xdg_config_home herdr_apply
