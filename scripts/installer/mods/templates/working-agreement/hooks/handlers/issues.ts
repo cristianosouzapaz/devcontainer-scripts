@@ -1,9 +1,8 @@
 import type { Args, EventResult, Frozen } from 'claude-code'
 
-import { bestEffort } from '../core/best-effort'
 import { addCreatedIssue, findDelegation, readOwnScope } from '../core/delegation'
 import type { EnginePort } from '../core/engine-port'
-import { trackIssue } from '../core/issue-audit'
+import { describeUntracked, trackIssue } from '../core/issue-audit'
 import { closeIssue, commentIssue, createIssue, editIssue, readIssuesConfig } from '../core/issue-write'
 import type { EditGuard, IssueWrite } from '../core/issue-write'
 import { readSession } from '../core/record-store'
@@ -14,8 +13,9 @@ import type { IssueInput } from '../domain/issue-fields'
 import { isCoordinatorSession } from '../domain/coordinator'
 import type { issueTools } from '../domain/coordinator'
 import { answerTool, markForAgent } from '../domain/messages'
+import { describeOutcome } from '../domain/outcome'
 import { readMarkedComments } from '../lib/github'
-import { fail, formatError, settle } from '../lib/result'
+import { fail, formatError, settle, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
 
 /** One issue tool's name. */
@@ -35,17 +35,19 @@ export async function handleIssueCall(port: EnginePort, tool: IssueTool, event: 
     : tool === 'issue_close' ? { result: await closeIssue(port, input.value), written: null }
       : tool === 'issue_comment' ? { result: await judgeReviewer(port, input.value.body) ?? await commentIssue(port, input.value), written: null }
         : await writeFields(port, tool, input.value)
-  // A write that landed is audited at every turn end, even when its read-back failed.
-  const text = result.isOk ? result.value : result.error
-  if (written) await bestEffort(port, 'issue audit tracking', () => trackIssue(port, written), undefined)
-  // Both a confirmed create and one whose read-back failed name the created issue.
+  // why: a write that landed must be audited at every turn end, even when its read-back failed, so a tracking failure is the tool's error.
+  const tracked = written ? await settle(trackIssue(port, written)) : succeed(undefined)
+  const outcome = describeOutcome(tool, result)
+  const text = written && !tracked.isOk ? await describeUntracked(port, outcome, written, tracked.error) : outcome
+  const isError = !result.isOk || !tracked.isOk
+  // why: a create whose read-back failed still created the issue, so it is named like a confirmed one.
   const created = tool === 'issue_create' ? written : 0
   if (created) {
     const added = await settle(addCreatedIssue(port, created))
     if (!added.isOk) return { result: markForAgent(`${text}, but #${created} could not join the delegation scope: ${added.error} — tell the user.`), isError: true }
-    if (added.value) return { result: markForAgent(`${text} — #${created} is delegated.`), ...(result.isOk ? {} : { isError: true }) }
+    if (added.value) return { result: markForAgent(`${text} — #${created} is delegated.`), ...(isError ? { isError: true } : {}) }
   }
-  return answerTool(tool, result)
+  return tracked.isOk ? answerTool(tool, result) : { result: markForAgent(text), isError: true }
 }
 
 /**

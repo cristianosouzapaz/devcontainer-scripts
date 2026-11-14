@@ -29,7 +29,7 @@ const cursorHide = "\x1B[?25l";
 const allTag = "All";
 const shortcuts = { all: "a", invert: "i" };
 
-// Hand-copied from `@inquirer/checkbox`'s default theme so the rewrite renders identically.
+// why: copied from `@inquirer/checkbox`'s default theme so this rewrite of the prompt renders identically.
 const checkboxTheme = {
     icon: {
         checked: chalk.green("◉"),
@@ -257,7 +257,7 @@ const tagCheckbox = createPrompt((config, done) => {
 
     const lines = [
         [prefix, message].filter(Boolean).join(" "),
-        // Blank line above and below the chip bar, matching the footer gap below the list.
+        // why: the blank lines around the chip bar match the footer gap below the list.
         ...(hasTagBar ? [" ", ` ${renderTagBar(tagList, tagPos, view.filter(isSelectable).length)}`, " "] : []),
         page,
         " ",

@@ -17,16 +17,17 @@ import { readWorkingTreeKey } from './repository'
  * @param unit - The merged unit entry.
  * @param git - The checkout's repository and default branch.
  * @param isCloseOut - Whether the slice always spans the live merge-base, with the unit's base branch or else the default branch, through tip.
+ * @param pinned - A tip its caller already read for the branch, which the slice ends at instead of reading the branch again; a pinned read
+ * caches no observed end, since its caller has not yet decided whether anything may change.
  * @returns The slice, or null for the default branch or an unreadable branch.
  */
-export async function readUnitSlice(port: EnginePort, identity: Identity, unit: Unit, git: GitState, isCloseOut?: boolean): Promise<UnitSlice | null> {
+export async function readUnitSlice(port: EnginePort, identity: Identity, unit: Unit, git: GitState, isCloseOut?: boolean, pinned?: string): Promise<UnitSlice | null> {
   if (isUnitOnBase(identity, git)) return null
   const wholeBranch = isCloseOut ?? (await readDeclaration(port, identity))?.flow === 'close-out'
   const read = (args: string[]) => readGitOutput(port.processes, args)
-  const tip = await read(['rev-parse', '--verify', '--quiet', `refs/heads/${identity.branch}`])
+  const tip = pinned ?? await read(['rev-parse', '--verify', '--quiet', `refs/heads/${identity.branch}`])
   if (!tip) return null
-  // The recorded base orders the branch's units and detects rewritten history; it moves only on re-declaration,
-  // or follows the user's re-sign when it names a delegated commit.
+  // why: the recorded base orders the branch's units and detects rewritten history, so it moves only on re-declaration, or follows the user's re-sign when it names a delegated commit.
   const isBaseGone = !wholeBranch && !!unit.base && !await isAncestor(port.processes, unit.base, tip)
   const recorded = isBaseGone && unit.base ? await remapDelegatedBase(port, unit.base, tip) ?? unit.base : unit.base
   const anchor = (wholeBranch ? undefined : recorded) ?? await read(['merge-base', await readDefaultRef(port.processes, unit.baseBranch ?? git.base), tip])
@@ -36,18 +37,17 @@ export async function readUnitSlice(port: EnginePort, identity: Identity, unit: 
     .map(async entry => (await readDeclaration(port, entry.identity))?.flow === 'close-out' ? null
       : anchor && entry.base && await isAncestor(port.processes, anchor, entry.base) ? entry.base : null))
   const candidates = later.filter((value): value is string => !!value)
-  // The nearest descendant base ends this slice; timestamps never order units.
+  // why: the nearest descendant base ends this slice, since timestamps never order units.
   const end = await candidates.slice(1).reduce(async (pending, candidate) => {
     const closest = await pending
     return await isAncestor(port.processes, candidate, closest) ? candidate : closest
   }, Promise.resolve(candidates[0] ?? tip))
   const isFrozen = end !== tip || candidates.length > 0
-  // A base taken from a branch follows that branch's fork point; once neither copy of the branch is readable, the recorded base stands.
+  // why: a base taken from a branch follows that branch's fork point; once neither copy of the branch is readable, the recorded base stands.
   const forkPoint = !wholeBranch && unit.baseBranch ? await readForkPoint(port.processes, unit.baseBranch, end) : null
   // why: Below the recorded base lie commits the base branch already delivered from another branch, which are never the unit's.
   const isBelow = !!forkPoint && !!recorded && forkPoint !== recorded && await isAncestor(port.processes, forkPoint, recorded)
-  // why: A base branch fast-forwarded onto the unit puts its end on that branch's first-parent chain, so the fork point
-  // is the end itself: the branch already contains the whole slice, which the recorded base still bounds.
+  // why: A base branch fast-forwarded onto the unit puts its end on that branch's first-parent chain, so the fork point is the end itself: the branch already contains the whole slice, which the recorded base still bounds.
   const isContained = !!recorded && forkPoint === end
   const base = forkPoint && !isBelow && !isContained ? forkPoint : anchor
   const worktrees = await readWorktrees(port.processes)
@@ -60,8 +60,7 @@ export async function readUnitSlice(port: EnginePort, identity: Identity, unit: 
     base, end, tree, baseTree: base ? await read(['rev-parse', `${base}^{tree}`]) : null, commits: count === null ? 0 : Number(count),
     isClean: status === '', isFrozen, isRewritten, isShared: entries.some(entry => !sameIdentity(entry.identity, identity)),
   }
-  // why: A child's branch is often deleted right after its merge, so every reader caches the end it sees while it can,
-  // after the read and never holding up the judgement.
-  void recordObservedEnd(port, identity, unit, git, slice, wholeBranch)
+  // why: A child's branch is often deleted right after its merge, so every reader caches the end it sees while it can, after the read and never holding up the judgement.
+  if (pinned === undefined) void recordObservedEnd(port, identity, unit, git, slice, wholeBranch)
   return slice
 }

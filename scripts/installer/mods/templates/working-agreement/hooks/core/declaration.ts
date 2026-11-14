@@ -10,6 +10,7 @@ import { describeRequirement } from '../domain/requirements'
 import { formatStepLabel, isUnitOnBase, markStep, projectDisplayStates } from '../domain/step-states'
 import { isAncestor, readForkPoint, readGitOutput, readParentBranch, runGit, readDefaultRef } from '../lib/git'
 import type { GitState } from '../lib/git'
+import { notFound } from '../lib/gh-call'
 import { readClosingPullRequests } from '../lib/github'
 import type { ClosingPullRequest, PullRequestCandidate } from '../lib/github'
 import { fail, succeed } from '../lib/result'
@@ -74,13 +75,13 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
   const errors: string[] = []
   for (const [index, issue] of declared.entries()) {
     const answer = answers[index]!
-    if (!answer.issue.isOk) return fail(`Issue #${issue}: ${answer.issue.error} — check the number.`)
+    if (!answer.issue.isOk) return fail(answer.issue.error.startsWith(notFound) ? `Issue #${issue}: not found — check the number.` : `Issue #${issue}: GitHub unreachable — retry (${answer.issue.error}).`)
     if (flow === 'follow-up') {
       const found = await readClosingPullRequests(port.processes, issue)
       if (!found.isOk) return fail('GitHub unreachable — retry')
       closing[issue] = found.value
     } else if (answer.issue.value.state !== 'OPEN') return fail(`Issue #${issue} is ${answer.issue.value.state.toLowerCase()} — declare an open issue.`)
-    // A re-declaration keeps the stored comments and sub-issues a failed read of them would otherwise erase.
+    // why: a re-declaration keeps the stored comments and sub-issues that a failed read of them would otherwise erase.
     const merge = mergeIssue(stored[issue], answer)
     info[issue] = merge.info
     if (merge.error !== null) errors.push(merge.error)
@@ -94,26 +95,26 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
   if (conclusion && !conclusion.isOk) return fail('GitHub unreachable — retry')
   const isConcluded = !!(conclusion?.isOk && conclusion.value)
   const continued = declaration ?? (carried?.isAttach ? carried.declaration : null)
-  // Allocate before pruning so even mixed mirrors from a dead chat cannot name the new lifetime.
+  // why: the generation is allocated before pruning so even mixed mirrors from a dead chat cannot name the new lifetime.
   const generation = continued && !isConcluded ? continued.generation : await nextGeneration(port)
   await pruneRecords(port)
   const inherited = isConcluded ? createEmptyUnit() : previous
   const entries = isOnDefault ? [] : (await readBranchUnits(port, identity.branch))
     .filter(entry => !carried?.isAttach || !sameIdentity(entry.identity, carried.declaration.identity))
   const existing = !isConcluded && (!!carried?.isAttach || entries.some(entry => sameIdentity(entry.identity, identity)))
-  // A base taken from another branch than the PR's is recomputed: re-declaring is how a mismatch is resolved.
+  // why: re-declaring is how a mismatch is resolved, so a base taken from another branch than the PR's is recomputed.
   const isMismatched = !!inherited.baseBranch && !!pullRequest && pullRequest.baseRefName !== inherited.baseBranch
   const kept = isMismatched ? undefined : inherited.baseBranch
   const keepsBase = existing && !isMismatched && (!inherited.base || await isAncestor(port.processes, inherited.base, git.head))
   const isKeptBase = keepsBase && !!inherited.base
-  // The reflog is read once, when the base is computed, and its answer cached: a clone or the reflog's expiry loses it.
+  // why: the reflog is read once, when the base is computed, and its answer cached, because a clone or the reflog's expiry loses it.
   const parent = pullRequest || kept || isKeptBase || isOnDefault ? null : await readParentBranch(port.processes, identity.branch, git.base)
   const baseBranch = pullRequest?.baseRefName ?? kept ?? parent ?? git.base
   const slice = await readUnitSlice(port, identity, isKeptBase ? inherited : { ...inherited, baseBranch }, git, flow === 'close-out')
   const followUp = flow === 'follow-up'
     ? await judgeFollowUp(port, { identity, parent: baseBranch, git, closing, slice, isExisting: existing, isCloseOut: declaration?.flow === 'close-out' }) : null
   if (followUp && !followUp.isOk) return followUp
-  // A Follow-up that enters through its base branch is a child unit: it spans from the fork point and is integrated, never tipped.
+  // why: a Follow-up that enters through its base branch is a child unit: it spans from the fork point and is integrated, never tipped.
   const isFollowUpChild = !!followUp?.value
   if (existing && slice?.isFrozen && flow !== 'close-out') return fail('This unit is frozen — declare on a new branch.')
   if (!existing && entries.length && flow !== 'close-out') {
@@ -132,7 +133,7 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
     return fail(`Cannot read unit base: ${baseBranch} is not fetched — run git fetch origin ${baseBranch}, then declare again.`)
   }
   if (!isOnDefault && !base) return fail('Cannot read unit base — retry.')
-  // Close out spans the live merge-base with its branch; a declaration tip comes from no branch.
+  // why: close out spans the live merge-base with its branch, and a declaration tip comes from no branch.
   const recordedBranch = isOnDefault ? undefined : flow === 'close-out' ? baseBranch
     : keepsBase && inherited.base ? inherited.baseBranch : isTip ? undefined : baseBranch
   const held = (await readSession(port)).unit
@@ -163,14 +164,15 @@ export async function declareFlow(engine: EnginePort, flow: string, issues: numb
     ...localMerged.filter((sha): sha is string => !!sha)]) ?? 0) : 0
   const notice = excluded > 0 ? ` ${excluded} commits already on this branch are not counted for this unit.` : ''
   const which = declared.length ? ` for ${formatIssueReferences(declared, ', ')}` : ''
-  // Naming where the base came from makes a lost parent branch visible at once.
+  // why: naming where the base came from makes a lost parent branch visible at once.
   const source = pullRequest && pullRequest.baseRefName === recordedBranch ? ` (PR #${pullRequest.number})` : parent && parent === recordedBranch ? ' (branch reflog)' : ''
   const origin = isOnDefault ? '' : recordedBranch ? `, base from ${recordedBranch}${source}` : isKeptBase ? ', base kept from the record' : ', base at the declaration tip'
   const shown = projectDisplayStates(position.states)
   const isTreeChanged = await readIsTreeChanged(port, next.unit, position.unit.generation)
   const isDelegated = !!await bestEffort(port, 'delegation read', () => findLiveDelegation(port, next.issues), null)
   const steps = position.states.map((state, index) => `${symbol[markStep(shown[index]!, position, isTreeChanged).mark]} ${formatStepLabel(state.step, position.pullRequest)} (${describeRequirement(state, next, position, isDelegated)})`).join('; ')
-  return succeed({ reply: `Flow declared: ${definition.label}${which}${origin}.${notice} Steps: ${steps}. ${composeInstruction(position, next, isDelegated)}`, start: composeStart(position, next, `Flow declared: ${definition.label}${which}.`, isDelegated) })
+  const composed = composeStart(position, next, `Flow declared: ${definition.label}${which}.`, isDelegated)
+  return succeed({ reply: `Flow declared: ${definition.label}${which}${origin}.${notice} Steps: ${steps}. ${composeInstruction(position, next, isDelegated)}`, start: composed.kind === 'prompt' ? composed.text : null })
 }
 
 /**
@@ -215,7 +217,7 @@ async function readPredecessor(port: EnginePort, flow: string, identity: Identit
   if (isUnitOnBase(identity, git)) return succeed(null)
   const declaration = await readDeclaration(port, { branch: git.base, issues: identity.issues })
   if (declaration?.flow !== flow) return succeed(null)
-  // The default branch has no slice, so the branch computes its own base.
+  // why: the default branch has no slice, so its base is computed here from the unit rather than read from one.
   const { base, baseBranch, ...unit } = await readUnit(port, declaration.identity)
   return succeed({ declaration, unit, isAttach: false })
 }

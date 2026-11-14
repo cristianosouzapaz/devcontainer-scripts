@@ -1,24 +1,27 @@
 import { coversIssues, describeScope, parseScope, widenScope } from '../domain/delegation'
-import type { DelegateRequest, DelegationScope } from '../domain/delegation'
+import { formatIssueReferences } from '../domain/messages'
+import type { DelegateRequest, DelegationLookup, DelegationScope } from '../domain/delegation'
 import type { SessionLiveness } from '../domain/process-host'
 import { removeFile } from '../lib/files'
+import { readGraphql } from '../lib/github'
+import { isRecord } from '../lib/guards'
 import { readJson, readJsonUnlessStrict } from '../lib/json'
 import { hasExitedZero } from '../lib/process'
-import { fail, succeed } from '../lib/result'
+import { fail, settle, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
 import { mergeUnique } from '../domain/records'
 import type { EnginePort } from './engine-port'
 import { logEvent } from './flow-log'
-import { judgeSession, stampHost } from './host'
+import { explainSession, judgeSession, stampHost } from './host'
+import type { LivenessJudgement } from './host'
 import { atomicReplace, listRecordNames, readCommonDir, readSession, readSessionMirrors, recordsPath, updateUnits } from './record-store'
 import { readSessionLiveness } from './session-host'
-import { withRecordLock } from './session-memory'
-import { readSpawnedSession } from './spawn'
+import { sessionMemory, withRecordLock } from './session-memory'
+import { progressPath, readProgressFile, readSpawnedSession, resolveSpawnedSession } from './spawn'
 import { unitAgent } from './unit-host'
 import { isCoordinatorSession } from '../domain/coordinator'
 
-// why: The scopes live beside the session mirrors, under the common directory every worktree shares, so a unit session
-// in any worktree reads them; each file has one writer, its coordinator, so no cross-process write can lose an issue.
+// why: the scopes live beside the session mirrors, under the common directory every worktree shares, so a unit session in any worktree reads them; each file has one writer, its coordinator, so no cross-process write can lose an issue.
 const bucket = 'delegation'
 
 /**
@@ -90,7 +93,65 @@ async function isSpawnedSession(port: EnginePort, issues: number[], strict: bool
  * unless strict, an unreadable record counts as not delegating.
  */
 export async function findDelegation(port: EnginePort, issues: number[], strict = false): Promise<DelegationScope | null> {
-  return findCovering(port, issues, strict, async () => (await listScopes(port, strict)).find(scope => coversIssues(scope, issues)) ?? null)
+  return findCovering(port, issues, strict, () => findCoveringScope(port, issues, strict))
+}
+
+/**
+ * Finds the first scope that covers a unit, whichever session asks and whether or not its coordinator still runs.
+ * @param port - The engine calls.
+ * @param issues - The unit's issues.
+ * @param strict - Whether an unreadable bucket, scope or parent throws.
+ * @returns The covering scope, or null.
+ */
+export async function findCoveringScope(port: EnginePort, issues: number[], strict: boolean): Promise<DelegationScope | null> {
+  for (const scope of await listScopes(port, strict)) if (await coversUnit(port, scope, issues, strict)) return scope
+  return null
+}
+
+/**
+ * Looks up whether this session is its unit's delegated session, as {@link findDelegation} does with strict reads, and says why not.
+ * @param port - The engine calls.
+ * @param issues - The unit's issues.
+ * @returns The covering scope, or the reason none delegates this session; a failed read is unreadable, never not delegated.
+ */
+export async function lookUpDelegation(port: EnginePort, issues: number[]): Promise<DelegationLookup> {
+  const common = await readCommonDir(port).catch(() => null)
+  if (!common) return { kind: 'unreadable', error: 'the git common directory could not be read', path: 'git rev-parse --git-common-dir' }
+  const current = await port.readSessionId()
+  const recorded: { issue: number; path: string; session: string | null }[] = []
+  for (const issue of issues) {
+    const path = progressPath(common, issue)
+    const read = await settle(readProgressFile(port, common, issue, true).then(progress => resolveSpawnedSession(common, issue, progress)))
+    if (!read.isOk) return { kind: 'unreadable', error: read.error, path }
+    recorded.push({ issue, path, session: read.value })
+    if (read.value === current) return lookUpScope(port, common, issues)
+  }
+  const other = recorded.find(entry => entry.session)
+  if (other?.session) return { kind: 'other-session', issue: other.issue, path: other.path, recorded: other.session, current }
+  return { kind: 'no-record', issues, paths: recorded.map(entry => entry.path) }
+}
+
+/**
+ * Finds the scope that covers this session's unit, naming the source a failed read came from: the scope files, or an issue's native
+ * parent on GitHub.
+ * @param port - The engine calls.
+ * @param common - The git common directory.
+ * @param issues - The unit's issues.
+ * @returns The covering scope, no scope, or the failed read with where to check it.
+ */
+async function lookUpScope(port: EnginePort, common: string, issues: number[]): Promise<DelegationLookup> {
+  const directory = recordsPath(common, bucket)
+  const scopes = await settle(listScopes(port, true))
+  if (!scopes.isOk) return { kind: 'unreadable', error: scopes.error, path: directory }
+  for (const scope of scopes.value) {
+    const covers = await settle(coversUnit(port, scope, issues, true))
+    if (!covers.isOk) {
+      const missed = issues.filter(issue => !scope.issues.includes(issue))
+      return { kind: 'unreadable', error: covers.error, path: `the native parent of ${formatIssueReferences(missed, ', ')} on GitHub, with gh issue view ${missed[0] ?? ''}` }
+    }
+    if (covers.value) return { kind: 'scope', scope }
+  }
+  return { kind: 'no-scope', issues }
 }
 
 /**
@@ -101,7 +162,49 @@ export async function findDelegation(port: EnginePort, issues: number[], strict 
  * @returns The covering live scope, or null; an orphaned scope delegates nothing, and a session spawn did not start is never delegated.
  */
 export async function findLiveDelegation(port: EnginePort, issues: number[], strict = false): Promise<DelegationScope | null> {
-  return findCovering(port, issues, strict, () => findLiveScope(port, issues, strict))
+  return findCovering(port, issues, strict, () => findLiveScope(port, issues, strict, true))
+}
+
+/**
+ * Tells whether a scope delegates a unit: each issue the unit resolves is in the scope or is a native sub-issue of one that is, since
+ * a group's unit declares the group's sub-issues beside it. The parents the scope needs are read in one GitHub call, once a process.
+ * @param port - The engine calls.
+ * @param scope - The scope.
+ * @param issues - The unit's issues.
+ * @param strict - Whether an unreadable parent throws; otherwise it counts as not covered.
+ * @returns Whether the unit is delegated; a unit with no issues never is.
+ * @throws When strict and the parents cannot be read.
+ */
+export async function coversUnit(port: EnginePort, scope: DelegationScope, issues: number[], strict: boolean): Promise<boolean> {
+  const missed = issues.filter(issue => !scope.issues.includes(issue))
+  if (!issues.length || !missed.length) return coversIssues(scope, issues)
+  const error = await readParents(port, missed)
+  if (error) {
+    if (strict) throw new Error(`cannot read the native parents of ${missed.map(issue => `#${issue}`).join(', ')}: ${error}`)
+    return false
+  }
+  return missed.every(issue => scope.issues.includes(sessionMemory.parentIssues.get(issue) ?? 0))
+}
+
+/**
+ * Reads into session memory the native parent of each issue not yet there, in one GitHub call: a parent rarely changes, and the guards
+ * and the pane check delegation on every call, so each is read once a process and outlasts a later GitHub outage.
+ * @param port - The engine calls.
+ * @param issues - The issues.
+ * @returns Null once every parent is known, else why one is not.
+ */
+async function readParents(port: EnginePort, issues: number[]): Promise<string | null> {
+  const unread = issues.filter(issue => !sessionMemory.parentIssues.has(issue))
+  if (!unread.length) return null
+  const query = unread.map(issue => `i${issue}:issue(number:${issue}){parent{number}}`).join(' ')
+  const read = await readGraphql(port.processes, `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){${query}}}`)
+  if (!read.isOk) return read.error
+  for (const issue of unread) {
+    const fields = read.value[`i${issue}`]
+    // why: an answer without the issue's field is no answer, so it is read again rather than held as no parent.
+    if (isRecord(fields)) sessionMemory.parentIssues.set(issue, isRecord(fields.parent) ? Number(fields.parent.number) : null)
+  }
+  return unread.every(issue => sessionMemory.parentIssues.has(issue)) ? null : 'unreadable gh output'
 }
 
 /**
@@ -123,27 +226,35 @@ async function findCovering(port: EnginePort, issues: number[], strict: boolean,
  * @param port - The engine calls.
  * @param issues - The issues.
  * @param strict - Whether an unreadable bucket or scope throws.
+ * @param isUnit - Whether the issues are a unit's, which a scope also covers through their native parents.
  * @returns The covering live scope, or null.
  */
-export async function findLiveScope(port: EnginePort, issues: number[], strict: boolean): Promise<DelegationScope | null> {
-  for (const scope of (await listScopes(port, strict)).filter(scope => coversIssues(scope, issues))) {
-    if (await readLiveness(port, scope) === 'live') return scope
+export async function findLiveScope(port: EnginePort, issues: number[], strict: boolean, isUnit = false): Promise<DelegationScope | null> {
+  for (const scope of await listScopes(port, strict)) {
+    if (!(isUnit || coversIssues(scope, issues)) || await readLiveness(port, scope) !== 'live') continue
+    if (!isUnit || await coversUnit(port, scope, issues, strict)) return scope
   }
   return null
 }
 
 /**
- * Finds the first issue a declaration would take from a delegated unit that runs in another session.
+ * Finds the first issue a declaration would take from a delegated unit that runs in another session: the issue's own unit, or the unit
+ * of its native parent, which a group's unit declares beside the group.
  * @param port - The engine calls.
  * @param issues - The issues to declare.
  * @returns The refusal naming the unit's session, or null when no running unit of a live scope holds any of them.
  */
 export async function findHeldIssue(port: EnginePort, issues: number[]): Promise<string | null> {
   const sessionId = await port.readSessionId()
+  const hasScope = (await listScopes(port, false)).length > 0
   for (const issue of issues) {
-    const holder = await readSpawnedSession(port, issue, false)
-    if (!holder || holder === sessionId || !await findLiveScope(port, [issue], false) || await readSessionLiveness(port, holder) !== 'live') continue
-    return `#${issue} is delegated: its unit runs in session ${holder} (herdr agent ${unitAgent(issue)}). Work on it there, or ask the coordinator to retire it first.`
+    const own = await readSpawnedSession(port, issue, false)
+    // why: only a delegated issue is held, so without any scope no parent is read from GitHub.
+    const parent = own || !hasScope || await readParents(port, [issue]) ? undefined : sessionMemory.parentIssues.get(issue) ?? undefined
+    const unit = own ? issue : parent
+    const holder = own ?? (parent ? await readSpawnedSession(port, parent, false) : null)
+    if (!holder || !unit || holder === sessionId || !await findLiveScope(port, [unit], false) || await readSessionLiveness(port, holder) !== 'live') continue
+    return `#${issue} is delegated: its unit runs in session ${holder} (herdr agent ${unitAgent(unit)}). Work on it there, or ask the coordinator to retire it first.`
   }
   return null
 }
@@ -157,6 +268,26 @@ export async function findHeldIssue(port: EnginePort, issues: number[]): Promise
  */
 export async function readLiveness(port: EnginePort, scope: DelegationScope): Promise<SessionLiveness> {
   return judgeSession(port, scope.sessionId, async () => scope.host)
+}
+
+/**
+ * Judges whether a coordinator can escalate an issue's unit: by the escalation sweep's own predicate, a scope whose issues hold the
+ * issue itself, never through a native parent, and whose coordinator runs.
+ * @param port - The engine calls.
+ * @param issue - The issue.
+ * @returns `live` when such a coordinator runs, `gone` when every scope holding the issue ended or none holds it, and `unknown`, with
+ * why, when the scopes cannot be read or a holding scope's coordinator cannot be judged.
+ */
+export async function judgeEscalator(port: EnginePort, issue: number): Promise<LivenessJudgement> {
+  const listed = await listScopes(port, true).then(scopes => ({ scopes }), (error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }))
+  if ('error' in listed) return { liveness: 'unknown', why: `the delegation scopes cannot be read: ${listed.error}` }
+  const whys: string[] = []
+  for (const scope of listed.scopes.filter(each => coversIssues(each, [issue]))) {
+    const judged = await explainSession(port, scope.sessionId, async () => scope.host)
+    if (judged.liveness === 'live') return judged
+    if (judged.liveness === 'unknown') whys.push(`coordinator ${scope.sessionId}: ${judged.why}`)
+  }
+  return whys.length ? { liveness: 'unknown', why: whys.join('; ') } : { liveness: 'gone' }
 }
 
 /**
@@ -200,7 +331,7 @@ async function stopDelegation(port: EnginePort): Promise<Result<string>> {
   const orphaned = others.filter((_, index) => liveness[index] !== 'live')
   const ended = [...own ? [own] : [], ...orphaned]
   if (!ended.length) return succeed(others.length ? 'No delegation to stop here: every other coordinator still runs — stop each in its own session.' : 'No delegation to stop.')
-  // An unreadable mirror loses only its unit's log line, never the stop.
+  // why: an unreadable mirror loses only its unit's log line, never the stop.
   const mirrors = await readSessionMirrors(port).catch(() => [])
   const lines: string[] = []
   for (const scope of ended) {

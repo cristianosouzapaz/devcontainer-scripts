@@ -72,12 +72,12 @@ async function readScope(port: EnginePort): Promise<Scope> {
   const session = await readSession(port)
   const unit = session.unit
   if (!unit || isUnitOnBase(unit, git)) return { unitBranch: unit?.branch ?? null, defaultBranch: git.base, slice: { kind: 'none' } }
-  // A unit branch deleted after its merge has no slice left to carry; only a failed read is unreadable.
+  // why: a unit branch deleted after its merge has no slice left to carry; only a failed read is unreadable.
   const exists = await runGit(port.processes, ['rev-parse', '--verify', '--quiet', `refs/heads/${unit.branch}`])
   if (exists.exitCode === 1) return { unitBranch: unit.branch, defaultBranch: git.base, slice: { kind: 'none' } }
   if (exists.exitCode !== 0) return { unitBranch: unit.branch, defaultBranch: git.base, slice: { kind: 'unreadable' } }
   const slice = await readUnitSlice(port, unit, await readUnit(port, unit), git, session.flow === 'close-out')
-  // A rewritten slice no longer bounds the unit's commits, so it cannot say which ref carries them.
+  // why: a rewritten slice no longer bounds the unit's commits, so it cannot say which ref carries them.
   const commits = slice?.base && !slice.isRewritten ? await readGitOutput(port.processes, ['rev-list', slice.end, '--not', slice.base]) : null
   return { unitBranch: unit.branch, defaultBranch: git.base,
     slice: slice?.base && commits !== null ? { kind: 'read', base: slice.base, commits: new Set(commits.split('\n').filter(Boolean)) } : { kind: 'unreadable' } }
@@ -108,7 +108,7 @@ function listMovedTips(before: RefSnapshot, after: RefSnapshot): MovedTip[] {
  */
 export function drawTerritory(port: EnginePort, before: RefSnapshot, after: RefSnapshot): Territory {
   const roots = [before.root, after.root]
-  // Held means the same other worktree has the branch checked out at both ends; one created, removed or switched mid-call holds nothing.
+  // why: only a branch the same other worktree has checked out at both ends counts as held, since a worktree created, removed or switched mid-call proves nothing.
   const held = new Set(before.worktrees.filter(wt => wt.branch && !roots.includes(wt.root)
     && after.worktrees.some(next => next.root === wt.root && next.branch === wt.branch)).map(wt => wt.branch))
   const owned = new Set([...before.worktrees, ...after.worktrees].filter(wt => wt.branch && roots.includes(wt.root)).map(wt => wt.branch))
@@ -141,10 +141,9 @@ export function drawTerritory(port: EnginePort, before: RefSnapshot, after: RefS
   return {
     judgeCommits: async (candidates, beforeTips) => {
       const tips = listMovedTips(before, after)
-      // why: a tip spawn or merge_child set for another unit, or a commit merge_child checked out to verify it, is the mod's own move,
-      // whichever session's window it falls in.
+      // why: a tip spawn or merge_child set for another unit, or a commit merge_child checked out to verify it, is the mod's own move, whichever session's window it falls in.
       const byMod = await Promise.all(tips.map(tip => isPlaced(port, tip.place, tip.after)))
-      // An unreadable scope costs only the tips that needed it, never the verdicts of the others.
+      // why: an unreadable scope costs only the tips that needed it, never the verdicts of the others.
       const placed = await Promise.all(tips.map((tip, index) => byMod[index] ? false : tip.branch === null ? true : ownsBranch(tip.branch).catch(() => null)))
       if (placed.every(verdict => verdict === true)) return { shas: candidates, isUnplaced: false }
       // why: a placed unit branch takes the merged child's commits into the slice, which must not make the child's own branch carry it.
@@ -165,7 +164,7 @@ export function drawTerritory(port: EnginePort, before: RefSnapshot, after: RefS
       if (names === null) return null
       const name = ref.slice('refs/remotes/'.length)
       const remote = names.split('\n').filter(entry => entry && name.startsWith(`${entry}/`)).sort((a, b) => b.length - a.length)[0]
-      // A tracking ref no configured remote names has no local branch to map to, so it stays judged.
+      // why: a tracking ref no configured remote names has no local branch to map to, so it stays judged.
       return remote === undefined || ownsBranch(name.slice(remote.length + 1)).catch(() => null)
     },
   }

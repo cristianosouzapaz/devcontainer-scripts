@@ -1,39 +1,50 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import { DroppedPromptError } from './core/engine-port'
 import type { EnginePort } from './core/engine-port'
 import { issueTools, readModulesAhead, suggestCoordinateTool, unitTools } from './domain/coordinator'
 import { suggestDelegateTool } from './domain/delegation'
+import { allowRemoteCommandsKey, refuseRemoteSettingChange } from './domain/remote-commands'
 import { closeReasons, triageLabels } from './domain/issue-fields'
-import { answerTool, describeHookError, failedToolAnswer, markForAgent, modToolPrefix } from './domain/messages'
+import { answerSettledTool, answerTool, describeHookError, failedToolAnswer, markForAgent, modToolPrefix, unknownToolAnswer } from './domain/messages'
+import { settle } from './lib/result'
+import { describeUnknown } from './domain/outcome'
 import { sessionMemory } from './core/session-memory'
 import { efforts, setContinueAtUsageLimit, setSpawnLimit } from './core/spawn'
 import { setHandoffThreshold } from './features/handoff'
-import { commitDelegated } from './core/delegated-commits'
+import { commitCheck, commitDelegated } from './core/delegated-commits'
 import { mergeParent } from './core/parent-merge'
 import { sendTyped } from './core/mail-send'
 import { sendKinds } from './domain/mail-reply'
-import { denyCoordinatorCall, handleAgentSpawn, handleMergeChildCall, handlePlanCall, handleSuggestCall, handleSuggestDelegateCall, handleToolCheck } from './handlers/coordinator'
+import { choiceRelayLimit, relayContract } from './domain/user-step'
+import { denyCoordinatorCall, handleAgentSpawn, handleMergeChildCall, handlePlanCall, handleSuggestCall, handleSuggestDelegateCall, handleToolCheck, mergeChildCheck } from './handlers/coordinator'
 import { handleDeclareFlowCall } from './handlers/declare-flow'
 import { handleFlowCommand } from './handlers/flow-command'
 import { handleIssueCall } from './handlers/issues'
 import { handleMailPromptSubmit } from './handlers/mail'
 import { handlePaneClose, handlePaneRender } from './handlers/pane-render'
-import { handlePromptSubmit } from './handlers/prompt'
+import { handleOwnPromptEntry, handlePromptSubmit } from './handlers/prompt'
 import { handleClassicSessionStart, handleFileChanged, handleSessionStart } from './handlers/session'
 import { handleSkillPrompt } from './handlers/skill'
 import { handleToolCall } from './handlers/tool-call'
 import { handleRun } from './handlers/run'
 import { handleVerify } from './handlers/verify'
+import { callKey, withStoppableDispatch } from './core/tool-run'
+import { answerCommandHook, callRef, settleToolRuns, stopDroppedCall } from './core/command-calls'
 import { handleNotification, handleTurnComplete, handleTurnStart } from './handlers/turn'
-import { handleUnitCall } from './handlers/units'
+import { handleUnitCall, unitCheck } from './handlers/units'
 import { handleStop, handleWorktreeCreate, handleWorktreeRemove } from './handlers/worktree'
 import { runWithDeadline } from './lib/process'
-import { checkFailed, guardCatch, measureGuard } from './core/check-retry'
-import { reportGuardTimeout, reportGuardUsage } from './core/guard-log'
+import { describeCheckFailure, guardCatch, measureGuard } from './core/check-retry'
+import { reportGithubRetry, reportGuardTimeout, reportGuardUsage } from './core/guard-log'
 
 const paneId = 'working-agreement'
 const issueNumber = { type: 'integer', minimum: 1 }
+const fullSha = { type: 'string', pattern: '^[0-9a-f]{40}$' }
+// why: the step tools promise the same terms, so one text keeps the three descriptions from drifting apart.
+const termsContract = ` The decision's Choice reaches the unit's agent verbatim with the step, so any amendment to the step belongs in the Choice; a Choice over ${choiceRelayLimit} `
+  + 'characters is refused at relay. The done says whether the Choice is shown to the agent; a done that says neither comes from an older mod, which showed nothing.'
 const issueFields = {
   title: { type: 'string', minLength: 1, description: 'Conventional-Commit style "type(scope): summary" unless issues.title says otherwise; issues with a wayfinder:* label are exempt.' },
   kind: { type: 'string', description: 'Which configured sections the body needs: spec, ticket, bug, decision, or a kind from issues.sections.' },
@@ -50,9 +61,26 @@ const issueFields = {
 }
 const declareTool = `${modToolPrefix}declare_flow`
 const session = { plugin: 'working-agreement', key: 'session' } as const
+// why: a raw reference, not an atom, so a value never written reads as undefined and a reload into the first version that keeps it can tell.
+const processState = { plugin: 'working-agreement', key: 'process' } as const
 const view = atom({ plugin: 'working-agreement', key: 'view' } as const, null)
 const liveRun = atom({ plugin: 'working-agreement', key: 'liveRun' } as const, null)
 const paneView = atom({ plugin: 'working-agreement', key: 'paneView' } as const, 'flow')
+const loadSeq = atom({ plugin: 'working-agreement', key: 'loadSeq' } as const, 0)
+/** What the session-end wait for runs in flight leaves of the exit's bound, so the engine's own end step still runs within it. */
+const sessionEndMarginMs = 200
+
+/**
+ * Builds a long tool dispatch's port, which reads how much of its hook's budget is left once the guard above it, whose clock runs
+ * on during the dispatch, has spent the most a check of its ever used.
+ * @param $ - The hook's engine interface.
+ * @param cause - The engine event the hook answers.
+ * @param budget - The hook's budget, read live.
+ * @returns The engine operations, with the budget reading.
+ */
+function createDispatchPort($: EngineInterface, cause: string, budget: { readonly remainingMs: number }): EnginePort {
+  return { ...createEnginePort($, cause), budgetLeft: () => budget.remainingMs - (sessionMemory.guards.get('tool.call')?.maxUsedMs ?? 0) }
+}
 
 /**
  * Builds the engine port as closures over `$`, which cannot be passed across an import.
@@ -61,13 +89,16 @@ const paneView = atom({ plugin: 'working-agreement', key: 'paneView' } as const,
  * @returns The engine operations used by the core and handlers.
  */
 function createEnginePort($: EngineInterface, cause: string): EnginePort {
-  return {
+  const port: EnginePort = {
     cause,
-    processes: { spawn: request => $.process.spawn(request), run: (argv, options) => runWithDeadline((line, init) => $.process.run(line, init), () => $.clock.now(), argv, options) },
+    processes: { spawn: request => $.process.spawn(request), run: (argv, options) => runWithDeadline((line, init) => $.process.run(line, init), () => $.clock.now(), argv, options),
+      onRetry: notice => { reportGithubRetry(port, notice) } },
     files: { stat: path => $.fs.stat(path, { resolve: true }), exists: path => $.fs.exists(path), read: path => $.fs.read(path), write: (path, text) => $.fs.write(path, text), list: path => $.fs.list(path) },
     clock: { sleep: (delayMs, signal) => $.clock.sleep(delayMs, { signal }) },
     readSessionState: () => $.state.get(session),
     writeSessionState: async (value, version) => (await $.state.set(session, value, { ifVersion: version })).isSet,
+    readProcessState: () => read($, processState),
+    updateProcessState: change => update($, processState, change),
     logDebug: text => { $.ui.log(text, { to: 'debug' }) },
     now: () => $.clock.now(),
     repeat: (delayMs, work) => { $.clock.every(delayMs, work) },
@@ -81,8 +112,25 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
     readPluginRoot: async () => $.plugin.root,
     readSessionId: () => $.session.id(),
     readContext: async () => (await $.session.usage({ breakdown: 'summary' })).context,
-    readView: () => read($, view),
-    writeView: async next => { await update($, view, () => next) },
+    readSessionStart: async () => (await $.session.usage()).startedAt,
+    // why: the engine resolves every model source (settings files, managed policy, environment) into this row; its unset value reads as a label.
+    readModel: async () => {
+      const value = (await $.config.list()).find(row => row.key === 'model')?.value
+      return typeof value === 'string' && value && !value.startsWith('Default') ? value : null
+    },
+    // why: read live so turning the setting off takes effect at once; any doubt counts as off, which never grants a command by accident.
+    readAllowRemoteCommands: async () => {
+      try {
+        return (await $.config.list()).find(row => row.key === allowRemoteCommandsKey)?.value === true
+      } catch {
+        return null
+      }
+    },
+    readView: async () => (await read($, view))?.view ?? null,
+    // why: a load a reload replaced may finish a paint after the newer load painted, so a view of a lower load number never lands over a higher one.
+    writeView: async (next, seq) => (await update($, view, current => current && current.seq > seq ? current : { seq, view: next }))?.seq === seq,
+    patchView: async change => { await update($, view, current => current?.view ? { ...current, view: change(current.view) } : current) },
+    claimLoadSeq: () => update($, loadSeq, seq => seq + 1),
     readLiveRun: () => read($, liveRun),
     writeLiveRun: async next => { await update($, liveRun, () => next) },
     readPaneView: () => read($, paneView),
@@ -93,7 +141,7 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
     // why: a prompt the engine refuses is otherwise lost without a trace, so its reason reaches the caller's failure log.
     submitPrompt: async text => {
       const entered = await $.prompt.submit({ text, asUser: true })
-      if (entered.drop !== undefined) throw new Error(`the engine dropped the prompt: ${entered.drop}`)
+      if (entered.drop !== undefined) throw new DroppedPromptError(entered.drop)
     },
     notify: async text => { await $.ui.notify(text, { title: 'working-agreement' }) },
     toast: text => { $.ui.toast(text) },
@@ -155,14 +203,17 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
       await $.tool.register({
         name: 'merge_child',
         isDeferred: false,
-        description: 'Coordinator only, under delegation: merges finished child units\' branches (child, or children: up to 3 sharing one parent, stacked in order) into the parent branch they were cut from — '
+        description: 'Coordinator only, under delegation: merges finished child units\' branches (child with tip, or children: up to 3 { branch, tip } sharing one parent, stacked in order) into the parent branch they were cut from — '
+          + 'tip is required: the full 40-hex SHA the review\'s GO named, never one taken from the unit\'s done line or a fresh git rev-parse of the branch; a branch no longer at its tip is refused with nothing changed unless its parent already holds it, and only the given commits are merged — '
           + 'each child onto the commit below it by fast-forward when that commit is on the child\'s first-parent chain, else by a merge commit, refused on conflict — '
           + 'moving the parent only after Verify passes on that exact tree through the Verify queue (a gate pass already recorded on that tree, config and commands counts; a unit\'s own pass does not). One Verify gates the whole stack; '
           + 'a red one is bisected by prefix: the parent moves to the longest green prefix, and the culprit is named with the failing command, its output tail and its log, '
           + 'for the coordinator to relay to that child\'s unit. Records the merges as delegated. Refused for a pair the mod does not know; a merge into the default branch is always the user\'s.',
         inputSchema: { type: 'object', properties: {
           child: { type: 'string', minLength: 1 },
-          children: { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1, maxItems: 3, uniqueItems: true },
+          tip: fullSha,
+          children: { type: 'array', items: { type: 'object', properties: { branch: { type: 'string', minLength: 1 }, tip: fullSha },
+            required: ['branch', 'tip'], additionalProperties: false }, minItems: 1, maxItems: 3 },
         }, additionalProperties: false },
       })
       await $.tool.register({
@@ -215,7 +266,7 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
         isDeferred: false,
         description: 'Coordinator only: starts the unit session of an issue in its own herdr worktree on branch <type>/<n>-<title slug> (<n>-<title slug> without a Conventional Commit prefix), ' +
           'from the default branch, or from the branch of its one open blocker once that blocker\'s unit is finished or integrated; a sub-issue of an issue with a unit branch starts from that branch\'s tip, ' +
-          'its parent issue never waited on as a blocker. Idempotent: a live session is reused, ' +
+          'its parent issue never waited on as a blocker, and held while that parent is delegated and has no unit branch yet. Idempotent: a live session is reused, ' +
           'a worktree without one is reopened and its session resumed. Refused beyond the configured cap of concurrent units. ' +
           'instructions: the unit-specific rules, appended verbatim to the start prompt so its first turn starts with them; a unit already prompted does not get them. ' +
           'model and effort: your own judgement of what this unit needs, with a one-line reason; omit both for the user\'s default model and effort, which is also the strong choice. ' +
@@ -250,8 +301,8 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
       await $.tool.register({
         name: 'plan',
         isDeferred: false,
-        description: 'Coordinator only, read-only: for each delegated issue lists its open blockers and their unit states (none, working, finished, integrated), '
-          + 'its own unit state, its unit\'s model, effort and reason, and whether spawn would start it now and from which branch, by spawn\'s own rules; issues that can start now come first.',
+        description: 'Coordinator only, read-only: for each delegated issue lists its native parent and whether that parent has a unit branch, its open blockers and their unit states (none, working, finished, integrated), '
+          + 'its own unit state, its unit\'s model, effort, reason and the base it was cut from, and whether spawn would start it now and from which branch, by spawn\'s own rules, the cap included; issues that can start now come first.',
         inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       })
       await $.tool.register({
@@ -261,10 +312,10 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
           + 'or turn end, and an idle unit starts a turn for it. kind: inform (the default) for information, assign for new work, cancel to stop the unit\'s open work, '
           + 'the text its reason: its tools but send are denied until it replies done, and a cancel is refused when it owes no assign or still owes one. A text starting with / is refused, '
           + 'since a message runs no command: ask for a skill in plain text; a user\'s /flow approve, skip or follow-up goes through approve_unit, skip_unit or follow_up_unit. '
-          + 'expects: step:<id>, a step of the unit\'s flow, on an assign or inform only; a message delivered while the unit is at another step is never shown to it: '
-          + 'a stale assign is dead-lettered to the user and you are told, a stale inform is dropped.',
+          + 'expects: step:<id>, a step of the unit\'s flow, on an assign only; an assign delivered while the unit is at another step is never shown to it: '
+          + 'a stale assign is dead-lettered to the user and you are told.',
         inputSchema: { type: 'object', properties: { number: issueNumber, text: { type: 'string', minLength: 1 }, kind: { type: 'string', enum: ['inform', 'assign', 'cancel'] },
-          expects: { type: 'string', pattern: '^step:[\\w-]+$', description: 'The unit step the message is written for, such as step:code; refused on a cancel.' } },
+          expects: { type: 'string', pattern: '^step:[\\w-]+$', description: 'The unit step the message is written for, such as step:code; refused on a cancel or an inform.' } },
           required: ['number', 'text'], additionalProperties: false },
       })
       await $.tool.register({
@@ -272,6 +323,8 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
         isDeferred: false,
         description: 'Sends a typed message through the mailboxes; never type into another session\'s terminal. A delegated unit opens a conversation with its coordinator: '
           + 'question (a design gap or a ⛳, with its options and your proposal) or blocked (stopped on something only the coordinator or the user can lift). '
+          + 'A unit reports anything else with an inform, which opens no conversation and takes no reply; it is refused while an assign or cancel is open, '
+          + 'whose done carries the report instead, and never sent as a reply. '
           + 'A reply names the id of the message it answers in in_reply_to and goes back to that message\'s sender: answer to a question or a blocked, done to an assign or a cancel. '
           + 'Any other reply is refused, and a message is replied to once. Keep the body short; put long text in an issue comment and its URL in refs. '
           + 'A question lists its choices in options. A unit never addresses the user: a coordinator sends a unit\'s question only the user can answer on with '
@@ -299,11 +352,11 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
           + 'Takes a typed message: kind approve, the delegated decision comment that approves (posted with issue_comment from this session after the diagnosis), the unit\'s diagnosis comment URL '
           + 'and its recorded red command. Refused unless the unit\'s Diagnose waits for approval, the decision is unchanged and unused, its Choice names /flow approve literally, as that command text and never a paraphrase, '
           + 'and its Choice or Reason cites both the diagnosis URL and the red command; then it sends the unit a step message, which the unit\'s mod checks again before it approves '
-          + 'and answers with a done naming the outcome.',
+          + `and answers with a done naming the outcome.${termsContract} ${relayContract}`,
         inputSchema: { type: 'object', properties: { number: issueNumber, kind: { type: 'string', enum: ['approve'] },
           decision: { type: 'string', minLength: 1, description: 'The delegated decision comment\'s URL.' },
           diagnosis: { type: 'string', minLength: 1, description: 'The unit\'s diagnosis comment URL, cited in the decision\'s Choice or Reason.' },
-          red: { type: 'string', minLength: 1, description: 'The unit\'s recorded red command, argv joined by spaces, cited in the decision\'s Choice or Reason.' } },
+          red: { type: 'string', minLength: 1, description: 'The unit\'s recorded red command, argv joined by spaces, or its argv as JSON when that text matches more than one red; the decision\'s Choice or Reason cites it as the joined text either way.' } },
         required: ['number', 'kind', 'decision', 'diagnosis', 'red'], additionalProperties: false },
       })
       await $.tool.register({
@@ -312,7 +365,7 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
         description: 'Coordinator only, under delegation: skips a step of a delegated unit\'s flow for the user, the only way to; unit_prompt refuses a literal /flow skip. '
           + 'Takes the delegated decision comment that skips it, posted with issue_comment from this session on the unit\'s issue, whose Choice names /flow skip <step> literally, as that command text and never a paraphrase, '
           + 'and whose Choice or Reason cites the reason. Refused unless the decision is unchanged and unused; then it sends the unit a step message, which the unit\'s mod '
-          + 'checks again before it skips and answers with a done naming the outcome.',
+          + `checks again before it skips and answers with a done naming the outcome.${termsContract} ${relayContract}`,
         inputSchema: { type: 'object', properties: { number: issueNumber,
           decision: { type: 'string', minLength: 1, description: 'The delegated decision comment\'s URL.' },
           step: { type: 'string', minLength: 1, description: 'The id of the step to skip, such as diagnose, named in the decision\'s Choice as /flow skip <step>.' },
@@ -325,7 +378,7 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
         description: 'Coordinator only, under delegation: declares Follow-up on an issue in a delegated unit for the user, the only way to; unit_prompt refuses a literal /flow follow-up. '
           + 'Takes the delegated decision comment that declares it, posted with issue_comment from this session on the unit\'s issue, whose Choice names /flow follow-up #<issue> literally, as that command text and never a paraphrase. '
           + 'Refused unless the decision is unchanged and unused; then it sends the unit a step message, which the unit\'s mod checks again before it declares and answers '
-          + 'with a done naming the outcome.',
+          + `with a done naming the outcome.${termsContract} ${relayContract}`,
         inputSchema: { type: 'object', properties: { number: issueNumber,
           decision: { type: 'string', minLength: 1, description: 'The delegated decision comment\'s URL.' },
           issue: { ...issueNumber, description: 'The issue whose open PR the follow-up adds to, named in the decision\'s Choice as /flow follow-up #<issue>.' } },
@@ -334,15 +387,19 @@ function createEnginePort($: EngineInterface, cause: string): EnginePort {
       await $.tool.register({
         name: 'retire_unit',
         isDeferred: false,
-        description: 'Coordinator only, under delegation: retires the unit of an issue in its scope so a later spawn starts it fresh. The mod archives the branch tip '
-          + 'as refs/retired/<n>/<timestamp> and uncommitted changes as a patch, posts the retirement as a delegated decision on the issue, then removes the herdr workspace, '
-          + 'worktree, branch, records and transcript, and names the restore command. Refused for a branch with a PR or merged into another branch, the calling session\'s own unit, '
-          + 'and issues outside the scope, whose retirement is the user\'s /flow retire.',
+        description: 'Coordinator only, under delegation: retires the unit of an issue in its scope so a later spawn starts it fresh. The mod deletes none of its work: it closes the '
+          + 'unit\'s session, keeps the branch tip as refs/retired/<n>/<timestamp>, moves the checkout aside to <worktree>.retired-<timestamp>, deletes the branch only while '
+          + 'unmoved, writes the archive record, removes its records and transcript, then posts the retirement as a delegated decision on the issue and names the resume and '
+          + 'reclaim commands. Refused, removing nothing, outside herdr, for a session that does not end, for a session that may still run with no workspace to close, for a '
+          + 'workspace whose path differs from the branch\'s worktree, for a branch with no worktree whose session\'s checkout or a detached checkout remains, for a branch with a '
+          + 'PR or merged into another branch, the calling session\'s own unit, and issues outside the scope, whose retirement is the user\'s /flow retire. A step that fails '
+          + 'after something changed returns an error marked stopped, naming the steps done, where the checkout and branch are, and how to finish.',
         inputSchema: { type: 'object', properties: { number: issueNumber, reason: { type: 'string', minLength: 1, description: 'Why the unit is redone: the decision\'s reason.' } },
           required: ['number', 'reason'], additionalProperties: false },
       })
     },
   }
+  return port
 }
 
 /**
@@ -372,6 +429,11 @@ export const register: Register = (on, options): void => {
 
   on('session.start', ($, e, next) => handleSessionStart(createEnginePort($, 'session start'), e, next))
 
+  on('session.end', async ($, e, next) => {
+    await settleToolRuns(createEnginePort($, 'session end'), next.budget.remainingMs - sessionEndMarginMs, next.signal)
+    return next(e)
+  })
+
   on('classic.SessionStart', ($, e, next) => handleClassicSessionStart(createEnginePort($, 'session start'), e, next))
 
   on('classic.FileChanged', ($, e, next) => handleFileChanged(createEnginePort($, 'ref change'), e, next))
@@ -382,12 +444,11 @@ export const register: Register = (on, options): void => {
 
   on('classic.Stop', ($, e, next) => handleStop(createEnginePort($, 'stop'), e, next))
 
-  // why: no engine call reads the permission mode, so spawn takes the one the session last reported, at most one tool call old.
-  // why: the classic event, unlike prompt.submit, is known to fire for the mod's own doorbell prompt, so the mail rides on it.
-  on('classic.UserPromptSubmit', ($, e, next) => { sessionMemory.permissionMode = e.permission_mode ?? null; return handleMailPromptSubmit(createEnginePort($, 'mail'), e, next) })
+  // why: no engine call reads the permission mode, so spawn takes the one the session last reported, at most one tool call old; the classic event, unlike prompt.submit, fires for the mod's own prompts, so their mail and lines ride on it.
+  on('classic.UserPromptSubmit', ($, e, next) => { sessionMemory.permissionMode = e.permission_mode ?? null; return handleOwnPromptEntry(createEnginePort($, 'prompt'), e, event => handleMailPromptSubmit(createEnginePort($, 'mail'), event, next)) })
   on('classic.PostToolUse', (_$, e, next) => { sessionMemory.permissionMode = e.permission_mode ?? null; return next(e) })
 
-  // The read-only side fails open: a failed read submits the prompt with the notice instead of the flow line; a chain already called is passed through.
+  // why: the read-only side fails open: a failed read submits the prompt with the notice instead of the flow line; a chain already called is passed through.
   on('prompt.submit', ($, e, next) => handlePromptSubmit(createEnginePort($, 'prompt'), e, next))
     .catch((_$, e, next) => next.called ? next(e) : next({ ...e, context: [...(e.context ?? []), describeUnreadState(describeHookError(next.error))] }))
 
@@ -395,30 +456,37 @@ export const register: Register = (on, options): void => {
 
   on('turn.start', ($, e, next) => handleTurnStart(createEnginePort($, 'turn start'), e, next))
   on('turn.complete', ($, e, next) => handleTurnComplete(createEnginePort($, 'turn end'), e, next))
-  // A permission dialog holds a delegated unit mid-turn, so its coordinator hears of it here rather than at the turn end.
+  // why: a permission dialog holds a delegated unit mid-turn, so its coordinator hears of it here rather than at the turn end.
   on('classic.Notification', ($, e, next) => handleNotification(createEnginePort($, 'notification'), e, next))
 
-  // A coordinator never declares a flow; this hook answers without next, so the guard runs inside it.
+  // why: a coordinator never declares a flow, and this hook answers without next, so the coordinator guard must run inside it.
   on('tool.call', { tool: declareTool }, async ($, e) => {
     const port = createEnginePort($, 'declare_flow')
     const deny = await denyCoordinatorCall(port, e)
     return deny ? { deny } : handleDeclareFlowCall(port, e)
-  }).catch((_$, _e, next) => ({ deny: `${checkFailed} ${describeHookError(next.error)}` }))
+  }).catch((_$, _e, next) => ({ deny: describeCheckFailure('declare_flow', next.error) }))
 
-  // Registration order nests hooks: the window must precede Verify and Run, which answer without next.
-  // Its .catch also answers a call re-entered beneath the hook's own $ calls (next.called false): the check never ran on it, so it is denied.
-  // A timed-out check is retried once inside the grace before it denies (core/check-retry); a failure that is not a timeout denies at once.
+  // why: registration order nests hooks, so the window must precede Verify and Run, which answer without next; its .catch also answers a call re-entered beneath the hook's own $ calls (next.called false): the check never ran on it, so it is denied; a timed-out check is retried once inside the grace before it denies (core/check-retry); a failure that is not a timeout denies at once.
   on('tool.call', ($, e, next) => measureGuard<typeof e, Awaited<ReturnType<typeof next>>>('tool.call', proceed => handleToolCall(createEnginePort($, `tool ${e.tool}`), e, proceed),
     usage => { reportGuardUsage(createEnginePort($, 'guard usage'), usage) })(e, next))
-    .catch(($, e, next) => guardCatch<typeof e, Awaited<ReturnType<typeof next>>>({ guard: 'tool.call', check: proceed => handleToolCall(createEnginePort($, `tool ${e.tool}`), e, proceed),
+    .catch(($, e, next) => guardCatch<typeof e, Awaited<ReturnType<typeof next>>>({ guard: 'tool.call', label: 'pre-call', check: proceed => handleToolCall(createEnginePort($, `tool ${e.tool}`), e, proceed),
       deny: reason => ({ deny: reason }), sleep: (delayMs, signal) => $.clock.sleep(delayMs, { signal }),
-      onTimeout: timeout => { reportGuardTimeout(createEnginePort($, 'guard timeout'), timeout) } })(e, next))
+      onTimeout: timeout => { reportGuardTimeout(createEnginePort($, 'guard timeout'), timeout) },
+      // why: a mod tool's hook beneath answers it, and once that hook overran a replay reaches core, which says no hook answered.
+      answerDropped: async event => event.tool.startsWith(modToolPrefix)
+        ? { result: markForAgent(stopDroppedCall(event.tool.slice(modToolPrefix.length), await $.session.id(), callRef(event))), isError: true } : undefined })(e, next))
 
-  on('tool.call', { tool: `${modToolPrefix}verify` }, ($, _e, next) => handleVerify(createEnginePort($, 'verify'), next.signal))
-    .catch((_$, _e, next) => failedToolAnswer('Verify could not run', next.error))
+  on('tool.call', { tool: `${modToolPrefix}verify` }, ($, e, next) => {
+    const port = createDispatchPort($, 'verify', next.budget)
+    return withStoppableDispatch(callKey(e), next.signal, signal => handleVerify(port, signal, callRef(e)))
+  })
+    .catch(($, e, next) => answerCommandHook('verify', () => $.session.id(), callRef(e), next.error))
 
-  on('tool.call', { tool: `${modToolPrefix}run` }, ($, e, next) => handleRun(createEnginePort($, 'run'), { argv: e.argv }, next.signal))
-    .catch((_$, _e, next) => failedToolAnswer('Run could not run', next.error))
+  on('tool.call', { tool: `${modToolPrefix}run` }, ($, e, next) => {
+    const port = createDispatchPort($, 'run', next.budget)
+    return withStoppableDispatch(callKey(e), next.signal, signal => handleRun(port, { argv: e.argv }, signal, callRef(e)))
+  })
+    .catch(($, e, next) => answerCommandHook('run', () => $.session.id(), callRef(e), next.error))
 
   on('tool.call', { tool: suggestCoordinateTool }, $ => handleSuggestCall(createEnginePort($, 'suggest coordinate')))
     .catch((_$, _e, next) => failedToolAnswer('The suggestion was not shown', next.error))
@@ -426,19 +494,19 @@ export const register: Register = (on, options): void => {
   on('tool.call', { tool: suggestDelegateTool }, ($, e) => handleSuggestDelegateCall(createEnginePort($, 'suggest delegate'), e))
     .catch((_$, _e, next) => failedToolAnswer('The suggestion was not shown', next.error))
 
-  on('tool.call', { tool: `${modToolPrefix}merge_child` }, ($, e, next) => handleMergeChildCall(createEnginePort($, 'merge child'), e, next.signal))
-    .catch((_$, _e, next) => failedToolAnswer('merge_child could not run, so check the parent branch before anything else', next.error))
+  on('tool.call', { tool: `${modToolPrefix}merge_child` }, ($, e, next) => {
+    const port = createDispatchPort($, 'merge child', next.budget)
+    return withStoppableDispatch(callKey(e), next.signal, signal => handleMergeChildCall(port, e, signal))
+  })
+    .catch((_$, _e, next) => unknownToolAnswer('merge_child', next.error, mergeChildCheck))
 
   on('tool.call', { tool: `${modToolPrefix}commit` }, async ($, e) => {
     const message: unknown = ({ ...e } as Record<string, unknown>).message
     if (typeof message !== 'string' || !message.trim()) return { result: markForAgent('message must be the commit message.'), isError: true }
-    const done = await commitDelegated(createEnginePort($, 'commit'), message)
-    return answerTool('commit', done)
-  })
-  on('tool.call', { tool: `${modToolPrefix}merge_parent` }, async $ => {
-    const done = await mergeParent(createEnginePort($, 'merge parent'))
-    return answerTool('merge_parent', done)
-  })
+    return answerSettledTool('commit', await settle(commitDelegated(createEnginePort($, 'commit'), message)), commitCheck)
+  }).catch((_$, _e, next) => unknownToolAnswer('commit', next.error, commitCheck))
+  on('tool.call', { tool: `${modToolPrefix}merge_parent` }, async $ => answerSettledTool('merge_parent', await settle(mergeParent(createEnginePort($, 'merge parent'))), commitCheck))
+    .catch((_$, _e, next) => unknownToolAnswer('merge_parent', next.error, commitCheck))
   on('tool.call', { tool: `${modToolPrefix}send` }, async ($, e) => answerTool('send', await sendTyped(createEnginePort($, 'send'), { ...e } as Record<string, unknown>)))
     .catch((_$, _e, next) => failedToolAnswer('send failed, so the message may not have been sent', next.error))
   on('tool.call', { tool: `${modToolPrefix}plan` }, $ => handlePlanCall(createEnginePort($, 'plan')))
@@ -451,10 +519,10 @@ export const register: Register = (on, options): void => {
 
   for (const tool of unitTools) {
     on('tool.call', { tool: `${modToolPrefix}${tool}` }, ($, e) => handleUnitCall(createEnginePort($, tool), tool, e))
-      .catch((_$, _e, next) => failedToolAnswer(`${tool} failed`, next.error))
+      .catch((_$, _e, next) => unknownToolAnswer(tool, next.error, unitCheck))
   }
 
-  // A coordinator's role must hold in every loop; a check that cannot read the role denies.
+  // why: a coordinator's role must hold in every loop, so a check that cannot read the role denies.
   on('tool.check', ($, e, next) => measureGuard<typeof e, Awaited<ReturnType<typeof next>>>('tool.check', proceed => handleToolCheck(createEnginePort($, `check ${e.tool}`), e, proceed),
     usage => { reportGuardUsage(createEnginePort($, 'guard usage'), usage) })(e, next))
     .catch(($, e, next) => guardCatch<typeof e, Awaited<ReturnType<typeof next>>>({ guard: 'tool.check', check: proceed => handleToolCheck(createEnginePort($, `check ${e.tool}`), e, proceed),
@@ -467,7 +535,13 @@ export const register: Register = (on, options): void => {
       deny: reason => ({ deny: reason }), sleep: (delayMs, signal) => $.clock.sleep(delayMs, { signal }),
       onTimeout: timeout => { reportGuardTimeout(createEnginePort($, 'guard timeout'), timeout) } })(e, next))
 
+  on('config.set', { key: allowRemoteCommandsKey }, (_$, e, next) => {
+    const refusal = refuseRemoteSettingChange(e.origin)
+    return refusal ? { deny: refusal } : next(e)
+  }).catch((_$, e, next) => next.called ? next(e) : { deny: `${allowRemoteCommandsKey} could not be checked: ${describeHookError(next.error)}` })
+
   on('command.run', { command: 'flow' }, async ($, e) => ({ text: await handleFlowCommand(createEnginePort($, `/flow ${e.args.trim().split(/\s+/)[0] ?? ''}`.trim()), e) }))
+    .catch((_$, e, next) => ({ text: describeUnknown(`/flow ${e.args.trim().split(/\s+/)[0] ?? ''}`.trim(), describeHookError(next.error), '/flow status', next.error.kind === 'timeout') }))
 
   on('ui.render', { component: 'Pane', requestId: paneId }, ($, e, next) => handlePaneRender(createEnginePort($, 'pane'), $.ui.resolve(e), e.props, next.signal))
   on('ui.close', { id: paneId }, ($, e, next) => handlePaneClose(createEnginePort($, 'pane close'), e, next))

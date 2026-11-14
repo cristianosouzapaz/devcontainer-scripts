@@ -84,16 +84,23 @@ export async function sweepHerdrWorktrees(port: EnginePort): Promise<void> {
  * Lists the herdr worktree workspaces whose label carries a prefix.
  * @param port - The engine calls.
  * @param prefix - The label prefix: one session's, any mod-created one, or the spawn label.
+ * @param isStrict - Whether an answer without a workspace list throws instead of reading as none.
  * @returns The matching worktrees, each named by what its label holds after the first colon.
- * @throws When herdr fails or answers with no JSON.
+ * @throws When herdr fails or answers with no JSON, or, when strict, with no workspace list.
  */
-export async function listHerdrWorktrees(port: EnginePort, prefix: string): Promise<HerdrWorktree[]> {
+export async function listHerdrWorktrees(port: EnginePort, prefix: string, isStrict = false): Promise<HerdrWorktree[]> {
   const workspaces = readField(await runHerdr(port, ['workspace', 'list']), 'result', 'workspaces')
-  return (Array.isArray(workspaces) ? workspaces : []).flatMap((workspace: unknown) => {
+  if (isStrict && !Array.isArray(workspaces)) throw new Error('herdr answered workspace list without a workspace list')
+  return (Array.isArray(workspaces) ? workspaces : []).flatMap((workspace: unknown, index: number) => {
     const label = readField(workspace, 'label')
     const workspaceId = readField(workspace, 'workspace_id')
     const path = readField(workspace, 'worktree', 'checkout_path')
-    if (typeof label !== 'string' || !label.startsWith(prefix) || typeof workspaceId !== 'string' || typeof path !== 'string') return []
+    const isOurs = typeof label === 'string' && label.startsWith(prefix)
+    // why: a count that skips an entry it cannot read would report a slot free that may not be.
+    if (isStrict && (typeof workspace !== 'object' || workspace === null || isOurs && (typeof workspaceId !== 'string' || typeof path !== 'string'))) {
+      throw new Error(`herdr answered workspace list with entry ${index + 1} malformed${isOurs ? ` (${label})` : ''}`)
+    }
+    if (!isOurs || typeof workspaceId !== 'string' || typeof path !== 'string') return []
     return [{ workspaceId, path, name: label.slice(label.indexOf(':') + 1) }]
   })
 }

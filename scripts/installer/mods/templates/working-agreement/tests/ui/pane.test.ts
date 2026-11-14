@@ -7,7 +7,6 @@ import { buildWriteCall, buildPullRequest, noFlow, pushedCloseOut, twoIssueClose
 import { declareFlow, endTurn, mountPane, readFlowStatus, readPromptContext, runFlowCommand, serveDisplayed, textOf } from '../support/helpers'
 import { createWorld } from '../support/world'
 
-// These labels occupy different numbers of pill rows in the pane.
 const oneRow = ['bug', 'ready-for-agent']
 const twoRows = ['ready-for-agent', 'needs-triage']
 const threeRows = ['ready-for-agent', 'needs-triage', 'needs-info']
@@ -122,7 +121,7 @@ test('every keyed Flow button draws only its clean label, keeps its hotkey and f
   expect((await pane.find({ key: 'n' }))?.props['hotkey']).toBe('n')
   expect(await pane.findAll({ type: 'Text', text: /^n$/ })).toHaveLength(0)
   await pane.unmount()
-  // `[ Run log ]` and `[ Continue in new session ]` take 40 columns with their gap, the body's width less its padding.
+  // why: `[ Run log ]` and `[ Continue in new session ]` take 40 columns with their gap, the body's width less its padding.
   displayed.value = value
   const narrow = await mountPane($, { columns: 44 })
   expect((await narrow.findAll({ type: 'Box' })).some(box => box.props['alignItems'] === 'flex-end' && box.props['flexDirection'] === 'row')).toBe(true)

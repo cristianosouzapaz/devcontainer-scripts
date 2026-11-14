@@ -345,7 +345,7 @@ test('a PR base that is not fetched refuses the declaration with the fetch to ru
 
 test('a child unit\'s slice starts at its fork point on the parent branch through sibling merges, parent advances and merges both ways', async ($, on) => {
   const graph = buildParentGraph()
-  // The parent was pushed at the cut and never since, so only the local branch knows where it went.
+  // why: the parent was pushed at the cut and never since, so only the local branch knows where it went.
   graph.refs['origin/par'] = 'p1'
   createWorld(on, { branch: 'b', graph }, { session: noFlow })
   await declareFlow($, 'small-feature', [1])
@@ -355,7 +355,7 @@ test('a child unit\'s slice starts at its fork point on the parent branch throug
   graph.refs.par = 'p2'
   expect(await readFlowStatus($), 'the parent advanced').toContain('Slice       p1..b1\n')
   graph.refs.b = 'b2'
-  // The merged parent tip carries the sibling's and the parent's files, so the slice diff holds only src/b.ts.
+  // why: the merged parent tip carries the sibling's and the parent's files, so the slice diff holds only src/b.ts.
   expect(await readFlowStatus($), 'the parent merged into the child').toContain('Slice       p2..b2\n')
   graph.refs.par = 'mpar'
   expect(await readFlowStatus($), 'the child integrated with --no-ff').toContain('Slice       p2..b2\n')

@@ -53,7 +53,8 @@ test('a delegated unit\'s Delegation row names only the delegation\'s state and 
   expect(readKeyedRow((await readFlowStatus($)) ?? '', 'Delegation')).toEqual(['Delegation  on · took /to-spec'])
   world.files.delete(scopeFile('coord'))
   await runFlowCommand($, 'status')
-  expect(world.views.at(-1)?.meta).toContainEqual({ key: 'Delegation', value: 'stopped · took /to-spec', tone: 'text' })
+  expect(world.views.at(-1)?.meta).toContainEqual({ key: 'Delegation',
+    value: 'not delegated · no coordinator\'s scope covers #1; check delegation/ under working-agreement in git rev-parse --git-common-dir · took /to-spec', tone: 'warn' })
 })
 
 test('an undelegated unit shows no Delegation row', async ($, on) => {
@@ -62,7 +63,7 @@ test('an undelegated unit shows no Delegation row', async ($, on) => {
   expect(world.views.at(-1)?.meta.map(row => row.key)).not.toContain('Delegation')
 })
 
-// Issue numbers above 9999 are not covered: `Issue #<n>` with a five-digit number is as long as keyWidth.
+// why: issue numbers above 9999 are not covered: `Issue #<n>` with a five-digit number is as long as keyWidth.
 test('every label a keyed row can carry, and the longest issue label, is shorter than the key column', () => {
   expect([...keyLabels, 'Issue #9999'].filter(label => label.length >= keyWidth)).toEqual([])
 })

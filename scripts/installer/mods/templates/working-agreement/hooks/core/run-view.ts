@@ -1,5 +1,6 @@
 import { cleanOutput } from './run-command'
 import { executeProcess } from '../lib/process'
+import { formatErrorLine } from '../lib/result'
 import type { Identity, RecordedRunStatus, RunCommandView, RunView, VerifyRecord } from '../../types'
 import { bestEffort } from './best-effort'
 import type { EnginePort } from './engine-port'
@@ -13,7 +14,8 @@ import { isFiniteNumber, isRecord, isStringArray } from '../lib/guards'
 type FinishedRunStatus = RecordedRunStatus | 'cancelled'
 interface FinishedRunPatch { status: FinishedRunStatus; kind?: RunView['kind'] }
 interface ChangedRunPatch { status: 'tree changed'; changed: string[]; kind?: RunView['kind'] }
-type RunViewPatch = FinishedRunPatch | ChangedRunPatch
+interface EndedRunPatch { status: 'ended'; label: string; kind?: RunView['kind'] }
+type RunViewPatch = FinishedRunPatch | ChangedRunPatch | EndedRunPatch
 
 const tailTimeoutMs = 5000
 
@@ -45,7 +47,6 @@ export async function withRunView(port: EnginePort, sid: string, identity: Ident
   sessionMemory.runViews.set(sid, { identity, generation, live: initial, published: initial, last: null, base })
   const paint = async (): Promise<void> => {
     while (!control.signal.aborted) {
-      // An abort ends the wait.
       try { await port.clock.sleep(1000, control.signal) } catch { return }
       if (control.signal.aborted) return
       const live = sessionMemory.runViews.get(sid)?.live
@@ -71,17 +72,22 @@ export async function withRunView(port: EnginePort, sid: string, identity: Ident
     }
   }
   const polling = { task: Promise.resolve() }
+  const failure: { error?: string } = {}
   try {
     await bestEffort(port, 'run view refresh', () => refreshView(port, { isQuiet: true, isSynced: true }), undefined)
     await bestEffort(port, 'live run start', () => port.writeLiveRun(initial), undefined)
     polling.task = bestEffort(port, 'run view paint', paint, undefined)
     return await work()
+  } catch (error) {
+    failure.error = formatErrorLine(error)
+    throw error
   } finally {
     control.abort()
     await polling.task
+    // why: a run that returned without finishing its view was cancelled only when its signal says so; any other end is told as it is.
     if (!sessionMemory.runViews.get(sid)?.last) {
-      const live = sessionMemory.runViews.get(sid)?.live
-      await bestEffort(port, 'run view finish', () => finishRunView(port, sid, { status: 'cancelled', kind: live?.kind === 'Run' ? 'red' : 'Verify' }, signal), undefined)
+      const patch: RunViewPatch = signal.aborted ? { status: 'cancelled' } : { status: 'ended', label: describeUnfinished(failure.error, initial.log) }
+      await bestEffort(port, 'run view finish', () => finishRunView(port, sid, patch, signal), undefined)
     }
     const memory = sessionMemory.runViews.get(sid)
     if (memory) sessionMemory.runViews.set(sid, { ...memory, live: null })
@@ -123,12 +129,13 @@ export async function finishRunView(port: EnginePort, sid: string, patch: RunVie
   const live = memory?.live
   if (!memory || !live) return
   const elapsed = (await port.now() - live.at) / 1000
-  const commands = live.commands.map(command => command.status === 'running' && patch.status === 'cancelled'
-    ? { ...command, status: 'cancelled' as const, outcome: 'cancelled', duration: runningDuration(live.commands, elapsed) } : command)
+  const stop = patch.status === 'cancelled' ? 'cancelled' : patch.status === 'ended' ? 'stopped' : null
+  const commands = live.commands.map(command => command.status === 'running' && stop
+    ? { ...command, status: 'cancelled' as const, outcome: stop, duration: runningDuration(live.commands, elapsed) } : command)
   const last: RunView = { ...live, ...patch, commands, duration: commands.reduce((total, command) => total + command.duration, 0) }
   sessionMemory.runViews.set(sid, { ...memory, live: last, last })
   const common = await bestEffort(port, 'run common directory read', () => readCommonDir(port), null)
-  // atomicReplace holds the error in sessionMemory.recordError unless the run was cancelled.
+  // why: atomicReplace already holds the error in sessionMemory.recordError unless the run was cancelled, so the rejection is dropped.
   if (common) await atomicReplace(port, recordsPath(common, 'runs', `${last.runId}.json`), JSON.stringify(last), signal).catch(() => {})
 }
 
@@ -152,7 +159,7 @@ export async function readRunLog(port: EnginePort): Promise<RunView[]> {
     if (runs.some(run => run.kind === kind)) continue
     const result = record.outcome.kind === 'pass' ? 'exit 0' : record.outcome.kind === 'timeout' ? 'timed out' : formatExit(record.outcome.code, record.outcome.signal)
     const fallback: RunView = { runId: record.runId, kind, status: runStatus(record.outcome), result, selection: '', tree: record.tree, cwd: '', log: '', commands: [], duration: 0, at: record.at }
-    // A missing, unreadable or misplaced sidecar leaves the record summary visible: the sidecar only adds display detail.
+    // why: a missing, unreadable or misplaced sidecar leaves the record summary visible: the sidecar only adds display detail.
     try {
       if (!common || /[/\\]/.test(record.runId)) throw new Error('invalid sidecar location')
       const parsed: unknown = await readJson(port.files, recordsPath(common, 'runs', `${record.runId}.json`))
@@ -163,6 +170,16 @@ export async function readRunLog(port: EnginePort): Promise<RunView[]> {
   const extra = display?.live?.status === 'running' ? display.published
     : display?.last && !records.some(({ record }) => record.runId === display.last?.runId) ? display.last : null
   return extra ? [extra, ...runs] : runs
+}
+
+/**
+ * Words a run that ended without finishing, as the Run log labels it and a command tool's answer repeats it.
+ * @param error - What ended it, when something was thrown.
+ * @param log - The run's log, once its command started.
+ * @returns The label, such as `did not finish: disk full. Log: <log>`.
+ */
+export function describeUnfinished(error: string | undefined, log: string | undefined): string {
+  return `did not finish${error ? `: ${error}` : ''}.${log ? ` Log: ${log}` : ''}`
 }
 
 /**

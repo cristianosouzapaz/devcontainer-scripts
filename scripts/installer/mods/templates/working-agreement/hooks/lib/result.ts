@@ -55,3 +55,11 @@ export const formatError = (error: unknown): string => (error instanceof Error ?
  * @returns The message's first line.
  */
 export const formatErrorLine = (error: unknown): string => formatError(error).split(/\r?\n/)[0] ?? ''
+
+/**
+ * Keeps a text's first line, for a surface that shows an error on one row.
+ *
+ * @param text - The text, such as gh's error.
+ * @returns Its first line.
+ */
+export const firstLineOf = (text: string): string => text.split(/\r?\n/)[0] ?? ''

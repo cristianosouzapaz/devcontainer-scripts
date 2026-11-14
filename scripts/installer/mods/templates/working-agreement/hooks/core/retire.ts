@@ -1,22 +1,28 @@
-import { findWorktreeRoot, hasMovedSinceCut, isAncestor, readGitOutput, readLocalBranchTips, readWorktreeStatus, runGit } from '../lib/git'
+import { findWorktreeRoot, hasMovedSinceCut, isAncestor, readGitOutput, readLocalBranchTips, readWorktrees } from '../lib/git'
 import { listPullRequests } from '../lib/github'
 import { isRecord } from '../lib/guards'
 import { readJson } from '../lib/json'
 import { executeProcess } from '../lib/process'
-import { fail, succeed } from '../lib/result'
+import { fail, formatError, settle, succeed } from '../lib/result'
+import { quoteWord } from '../lib/shell'
 import type { Result } from '../lib/result'
 import { unitAddress } from '../domain/mail'
 import type { Envelope } from '../domain/mail'
 import { deriveReplyId } from '../domain/mail-reply'
+import { stop as stopAfter } from '../domain/outcome'
+import type { Stopped } from '../domain/outcome'
 import { sameIdentity } from '../domain/records'
 import type { Identity } from '../domain/records'
+import type { SessionLiveness } from '../domain/process-host'
 import type { EnginePort } from './engine-port'
 import { logEvent } from './flow-log'
-import { runHerdr } from './herdr-worktrees'
-import { atomicReplace, listIdentityRecords, readCommonDir, readSession, readSessionMirrors, recordsPath } from './record-store'
+import { outsideHerdr } from './herdr-worktrees'
+import { atomicReplace, listIdentityRecords, mirrorRevisionPath, readCommonDir, readSession, readSessionMirrors, recordsPath } from './record-store'
 import type { RecordBucket } from './record-store'
 import { mailPath } from './mailbox'
-import { deriveSessionId, progressPath, withSpawnLock } from './spawn'
+import { setUnitAside } from './retire-checkout'
+import { isSameHost, readSessionHostStrictly, readSessionLiveness } from './session-host'
+import { deriveSessionId, exitWaitMs, pollUntil, progressPath, readProgressFile, resolveSpawnedSession, withSpawnLock } from './spawn'
 import { readUnitHost } from './unit-host'
 import { findUnitBranch } from './unit-state'
 import { noticePath } from './coordinator-notice'
@@ -29,15 +35,19 @@ import type { UnitWorkspace } from './unit-host'
  */
 export interface RetirementPlan {
   issue: number; branch: string; tip: string; session: string
-  workspace: UnitWorkspace | null; worktree: string | null; isDirty: boolean
+  workspace: UnitWorkspace | null; worktree: string | null; liveness: SessionLiveness
   identities: Identity[]; records: string[]; transcripts: string[]; mail: MailCount
 }
+
 
 /** How many messages a mailbox holds: unread in new/, read in cur/, and invalid in bad/. */
 interface MailCount { unread: number; read: number; invalid: number }
 
-/** What an archive kept: the ref holding the branch tip, the patch of uncommitted changes, and the command that restores both. */
-export interface Archive { v: 1; issue: number; branch: string; ref: string; patch: string | null; restore: string }
+/**
+ * What a retirement kept: the ref holding the branch tip, the checkout moved aside, the command that resumes the work, and the command
+ * that reclaims the checkout's disk, which only the user runs.
+ */
+export interface Archive { v: 1; issue: number; branch: string; ref: string; checkout: string | null; restore: string; reclaim: string | null }
 
 // why: Beside the other records, under the common directory every worktree shares, so a coordinator's report reads them.
 const bucket = 'retired'
@@ -59,25 +69,51 @@ export async function planRetirement(port: EnginePort, issue: number): Promise<R
   const branch = found.value
   const tip = await readGitOutput(port.processes, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])
   if (!tip) return fail(`cannot resolve ${branch}`)
-  const session = await deriveSessionId(common, issue)
+  const progress = await settle(readProgressFile(port, common, issue, true))
+  if (!progress.isOk) return fail(`#${issue}'s spawn record ${progressPath(common, issue)} could not be read (${progress.error}), so its unit's session is unknown; nothing was removed`)
+  // why: the record names the session that runs the unit, a handoff's included; with no session recorded, the derived one is where a spawn would have started it.
+  const derived = await deriveSessionId(common, issue)
+  const session = await resolveSpawnedSession(common, issue, progress.value) ?? derived
+  // why: a later spawn starts the derived session again, so its conversation and records go too, or it would be resumed; so do those of superseded sessions.
+  const sessions = [...new Set([session, derived, ...progress.value.predecessors ?? []])]
   const worktree = await findWorktreeRoot(port.processes, branch) ?? null
-  if (session === await port.readSessionId() || worktree === await port.readCwd()) return fail(`this session is #${issue}'s unit, and a session never retires itself`)
+  const cwd = await resolvePath(port, await port.readCwd())
+  if (session === await port.readSessionId() || worktree !== null && isInside(cwd, await resolvePath(port, worktree))) {
+    return fail(`this session is #${issue}'s unit, and a session never retires itself`)
+  }
   const merged = await findMerge(port, branch, tip)
   if (merged) return fail(`${branch} ${merged}, so its unit is not retired`)
   const host = await readUnitHost(port)
   const workspace = host ? (await host.list(port)).find(entry => entry.issue === issue) ?? null : null
-  const isDirty = worktree !== null && await readWorktreeStatus(port.processes, worktree) !== ''
-  const mirror = (await readSessionMirrors(port)).find(entry => entry.session.sessionId === session)?.session
-  const identities = [{ branch, issues: [issue] }, ...mirror?.units.map(entry => entry.identity) ?? [], ...mirror?.unit ? [mirror.unit] : []]
+  if (workspace && isInside(cwd, await resolvePath(port, workspace.path))) return fail(`this session runs in #${issue}'s workspace, and a session never retires itself`)
+  for (const other of sessions.filter(each => each !== session)) {
+    const hosts = await Promise.all([other, session].map(each => readSessionHostStrictly(port, each)))
+    const unread = [other, session].find((_, index) => hosts[index] === null)
+    if (unread) {
+      return fail(`whether #${issue}'s superseded session ${other} runs on its own is unknown: the host record ${recordsPath(common, 'host', `${unread}.json`)} `
+        + 'could not be read; nothing was removed; check that file')
+    }
+    const [own, unit] = hosts.map(read => read?.value ?? null)
+    // why: a superseded session resumed on its own runs outside the unit's process, so its conversation is in use; an absent record is pruned only once its process ended.
+    if (own && await readSessionLiveness(port, other) === 'live' && !(unit && isSameHost(own, unit))) {
+      return fail(`#${issue}'s superseded session ${other} runs on its own, in another process than its unit's, so its conversation is not removed; `
+        + `nothing was removed; end that session, or check its host record ${recordsPath(common, 'host', `${other}.json`)}`)
+    }
+  }
+  const transcripts = await findTranscripts(port, sessions)
+  if (!transcripts.isOk) return transcripts
+  const stray = await findStrayCheckout(port, issue, worktree, transcripts.value)
+  if (stray) return fail(`${stray}, which may hold #${issue}'s uncommitted work; check it out on ${branch} or set it aside by hand; nothing was removed`)
+  const mirrors = (await readSessionMirrors(port)).filter(entry => sessions.includes(entry.session.sessionId)).map(entry => entry.session)
+  const identities = [{ branch, issues: [issue] }, ...mirrors.flatMap(mirror => [...mirror.units.map(entry => entry.identity), ...mirror.unit ? [mirror.unit] : []])]
     .filter((identity, index, all) => identity.branch === branch && all.findIndex(other => sameIdentity(other, identity)) === index)
   const delegated = await listBranchRecords(port, common, 'delegated', branch)
   const count = async (box: 'new' | 'cur' | 'bad'): Promise<number> => (await port.files.list(mailPath(common, unitAddress(issue), box)).catch(() => []))
     .filter(entry => entry.name.endsWith('.json')).length
-  const records = [progressPath(common, issue), recordsPath(common, 's', `${session}.json`),
+  const records = [progressPath(common, issue), ...sessions.flatMap(each => [recordsPath(common, 's', `${each}.json`), mirrorRevisionPath(common, each)]),
     noticePath(common, branch), stallPath(common, issue), ...delegated, ...(await Promise.all(identities.map(identity => listIdentityRecords(port, identity)))).flat()]
-  const transcripts = await findTranscripts(port, session)
-  if (!transcripts.isOk) return transcripts
-  return succeed({ issue, branch, tip, session, workspace, worktree, isDirty, identities,
+  const liveness = await readSessionLiveness(port, session)
+  return succeed({ issue, branch, tip, session, workspace, worktree, liveness, identities,
     records: await filterExisting(port, records), transcripts: transcripts.value,
     mail: { unread: await count('new'), read: await count('cur'), invalid: await count('bad') } })
 }
@@ -89,12 +125,14 @@ export async function planRetirement(port: EnginePort, issue: number): Promise<R
  */
 export function describeRetirement(plan: RetirementPlan): string {
   return [
-    `Retiring #${plan.issue}'s unit archives, before removing anything:`,
-    `- the tip of ${plan.branch} (${plan.tip.slice(0, 7)}) as refs/${bucket}/${plan.issue}/<timestamp>`,
-    plan.isDirty ? `- the uncommitted changes in ${plan.worktree} as a patch under the records directory` : '- no uncommitted changes',
+    `Retiring #${plan.issue}'s unit deletes none of its work:`,
+    plan.workspace ? `- closes herdr workspace ${plan.workspace.workspaceId} and waits for its session to end`
+      : plan.liveness === 'gone' ? '- no session to close: its recorded process has ended'
+        : '- its session may still run with no herdr workspace to close, so retiring it is refused',
+    `- keeps the tip of ${plan.branch} (${plan.tip.slice(0, 7)}) as refs/${bucket}/${plan.issue}/<timestamp>`,
+    plan.worktree ? `- moves worktree ${plan.worktree} aside to ${plan.worktree}.retired-<timestamp>, every file it holds included` : '- no worktree',
+    `- deletes branch ${plan.branch} only while it is still at ${plan.tip.slice(0, 7)}`,
     'Then it removes:',
-    plan.workspace ? `- herdr workspace ${plan.workspace.workspaceId} with its agent, and worktree ${plan.workspace.path}` : plan.worktree ? `- worktree ${plan.worktree}` : '- no worktree',
-    `- branch ${plan.branch}`,
     ...plan.records.map(path => `- record ${path}`),
     `- ${describeMail(plan.mail)} in its mailbox, moved into the archive`,
     ...plan.transcripts.map(path => `- transcript ${path}`),
@@ -103,34 +141,143 @@ export function describeRetirement(plan: RetirementPlan): string {
 }
 
 /**
- * Retires an issue's unit under the spawn lock: archives its branch tip and uncommitted changes, lets the caller record the decision,
- * then removes its workspace, worktree, branch, records and transcript, and logs the retirement in the unit's transition log.
+ * Retires an issue's unit under the spawn lock without deleting any of its work: closes its session and waits for it to end, re-reads the
+ * plan, keeps its tip as a ref, moves its checkout aside and deletes its branch only while unmoved, writes the archive record, then
+ * archives its mailbox, removes its records and transcript, lets the caller record the decision, and only then logs the retirement in the
+ * unit's transition log.
  * @param port - The engine calls.
  * @param issue - The issue number.
- * @param check - Judges the plan read under the lock before anything is archived; a failure stops the retirement.
- * @param record - Records the decision once the archive exists; a failure leaves the unit in place.
- * @returns What was archived and removed with the restore command, or why nothing was removed.
+ * @param check - Judges the plan read under the lock before anything changes; a failure stops the retirement.
+ * @param record - Records the decision once every other step has succeeded.
+ * @returns What was kept with the commands that resume the work and reclaim its disk; a refusal that removed nothing; or, marked by
+ * {@link isStopped}, the step a retirement already under way stopped at, with the steps done and how to finish.
  */
 export function retireUnit(port: EnginePort, issue: number, check: (plan: RetirementPlan) => Result<void>,
   record: (plan: RetirementPlan, archive: Archive) => Promise<Result<string>>): Promise<Result<string>> {
-  return withSpawnLock(port, async common => {
+  return withSpawnLock(port, async (common): Promise<Result<string>> => {
+    const host = await readUnitHost(port)
+    if (!host) return fail(`${outsideHerdr}, so the unit's session cannot be stopped; nothing was removed`)
     const plan = await planRetirement(port, issue)
     if (!plan.isOk) return plan
     const judged = check(plan.value)
     if (!judged.isOk) return judged
-    const archive = await archiveUnit(port, common, plan.value)
-    if (!archive.isOk) return fail(`nothing was removed: ${archive.error}`)
-    const recorded = await record(plan.value, archive.value)
-    if (!recorded.isOk) return fail(`archived as ${archive.value.ref}, but nothing was removed: ${recorded.error}`)
-    const removed = await removeUnit(port, common, plan.value, archive.value)
+    const { branch, tip, worktree, workspace } = plan.value
+    if (workspace && (worktree === null || await resolvePath(port, workspace.path) !== await resolvePath(port, worktree))) {
+      return fail(`#${issue}'s workspace holds ${quoteWord(workspace.path)}, but ${branch} is checked out in ${worktree ? quoteWord(worktree) : 'no worktree'}; nothing was removed`)
+    }
+    // why: a unit stopped by a dialog before its mod loaded never records its process, so only an ended one proves no session runs.
+    if (!workspace && plan.value.liveness !== 'gone') {
+      return fail(`#${issue}'s session ${plan.value.liveness === 'live' ? 'still runs' : 'may still run, as no ended process of it is recorded'}, `
+        + 'but no herdr workspace of it is found to close; nothing was removed')
+    }
+    if (workspace) {
+      await host.close(port, workspace)
+      if (!await pollUntil(port, exitWaitMs, 500, async () => await host.state(port, workspace, 0) === 'none')) {
+        return fail(`#${issue}'s session did not end after its host was asked to close it; nothing was removed`)
+      }
+    }
+    // why: once anything changed, a refusal's "nothing was removed" would be false, so the reply names what was done, kept and left.
+    const stop = (detail: string): Stopped => stopAfter(`#${issue}'s retirement: ${workspace ? 'session stopped; ' : ''}${detail}`)
+    const keptAt = `${worktree ? `checkout kept at ${quoteWord(worktree)} and ` : ''}branch ${branch} kept`
+    const left = [...plan.value.records, ...plan.value.transcripts].map(quoteWord).join(' ')
+    const again = await planRetirement(port, issue)
+    if (!again.isOk) return stop(`${keptAt}; re-reading the plan failed: ${again.error}`)
+    if (again.value.tip !== tip || again.value.worktree !== worktree) return stop(`${keptAt}; re-reading the plan failed: ${branch} or its worktree changed while the session closed`)
+    const stamp = new Date(await port.now()).toISOString().replace(/[-:]|\.\d+/g, '')
+    const ref = `refs/${bucket}/${issue}/${stamp}`
+    // why: written as soon as the checkout has moved, and again for a branch with none, so /flow report lists the retirement whatever step fails next.
+    const writeArchive = async (archive: Archive): Promise<string> =>
+      atomicReplace(port, recordsPath(common, bucket, `${issue}-${stamp}.json`), JSON.stringify(archive)).then(() => '', formatError)
+    const moved: { archive?: Archive; error?: string } = {}
+    const aside = await setUnitAside(port.processes, { issue, branch, tip, worktree, stamp }, async checkout => {
+      moved.archive = composeArchive(plan.value, ref, checkout, stamp)
+      moved.error = await writeArchive(moved.archive)
+    })
+    const describeArchive = (archive: Archive, error: string | undefined): string => `${error ? `writing the archive record failed: ${error}` : 'archive record written'}`
+      + `.\nResume the work with: ${archive.restore}${archive.reclaim ? `\nReclaim its disk with: ${archive.reclaim}` : ''}`
+    if (!aside.isOk) return stop(`${aside.error}${moved.archive ? `; ${describeArchive(moved.archive, moved.error)}` : ''}`)
+    const archive = moved.archive ?? composeArchive(plan.value, ref, null, stamp)
+    const kept = aside.value.done.join('; ')
+    const written = moved.archive ? moved.error ?? '' : await writeArchive(archive)
+    if (written) return stop(`${kept}; its mailbox, records and transcript are left in place, so remove by hand: ${left}; ${describeArchive(archive, written)}`)
+    const commands = describeArchive(archive, undefined).replace(/^archive record written\.\n/, '')
+    const removed = await removeRecords(port, common, plan.value, archive)
+    if (!removed.isOk) {
+      return stop(`${kept}; archive record written; removing its mailbox, records and transcript failed: ${removed.error}; `
+        + `remove by hand whichever of these is left: ${left}.\n${commands}`)
+    }
+    const recorded = await record(plan.value, archive)
+    if (!recorded.isOk) return stop(`${kept}; archive record written; records and transcript removed; recording the decision failed: ${recorded.error}\n${commands}`)
     const session = await readSession(port)
     for (const identity of plan.value.identities) {
-      logEvent(port, { ...session, unit: identity }, 'retired', { ref: archive.value.ref, patch: archive.value.patch, by: session.sessionId, mailArchived: plan.value.mail })
+      logEvent(port, { ...session, unit: identity }, 'retired', { ref: archive.ref, checkout: archive.checkout, by: session.sessionId, mailArchived: plan.value.mail })
     }
-    const kept = `archived as ${archive.value.ref}${archive.value.patch ? ` and ${archive.value.patch}` : ''}; restore with: ${archive.value.restore}`
-    if (!removed.isOk) return fail(`#${issue}'s unit is ${kept}, but its removal stopped: ${removed.error}`)
-    return succeed(`Retired #${issue}'s unit (${plan.value.branch}): ${kept}${recorded.value ? `\n${recorded.value}` : ''}\nA later spawn ${issue} starts a fresh session.`)
+    return succeed([`Retired #${issue}'s unit (${branch}): ${kept}.`, `Resume the work with: ${archive.restore}`,
+      ...archive.reclaim ? [`Reclaim its disk with: ${archive.reclaim}`] : [], ...recorded.value ? [recorded.value] : [],
+      `A later spawn ${issue} starts a fresh session.`].join('\n'))
   })
+}
+
+/**
+ * Writes a retirement's archive record: the kept ref and checkout with the commands that resume the work and reclaim the checkout.
+ * @param plan - The retirement.
+ * @param ref - The ref holding the branch tip.
+ * @param checkout - The checkout moved aside, or null when the branch had none.
+ * @param stamp - The retirement's stamp.
+ * @returns The archive.
+ */
+function composeArchive(plan: RetirementPlan, ref: string, checkout: string | null, stamp: string): Archive {
+  // why: the unit's own branch name goes to the respawned unit, so the resumed work takes a name of its own.
+  const free = quoteWord(`${plan.branch}-retired-${stamp}`)
+  return { v: 1, issue: plan.issue, branch: plan.branch, ref, checkout,
+    restore: checkout ? `git -C ${quoteWord(checkout)} switch -c ${free}` : `git branch ${free} ${quoteWord(ref)}`,
+    reclaim: checkout ? `git worktree remove --force ${quoteWord(checkout)}` : null }
+}
+
+/**
+ * Resolves a path as the filesystem reads it, so two spellings of one checkout compare equal.
+ * @param port - The engine calls.
+ * @param path - The path.
+ * @returns The canonical path, or the path itself when it cannot be resolved.
+ */
+async function resolvePath(port: EnginePort, path: string): Promise<string> {
+  const resolved = await executeProcess(port.processes, ['realpath', '-m', '--', path]).catch(() => null)
+  return resolved?.exitCode === 0 && resolved.stdout.trim() ? resolved.stdout.trim() : path
+}
+
+/**
+ * Tells whether a directory is a checkout or lies under it.
+ * @param directory - The resolved directory.
+ * @param checkout - The resolved checkout.
+ * @returns Whether the directory is inside the checkout.
+ */
+function isInside(directory: string, checkout: string): boolean {
+  return directory === checkout || directory.startsWith(`${checkout}/`)
+}
+
+/**
+ * Finds a checkout that may hold a unit's work outside its branch's worktree: the one its session worked in, which its transcript's
+ * directory names, when it is no longer the branch's worktree, on whatever branch or commit. Only when no transcript identifies that
+ * checkout and the branch has no worktree, any linked checkout with a detached HEAD, as a rebase, a bisect or a checkout of an older commit
+ * leaves it, may be the unit's; checkouts earlier retirements set aside are left out.
+ * @param port - The engine calls.
+ * @param issue - The issue number.
+ * @param worktree - The branch's worktree, or null when it has none.
+ * @param transcripts - The unit session's transcript paths.
+ * @returns Why retiring is unsafe, naming the checkout, or null when no such checkout exists.
+ */
+async function findStrayCheckout(port: EnginePort, issue: number, worktree: string | null, transcripts: string[]): Promise<string | null> {
+  const worktrees = await readWorktrees(port.processes)
+  if (!worktrees) return 'the worktrees cannot be listed, so a checkout of the unit cannot be ruled out'
+  // why: Claude Code files a session's transcript under its working directory with every other character than a letter or digit as `-`.
+  const sessionDirectories = transcripts.map(path => path.split('/').at(-2))
+  const listed = worktrees.filter(each => !/\.retired-\d{8}T\d{6}Z$/.test(each.root))
+  const describe = (each: (typeof listed)[number]): string => each.branch ? `on ${each.branch.replace(/^refs\/heads\//, '')}` : `detached at ${each.head.slice(0, 7)}`
+  const own = listed.find(each => sessionDirectories.includes(each.root.replace(/[^A-Za-z0-9]/g, '-')))
+  if (own) return own.root === worktree ? null : `the checkout at ${quoteWord(own.root)} #${issue}'s session worked in is ${describe(own)}`
+  // why: a long working directory gets a shortened transcript directory, so a checkout no transcript names may still be the unit's.
+  const detached = worktree === null ? listed.slice(1).find(each => !each.branch) : undefined
+  return detached ? `the checkout at ${quoteWord(detached.root)} is ${describe(detached)}` : null
 }
 
 /**
@@ -209,6 +356,7 @@ export async function readArchives(port: EnginePort, issue: number): Promise<Arc
   const common = await readCommonDir(port)
   const directory = recordsPath(common, bucket)
   const names = (await port.files.list(directory).catch(() => [])).map(entry => entry.name).filter(name => name.startsWith(`${issue}-`) && name.endsWith('.json')).sort()
+  // why: an archive that cannot be read is left out, so one bad file never hides the issue's other retirements.
   const archives = await Promise.all(names.map(async name => parseArchive(await readJson(port.files, `${directory}/${name}`).catch(() => null))))
   return archives.filter((archive): archive is Archive => archive?.issue === issue)
 }
@@ -232,43 +380,15 @@ async function findMerge(port: EnginePort, branch: string, tip: string): Promise
 }
 
 /**
- * Archives a unit's work: its branch tip as a ref and its uncommitted changes as a patch, with a record naming both and the restore command.
- * @param port - The engine calls.
- * @param common - The git common directory.
- * @param plan - The retirement.
- * @returns The archive, or why it could not be made.
- */
-async function archiveUnit(port: EnginePort, common: string, plan: RetirementPlan): Promise<Result<Archive>> {
-  const stamp = new Date(await port.now()).toISOString().replace(/[-:]|\.\d+/g, '')
-  const ref = `refs/${bucket}/${plan.issue}/${stamp}`
-  if (await readGitOutput(port.processes, ['update-ref', ref, plan.tip, '']) === null) return fail(`cannot write ${ref}`)
-  await executeProcess(port.processes, ['mkdir', '-p', '--', recordsPath(common, bucket)])
-  const patch = plan.isDirty && plan.worktree ? recordsPath(common, bucket, `${plan.issue}-${stamp}.patch`) : null
-  if (patch && plan.worktree) {
-    // why: staging every path first puts untracked files in the patch too; the worktree is removed next, so its index does not matter.
-    await runGit(port.processes, ['-C', plan.worktree, 'add', '-A'])
-    const diff = await runGit(port.processes, ['-C', plan.worktree, 'diff', '--cached', '--binary', 'HEAD'])
-    if (diff.exitCode !== 0) return fail(`archived ${ref}, but cannot read the uncommitted changes in ${plan.worktree}`)
-    await atomicReplace(port, patch, diff.stdout)
-  }
-  const path = plan.worktree ?? `../${plan.branch.replace(/\//g, '-')}`
-  const restore = `git worktree add ${path} -b ${plan.branch} ${ref}${patch ? ` && git -C ${path} apply --index ${patch}` : ''}`
-  const archive: Archive = { v: 1, issue: plan.issue, branch: plan.branch, ref, patch, restore }
-  await atomicReplace(port, recordsPath(common, bucket, `${plan.issue}-${stamp}.json`), JSON.stringify(archive))
-  return succeed(archive)
-}
-
-/**
- * Removes a unit once its work is archived: the herdr workspace with its agent first, so the session writes no more records, then its
- * mailbox's messages move into the archive, then the worktree, the branch, the records and the transcript go.
+ * Removes what a unit leaves outside its checkout once the checkout is set aside: its mailbox's messages move into the archive, then its
+ * records and transcript go.
  * @param port - The engine calls.
  * @param common - The git common directory.
  * @param plan - The retirement.
  * @param archive - The retirement's archive.
  * @returns Nothing, or the step that failed.
  */
-async function removeUnit(port: EnginePort, common: string, plan: RetirementPlan, archive: Archive): Promise<Result<void>> {
-  if (plan.workspace) await runHerdr(port, ['worktree', 'remove', '--workspace', plan.workspace.workspaceId, '--force'])
+async function removeRecords(port: EnginePort, common: string, plan: RetirementPlan, archive: Archive): Promise<Result<void>> {
   // why: the retired session's mail stays readable for the record, but out of the mailbox a respawn reads.
   const target = mailArchivePath(common, archive)
   await executeProcess(port.processes, ['mkdir', '-p', '--', target])
@@ -278,26 +398,23 @@ async function removeUnit(port: EnginePort, common: string, plan: RetirementPlan
       return fail(`cannot move ${source} into ${target}`)
     }
   }
-  const worktree = await findWorktreeRoot(port.processes, plan.branch)
-  if (worktree && await readGitOutput(port.processes, ['worktree', 'remove', '--force', worktree]) === null) return fail(`cannot remove worktree ${worktree}`)
-  if (await readGitOutput(port.processes, ['branch', '-D', plan.branch]) === null) return fail(`cannot delete branch ${plan.branch}`)
   const paths = [...plan.records, ...plan.transcripts]
   if (paths.length && (await executeProcess(port.processes, ['rm', '-rf', '--', ...paths])).exitCode !== 0) return fail('cannot remove the records and transcript')
   return succeed(undefined)
 }
 
 /**
- * Finds a unit session's transcript, wherever Claude Code filed it: the session id belongs to the repository and issue alone.
+ * Finds a unit's session transcripts, wherever Claude Code filed them: each session id belongs to the repository and issue alone.
  * @param port - The engine calls.
- * @param session - The unit's session id.
- * @returns The transcript file and its directory of subagent transcripts, where they exist.
+ * @param sessions - The unit's session ids: the recorded one, the derived one a later spawn would resume, and those handoffs superseded.
+ * @returns Each transcript file and its directory of subagent transcripts, where they exist.
  */
-async function findTranscripts(port: EnginePort, session: string): Promise<Result<string[]>> {
+async function findTranscripts(port: EnginePort, sessions: string[]): Promise<Result<string[]>> {
   const directory = await port.readClaudeDir()
   if (!directory) return fail('neither CLAUDE_CONFIG_DIR nor HOME is set, so the unit\'s transcript cannot be found, and a kept transcript would make the next spawn resume it')
   const projects = `${directory}/projects`
   const entries = await port.files.list(projects).catch(() => [])
-  return succeed(await filterExisting(port, entries.flatMap(entry => [`${projects}/${entry.name}/${session}.jsonl`, `${projects}/${entry.name}/${session}`])))
+  return succeed(await filterExisting(port, entries.flatMap(entry => sessions.flatMap(session => [`${projects}/${entry.name}/${session}.jsonl`, `${projects}/${entry.name}/${session}`]))))
 }
 
 /**
@@ -312,6 +429,7 @@ async function listBranchRecords(port: EnginePort, common: string, name: RecordB
   const directory = recordsPath(common, name)
   const entries = (await port.files.list(directory).catch(() => [])).filter(entry => entry.name.endsWith('.json'))
   const named = await Promise.all(entries.map(async entry => {
+    // why: a record that cannot be read is not taken as this branch's, so retirement never moves a file it could not check.
     const value: unknown = await readJson(port.files, `${directory}/${entry.name}`).catch(() => null)
     return isRecord(value) && value.branch === branch ? [`${directory}/${entry.name}`] : []
   }))
@@ -335,7 +453,9 @@ async function filterExisting(port: EnginePort, paths: string[]): Promise<string
  * @returns The archive, or null.
  */
 function parseArchive(value: unknown): Archive | null {
-  return isRecord(value) && value.v === 1 && typeof value.issue === 'number' && typeof value.branch === 'string' && typeof value.ref === 'string'
-    && (value.patch === null || typeof value.patch === 'string') && typeof value.restore === 'string'
-    ? { v: 1, issue: value.issue, branch: value.branch, ref: value.ref, patch: value.patch, restore: value.restore } : null
+  if (!isRecord(value) || value.v !== 1 || typeof value.issue !== 'number' || typeof value.branch !== 'string' || typeof value.ref !== 'string'
+    || typeof value.restore !== 'string') return null
+  // why: a record written before checkouts were moved aside names no checkout and no reclaim command.
+  const optional = (field: unknown): string | null => typeof field === 'string' ? field : null
+  return { v: 1, issue: value.issue, branch: value.branch, ref: value.ref, checkout: optional(value.checkout), restore: value.restore, reclaim: optional(value.reclaim) }
 }

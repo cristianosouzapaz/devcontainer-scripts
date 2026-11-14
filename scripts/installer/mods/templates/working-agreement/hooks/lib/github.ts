@@ -4,10 +4,16 @@ import { isNonEmptyString, isRecord } from './guards'
 import { parseClosingIssues } from './closing-keywords'
 import { isPrFields, isActiveRule, isCheckRun, isClosingPullRequest, isComparison, isCompleteConnection, isCrossReference, isPullRequestCandidate, isReferencingPullRequest, isRequiredCheckRule, isRuleset, isStatus, isWorkflowRun } from './github-rows'
 import type { PullRequestRow } from './github-rows'
-import { hasExitedZero, runProcess } from './process'
+import { callGh, isOutcomeUnknown, notFound, readGhOutput } from './gh-call'
+import type { GhEffect } from './gh-call'
 import type { ProcessPort } from './process'
-import { fail, succeed } from './result'
+import { fail, firstLineOf, succeed } from './result'
 import type { Result } from './result'
+
+/** A gh failure, marked when a write it made may have landed, and when its failed request never left. */
+interface GhRunFailure { isOk: false; error: string; isOutcomeUnknown?: true; isNeverSent?: true }
+/** What gh printed, or why it failed. */
+type GhRunResult = Exclude<Result<string>, { isOk: false }> | GhRunFailure
 
 /** An issue comment with its body, as the delegated-decision markers are read from it. */
 export interface MarkedComment { url: string; body: string }
@@ -62,8 +68,12 @@ const writeTimeoutMs = 60000
  * @returns The decoded body, null for an optional HTTP 404, or the selected HTTP-status or stderr failure.
  */
 async function readRest<T>(processes: ProcessPort, endpoint: string, decode: (body: unknown) => Result<T>, isOptional = false): Promise<Result<T | null>> {
-  const run = await runProcess(processes, ['gh', 'api', '--include', endpoint])
-  if (!run.isOk) return run
+  const call = await callGh(processes, ['api', '--include', endpoint])
+  const run = call.run
+  if (!run.isOk || (call.failure !== null && !['not-found', 'permanent'].includes(call.failure))) {
+    const failed = readGhOutput(call)
+    return failed.isOk ? fail('unreadable gh output') : failed
+  }
   const { stdout, stderr, exitCode } = run.value
   const split = /\r?\n\r?\n/.exec(stdout)
   const status = /^HTTP\/\S+ (\d{3})\b/.exec(stdout)?.[1]
@@ -94,10 +104,11 @@ async function readBranchRules(processes: ProcessPort, base: string): Promise<Re
  * @returns Connected, unauth when gh asks for a login, or unreachable on any other failure.
  */
 export async function probeGithub(processes: ProcessPort): Promise<GithubProbe> {
-  const run = await runProcess(processes, ['gh', 'api', 'user', '--jq', '.login'], probeTimeoutMs)
-  if (run.isOk && run.value.exitCode === 0) return { status: 'connected', error: null }
-  const error = run.isOk ? run.value.stderr.trim() : run.error
-  return { status: run.isOk && /auth login|not logged|authenticat/i.test(run.value.stderr) ? 'unauth' : 'unreachable', error }
+  const call = await callGh(processes, ['api', 'user', '--jq', '.login'], 'read', probeTimeoutMs)
+  const run = call.run
+  if (call.failure === null) return { status: 'connected', error: null }
+  const read = readGhOutput(call)
+  return { status: run.isOk && /auth login|not logged|authenticat/i.test(run.value.stderr) ? 'unauth' : 'unreachable', error: read.isOk ? '' : read.error }
 }
 
 /**
@@ -109,7 +120,7 @@ export async function probeGithub(processes: ProcessPort): Promise<GithubProbe> 
  */
 export async function readIssue(processes: ProcessPort, issue: number): Promise<Result<IssueSnapshot>> {
   const query = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){issue(number:${issue}){state title url labels(first:100){nodes{name}}}}}`
-  const repository = await readGraphql(processes, query, [], { fallback: 'not found' })
+  const repository = await readGraphql(processes, query, [], { fallback: notFound })
   if (!repository.isOk) return repository
   const fields = isRecord(repository.value.issue) ? repository.value.issue : null
   if (!fields) return fail('unreadable gh output')
@@ -159,6 +170,19 @@ export async function readMarkedComments(processes: ProcessPort, issue: number):
 }
 
 /**
+ * Reads every comment of an issue fresh, with its body, author and creation time.
+ * @param processes - The engine's process runner.
+ * @param issue - The issue number.
+ * @returns The comments, or the read failure.
+ */
+export async function readAuthoredComments(processes: ProcessPort, issue: number): Promise<Result<AuthoredComment[]>> {
+  const rows = await readRows(processes, ['gh', 'api', `repos/{owner}/{repo}/issues/${issue}/comments`, '--paginate', '--jq',
+    '.[] | {url: .html_url, body, createdAt: .created_at, author: .user.login}'])
+  return rows.isOk ? succeed(rows.value.map(row => ({ url: toStringOrEmpty(row.url), body: toStringOrEmpty(row.body), createdAt: toStringOrEmpty(row.createdAt), author: toStringOrEmpty(row.author) })))
+    : fail(`cannot read the comments of #${issue}: ${rows.error}`)
+}
+
+/**
  * Reads one comment of an issue fresh, with its author and creation time.
  * @param processes - The engine's process runner.
  * @param issue - The issue number.
@@ -166,14 +190,12 @@ export async function readMarkedComments(processes: ProcessPort, issue: number):
  * @returns The comment, or why it cannot be read or is not on the issue.
  */
 export async function readAuthoredComment(processes: ProcessPort, issue: number, url: string): Promise<Result<AuthoredComment>> {
-  const rows = await readRows(processes, ['gh', 'api', `repos/{owner}/{repo}/issues/${issue}/comments`, '--paginate', '--jq',
-    '.[] | {url: .html_url, body, createdAt: .created_at, author: .user.login}'])
-  if (!rows.isOk) return fail(`cannot read the comments of #${issue}: ${rows.error}`)
-  const row = rows.value.find(each => each.url === url)
-  if (!row) return fail(`${url} is not a comment of #${issue}`)
-  const createdAt = toStringOrEmpty(row.createdAt)
-  if (!Number.isFinite(Date.parse(createdAt))) return fail(`${url} has no readable creation time`)
-  return succeed({ url, body: toStringOrEmpty(row.body), createdAt, author: toStringOrEmpty(row.author) })
+  const comments = await readAuthoredComments(processes, issue)
+  if (!comments.isOk) return comments
+  const comment = comments.value.find(each => each.url === url)
+  if (!comment) return fail(`${url} is not a comment of #${issue}`)
+  if (!Number.isFinite(Date.parse(comment.createdAt))) return fail(`${url} has no readable creation time`)
+  return succeed(comment)
 }
 
 /**
@@ -182,21 +204,26 @@ export async function readAuthoredComment(processes: ProcessPort, issue: number,
  * @returns The login, or the read failure.
  */
 export async function readGhLogin(processes: ProcessPort): Promise<Result<string>> {
-  const run = hasExitedZero(await runProcess(processes, ['gh', 'api', 'user', '--jq', '.login']))
+  const run = readGhOutput(await callGh(processes, ['api', 'user', '--jq', '.login']))
   if (!run.isOk) return fail(`cannot read the gh login: ${run.error}`)
   const login = run.value.stdout.trim()
   return login ? succeed(login) : fail('gh printed no login')
 }
 
 /**
- * Runs gh, failing on a non-zero exit with its first error line.
+ * Runs gh with the retries its effect allows, failing on a non-zero exit with the failure's real cause.
  * @param processes - The engine's process runner.
  * @param args - The gh arguments.
- * @returns What gh printed, or the failure.
+ * @param effect - What the call may change; a read gets the read timeout, a write the longer write timeout.
+ * @returns What gh printed, or the failure; `isOutcomeUnknown` marks a failed write that may have landed, `isNeverSent` one
+ * whose failed request never left.
  */
-export async function runGh(processes: ProcessPort, args: string[]): Promise<Result<string>> {
-  const run = hasExitedZero(await runProcess(processes, ['gh', ...args], writeTimeoutMs))
-  return run.isOk ? succeed(run.value.stdout) : run
+export async function runGh(processes: ProcessPort, args: string[], effect: GhEffect = 'idempotent'): Promise<GhRunResult> {
+  const call = await callGh(processes, args, effect, effect === 'read' ? undefined : writeTimeoutMs)
+  const run = readGhOutput(call)
+  if (run.isOk) return succeed(run.value.stdout)
+  if (!isOutcomeUnknown(call)) return run
+  return call.failure === 'never-sent' ? { ...run, isOutcomeUnknown: true, isNeverSent: true } : { ...run, isOutcomeUnknown: true }
 }
 
 /**
@@ -207,7 +234,10 @@ export async function runGh(processes: ProcessPort, args: string[]): Promise<Res
  * @returns Success, or a failure with gh's first error line.
  */
 export async function openIssueInBrowser(processes: ProcessPort, issue: number): Promise<Result<undefined>> {
-  const run = hasExitedZero(await runProcess(processes, ['gh', 'issue', 'view', String(issue), '--web']))
+  const call = await callGh(processes, ['issue', 'view', String(issue), '--web'])
+  // why: the pane shows a failed open as one row, so its note keeps gh's first stderr line; the call's class is already read from all of it.
+  const firstLine = call.run.isOk ? { ...call, run: { ...call.run, value: { ...call.run.value, stderr: firstLineOf(call.run.value.stderr.trim()) } } } : call
+  const run = readGhOutput(firstLine)
   return run.isOk ? succeed(undefined) : run
 }
 
@@ -229,7 +259,6 @@ export async function listPullRequests(processes: ProcessPort, branch: string): 
   if (!isCompleteConnection(connection) || !Array.isArray(connection.nodes)) return fail('PR candidate list incomplete or unreadable')
   const rows: unknown[] = connection.nodes
   if (rows.some(row => isRecord(row) && !isCompleteConnection(row.closingIssuesReferences))) return fail('PR candidate list incomplete or unreadable')
-  // Preserve the original string coercion after the numeric guards, including non-string JSON values.
   const candidates: PullRequestRow[] = []
   for (const row of rows) {
     const candidate = isRecord(row) && typeof row.number === 'number' && Number.isSafeInteger(row.number) && row.number > 0 ? { ...row, state: String(row.state) } : row
@@ -272,8 +301,7 @@ export async function readCommitChecks(processes: ProcessPort, sha: string): Pro
   if (!statuses.isOk) return statuses
   if (!checks.value.every(isCheckRun)) return fail('unreadable gh output')
   if (!statuses.value.every(isStatus)) return fail('unreadable gh output')
-  // why: GitHub Actions creates a workflow run on the push or PR event, before its first check run, so zero checks
-  // with a run not yet completed is CI starting, not a repository without CI.
+  // why: GitHub Actions creates a workflow run on the push or PR event, before its first check run, so zero checks with a run not yet completed is CI starting, not a repository without CI.
   if (!checks.value.length && !statuses.value.length) {
     const runs = await readRows(processes, ['gh', 'api', '--paginate', `repos/{owner}/{repo}/actions/runs?head_sha=${sha}`, '--jq', '.workflow_runs[] | {name, path, status}'])
     if (!runs.isOk) return runs
@@ -332,7 +360,7 @@ export async function readBranchRulesets(processes: ProcessPort, base: string): 
   const grouped = new Map<number, string[]>()
   const active = rules.value.map(rule => ({ ...rule, ruleset_id: Number(rule.ruleset_id) })).filter(isActiveRule)
   for (const rule of active) grouped.set(rule.ruleset_id, [...(grouped.get(rule.ruleset_id) ?? []), typeof rule.type === 'string' ? rule.type : 'unknown'])
-  // GitHub's ruleset list leaves current_user_can_bypass null; only the single-ruleset read carries it.
+  // why: GitHub's ruleset list leaves current_user_can_bypass null; only the single-ruleset read carries it.
   const rulesets = await Promise.all([...grouped.keys()].map(id => readRest(processes, `repos/{owner}/{repo}/rulesets/${id}`, succeed)))
   const failure = rulesets.find(ruleset => !ruleset.isOk)
   if (failure && !failure.isOk) return failure
@@ -352,7 +380,7 @@ export async function readBranchRulesets(processes: ProcessPort, base: string): 
 export async function readBranchProtection(processes: ProcessPort, base: string): Promise<Result<boolean>> {
   const data = await readRest(processes, `repos/{owner}/{repo}/branches/${encodeURIComponent(base)}`, succeed)
   if (!data.isOk) return data
-  // GitHub sets `protected` for a ruleset too; `protection.enabled` is the classic rule alone.
+  // why: GitHub sets `protected` for a ruleset too, so only `protection.enabled` tells the classic rule alone.
   const protection = isRecord(data.value) ? data.value.protection : null
   return isRecord(protection) && typeof protection.enabled === 'boolean' ? succeed(protection.enabled) : fail('unreadable gh output')
 }
@@ -391,7 +419,7 @@ export async function readClosingPullRequests(processes: ProcessPort, issue: num
  * @param repository - The repository payload.
  * @returns Its name and default branch, or null when the name is unreadable.
  */
-function readRepositoryIdentity(repository: Record<string, unknown>): RepositoryIdentity | null {
+export function readRepositoryIdentity(repository: Record<string, unknown>): RepositoryIdentity | null {
   if (typeof repository.nameWithOwner !== 'string') return null
   const ref = repository.defaultBranchRef
   return { nameWithOwner: repository.nameWithOwner, defaultBranch: isRecord(ref) && typeof ref.name === 'string' ? ref.name : null }
@@ -405,7 +433,7 @@ function readRepositoryIdentity(repository: Record<string, unknown>): Repository
  * @returns The parsed records, or a process or response failure.
  */
 async function readRows(processes: ProcessPort, args: string[], unreadable = 'unreadable gh output'): Promise<Result<Record<string, unknown>[]>> {
-  const run = hasExitedZero(await runProcess(processes, args))
+  const run = readGhOutput(await callGh(processes, args.slice(1)))
   if (!run.isOk) return run
   const rows = run.value.stdout.trim() ? run.value.stdout.trim().split('\n').map(parseJson) : []
   if (!rows.every(row => row.isOk && isRecord(row.value))) return fail(unreadable)
@@ -423,7 +451,7 @@ export async function readPrFields(processes: ProcessPort, number: number): Prom
   const repository = await readGraphql(processes, query, [], { unreadable: 'unreadable PR fields' })
   if (!repository.isOk) return repository
   const fields = repository.value.pullRequest
-  // Rebuild in a fixed order: GraphQL object key order must not change a fact's identity.
+  // why: rebuilt in a fixed order, since GraphQL object key order must not change a fact's identity.
   return isPrFields(fields) ? succeed({ state: fields.state, closedAt: fields.closedAt,
     autoMergeRequest: fields.autoMergeRequest ? {
       authorEmail: fields.autoMergeRequest.authorEmail, commitBody: fields.autoMergeRequest.commitBody, commitHeadline: fields.autoMergeRequest.commitHeadline,
@@ -442,7 +470,7 @@ export async function readPrFields(processes: ProcessPort, number: number): Prom
  * @returns The repository payload, or the corresponding failure.
  */
 export async function readGraphql(processes: ProcessPort, query: string, variables: string[] = [], failures: GraphqlFailures = {}): Promise<Result<Record<string, unknown>>> {
-  const run = hasExitedZero(await runProcess(processes, ['gh', 'api', 'graphql', '-F', 'owner={owner}', '-F', 'name={repo}', ...variables.flatMap(value => ['-f', value]), '-f', `query=${query}`]), failures.fallback)
+  const run = readGhOutput(await callGh(processes, ['api', 'graphql', '-F', 'owner={owner}', '-F', 'name={repo}', ...variables.flatMap(value => ['-f', value]), '-f', `query=${query}`]), failures.fallback)
   if (!run.isOk) return run
   const data = parseJson(run.value.stdout)
   if (data.isOk && isRecord(data.value) && data.value.errors !== undefined) return fail(failures.errors ?? failures.unreadable ?? 'unreadable gh output')

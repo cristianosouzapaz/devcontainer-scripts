@@ -8,7 +8,7 @@ import { readSession, updateSession, updateUnits } from '../core/record-store'
 import { withRecordLock } from '../core/session-memory'
 import { mergeUnique } from '../domain/records'
 
-// The skills the coordinator may run for the user under delegation; the other user-step skills stay the user's.
+// why: under delegation the coordinator may run only these user-step skills for the user; the others stay the user's.
 const delegableSkills = ['to-spec', 'to-tickets']
 
 /**

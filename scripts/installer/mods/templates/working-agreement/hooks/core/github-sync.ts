@@ -5,7 +5,7 @@ import { probeGithub, readIssue, readIssueComments, readSubIssues } from '../lib
 import type { IssueSnapshot } from '../lib/github'
 import type { ProcessPort } from '../lib/process'
 import { createLimiter } from '../lib/queue'
-import { fail } from '../lib/result'
+import { fail, firstLineOf } from '../lib/result'
 import type { Result } from '../lib/result'
 import type { EnginePort } from './engine-port'
 import { updateSession } from './record-store'
@@ -26,8 +26,7 @@ interface IssueMerge { info: IssueInfo; error: string | null }
 /** How an issue sync runs: whether it reads within its minute, and whether a probe that last failed runs again then. */
 interface SyncOptions { isForced?: boolean; isProbeForced?: boolean }
 
-// why: `/flow status` probes on its own and through the re-read it starts; a forced read this soon after another
-// reuses that probe, in flight or settled, rather than paying for a second one.
+// why: `/flow status` probes on its own and through the re-read it starts; a forced read this soon after another reuses that probe, in flight or settled, rather than paying for a second one.
 const probeReuseMs = 1000
 // why: Every issue starts up to three gh reads at once; a unit with many issues must not start them all together.
 const ghConcurrency = 4
@@ -43,11 +42,11 @@ const ghConcurrency = 4
 export async function readGithubStatus(port: EnginePort, isForced = false, isFresh = false): Promise<GithubStatus> {
   const now = await port.now()
   const age = sessionMemory.githubProbe ? now - sessionMemory.githubProbe.at : Infinity
-  // A clock that moved back makes the last probe's age unknown, so it is not reused.
+  // why: a clock that moved back makes the last probe's age unknown, so it is not reused.
   if (!isFresh && sessionMemory.githubProbe && age >= 0 && age < (isForced ? probeReuseMs : githubTtlMs)) return sessionMemory.githubProbe.status
-  // Stored before the probe settles, so a read that starts meanwhile shares it.
+  // why: the probe is stored before it settles, so a read that starts meanwhile shares it.
   const status: Promise<GithubStatus> = probeGithub(port.processes).then(probe => {
-    // A probe that a newer one replaced while it ran leaves the newer answer in place.
+    // why: a probe that a newer one replaced while it ran must leave the newer answer in place.
     if (sessionMemory.githubProbe?.status !== status) return probe.status
     if (probe.status === 'connected') {
       sessionMemory.githubLastOk = now
@@ -67,7 +66,8 @@ export async function readGithubStatus(port: EnginePort, isForced = false, isFre
  * @returns The fresh list, the stored list when the read failed, or the failure when no list was ever read.
  */
 function keepList<T>(read: Result<T[]>, previous: T[] | ReadFailure | undefined): T[] | ReadFailure {
-  return read.isOk ? read.value : Array.isArray(previous) ? previous : { error: read.error }
+  // why: the fact is shown on one pane row, so it keeps gh's first error line; /flow status's GitHub row keeps the whole error.
+  return read.isOk ? read.value : Array.isArray(previous) ? previous : { error: firstLineOf(read.error) }
 }
 
 /**
@@ -87,7 +87,7 @@ function readGoodInfo(previous: IssueInfo | undefined): IssueRead | undefined {
  */
 export function mergeIssue(previous: IssueInfo | undefined, answer: IssueAnswer): IssueMerge {
   const kept = readGoodInfo(previous)
-  if (!answer.issue.isOk) return { info: kept ?? { error: `GitHub read failed (${answer.issue.error})` }, error: answer.issue.error }
+  if (!answer.issue.isOk) return { info: kept ?? { error: `GitHub read failed (${firstLineOf(answer.issue.error)})` }, error: answer.issue.error }
   const { comments, subIssues, issue: { value: issue } } = answer
   const failed = [comments, subIssues].find(read => read && !read.isOk)
   return {
@@ -118,7 +118,7 @@ async function readIssueAnswer(processes: ProcessPort, flow: string | null, numb
  * @returns The reason: not authenticated, gh's first error line (a timeout included), or unreachable.
  */
 function describeUnavailable(github: GithubStatus): string {
-  return github === 'unauth' ? 'not authenticated — run gh auth login' : sessionMemory.githubError?.trim().split('\n')[0] || 'unreachable'
+  return github === 'unauth' ? 'not authenticated — run gh auth login' : firstLineOf(sessionMemory.githubError?.trim() ?? '') || 'unreachable'
 }
 
 /**
@@ -141,7 +141,7 @@ export function markIssuesDeclared(now: number, error: string | null): void {
   sessionMemory.issuesCheckedAt = now
   sessionMemory.issuesAttempt += 1
   applyIssuesOutcome(sessionMemory.issuesAttempt, now, error)
-  // The last full read may have been of another unit's issues, so its time no longer dates these facts.
+  // why: the last full read may have been of another unit's issues, so its time no longer dates these facts.
   if (error !== null) sessionMemory.issuesReadAt = null
 }
 
@@ -174,7 +174,7 @@ function applyIssuesOutcome(attempt: number, now: number, error: string | null):
  */
 export function readIssueAnswers(processes: ProcessPort, flow: string | null, issues: number[]): Promise<IssueAnswer[]> {
   const limit = createLimiter(ghConcurrency)
-  const limited: ProcessPort = { run: (argv, options) => limit(() => processes.run(argv, options)) }
+  const limited: ProcessPort = { ...processes, run: (argv, options) => limit(() => processes.run(argv, options)) }
   return Promise.all(issues.map(issue => readIssueAnswer(limited, flow, issue)))
 }
 
@@ -198,7 +198,7 @@ export async function syncIssues(port: EnginePort, held: VersionedSession, optio
   sessionMemory.issuesCheckedAt = now
   sessionMemory.issuesAttempt += 1
   const attempt = sessionMemory.issuesAttempt
-  // A connected answer keeps its minute, so only recovery from an outage pays for the extra probe.
+  // why: a connected answer keeps its minute, so only recovery from an outage pays for the extra probe.
   const github = await readGithubStatus(port, isProbeForced && sessionMemory.githubCache?.status !== 'connected')
   const reason = github === 'connected' ? null : describeUnavailable(github)
   const answers = reason === null ? await readIssueAnswers(port.processes, session.flow, session.issues)
@@ -207,12 +207,11 @@ export async function syncIssues(port: EnginePort, held: VersionedSession, optio
     const outcome: { error: string | null; isApplied: boolean } = { error: null, isApplied: false }
     const written = await updateSession(port, current => {
       outcome.isApplied = false
-      // The info is for the issues read; a unit declared meanwhile has its own.
+      // why: the info is for the issues read, and a unit declared meanwhile has its own.
       if (JSON.stringify(current.issues) !== JSON.stringify(session.issues)) return null
       const merges = session.issues.map((issue, index) => mergeIssue(current.info[issue], answers[index]!))
       outcome.error = merges.find(merge => merge.error !== null)?.error ?? null
-      // A newer attempt already stored its outcome, or one still in flight will: a failed older one has nothing to add,
-      // even when that newer one then fails to write, since the next sync reads again.
+      // why: a newer attempt already stored its outcome, or one still in flight will: a failed older one has nothing to add, even when that newer one then fails to write, since the next sync reads again.
       if (attempt < sessionMemory.issuesAppliedAttempt || (outcome.error !== null && attempt < sessionMemory.issuesAttempt)) return null
       outcome.isApplied = true
       const info = Object.fromEntries(session.issues.map((issue, index) => [issue, merges[index]!.info]))

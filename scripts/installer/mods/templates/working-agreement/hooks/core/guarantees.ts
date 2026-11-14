@@ -1,7 +1,6 @@
 import type { PrSnapshot, UncheckedReason, Violation, ViolationFact } from '../../types'
 import { listNewCommits, readContentTree, readGitOutput, readGitState, readWorktrees } from '../lib/git'
 import { readPrFields } from '../lib/github'
-import { runProcess } from '../lib/process'
 import { fail, formatError } from '../lib/result'
 import { bestEffort, logFailure } from './best-effort'
 import { claimDelegatedCommits } from './delegated-commits'
@@ -12,12 +11,11 @@ import { readCommonDir, readSession, temporaryPath, updateSession, recordsPath }
 import { modToolPrefix } from '../domain/messages'
 import { sameIdentity, uncheckedReasons } from '../domain/records'
 import { readRepositoryRoot } from './repository'
-import { sessionMemory, withRecordLock } from './session-memory'
+import { withRecordLock } from './session-memory'
 import { drawTerritory } from './territory'
 import type { RefSnapshot } from './territory'
 import { readCandidates, selectBasePullRequest } from './unit-github'
 import { pluralize } from '../domain/messages'
-import { readGithubStatus } from './github-sync'
 
 /** Which part of a PR snapshot failed: GitHub, or the git, repository, session or record reads around it. */
 interface PrFailure { read: 'PR' | 'repository'; error: string }
@@ -34,9 +32,6 @@ export interface GuaranteeSnapshot {
 
 /** Who reads a violation: the agent in its call result, or the user in the pane and `/flow status`. */
 type ViolationReader = 'agent' | 'user'
-
-// why: One short wait lets a blip longer than a round trip pass before the single retry, well inside the hook budget.
-const retryDelaySeconds = 1
 
 const readOnly = new Set([
   'Read', 'Grep', 'Glob', 'LS', 'LSP', 'WebFetch', 'WebSearch', 'AskUserQuestion', 'TodoWrite', 'ToolSearch', 'TaskOutput',
@@ -57,28 +52,18 @@ class GithubReadError extends Error {}
 export const checksGuarantees = (tool: string): boolean => !readOnly.has(tool)
 
 /**
- * Waits before a retry in a host `sleep`: a process call in flight stops the hook's budget clock, which a `$.clock` wait runs down.
- * @param port - The port the retry goes through.
- */
-async function waitBeforeRetry(port: EnginePort): Promise<void> {
-  await runProcess(port.processes, ['sleep', String(retryDelaySeconds)])
-}
-
-/**
  * Refreshes the last PR read in authoritative state, including tick and turn-end reads.
  * @param port - The engine calls.
  * @param number - The open PR selected by the unit reader, if any.
- * @param retry - The port a failed read is made once more through, as a guarantee snapshot needs so one transient failure leaves its call checked; none, no retry.
  * @returns The last fresh read, or null when no open PR is known.
  */
-export async function refreshPrSnapshot(port: EnginePort, number?: number, retry?: EnginePort): Promise<PrSnapshot | null> {
+export async function refreshPrSnapshot(port: EnginePort, number?: number): Promise<PrSnapshot | null> {
   const session = await readSession(port)
   if (!session.unit) return null
   const held = session.prSnapshot && sameIdentity(session.prSnapshot.unit, session.unit) ? session.prSnapshot : null
   const selected = number ?? (held?.fields.state === 'OPEN' ? held.number : undefined)
   if (!selected || (held?.number === selected && held.fields.state !== 'OPEN')) return null
-  const first = await readPrFields(port.processes, selected)
-  const read = first.isOk || !retry ? first : await waitBeforeRetry(retry).then(() => readPrFields(retry.processes, selected))
+  const read = await readPrFields(port.processes, selected)
   if (!read.isOk) throw new GithubReadError(read.error)
   const snapshot = { unit: session.unit, number: selected, fields: read.value }
   await withRecordLock(() => updateSession(port, current => current.unit && sameIdentity(current.unit, snapshot.unit) ? { ...current, prSnapshot: snapshot } : null))
@@ -86,36 +71,21 @@ export async function refreshPrSnapshot(port: EnginePort, number?: number, retry
 }
 
 /**
- * Reads the candidates once more after a short wait, through a probe of its own: the candidates cache and a forced
- * probe both reuse a failed first attempt, so only a fresh probe followed by a forced read reads again.
- * @param retry - The port the retry goes through.
- * @param branch - The unit branch.
- * @returns The candidates, or why the retry failed.
- */
-async function retryCandidates(retry: EnginePort, branch: string): ReturnType<typeof readCandidates> {
-  await waitBeforeRetry(retry)
-  const github = await readGithubStatus(retry, true, true)
-  return github === 'connected' ? readCandidates(retry, branch, false, true) : fail(`GitHub ${github}: ${sessionMemory.githubError?.trim().split('\n')[0] || 'no detail'}`)
-}
-
-/**
- * Captures the unit's open PR before a guarded operation, retrying each failed PR read once and rejecting unreadable repository facts.
+ * Captures the unit's open PR before a guarded operation, rejecting unreadable repository facts; each gh read retries a transient failure itself.
  * @param port - The engine calls.
- * @param retry - The port each retry goes through, outside the observation's shared reads, which hold a failure too.
  * @returns The existing or refreshed open-PR snapshot, or null without an open PR.
  */
-async function readPrBefore(port: EnginePort, retry: EnginePort): Promise<PrSnapshot | null> {
+async function readPrBefore(port: EnginePort): Promise<PrSnapshot | null> {
   const session = await readSession(port)
   if (!session.unit) return null
   if (session.prSnapshot && sameIdentity(session.prSnapshot.unit, session.unit)) return session.prSnapshot.fields.state === 'OPEN' ? session.prSnapshot : null
   const git = await readGitState(port.processes)
   if (!git.isOk || !git.value) throw new Error(git.isOk ? 'not a repository' : `repository unreadable: ${git.error}`)
-  const first = await readCandidates(port, session.unit.branch)
-  const candidates = first.isOk ? first : await retryCandidates(retry, session.unit.branch)
+  const candidates = await readCandidates(port, session.unit.branch)
   if (!candidates.isOk) throw new GithubReadError(`PR candidates unreadable: ${candidates.error}`)
   const chosen = selectBasePullRequest(candidates.value)
   if (!chosen.isOk) throw new GithubReadError(chosen.error)
-  return chosen.value?.state === 'OPEN' ? refreshPrSnapshot(port, chosen.value.number, retry) : null
+  return chosen.value?.state === 'OPEN' ? refreshPrSnapshot(port, chosen.value.number) : null
 }
 
 /**
@@ -126,7 +96,7 @@ async function readPrBefore(port: EnginePort, retry: EnginePort): Promise<PrSnap
 async function readRefs(port: EnginePort): Promise<RefSnapshot | null> {
   const refs = await readGitOutput(port.processes, ['for-each-ref', '--format=%(refname) %(objectname)'])
   const worktrees = await readWorktrees(port.processes)
-  // Without its root the session's own worktree would read as another's, silently dropping its commits.
+  // why: without its root the session's own worktree would read as another's, silently dropping its commits.
   const root = await readRepositoryRoot(port)
   if (refs === null || worktrees === null || root === null) return null
   return { refs: Object.fromEntries(refs.split('\n').filter(Boolean).map(line => line.split(' ') as [string, string])), worktrees, root }
@@ -165,7 +135,7 @@ export async function snapshotGuarantees(engine: EnginePort, tool: string, befor
   const pr = await (async (): Promise<{ value: PrSnapshot | null; failure: PrFailure | null }> => {
     if (isJudgedTool(tool)) return { value: null, failure: null }
     try {
-      const value = before ? (before.pr ? await refreshPrSnapshot(port, before.pr.number, engine) : null) : await readPrBefore(port, engine)
+      const value = before ? (before.pr ? await refreshPrSnapshot(port, before.pr.number) : null) : await readPrBefore(port)
       return { value, failure: before?.prFailure ?? null }
     } catch (error) {
       logFailure(port, 'PR snapshot read', fail(formatError(error)))
@@ -211,7 +181,7 @@ export async function judgeGuarantees(engine: EnginePort, before: GuaranteeSnaps
   if (!before.trees) reasons.add('trees read failed before')
   if (!after.trees) reasons.add('trees read failed after')
   if (before.prFailure) reasons.add(`${before.prFailure.read} read failed before`)
-  // The closing snapshot inherits the opening one's failure, so only a failure the opening one lacked is a fresh one.
+  // why: the closing snapshot inherits the opening one's failure, so only a failure the opening one lacked is a fresh one.
   else if (after.prFailure) reasons.add(`${after.prFailure.read} read failed after`)
   const beforeRefs = before.refs
   const afterRefs = after.refs
@@ -220,11 +190,11 @@ export async function judgeGuarantees(engine: EnginePort, before: GuaranteeSnaps
       const territory = drawTerritory(port, beforeRefs, afterRefs)
       const beforeTips = [...Object.values(beforeRefs.refs), ...beforeRefs.worktrees.map(wt => wt.head)].filter(Boolean)
       const candidates = await listNewCommits(port.processes, localTips(afterRefs), beforeTips)
-      // Git's min-age is inclusive; commits from the window's first second still count.
+      // why: git's min-age is inclusive, so one second is taken off for commits from the window's first second to still count.
       const fetched = candidates.length ? await listNewCommits(port.processes, remoteTips(afterRefs), beforeTips, before.windowStartSeconds - 1) : []
       const unfetched = candidates.filter(sha => !fetched.includes(sha))
       const verdict = unfetched.length ? await territory.judgeCommits(unfetched, beforeTips) : { shas: [], isUnplaced: false }
-      // A delegated unit's own unsigned commit is recorded as delegated, never as a violation.
+      // why: a delegated unit's own unsigned commit is recorded as delegated, never as a violation.
       const delegated = await claimDelegatedCommits(port, beforeRefs, afterRefs, verdict.shas)
       const shas = verdict.shas.filter(sha => !delegated.includes(sha))
       if (shas.length) facts.push({ kind: 'commit', fact: { shas }, checkouts: afterRefs.worktrees

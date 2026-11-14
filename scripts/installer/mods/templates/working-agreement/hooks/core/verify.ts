@@ -12,13 +12,17 @@ import { readGit, readRepositoryRoot } from './repository'
 import { hashObject, runGit } from '../lib/git'
 import type { FinishedCommand } from './run-command'
 import { formatExit } from './run-view'
-import { readRunDisplay, sessionMemory } from './session-memory'
+import { readProcessState } from './process-state'
+import { judgeTurnRunning, withTurnFacts } from './turn-evidence'
+import { readRunDisplay } from './session-memory'
 import { readUnitSlice } from './unit-slice'
-import { configPath, coversSelection, listConfigRunners, readConfigBlob, readRepositoryConfig, readVerifyConfig, readWorkingTreeConfig, selectVerify } from './verify-config'
+import { configPath, coversSelection, dedupeCommands, listConfigCommands, readConfigBlob, readRepositoryConfig, readVerifyConfig, readWorkingTreeConfig, selectVerify } from './verify-config'
 import { approvalScript } from '../domain/bash-guards'
 import { quoteIfNeeded } from '../lib/shell'
 import { facts } from '../domain/facts'
 import { isOwnTurnLive } from './verify-queue'
+import { isDelegatedChange } from './delegated-commits'
+import { findDelegation } from './delegation'
 
 /** Binds shared evidence to content and to the stage it ran at, so a pass at one stage never stands for the other. */
 interface EvidenceKey extends Pick<VerifyRecord, 'tree' | 'configBlob' | 'commands'> { stage: VerifyStage }
@@ -38,19 +42,19 @@ export async function isVerifyApproved(port: EnginePort, blob: string): Promise<
 }
 
 /**
- * Lists the programs and scripts the user's approved Verify configs run, which a delegated unit may only start through the queue.
+ * Lists the commands the user's approved Verify configs run, which a delegated unit may only start through the queue.
  * @param port - Engine calls.
- * @returns The runners; the working tree's config adds its own when an approval cannot be read back to a valid config.
+ * @returns The commands; the working tree's config adds its own when an approval cannot be read back to a valid config.
  */
-export async function readApprovedRunners(port: EnginePort): Promise<string[]> {
+export async function readApprovedCommands(port: EnginePort): Promise<string[][]> {
   const common = await readCommonDir(port)
   const names = common ? await port.files.list(recordsPath(common, 'ok')).then(entries => entries.map(entry => entry.name), () => null) : null
   const blobs = (names ?? []).filter(name => /^[0-9a-f]+\.json$/.test(name)).map(name => name.slice(0, -'.json'.length))
   const approved = (await Promise.all(blobs.map(async blob => await isVerifyApproved(port, blob) ? readConfigBlob(port, blob) : null))).filter(loaded => loaded !== null)
   const configs = approved.flatMap(loaded => loaded.kind === 'valid' ? [loaded.config] : [])
-  // why: a unit can edit its own tree's config, so that copy only ever adds runners, and only when the approved ones cannot all be read.
+  // why: a unit can edit its own tree's config, so that copy only ever adds commands, and only when the approved ones cannot all be read.
   const tree = names !== null && configs.length && configs.length === approved.length ? null : await readWorkingTreeConfig(port)
-  return [...new Set([...configs, ...tree?.kind === 'valid' ? [tree.config] : []].flatMap(listConfigRunners))]
+  return dedupeCommands([...configs, ...tree?.kind === 'valid' ? [tree.config] : []].flatMap(listConfigCommands))
 }
 
 /**
@@ -148,6 +152,7 @@ export async function writeVerifyEvidence(port: EnginePort, run: VerifyRecord & 
  */
 export async function readVerifyEvidence(port: EnginePort, key: EvidenceKey): Promise<VerifyEvidence | null> {
   const common = await readCommonDir(port)
+  // why: evidence that cannot be read counts as none, so Verify runs again rather than credit a pass it cannot check.
   return common ? parseVerifyEvidence(await evidencePath(port, common, key).then(path => readJson(port.files, path)).catch(() => null)) : null
 }
 
@@ -170,14 +175,17 @@ export async function readVerifyState(port: EnginePort, slice: UnitSlice | null,
   const loaded = await readVerifyConfig(port, slice?.tree ?? null)
   if (loaded.kind === 'missing') return { isVerified: false, isReached: true, fact: loaded.fact, factCode: 'verify-config-missing' }
   if (loaded.kind === 'invalid') return { isVerified: false, isReached: true, fact: facts.verifyConfigInvalid, detail: loaded.fact }
+  if (loaded.kind === 'unreadable') return { isVerified: false, isReached: true, fact: loaded.fact }
   if (!await isVerifyApproved(port, loaded.blob)) {
     const approval = await composeApprovalCommand(port, loaded.blob)
-    // why: Yellow says the user blocks the unit, so the wait shows only once the unit has nothing else to do: its turn ended, or its
-    // Verify call was refused for this config. Until then the unapproved config is a note on Code, which stays current.
-    // The turn and the Verify call are this session's own, so another unit judged from here, as a coordinator does, reads as waiting.
+    // why: Yellow says the user blocks the unit, so the wait shows only once the unit has nothing else to do: its turn ended, or its Verify call was refused for this config (until then the unapproved config is a note on Code, which stays current); the turn and the Verify call are this session's own, so another unit judged from here, as a coordinator does, reads as waiting.
     const own = (await readSession(port)).unit
     const isOwnUnit = !!identity && !!own && sameIdentity(own, identity)
-    if (isOwnUnit && sessionMemory.isTurnLive && sessionMemory.verifyAskedBlob !== loaded.blob) return { isVerified: false, isReached: false, approval, approvalBlob: loaded.blob }
+    // why: unknown process state is never taken for an idle unit, so it shows no wait.
+    // why: an ask this load saw whose write failed still counts, so the wait it began is shown.
+    const read = isOwnUnit ? await readProcessState(port) : null
+    const state = read && withTurnFacts(read)
+    if (isOwnUnit && (!state || judgeTurnRunning(state)) && state?.verifyAskedBlob !== loaded.blob) return { isVerified: false, isReached: false, approval, approvalBlob: loaded.blob }
     return { isVerified: false, isReached: true, fact: facts.verifyConfigApproval, isWaitingApproval: true, approval, approvalBlob: loaded.blob }
   }
   if (!slice?.tree) return { isVerified: false, isReached: false }
@@ -187,13 +195,11 @@ export async function readVerifyState(port: EnginePort, slice: UnitSlice | null,
   const shared = await readVerifyEvidence(port, { tree: slice.tree, configBlob: loaded.blob, commands: selection.commands, stage: 'unit' })
   const isOwn = (run: VerifyRecord): boolean => unit.verifyRuns.some(own => own.runId === run.runId)
   const foreign = shared && !isOwn(shared.run) ? shared : null
-  // Any outcome, config or selection on this tree and base ends Code, and so does another unit's run on this content; whether it
-  // verifies is judged below.
-  // why: The base only selects the commands, so a run on this tree under an earlier base, as before a merge commit moved it,
-  // still stands when its config ran every command the current selection asks for.
+  // why: any run on this tree and base ends Code whatever its outcome, config or selection (whether it verifies is judged below), and since the base only selects the commands, a run on this tree under an earlier base, as before a merge commit moved it, still counts when its config ran every command the current selection asks for.
   const onSlice = unit.verifyRuns.filter(run => run.tree === slice.tree
     && (run.base === slice.base || (run.configBlob === loaded.blob && coversSelection(run.commands, selection.commands))))
   const isReached = onSlice.length > 0 || !!foreign
+  if (!isReached && await isCommittedOutsideVerify(port, slice, unit, identity)) return { isVerified: false, isReached: true, isSetAside: true }
   const records = [...onSlice.filter(run => run.configBlob === loaded.blob), ...(foreign ? [foreign.run] : [])].sort((a, b) => b.at - a.at)
   const matching = records.filter(run => coversSelection(run.commands, selection.commands))
   const decider = matching[0]
@@ -206,6 +212,22 @@ export async function readVerifyState(port: EnginePort, slice: UnitSlice | null,
   return { isVerified: false, isReached, isError: outcome?.kind === 'fail' || outcome?.kind === 'timeout', fact: outcome?.kind === 'timeout' ? facts.verifyTimedOut(outcome.minutes)
     : outcome?.kind === 'fail' ? (outcome.signal ? facts.verifyFailedSignal : outcome.code === null ? facts.verifyFailed : facts.verifyFailedExit(outcome.code)) : undefined,
     ...(outcome?.kind === 'fail' && outcome.signal ? { detail: `failed, ${formatExit(outcome.code, outcome.signal)}` } : {}), ...run }
+}
+
+/**
+ * Tells whether a delegated unit's slice ends on a commit made outside its tools after a Verify of the unit on another tree, so Verify is set
+ * aside rather than shown as the step the unit is stuck at. Only a delegated unit commits through the commit tool, so elsewhere a commit after
+ * Verify is the user's normal path and reopens Code; work committed before any Verify of the unit is still verified first.
+ * @param port - Engine calls.
+ * @param slice - Current unit boundaries and content, with no Verify record on its tree.
+ * @param unit - The unit's Verify records.
+ * @param identity - The declared unit, whose issues tell whether it is delegated.
+ * @returns True when the clean end carries a change no delegated record holds, re-signed or not; false too when its change or the records cannot be read.
+ */
+async function isCommittedOutsideVerify(port: EnginePort, slice: UnitSlice, unit: Unit, identity: Identity | null | undefined): Promise<boolean> {
+  if (!identity || !slice.isClean || slice.commits === 0 || !unit.verifyRuns.some(run => run.tree !== slice.tree)) return false
+  if (!await findDelegation(port, identity.issues).catch(() => null)) return false
+  return await isDelegatedChange(port, slice.end) === false
 }
 
 /**

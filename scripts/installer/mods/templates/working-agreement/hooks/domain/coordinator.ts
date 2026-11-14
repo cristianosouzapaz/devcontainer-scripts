@@ -1,28 +1,27 @@
 import { suggestDelegateTool } from './delegation'
 import { appendInstructions, markForAgent, modToolPrefix } from './messages'
 
-/** The `/flow` subcommands only the user runs, from the prompt; the inbox moves the user's mail and answers as the user, so no agent may run any form of it. */
+/** The `/flow` subcommands only the user runs, at the local terminal or, when enabled, through Remote Control; the inbox moves the user's mail and answers as the user, so no agent may run any form of it. */
 export const humanOnlyFlowCommands = ['coordinate', 'delegate', 'retire', 'setup-labels', 'trivial', 'follow-up', 'approve', 'handoff', 'skip', 'lift', 'inbox']
 
 /** The mod tool that proposes `/flow coordinate` in the prompt box. */
 export const suggestCoordinateTool = `${modToolPrefix}suggest_coordinate`
+/** Claude Code's tool a subagent returns its report with. Matched by exact name, so a rename fails closed. */
+export const handbackTool = 'SubagentHandback'
 /** The issue tools, by the name after the mod's prefix. */
 export const issueTools = ['issue_create', 'issue_edit', 'issue_close', 'issue_comment'] as const
 /** The coordinator's tools that start, message, escalate, retire and unblock unit sessions, by the name after the mod's prefix. */
 export const unitTools = ['spawn', 'unit_prompt', 'unit_read', 'approve_unit', 'skip_unit', 'follow_up_unit', 'retire_unit', 'escalate_unit', 'dismiss_dialog'] as const
 
-// why: These tools write nothing in the repository but the engine does not mark them read-only; Agent is safe here
-// because every call of the subagent it starts is checked again under its agentId. The issue tools are the coordinator's
-// only GitHub write channel, spawn starts the unit sessions that do write, unit_prompt and send are its only channels to them, approve_unit, skip_unit and follow_up_unit send a unit only a step whose delegated decision they checked, retire_unit
-// removes a delegated unit only after the mod archived its work and posted the decision, escalate_unit only resumes a unit's own session on a higher level, dismiss_dialog sends only Esc and only to a dialog its catalogue allows it on, and
-// send only writes a reply into a mailbox under the legal-reply map, and merge_child is its one repository write, which the mod itself runs only for a delegated child/parent pair it knows; plan only reads.
+// why: These tools write nothing in the repository but the engine does not mark them read-only; Agent is safe here because every call of the subagent it starts is checked again under its agentId. The issue tools are the coordinator's only GitHub write channel, spawn starts the unit sessions that do write, unit_prompt and send are its only channels to them, approve_unit, skip_unit and follow_up_unit send a unit only a step whose delegated decision they checked, retire_unit deletes none of a delegated unit's work, moving its checkout aside and keeping its tip before it removes its records, escalate_unit only resumes a unit's own session on a higher level, dismiss_dialog sends only Esc and only to a dialog its catalogue allows it on, and send only writes a reply into a mailbox under the legal-reply map, a subagent's handback only returns its report, and merge_child is its one repository write, which the mod itself runs only for a delegated child/parent pair it knows; plan only reads.
 const modTools = [suggestCoordinateTool, suggestDelegateTool, ...[...issueTools, ...unitTools, 'send', 'merge_child', 'plan'].map(name => `${modToolPrefix}${name}`)]
-const allowedTools = ['Agent', 'Skill', 'ToolSearch', 'AskUserQuestion', 'TodoWrite', ...modTools]
+const allowedTools = ['Agent', 'Skill', 'ToolSearch', 'AskUserQuestion', 'TodoWrite', handbackTool, ...modTools]
 
 // why: Reads the engine cannot recognize as read-only; each is matched as an exact argv prefix, so a write subcommand never matches.
-const allowedCommands = [
+/** The coordinator's read allowlist of Bash commands, each an argv prefix. */
+export const allowedCommands: readonly (readonly string[])[] = [
   'gh issue view', 'gh issue list', 'gh pr view', 'gh pr list', 'gh pr checks', 'gh pr diff', 'gh repo view', 'gh run view', 'gh run list',
-  'herdr agent list', 'herdr agent get', 'herdr agent read',
+  'herdr agent list', 'herdr agent get', 'herdr agent read', 'shellcheck',
 ].map(command => command.split(' '))
 
 // why: Any of these lets a simple-looking command chain, redirect or substitute another one.
@@ -34,6 +33,10 @@ export const coordinatorDeny = markForAgent('This session is the coordinator, wh
 // why: The allowlist cannot tell a chain of reads from a chain hiding a write, so it is refused without being called a write.
 const compoundDeny = markForAgent('This command was not recognized as read-only: the coordinator\'s read allowlist accepts only a simple command, ' +
   'without ; | & > < $ backticks or newlines. If every part is a read, run each part on its own; a write belongs to a unit session in its own herdr worktree (spawn one).')
+// why: A simple command off the list may well be a read, so naming it a write would mislead; the mod refuses neither the read tools nor a read-only subagent outside the repository, though the engine may still ask the user.
+const offListDeny = markForAgent(`This command is not on the coordinator's read allowlist (${allowedCommands.map(argv => `\`${argv.join(' ')}\``).join(', ')}, each matched as the start of the command), ` +
+  'so it is refused without being judged a write. To read files, use the Read, Grep or Glob tools or a read-only subagent, which the mod does not refuse; ' +
+  'a write belongs to a unit session (spawn one).')
 
 /**
  * Writes the prompt `/flow coordinate` submits; the same text always writes the same bytes.
@@ -104,11 +107,12 @@ export function isAllowedForCoordinator(tool: string, input: unknown): boolean {
  * Names why the coordinator's permission check refuses a call it does not allow.
  * @param tool - The called tool.
  * @param input - The call's arguments.
- * @returns The compound-command reason for a Bash command with a shell metacharacter, else the coordinator's deny.
+ * @returns The compound-command reason for a Bash command with a shell metacharacter, the off-allowlist reason for any other Bash command, else the coordinator's deny.
  */
 export function explainCoordinatorDeny(tool: string, input: unknown): string {
   const command = readCommand(input)
-  return tool === 'Bash' && command !== undefined && shellMetacharacters.test(command) ? compoundDeny : coordinatorDeny
+  if (tool !== 'Bash' || command === undefined) return coordinatorDeny
+  return shellMetacharacters.test(command) ? compoundDeny : offListDeny
 }
 
 /**

@@ -1,14 +1,15 @@
 import { expect } from 'claude-code/testing'
 import { test } from '../../support/kit'
-import { approvalCommand, buildChangedCheckout, buildVerifyRun, noFlow, verifyFile, verifyId } from '../../support/builders'
-import { approveVerify, readCurrentStep, readFlowStatus, readPromptContext, runFlowCommand } from '../../support/helpers'
-import { configBlob, createTestPort, createWorld, records } from '../../support/world'
+import { approvalCommand, buildChangedCheckout, buildVerifyRun, diagnosisComment, fixed, noFlow, verifyFile, verifyId } from '../../support/builders'
+import { approveVerify, declareFlow, readCurrentStep, readFlowStatus, readPromptContext, runFlowCommand } from '../../support/helpers'
+import { configBlob, createTestPort, createWorld, linearGraph, markSpawned, records, seedDelegation } from '../../support/world'
 import type { Checkout, Options } from '../../support/world'
 import type { VerifyRecord } from '../../../types'
 import { readGit } from '../../../hooks/core/repository'
 import { readUnitSlice } from '../../../hooks/core/unit-slice'
 import { readVerifyState, writeVerifyEvidence } from '../../../hooks/core/verify'
 import { facts } from '../../../hooks/domain/facts'
+import { doorbellText } from '../../../hooks/domain/mail'
 
 const changed = buildChangedCheckout()
 const config = { always: [['lint'], ['docs']],
@@ -109,6 +110,18 @@ test('a change only gate rules match runs only always at the unit and is not lef
   expect(await readFlowStatus($)).not.toContain(facts.leftToCi)
 })
 
+// contract: a change no rule matches still runs always, so its selection never says no local check was selected
+test('a change no rule matches runs always and says only always ran, never that no local check was selected', async ($, on) => {
+  const file = JSON.stringify({ always: [['lint']], rules: [{ paths: ['docs/**'], run: ['docs'] }] })
+  const world = createWorld(on, { ...changed, changed: ['src/a.ts'] }, { verifyFile: file })
+  approveVerify(world, file)
+  const result = String((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result)
+  expect(result).toContain('Selection: no rule matched, so only always runs; targeted checks are left to CI · unit stage.')
+  expect(result).not.toContain(facts.leftToCi)
+  expect(world.sessions.get('sid')?.units[0]?.verifyRuns[0]?.commands).toEqual([['lint']])
+  expect(await readFlowStatus($)).not.toContain(facts.leftToCi)
+})
+
 test('rules sharing a runner run it once with every path', async ($, on) => {
   const rules = [{ paths: ['docs/**'], run: ['t/bats.sh', 'mods'] }, { paths: ['docs/**'], run: ['sh', '-c', 'a'] },
     { paths: ['docs/**'], run: ['t/bats.sh', 'conventions'] }, { paths: ['docs/**'], run: ['t/bats.sh', 'mods/one.bats', 'mods'] },
@@ -157,7 +170,7 @@ test('a unit with no common base selects no rule and is left to CI', async ($, o
     refs: { main: 'm', 'origin/main': 'm', feat: 'f' },
   } }, { verifyFile })
   approveVerify(world)
-  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain(`Selection: ${facts.leftToCi}`)
+  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain(`Selection: no rule matched, so only always runs; targeted checks are left to CI`)
   expect(world.sessions.get('sid')?.units[0]?.verifyRuns[0]?.base).toBeNull()
 })
 
@@ -281,7 +294,7 @@ test('a Verify on a new tree replaces the previous tree record in the session', 
   await $.tool.call({ tool: 'mcp__working-agreement__verify' })
   expect(world.sessions.get('sid')?.units[0]?.verifyRuns.map(run => run.tree)).toEqual(['two'])
   expect(await readCurrentStep($)).toBe('Commit')
-  // The session keeps only the new tree's record; the repository-wide evidence still verifies the earlier tree.
+  // why: the session keeps only the new tree's record; the repository-wide evidence still verifies the earlier tree.
   checkout.tree = 'one'
   expect(await readCurrentStep($)).toBe('Commit')
 })
@@ -306,7 +319,7 @@ test('timeout is a recorded failure and concurrent runs are refused', async ($, 
   approveVerify(world, options.verifyFile!)
   const run = $.tool.call({ tool: 'mcp__working-agreement__verify' })
   await world.clock.settle()
-  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('already in flight')
+  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toMatch(/^verify refused: this session's verify call started at \S+ is still in flight \(running its command \(log: \/repo\.git\/working-agreement\/runs\/sid-\S+\.log\)\); its result goes to that call\. Wait for it to answer, then call verify again; \/flow status shows it\.$/)
   await world.clock.advance(600)
   expect((await run).result).toContain('timed out after 0.01 min')
   expect(await readFlowStatus($)).toContain('timed out after 0.01 min')
@@ -330,7 +343,61 @@ test('a stop on a passing Verify the tree has moved past is blocked once, and th
   expect((await $.classic.Stop({ stop_hook_active: true, background_tasks: [] } as never)).block).toBeUndefined()
 })
 
+// contract: a doorbell turn that found no mail asks for nothing, so its Stop is not held for a stale Verify
+test('an empty doorbell turn\'s stop is not held for a stale Verify', async ($, on) => {
+  const checkout: Checkout = { ...changed }
+  const world = createWorld(on, checkout, { verifyFile })
+  approveVerify(world)
+  await $.tool.call({ tool: 'mcp__working-agreement__verify' })
+  checkout.tree = 'two'
+  await $.classic.UserPromptSubmit({ prompt: doorbellText, permission_mode: 'default' } as never)
+  await $.turn.start({ text: 'doorbell', turnId: 't' })
+  expect((await $.classic.Stop({ stop_hook_active: false, background_tasks: [] } as never)).block).toBeUndefined()
+})
+
+// contract: an empty doorbell turn whose Stop delivers mail is work again, so that Stop is held for a stale Verify too
+test('an empty doorbell turn whose Stop delivers mail is held for a stale Verify', async ($, on) => {
+  const checkout: Checkout = { ...changed }
+  const world = createWorld(on, checkout, { verifyFile })
+  markSpawned(world, [1])
+  approveVerify(world)
+  await $.tool.call({ tool: 'mcp__working-agreement__verify' })
+  checkout.tree = 'two'
+  await $.classic.UserPromptSubmit({ prompt: doorbellText, permission_mode: 'default' } as never)
+  await $.turn.start({ text: 'doorbell', turnId: 't' })
+  world.files.set(`${records}/mail/1/new/late.1.json`, JSON.stringify({ v: 1, id: 'late', kind: 'inform', from: 'coordinator-coord', to: '1', issue: 1, in_reply_to: '',
+    seq: 1, created_at: '2026-11-09T00:00:00.000Z', expects: '', attempt: 1, body: 'Late news.', refs: [], author: 'agent' }))
+  const block = (await $.classic.Stop({ stop_hook_active: false, background_tasks: [] } as never)).block ?? ''
+  expect(block).toContain('Late news.')
+  expect(block).toContain('Verify is stale: the tree changed after it')
+})
+
 test('a stop with no passing Verify is never blocked', async ($, on) => {
   createWorld(on, { ...changed }, { verifyFile })
   expect((await $.classic.Stop({ stop_hook_active: false, background_tasks: [] } as never)).block).toBeUndefined()
 })
+
+for (const isDelegated of [true, false]) {
+  test(`a commit made outside the tools after Verify ${isDelegated ? 'moves a delegated Fix flow past Code and Verify to its PR step' : 'reopens Code in an ordinary unit'}`, async ($, on) => {
+    const graph = linearGraph({ feat: 1 }, verifyFile, 1)
+    const outside = { ...graph, commits: { ...graph.commits, c2: { parents: ['c1'], files: { ...graph.commits.c1!.files, 'src/a.ts': 'two' } } } }
+    const git: Checkout = { branch: 'feat', graph }
+    const world = createWorld(on, git, { session: noFlow, verifyFile, unit: { ...fixed }, issueLabels: { 1: ['ready-for-agent'] }, comments: { 1: [diagnosisComment] } })
+    if (isDelegated) seedDelegation(world, 'coord', [1])
+    await declareFlow($, 'fix', [1])
+    approveVerify(world)
+    expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('Verify passed')
+    git.graph = { ...outside, refs: { ...outside.refs, feat: 'c2' } }
+    const status = await readFlowStatus($)
+    if (!isDelegated) {
+      // why: outside delegation every commit is the user's, so one after Verify is the normal path back to Verify.
+      expect(status).toContain('▸ Code · changed after Verify')
+      expect(status).not.toContain('committed outside Verify')
+      return
+    }
+    expect(status).toContain('✓ Code')
+    expect(status).toContain('↷ Verify · committed outside Verify')
+    expect(status).toContain('✓ Commit')
+    expect(await readCurrentStep($)).toBe('PR')
+  })
+}

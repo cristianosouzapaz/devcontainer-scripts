@@ -5,8 +5,17 @@ import { flowDefinitions } from './flow-definitions'
 
 export type { GithubStatus, Identity, IssueInfo, ObservedEndRecord, PullRequest, SessionRecord, Unit, UnitEntry, UnitRecord } from '../../types'
 
-/** Adds the current unit's derived flow and issues for the existing flow logic. */
-export interface Session extends SessionRecord { flow: string | null; issues: number[] }
+/** Why the last turn-end audit's result may not be on the record: its writes failed, or the process state that would say so is unreadable. */
+export type AuditNote = { kind: 'unrecorded'; reason: string } | { kind: 'unknown'; reason: string }
+
+/**
+ * Holds a chat's record with what is derived as it is read: the flow and issues from the shared declaration, and from this process's
+ * state whether the last turn-end audit went unrecorded, which only this chat's own read knows.
+ */
+export interface Session extends SessionRecord { flow: string | null; issues: number[]; auditNote?: AuditNote }
+
+/** The red an approval pins, or why none pins: no red before the diagnosis, several matching argvs (listed), or none matching the citation (every red listed). */
+export type RedPin = { kind: 'pinned'; red: RunRecord } | { kind: 'none' | 'ambiguous' | 'unmatched'; reds: string[][] }
 
 /** Lists every unchecked reason in the fixed order a fact keeps and the pane prints. */
 export const uncheckedReasons: UncheckedReason[] = [
@@ -15,10 +24,10 @@ export const uncheckedReasons: UncheckedReason[] = [
   'commit reachability read failed', 'commits or push could not be placed',
 ]
 const githubStatuses: GithubStatus[] = ['connected', 'unreachable', 'unauth', 'unknown']
-// why: Every run of a unit is written into its record on each write; the bounds keep that record small
-// while a red-to-green loop and the regression tests beside it still fit.
+// why: Every run of a unit is written into its record on each write; the bounds keep that record small while a red-to-green loop and the regression tests beside it still fit.
 const runsPerArgv = 10
 const totalRuns = 50
+const listedReds = 5
 
 /**
  * Identifies issue facts or their read failure.
@@ -155,19 +164,27 @@ function isViolation(value: unknown): value is Violation {
 }
 
 /**
+ * Identifies an audit's findings, each naming its issue, field, expected and actual value.
+ * @param value - The decoded value.
+ * @returns Whether they are findings.
+ */
+const areFindings = (value: unknown): boolean => Array.isArray(value) && value.every(finding =>
+  isRecord(finding) && hasOnlyKeys(finding, ['issue', 'field', 'expected', 'actual']) && isSafeInteger(finding.issue)
+  && ['field', 'expected', 'actual'].every(key => typeof finding[key] === 'string'))
+
+/**
  * Identifies the session's issue audit: its window, the issues it tracks and its latest result.
  * @param value - The decoded value.
  * @returns Whether the audit is valid.
  */
 function isIssueAudit(value: unknown): value is IssueAudit {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['since', 'issues', 'result']) || !isFiniteNumber(value.since)
+  if (!isRecord(value) || !hasOnlyKeys(value, ['since', 'issues', 'result', 'unsearched']) || (value.since !== undefined && !isFiniteNumber(value.since))
+    || (value.unsearched !== undefined && typeof value.unsearched !== 'string')
     || !Array.isArray(value.issues) || !value.issues.every(issue => isSafeInteger(issue) && issue > 0)) return false
   const result = value.result
   return result === undefined || (isRecord(result) && ((result.state === 'compliant' && hasOnlyKeys(result, ['state']))
-    || (result.state === 'pending' && hasOnlyKeys(result, ['state', 'reason']) && typeof result.reason === 'string')
-    || (result.state === 'violations' && hasOnlyKeys(result, ['state', 'findings']) && Array.isArray(result.findings) && result.findings.every(finding =>
-      isRecord(finding) && hasOnlyKeys(finding, ['issue', 'field', 'expected', 'actual']) && isSafeInteger(finding.issue)
-      && ['field', 'expected', 'actual'].every(key => typeof finding[key] === 'string')))))
+    || (result.state === 'pending' && hasOnlyKeys(result, ['state', 'reason', 'findings']) && typeof result.reason === 'string' && (result.findings === undefined || areFindings(result.findings)))
+    || (result.state === 'violations' && hasOnlyKeys(result, ['state', 'findings']) && areFindings(result.findings))))
 }
 
 /**
@@ -292,13 +309,34 @@ export const findEarliestRed = (runs: RunRecord[]): RunRecord | undefined =>
   runs.filter(run => run.outcome.kind !== 'pass').sort(newestFirst).at(-1)
 
 /**
- * Finds the latest failing run strictly before a time, the red a diagnosis posted at that time was written on.
+ * Pins the red a diagnosis posted at a time was written on, among the reds the records hold strictly before it. A cited argv matches
+ * exactly; a cited text matches each argv joined by spaces, and is ambiguous when it matches more than one distinct argv. With no
+ * citation, the red pins only when one distinct argv failed before the time, so a later probe never stands in for it silently.
  * @param runs - The unit's command history.
  * @param before - The time the red must come strictly before.
- * @returns That run, if any.
+ * @param cited - The red the approval cites: its exact argv, its argv joined by spaces, or nothing.
+ * @returns The latest run of the pinned argv, or why none pins, with the reds that collide or, when none matches, every distinct red before the time, newest first.
  */
-export const findLatestRedBefore = (runs: RunRecord[], before: number): RunRecord | undefined =>
-  runs.filter(run => run.outcome.kind !== 'pass' && run.at < before).sort(newestFirst)[0]
+export function pinDiagnosedRed(runs: RunRecord[], before: number, cited?: string[] | string): RedPin {
+  const reds = runs.filter(run => run.outcome.kind !== 'pass' && run.at < before).sort(newestFirst)
+  // why: a Map keeps the last value set for a key, so the reds go in oldest first and each argv keeps its newest run.
+  const distinct = [...new Map([...reds].reverse().map(run => [JSON.stringify(run.argv), run])).values()].sort(newestFirst)
+  const matches = cited === undefined ? distinct
+    : distinct.filter(run => typeof cited === 'string' ? run.argv.join(' ') === cited : JSON.stringify(run.argv) === JSON.stringify(cited))
+  if (matches.length === 1) return { kind: 'pinned', red: matches[0]! }
+  if (!distinct.length) return { kind: 'none', reds: [] }
+  return matches.length ? { kind: 'ambiguous', reds: matches.map(run => run.argv) } : { kind: 'unmatched', reds: distinct.map(run => run.argv) }
+}
+
+/**
+ * Lists red argvs as JSON, the form a citation names exactly, clipped to the newest few.
+ * @param reds - The argvs, newest first.
+ * @returns The list.
+ */
+export function describeReds(reds: string[][]): string {
+  const shown = reds.slice(0, listedReds).map(argv => JSON.stringify(argv)).join(', ')
+  return reds.length > listedReds ? `${shown} and ${reds.length - listedReds} more` : shown
+}
 
 /**
  * Keeps, newest first across chat contributions, each argv's newest runs and its earliest red, newest argvs first up to a

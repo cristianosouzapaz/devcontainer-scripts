@@ -30,6 +30,7 @@ export async function dismissDialog(port: EnginePort, issue: number, dialog: unk
   const common = await readCommonDir(port)
   if (!host || !common) return fail(outsideHerdr)
   const session = await readSpawnedSession(port, issue, false)
+  // why: a stall record that cannot be read names no dialog, so the dismissal is refused rather than a key sent to a dialog no report named.
   const record = parseStallRecord(await readJson(port.files, stallPath(common, issue)).catch(() => undefined))
   if (!session || record?.session !== session || record.dialog !== entry.id) {
     return fail(`no stall report of #${issue}'s current session named ${entry.id}: only a dialog a report named is cleared`)

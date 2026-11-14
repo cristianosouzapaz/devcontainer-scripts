@@ -57,7 +57,7 @@ const rows: ContractRow[] = [
     start: async ($, on) => {
       const options: Options = { session: { flow: 'large-feature', info: { 1: { title: 'map', labels: ['wayfinder:map'], subIssues: [{ state: 'closed', labels: ['wayfinder:research'] }] } } }, issueLabels: { 1: ['wayfinder:map'] }, subIssues: { 1: [{ state: 'closed', labels: ['wayfinder:research'] }] } }
       const { clock } = createWorld(on, { branch: 'feat' }, options)
-      // Starting the skill alone never completes the step.
+      // why: starting the skill alone never completes the step, so establish still has to land its sub-issues.
       await startSkill($, 'to-tickets')
       return {
         establish: async () => { options.subIssues = { 1: [{ state: 'closed', labels: ['wayfinder:research'] }, { state: 'open', labels: ['ready-for-agent'] }] }; await advanceRefresh(clock) },
@@ -102,7 +102,7 @@ function advanceRefresh(clock: MockClock): Promise<void> {
   return clock.advance(refreshMs)
 }
 
-// The pane, /flow status and the prompt instruction must agree on the step.
+// why: the pane, /flow status and the prompt instruction must agree on the step, so each is checked.
 async function expectDone($: Engine, row: ContractRow): Promise<void> {
   expect(await readFlowStatus($)).toContain(`✓ ${row.doneStep ?? row.step}`)
   const context = await readPromptContext($)

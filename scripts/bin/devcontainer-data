@@ -47,19 +47,20 @@ cli_link_problem() {
 	cli_link_problem_message "$category_id" "$state"
 }
 
-# cli_category_status <probe>: prints the identity the probe reports, "not authenticated", or "directory present" when there is no probe
+# cli_category_status <probe>: prints the identity the probe reports, "not authenticated", "no answer in <n>s", "could not check", or "directory present" when there is no probe
 cli_category_status() {
-	local probe="$1" identity identity_status
+	local probe="$1" state detail
 
 	if [[ -z "$probe" ]]; then
 		printf '%s\n' 'directory present'
 		return 0
 	fi
-	identity=''
-	identity_status=0
-	identity=$(persistent_data_summary_identity "$probe") || identity_status=$?
-	[[ "$identity_status" -eq 0 && -n "$identity" ]] || { printf '%s\n' 'not authenticated'; return 0; }
-	printf 'authenticated (%s)\n' "$identity"
+	IFS='|' read -r state detail <<<"$(persistent_data_summary_identity_state "$probe")"
+	case "$state" in
+	signed-in) printf 'authenticated (%s)\n' "$detail" ;;
+	signed-out) printf '%s\n' 'not authenticated' ;;
+	*) printf '%s\n' "$detail" ;;
+	esac
 }
 
 # cli_reset_category <category_id>: deletes and recreates the category directory
@@ -351,10 +352,13 @@ cli_status_rows() {
 				detail=$(cli_category_status "$probe")
 				if [[ "$detail" == 'directory present' ]]; then
 					detail='available'
-				elif [[ "$detail" != authenticated* ]]; then
+				elif [[ "$detail" == 'not authenticated' ]]; then
 					health='warning'
 					action_label='Log in'
 					action_command="$login_hint"
+				elif [[ "$detail" != authenticated* ]]; then
+					# why: a probe that never answered or failed says nothing about the sign-in, so no login is asked for
+					health='warning'
 				fi
 				;;
 			missing)
@@ -529,24 +533,20 @@ cli_health_version() {
 
 # cli_health_identity <id> <login-hint>: bounded authentication probe that never changes persistent state
 cli_health_identity() {
-	local id="$1" login_hint="$2" output rc=0 identity=''
+	local id="$1" login_hint="$2" state detail
 
-	if [[ "$id" == github ]]; then
-		output=$(agent_probe gh auth status 2>&1) || rc=$?
-		[[ "$rc" -eq 0 ]] && identity=$(sed -n 's/.*Logged in to [^ ]* account \([^ ]*\).*/\1/p' <<<"$output" | head -n1)
-	elif declare -F "agent_${id}_identity" >/dev/null; then
-		identity=$(agent_identity "$id") || rc=$?
-	else
+	if [[ "$id" != github ]] && ! declare -F "agent_${id}_identity" >/dev/null; then
 		cli_health_add "agent.${id}.identity" error 'unsupported identity probe'
 		return 1
 	fi
-	if [[ "$rc" -eq 124 || "$rc" -eq 137 || "$rc" -eq 125 ]]; then
-		cli_health_add "agent.${id}.identity" warning "$(cli_health_probe_detail "$rc")" 'Retry health check' "$(cli_health_retry_action)"
-	elif [[ -n "$identity" ]]; then
-		cli_health_add "agent.${id}.identity" ok "$identity"
-	else
-		cli_health_add "agent.${id}.identity" warning 'not authenticated' 'Log in' "$login_hint"
-	fi
+	IFS='|' read -r state detail <<<"$(persistent_data_summary_identity_state "$id")"
+	case "$state" in
+	signed-in) cli_health_add "agent.${id}.identity" ok "$detail" ;;
+	signed-out) cli_health_add "agent.${id}.identity" warning 'not authenticated' 'Log in' "$login_hint" ;;
+	no-answer) cli_health_add "agent.${id}.identity" warning 'probe timed out' 'Retry health check' "$(cli_health_retry_action)" ;;
+	# why: a probe that failed says nothing about the sign-in, so no login is asked for
+	*) cli_health_add "agent.${id}.identity" warning 'probe failed' ;;
+	esac
 }
 
 # cli_health_asset <agent_id> <asset-json>: checks the inventory-defined state without overwriting adopted files

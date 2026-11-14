@@ -1,7 +1,7 @@
 import type { MailKind } from './mail'
 
-/** The kinds an agent sends with `send`: a unit's question, blocked and done, and either side's answer. */
-export const sendKinds = ['question', 'blocked', 'answer', 'done'] as const
+/** The kinds an agent sends with `send`: a unit's question, blocked, inform and done, and either side's answer. */
+export const sendKinds = ['question', 'blocked', 'inform', 'answer', 'done'] as const
 
 /** The legal-reply map: the one reply each conversation-opening kind takes; any other reply is refused. */
 const legalReplies: Partial<Record<MailKind, MailKind>> = { assign: 'done', blocked: 'answer', question: 'answer', cancel: 'done', step: 'done' }

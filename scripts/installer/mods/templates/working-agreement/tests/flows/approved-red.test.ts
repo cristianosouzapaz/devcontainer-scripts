@@ -71,7 +71,7 @@ test("a different command going red to green after the approval does not stand i
 })
 
 /**
- * Records a red of each argv in turn, one clock tick apart, then posts the diagnosis comment and approves it.
+ * Records a red of each argv in turn, one clock tick apart, then posts the diagnosis comment and approves it, citing the last red.
  * @param $ - The engine under test.
  * @param on - The kit's world hooks.
  * @param argvs - The red argvs, in the order they are run.
@@ -88,7 +88,7 @@ async function approveAfterReds($: Engine, on: On, argvs: string[][]): Promise<A
   }
   options.comments = { 1: [{ ...diagnosisComment, createdAt: new Date(world.clock.now() + 1).toISOString() }] }
   await world.clock.advance(10)
-  expect((await runFlowCommand($, `approve ${diagnosisComment.url}`)).text).toContain('Diagnosis approved')
+  expect((await runFlowCommand($, `approve ${diagnosisComment.url} ${JSON.stringify(argvs.at(-1))}`)).text).toContain('Diagnosis approved')
   return { checkout, options, world }
 }
 

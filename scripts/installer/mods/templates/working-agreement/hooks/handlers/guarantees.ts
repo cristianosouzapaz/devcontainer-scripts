@@ -12,7 +12,7 @@ import { markForAgent, modToolPrefix } from '../domain/messages'
 
 interface ToolCallResult { value?: EventResult<'tool.call'> }
 
-// `gh` as a command word: at the start, or after a separator, a subshell or a substitution.
+// why: `gh` counts only as a command word, at the start or after a separator, a subshell or a substitution, so a word merely ending in gh does not match.
 const ghCommand = /(^|[\s;&|(`])gh\s/
 
 /**
@@ -41,11 +41,11 @@ export async function handleGuarantees(port: EnginePort, event: Frozen<Args<'too
   try {
     result.value = await run()
   } finally {
-    // A Bash or MCP call can open or close a PR without moving a local ref, which would otherwise wait out the cache.
+    // why: a Bash or MCP call can open or close a PR without moving a local ref, which would otherwise wait out the cache.
     if (!isJudgedTool(event.tool)) forgetCandidates()
-    // The skill or call that follows repaints from the stored issue info, which only a full read refreshes; the read runs on a timer's dispatch so the call never waits on it.
+    // why: the skill or call that follows repaints from the stored issue info, which only a full read refreshes; the read runs on a timer's dispatch so the call never waits on it.
     if (mayChangeIssues(event)) port.defer(() => { void bestEffort(port, 'issue reread', () => reread(port, true), undefined) })
-    // Observation never changes whether this or a later call can run.
+    // why: observation never changes whether this or a later call can run, so its failure is only best effort.
     await bestEffort(port, 'guarantee observation', async () => {
       const after = await snapshotGuarantees(port, event.tool, before)
       const facts = await judgeGuarantees(port, before, after, event.tool_use_id)

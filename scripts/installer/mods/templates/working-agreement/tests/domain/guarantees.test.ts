@@ -23,7 +23,7 @@ const graph = (): Graph => ({ commits: { a: { parents: [], files: {} } }, refs: 
  */
 const commit = (git: Graph): Graph => ({ ...git, commits: { ...git.commits, b: { parents: ['a'], files: { file: 'changed' } } }, refs: { ...git.refs, feature: 'b' } })
 
-// Direct dispatch is reserved for pinned subagent ids and a throwing run: tool.call drops supplied ids, and the engine skips a throwing boundary hook.
+// why: direct dispatch is reserved for pinned subagent ids and a throwing run: tool.call drops supplied ids, and the engine skips a throwing boundary hook.
 
 for (const agentId of [undefined, 'child']) {
   test(`a new commit records the call and loop and tells that loop (${agentId ?? 'main'})`, async ($, on) => {
@@ -52,7 +52,7 @@ for (const agentId of [undefined, 'child']) {
     expect(views.at(-1)?.violations?.[0]?.tone).toBe('error')
     expect(views.at(-1)?.violations?.[0]?.text).toBe('A commit appeared during an agent call (it may be yours)')
     expect(parseSession(sessions.get('sid'))).not.toBe(null)
-    // The direct-dispatch port's record never reaches the engine store, so only the dispatched call continues there.
+    // why: the direct-dispatch port's record never reaches the engine store, so only the dispatched call continues there.
     if (agentId) return
     expect((await readFlowStatus($))?.split('\n').find(line => line.startsWith('Violation'))).toContain('A commit appeared during an agent call (it may be yours) · ')
     expect((await $.tool.call({ tool: 'Bash', command: 'later' })).deny).toBeUndefined()
@@ -182,7 +182,7 @@ test("a commit on the unit's branch checked out in another worktree is attribute
   const record = sessions.get('sid')!.violations!.find(record => record.kind === 'commit')!
   expect(record.checkouts).toEqual([{ root: '/other', branch: 'feature' }])
   expect(parseSession(sessions.get('sid'))).not.toBe(null)
-  // The diagnostic retains the observed checkout even after that branch is no longer checked out.
+  // why: the branch moves away, so the diagnostic must keep naming the checkout it observed, not the current one.
   checkout.worktrees!['/other']!.branch = 'main'
   expect((await readFlowStatus($))?.split('\n').find(line => line.startsWith('Violation'))).toContain('on feature, checked out in another worktree')
   expect(views.at(-1)?.violations?.[0]?.text).toBe("A commit appeared on feature, checked out in another worktree, during an agent call (it may be yours or another session's)")
@@ -209,7 +209,7 @@ for (const held of [undefined, [], [{ root: '/first', branch: 'first' }]]) {
     await $.tool.call({ tool: 'Bash', command: 'first' })
     const session = sessions.get('sid')!
     const record = session.violations!.find(record => record.kind === 'commit')!
-    // A chat resumed from this record, as an earlier version wrote its checkouts.
+    // why: a resumed chat reseeds the record with its checkouts as an earlier version wrote them, which attribution must still read.
     chat.id = 'resumed'
     seedChat(chat.id, { ...session, sessionId: chat.id, violations: [{ ...record, sessionId: chat.id, checkouts: held }] })
     checkout.graph = graph()
@@ -304,7 +304,7 @@ for (const tool of ['Bash', 'mcp__unknown__write', 'Task', 'Agent', 'Skill', 'Fu
   })
 }
 
-// A delegated unit without a PR reads only the candidates; a unit with one reads its fields before and after the call.
+// why: a delegated unit without a PR reads only the candidates; a unit with one reads its fields before and after the call.
 for (const read of [
   { query: 'pullRequests(headRefName:', phase: 'before', prs: [], reason: 'PR read failed before' },
   { query: 'pullRequest(number:', phase: 'before', prs: [buildPullRequest()], reason: 'PR read failed before' },
@@ -325,7 +325,7 @@ for (const read of [
       return state.failures-- > 0 ? { exitCode: 1, stderr: 'dial tcp: i/o timeout' } : undefined
     } }
     const world = createWorld(on, { branch: 'feature', graph: graph() }, options)
-    // Without a PR the snapshot is never held, so a first call leaves the measured one a fresh candidates read.
+    // why: without a PR the snapshot is never held, so a first call leaves the measured one a fresh candidates read.
     if (!read.prs.length) await $.tool.call({ tool: 'Bash', command: 'warm-up' })
     state.phase = 'before'
     const result = await $.tool.call({ tool: 'Bash', command: 'opaque' })
@@ -339,8 +339,8 @@ for (const read of [
     expect(reads).toBe(2)
   })
 
-  test(`a ${read.query} read that fails twice ${read.phase} the call leaves it unchecked: ${read.reason}`, async ($, on) => {
-    const { violations } = await callWithFailingReads($, on, 2)
+  test(`a ${read.query} read that fails on every attempt ${read.phase} the call leaves it unchecked: ${read.reason}`, async ($, on) => {
+    const { violations } = await callWithFailingReads($, on, 3)
     expect(violations.map(record => record.kind)).toEqual(['unchecked'])
     expect(violations[0]?.kind === 'unchecked' ? violations[0].fact.reasons : null).toEqual([read.reason])
   })
@@ -361,7 +361,7 @@ test('a reachability probe that fails fast before the call and then answers leav
   } }
   const world = createWorld(on, { branch: 'feature', graph: graph() }, options)
   await $.tool.call({ tool: 'Bash', command: 'warm-up' })
-  // Past the probe's minute, so the measured call probes again.
+  // why: past the probe's minute, so the measured call probes again.
   await world.clock.advance(61000)
   state.phase = 'before'
   await $.tool.call({ tool: 'Bash', command: 'opaque' })
@@ -369,9 +369,9 @@ test('a reachability probe that fails fast before the call and then answers leav
   expect(state.probes).toBe(2)
 })
 
-test('a failed PR read is retried once, a second after it failed', async ($, on) => {
+test('a failed PR read is retried a second after it failed', async ($, on) => {
   const state = { phase: 'warm-up', reads: 0 }
-  const options: Options = { prs: [], afterTool: () => { state.phase = 'after' }, gh: args => {
+  const options: Options = { prs: [], isSleepInstant: false, afterTool: () => { state.phase = 'after' }, gh: args => {
     if (state.phase !== 'before' || !args.some(arg => arg.includes('pullRequests(headRefName:'))) return undefined
     state.reads += 1
     return state.reads === 1 ? { exitCode: 1, stderr: 'dial tcp: i/o timeout' } : undefined
@@ -751,7 +751,7 @@ for (const { label, format, listed, isFailed } of [
   test(`a capture that writes the empty tree reads ${label}`, async (_$, on) => {
     const world = createWorld(on, { branch: 'feature', graph: graph() })
     const { processes } = createTestPort(world)
-    // An index deleted before write-tree reads as empty, so git writes the empty tree.
+    // why: an index deleted before write-tree reads as empty, so git writes the empty tree.
     const answers = new Map([['--show-object-format', `/repo.git/index\n${format}`], ['write-tree', `${emptyTrees[format]}\n`], ['ls-files', listed]])
     const run: typeof processes.run = async (argv, options) => {
       const stdout = [...answers].find(([argument]) => argv.includes(argument))?.[1]

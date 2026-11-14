@@ -14,6 +14,7 @@ import { knownEnd, readChildEnd } from './child-end'
 import { readDeclaration } from './record-store'
 import { readUnitSlice } from './unit-slice'
 import { facts } from '../domain/facts'
+import { moduleState } from '../lib/module-state'
 
 interface Cached<T> { at: number; result: Result<T> }
 
@@ -21,7 +22,7 @@ interface Cached<T> { at: number; result: Result<T> }
 type Delivery = Pick<Evidence, 'checks' | 'pullRequest' | 'prFact' | 'prDetail' | 'prFactCode' | 'isConcluded'>
 
 /** The latest answer for each pair whose comparison is not cached as immutable, which a cache-only observation reuses. */
-const unsettledComparisons = new Map<string, Result<Comparison | null>>()
+const pendingReads = moduleState(() => ({ comparisons: new Map<string, Result<Comparison | null>>() }))
 /** Marks the error a cache-only observation throws on a GitHub fact its cache lacks. */
 const cacheMissMark = 'GitHub fact not cached'
 
@@ -127,13 +128,13 @@ async function compare(port: EnginePort, from: string, to: string): Promise<Resu
   const key = JSON.stringify([from, to])
   const cached = sessionMemory.comparisons.get(key)
   if (cached) return succeed(cached)
-  const unsettled = unsettledComparisons.get(key)
+  const unsettled = pendingReads.comparisons.get(key)
   if (unsettled && port.isGithubCacheOnly) return unsettled
   refuseUncached(port)
   const result = await compareCommits(port.processes, from, to)
-  // A 404 can become readable after the user pushes; only actual SHA comparisons are immutable.
+  // why: a 404 can become readable after the user pushes, so only an actual SHA comparison, which is immutable, is cached for the session.
   if (result.isOk && result.value) sessionMemory.comparisons.set(key, result.value)
-  else unsettledComparisons.set(key, result)
+  else pendingReads.comparisons.set(key, result)
   return result
 }
 
@@ -200,13 +201,11 @@ export async function readConclusion(port: EnginePort, identity: Identity, unit:
   const childEnd = isChild ? end : null
   const key = unitMemoryKey(identity, unit)
   const held = sessionMemory.concluded.get(key)
-  // why: A child's conclusion holds for the slice end it was found on: a new commit reopens it, while an end that can no
-  // longer be read, as after the branch's deletion, leaves it standing.
+  // why: A child's conclusion holds for the slice end it was found on: a new commit reopens it, while an end that can no longer be read, as after the branch's deletion, leaves it standing.
   if (held && (childEnd === null || held.end === null || held.end === childEnd)) return succeed(held.pullRequest)
   if (!unit.base) return succeed(null)
   const merged = candidates.filter(pr => pr.state === 'MERGED').sort((a, b) => a.number - b.number)
-  // why: A child's own PR into its parent integrates it, as the parent's ancestry shows once fetched; it never delivers it.
-  // Its head, not the merge commit, is compared, so a squash or rebase merge of the parent's PR still concludes it.
+  // why: A child's own PR into its parent integrates it, as the parent's ancestry shows once fetched; it never delivers it; its head, not the merge commit, is compared, so a squash or rebase merge of the parent's PR still concludes it.
   const found = !isChild ? await filterByComparison(port, unit.base, merged, isDescending, true)
     : childEnd ? await filterByComparison(port, childEnd, merged.filter(pr => pr.baseRefName === defaultBranch), isContaining, true) : succeed([])
   if (!found.isOk) return found
@@ -261,7 +260,7 @@ async function readCi(port: EnginePort, sha: string, base: string, isLocal: bool
   const now = await port.now()
   const checks = sessionMemory.checks.get(sha)
   const rules = sessionMemory.rules.get(base)
-  // Only GitHub can finish a pending check, so nothing local triggers the read that would show it.
+  // why: only GitHub can finish a pending check, so nothing local triggers the read that would show it.
   const isStale = isForced || judgeCi(checks?.result, rules?.result).checks === 'pending'
   const isChecksHeld = !!readCached(checks, now, isLocal, isStale)
   const isRulesHeld = !!readCached(rules, now, isLocal, isStale)

@@ -27,12 +27,10 @@ const confirmSelection = async (sections, installLabel = "Install selected asset
     const summaryLines = formatSelectionSummary(sections).split("\n");
     const blank = () => new Separator(" ");
     return select({
-        // Keep the readline message single-line. Multiline messages confuse Inquirer's
-        // cursor accounting when this prompt is reopened after "Continue editing selection".
+        // why: a multiline message confuses Inquirer's cursor accounting when this prompt reopens after "Continue editing selection".
         message: "What would you like to do?",
         choices: [
-            // Separators render the summary as part of the prompt screen without becoming
-            // selectable rows, so the edit loop can redraw it without leaving stale lines.
+            // why: separators show the summary on the prompt screen without selectable rows, so the edit loop redraws it without stale lines.
             blank(),
             ...summaryLines.map((line) => new Separator(line)),
             blank(),

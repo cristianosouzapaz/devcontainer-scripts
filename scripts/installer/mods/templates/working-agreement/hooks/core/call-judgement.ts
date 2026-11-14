@@ -21,19 +21,19 @@ export async function judgeToolCall(engine: EnginePort, args: Record<string, unk
   const port = createReadPort(engine)
   const input = toStringOrEmpty(args.file_path ?? args.notebook_path)
   if (!input.startsWith('/')) return deny('a file write requires an absolute path', 'pass an absolute path, then retry')
-  // A git that cannot run rejects here, even for scratch files; the tool.call catch fails closed.
+  // why: a git that cannot run rejects here, even for scratch files, so the tool.call catch fails closed.
   const common = await readCommonDir(port)
   if (!common) return { decision: 'allow' }
   const sessionCommon = (await placePath(port, common)).path
   const records = (await placePath(port, recordsPath(sessionCommon))).path
   const resolved = await placePath(port, input)
-  // Folding a missing tail's '..' may enter a different existing checkout.
+  // why: folding a missing tail's '..' may enter a different existing checkout, so the folded path is placed again.
   const placed = resolved.path === input ? resolved : await placePath(port, resolved.path)
   if (toRepoRelative(placed.path, records) !== null) {
     return deny("the agent cannot write the mod's records", "Verify config approval is the user's, from their own terminal")
   }
   const run = await runGit(port.processes, ['-C', placed.directory, 'rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel'])
-  // Outside a checkout (including inside git metadata) has no top level to judge.
+  // why: a path outside a checkout (including inside git metadata) has no top level to judge.
   if (run.exitCode !== 0) return { decision: 'allow' }
   const [otherCommon, root] = run.stdout.trim().split('\n')
   if (!otherCommon || !root) throw new Error('cannot locate the file checkout')
@@ -51,7 +51,7 @@ export async function judgeToolCall(engine: EnginePort, args: Record<string, unk
     : { decision: 'allow' }
 }
 
-// Resolve before folding '..': a symlink can change which parent that component names.
+// why: paths are resolved before folding '..' because a symlink can change which parent that component names.
 /**
  * Resolves write targets through existing ancestors so newly created paths can be gated.
  * @param port - The engine calls.
@@ -59,7 +59,7 @@ export async function judgeToolCall(engine: EnginePort, args: Record<string, unk
  * @returns The resolved path and existing containing directory, rejecting unresolved paths.
  */
 async function placePath(port: EnginePort, path: string): Promise<PlacedPath> {
-  // A write may create the path.
+  // why: a write may create the path, so a missing one is not an error.
   const stat = await port.files.stat(path).catch(() => undefined)
   if (stat) {
     if (!stat.realPath) throw new Error('cannot resolve the write path')

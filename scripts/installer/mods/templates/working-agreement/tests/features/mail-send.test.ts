@@ -3,11 +3,11 @@ import type { Engine } from 'claude-code/testing'
 
 import { createEmptySession } from '../../hooks/domain/records'
 import { coordinator } from '../support/builders'
-import { callModTool, inside } from '../support/helpers'
+import { callModTool, inside, startSession } from '../support/helpers'
 import { test } from '../support/kit'
 import { tickMs } from '../../hooks/core/timing'
 import { buildScope, buildStat, coordinatorHost, createWorld, markSpawned, records, root, scopeFile } from '../support/world'
-import type { World } from '../support/world'
+import type { Options, World } from '../support/world'
 
 /** A message as its file holds it. */
 interface Mail { id: string; kind: string; from: string; to: string; issue: number; in_reply_to: string; body: string; refs: string[] }
@@ -15,15 +15,16 @@ interface Mail { id: string; kind: string; from: string; to: string; issue: numb
 const unitSession = 'unit-12'
 const coordinatorBox = `${records}/mail/coordinator-sid`
 const unitBox = `${records}/mail/12`
-const doorbell = '[working-agreement] Mail arrived in this session\'s mailbox; it is delivered with this prompt.'
+const doorbell = '[working-agreement] Checking this session\'s mailbox; any mail comes with this prompt.'
 
 /**
  * Builds a coordinator world, session sid, that delegates issue 12 to the unit session spawn started for it.
  * @param on - The test's hook registration.
+ * @param changes - Further world options.
  * @returns The world, still in the coordinator's session.
  */
-function arrange(on: Parameters<typeof createWorld>[0]): World {
-  const world = createWorld(on, { branch: 'main' }, { session: coordinator, herdrEnv: inside })
+function arrange(on: Parameters<typeof createWorld>[0], changes: Options = {}): World {
+  const world = createWorld(on, { branch: 'main' }, { session: coordinator, herdrEnv: inside, ...changes })
   world.files.set(scopeFile('sid'), buildScope('sid', [12]))
   markSpawned(world, [12], unitSession)
   world.seedChat(unitSession, createEmptySession(unitSession))
@@ -89,6 +90,7 @@ test('a unit\'s question and blocked reach its coordinator, whose doorbell promp
     { kind: 'question', from: '12', to: 'coordinator-sid', issue: 12, reply: '' },
   ])
   become(world, 'coordinator')
+  await startSession($)
   await $.classic.FileChanged({ file_path: `${coordinatorBox}/new/${sent[0]!.id}.1.json`, event: 'add' } as never)
   await world.clock.settle()
   expect(world.prompts.filter(prompt => prompt === doorbell)).toHaveLength(1)
@@ -157,6 +159,132 @@ test('send refuses a reply the legal-reply map forbids', async ($, on) => {
   await ring($)
   expect((await send($, { kind: 'answer', body: 'x', in_reply_to: answer })).text).toContain('an answer takes no reply')
   expect(readBox(world, coordinatorBox, 'new')).toEqual([])
+})
+
+// contract: a send from a session whose spawn records cannot be read is refused with the read's error, sends nothing, and never says the session has no mailbox
+test('a send whose own mailbox addresses cannot be read is refused, naming the error, and sends nothing', async ($, on) => {
+  const world = arrange(on, { listFails: directory => directory === `${records}/spawn` })
+  become(world, 'unit')
+  const sent = await send($, { kind: 'inform', body: 'Found: the parser also drops tabs.' })
+  expect(sent).toEqual({ isError: true, text: expect.stringMatching(/^\[working-agreement\] send refused: this session's mailbox addresses could not be read \(.+\), so nothing was sent; retry the send/) })
+  expect(readBox(world, coordinatorBox, 'new')).toEqual([])
+})
+
+// contract: a unit that owes nothing reports with an inform: it reaches the live coordinator's new/ as the agent's, opens no conversation, and a reply to it is refused
+test('a unit that owes nothing sends its coordinator an inform, which takes no reply', async ($, on) => {
+  const world = arrange(on)
+  become(world, 'unit')
+  const sent = await send($, { kind: 'inform', body: 'Found: the parser also drops tabs.' })
+  const [inform] = readBox(world, coordinatorBox, 'new')
+  expect(inform).toMatchObject({ kind: 'inform', from: '12', to: 'coordinator-sid', issue: 12, in_reply_to: '', author: 'agent' })
+  expect(sent.isError).toBe(false)
+  expect(sent.text).toContain(`Sent inform ${inform!.id} to the coordinator (coordinator-sid); it takes no reply.`)
+  become(world, 'coordinator')
+  expect(await ring($)).toContain('the parser also drops tabs')
+  expect((await send($, { kind: 'answer', body: 'Thanks.', in_reply_to: inform!.id })).text).toContain('an inform takes no reply')
+  expect(readBox(world, unitBox, 'new')).toEqual([])
+})
+
+// contract: an inform is refused, with nothing written, while the unit owes an assign its done, as a reply, and from a coordinator
+test('an inform is refused while an assign is owed, as a reply, and from a coordinator', async ($, on) => {
+  const world = arrange(on)
+  expect((await send($, { kind: 'inform', body: 'x' })).text).toContain('a coordinator messages a unit with unit_prompt')
+  const assignId = await assign($, world)
+  const owed = await send($, { kind: 'inform', body: 'Found a fact.' })
+  expect(owed).toMatchObject({ isError: true })
+  expect(owed.text).toContain(`assign ${assignId} is open: put this in its done`)
+  expect((await send($, { kind: 'inform', body: 'x', in_reply_to: assignId })).text).toContain('an inform opens no conversation and is never a reply')
+  expect(readBox(world, coordinatorBox, 'new')).toEqual([])
+})
+
+// contract: an open cancel is the one an inform's refusal names, since its done closes the assign it stopped too
+test('an inform is refused while a cancel is owed, naming the cancel', async ($, on) => {
+  const world = arrange(on)
+  await assign($, world)
+  become(world, 'coordinator')
+  expect((await callModTool($, 'unit_prompt', { number: 12, text: 'Stop.', kind: 'cancel' })).isError).toBe(false)
+  const [cancel] = readBox(world, unitBox, 'new')
+  become(world, 'unit')
+  await ring($)
+  const refused = await send($, { kind: 'inform', body: 'Found a fact.' })
+  expect(refused).toMatchObject({ isError: true })
+  expect(refused.text).toContain(`cancel ${cancel!.id} is open: put this in its done`)
+  expect(readBox(world, coordinatorBox, 'new')).toEqual([])
+})
+
+// contract: a unit mailbox that cannot be listed leaves whether an assign is open unknown: the inform is refused as unknown, with how to check, and nothing is written
+test('an inform is refused as unknown when the unit\'s mailbox cannot be listed', async ($, on) => {
+  const fault = { isArmed: false }
+  const world = arrange(on, { listFails: directory => fault.isArmed && directory === `${unitBox}/cur` })
+  await assign($, world)
+  fault.isArmed = true
+  const refused = await send($, { kind: 'inform', body: 'Found a fact.' })
+  expect(refused).toMatchObject({ isError: true })
+  expect(refused.text).toContain('whether an assign or cancel is open is unknown')
+  expect(refused.text).toContain(`the mod could not list ${unitBox}/cur, which this unit's owed mail is read from. Nothing was sent; check with ls ${unitBox}/cur, then send the inform again`)
+  expect(readBox(world, coordinatorBox, 'new')).toEqual([])
+})
+
+// contract: a coordinator whose liveness cannot be established leaves the receiver unknown: an inform or question is refused as unknown, with how to check, never sent to the recorded address
+test('a unit\'s inform or question is refused as unknown while its coordinator\'s liveness cannot be read', async ($, on) => {
+  const world = arrange(on)
+  world.files.set(scopeFile('sid'), buildScope('sid', [12], null))
+  become(world, 'unit')
+  for (const kind of ['inform', 'question']) {
+    const refused = await send($, { kind, body: 'Found a fact.' })
+    expect(refused).toMatchObject({ isError: true })
+    expect(refused.text).toContain('whether a running coordinator delegates #12 is unknown: the process of coordinator-sid')
+    expect(refused.text).toContain(`Nothing was sent, never to a recorded address; check that session sid still runs in its herdr pane, then send the ${kind} again`)
+  }
+  expect([...world.files.keys()].filter(path => path.includes('/new/'))).toEqual([])
+})
+
+// contract: a coordinator whose process record is present but cannot be read is not judged ended: the inform is refused as unknown, with how to check, and nothing is written
+test('a unit\'s question or inform is refused as unknown, never as no running coordinator, while its coordinator\'s process cannot be read', async ($, on) => {
+  const world = arrange(on, { failRead: path => path === `/proc/${coordinatorHost.pid}/stat` })
+  become(world, 'unit')
+  for (const kind of ['question', 'inform']) {
+    const refused = await send($, { kind, body: 'Found a fact.' })
+    expect(refused.isError).toBe(true)
+    expect(refused.text).not.toContain('no running coordinator delegates')
+    expect(refused.text).toContain('whether a running coordinator delegates #12 is unknown: the process of coordinator-sid')
+    expect(refused.text).toContain(`check that session sid still runs in its herdr pane, then send the ${kind} again`)
+  }
+  expect([...world.files.keys()].filter(path => path.includes('/new/'))).toEqual([])
+})
+
+// contract: a coordinator whose process record cannot be read and whose existence check rejects is not judged ended: the send is refused as unknown, nothing written
+test('a unit\'s question is refused as unknown while its coordinator\'s process cannot be read and its existence check rejects', async ($, on) => {
+  const stat = `/proc/${coordinatorHost.pid}/stat`
+  const world = arrange(on, { failRead: path => path === stat, existsFault: path => path === stat ? 'reject' : undefined })
+  become(world, 'unit')
+  const refused = await send($, { kind: 'question', body: 'Store A or B?' })
+  expect(refused.isError).toBe(true)
+  expect(refused.text).not.toContain('no running coordinator delegates')
+  expect(refused.text).toContain('whether a running coordinator delegates #12 is unknown: the process of coordinator-sid')
+  expect([...world.files.keys()].filter(path => path.includes('/new/'))).toEqual([])
+})
+
+// contract: a coordinator whose process record cannot be read is judged ended only when no stat finds it: an exists that says absent while a stat finds it leaves it unknown
+test('a unit\'s question is refused as unknown while its coordinator\'s unreadable process record is missed by exists but found by stat', async ($, on) => {
+  const stat = `/proc/${coordinatorHost.pid}/stat`
+  const world = arrange(on, { failRead: path => path === stat, existsFault: path => path === stat ? 'absent' : undefined })
+  become(world, 'unit')
+  const refused = await send($, { kind: 'question', body: 'Store A or B?' })
+  expect(refused.isError).toBe(true)
+  expect(refused.text).not.toContain('no running coordinator delegates')
+  expect(refused.text).toContain('whether a running coordinator delegates #12 is unknown: the process of coordinator-sid')
+  expect([...world.files.keys()].filter(path => path.includes('/new/'))).toEqual([])
+})
+
+// contract: a step whose done the mod still owes never blocks the unit's inform
+test('a unit owing only a step sends its inform', async ($, on) => {
+  const world = arrange(on)
+  world.files.set(`${unitBox}/cur/st.1.json`, JSON.stringify({ v: 2, id: 'st', kind: 'step', from: 'coordinator-sid', to: '12', issue: 12, in_reply_to: '', seq: 1,
+    created_at: '2026-11-03T00:00:00.000Z', expects: '', attempt: 1, body: '/flow approve x', refs: [], author: 'agent', options: [] }))
+  become(world, 'unit')
+  expect((await send($, { kind: 'inform', body: 'Found a fact.' })).isError).toBe(false)
+  expect(readBox(world, coordinatorBox, 'new')).toMatchObject([{ kind: 'inform', from: '12', body: 'Found a fact.' }])
 })
 
 // contract: an assign stays open through a blocked: the blocked is answered on its own, and the assign still takes its done
@@ -236,6 +364,7 @@ test('a session watches the mail root from its start, so a coordinator made late
   become(world, 'unit')
   await send($, { kind: 'question', body: 'x' })
   become(world, 'coordinator')
+  await startSession($)
   const [question] = readBox(world, coordinatorBox, 'new')
   await $.classic.FileChanged({ file_path: `${coordinatorBox}/new/${question!.id}.1.json`, event: 'add' } as never)
   await world.clock.settle()

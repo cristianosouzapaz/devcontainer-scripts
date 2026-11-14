@@ -65,8 +65,7 @@ export function parseDelegatedCommit(value: unknown): DelegatedCommit | null {
  * @returns The chains sorted by head, each with its merged children.
  */
 export function groupChains(branches: SigningBranch[]): ChainGroup[] {
-  // why: A rebase re-runs every merge and stops on each conflict resolved by hand; re-creating each commit on its own tree
-  // keeps the verified content, and a moved ref still matches its worktree since every tree stays the same.
+  // why: A rebase re-runs every merge and stops on each conflict resolved by hand; re-creating each commit on its own tree keeps the verified content, and a moved ref still matches its worktree since every tree stays the same.
   const merged = (head: string, seen: string[] = []): SigningBranch[] => branches
     .filter(entry => entry.isMerged && entry.parent === head && !seen.includes(entry.branch))
     .flatMap(entry => [entry, ...merged(entry.branch, [...seen, head])])

@@ -1,8 +1,11 @@
 import type { StepSkip } from '../../types'
 import type { Identity, UnitEntry } from '../../hooks/domain/records'
-import { buildParentGraph, buildParentPullRequest } from './builders'
+import { buildParentGraph, buildParentPullRequest, coordinator } from './builders'
 import { buildScope, configBlob, declarationFile, delegatedFile, hashIdentity, records, scopeFile } from './world'
 import type { Checkout, Graph, Options, World } from './world'
+
+/** A gated checkout with two finished children, and the world options whose gate command fails on chosen trees. */
+export interface TwoChildren { live: Checkout; options: Options }
 
 /** A child unit cut from parent, as the declaration caches it. */
 export const childUnit: Options = { unit: { base: 'p0', baseBranch: 'parent' } }
@@ -17,6 +20,15 @@ const gateConfig ='{"always":[["./check"]]}'
 
 /** Approves the gated checkout's config, so merge_child's Verify runs its command. */
 export const gateOptions: Options = { verifyFile: gateConfig, approvedConfig: gateConfig }
+
+/** The full SHA child `a`'s tip carries in the delegation workflow, the reference workflow's `a2`, so merge_child can be given it as a tip. */
+export const tipA = `a2${'0'.repeat(38)}`
+
+/** The full SHA child `b`'s tip carries in the delegation workflow, the reference workflow's `b1`. */
+export const tipB = `b1${'0'.repeat(38)}`
+
+/** The child tips the delegation workflow renames to full SHAs. */
+const fullTips: Record<string, string> = { a2: tipA, b1: tipB }
 
 /**
  * Builds the parallel workflow: main, a parent branch cut from it, the session's child with one slice commit, and a sibling.
@@ -163,12 +175,26 @@ export const childCheckout = (change: (git: Graph) => Graph = git => git): Check
 })
 
 /**
- * Checks out the coordinator on the default branch, with parent `par` held by `/par` and child `a` (issue 2, cut from `par`) by `/a`.
- * @param change - Rewrites the reference workflow's history before the call.
+ * Renames commits of a history, in its commits, their parents, its refs and its reflog cuts.
+ * @param graph - The history, left unchanged.
+ * @param names - The new id of each renamed commit.
+ * @returns The renamed history.
+ */
+const renameCommits = (graph: Graph, names: Record<string, string>): Graph => {
+  const rename = (id: string) => names[id] ?? id
+  const renameValues = (map: Record<string, string>) => Object.fromEntries(Object.entries(map).map(([key, id]) => [key, rename(id)]))
+  return { ...graph, commits: Object.fromEntries(Object.entries(graph.commits).map(([id, commit]) => [rename(id), { ...commit, parents: commit.parents.map(rename) }])),
+    refs: renameValues(graph.refs), ...graph.cuts ? { cuts: renameValues(graph.cuts) } : {} }
+}
+
+/**
+ * Checks out the coordinator on the default branch, with parent `par` held by `/par` and child `a` (issue 2, cut from `par`) by `/a`;
+ * the children's tips `a2` and `b1` carry the full SHAs `tipA` and `tipB`, so merge_child can be given them.
+ * @param change - Rewrites the reference workflow's history before the call, naming the tips `a2` and `b1`.
  * @returns The checkout.
  */
 export const delegationCheckout = (change: (git: Graph) => Graph = git => git): Checkout => ({
-  branch: 'main', graph: change(buildParentGraph()), worktrees: { '/repo': { branch: 'main' }, '/par': { branch: 'par' }, '/a': { branch: 'a' } },
+  branch: 'main', graph: renameCommits(change(buildParentGraph()), fullTips), worktrees: { '/repo': { branch: 'main' }, '/par': { branch: 'par' }, '/a': { branch: 'a' } },
 })
 
 /**
@@ -209,7 +235,7 @@ export async function seedDelegatedChild(world: World, issues = [1, 2]): Promise
   await seedUnit(world, 'child', { branch: 'a', issues: [2] }, { skips: coveredSkips(), base: 'p1', baseBranch: 'par' })
   await seedUnit(world, 'parent', { branch: 'par', issues: [1] }, { skips: coveredSkips() })
   world.files.set(scopeFile('sid'), buildScope('sid', issues))
-  for (const sha of ['a1', 'a2']) world.files.set(delegatedFile(sha), JSON.stringify({ v: 1, key: sha, sha, branch: 'a' }))
+  for (const sha of ['a1', tipA]) world.files.set(delegatedFile(sha), JSON.stringify({ v: 1, key: sha, sha, branch: 'a' }))
 }
 
 /**
@@ -235,4 +261,26 @@ export function coveredSkips(): StepSkip[] {
  */
 export function parChild(): Options {
   return { unit: { base: 'p1', baseBranch: 'par', skips: [{ step: 'code', reason: 'covered' }, { step: 'verify', reason: 'covered' }] } }
+}
+
+/**
+ * Builds the gated delegation workflow with a second finished child, `b` (issue 3, cut from `par` at `p1`), in its own worktree.
+ * @param redAt - The commits whose tree fails the gate's command when a gating Verify checks them out.
+ * @returns The checkout, and the world options whose command fails on those trees.
+ */
+export function twoChildren(redAt: string[] = []): TwoChildren {
+  const live = gatedCheckout()
+  live.worktrees = { ...live.worktrees, '/b': { branch: 'b' } }
+  const spawnCode = () => redAt.includes(live.worktrees?.['/par.verify']?.head ?? '') ? 1 : 0
+  return { live, options: { session: coordinator, ...gateOptions, spawnCode, spawnOutput: 'check: 1 failing' } }
+}
+
+/**
+ * Seeds both children of the two-children workflow as finished delegated units in this coordinator's scope.
+ * @param world - The world.
+ */
+export async function seedTwoChildren(world: World): Promise<void> {
+  await seedDelegatedChild(world, [1, 2, 3])
+  await seedUnit(world, 'child-b', { branch: 'b', issues: [3] }, { skips: coveredSkips(), base: 'p1', baseBranch: 'par' })
+  world.files.set(delegatedFile(tipB), JSON.stringify({ v: 1, key: tipB, sha: tipB, branch: 'b' }))
 }

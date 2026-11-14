@@ -55,7 +55,7 @@ test('a fact written during a run survives in the record and on the pane after t
   const pending = $.tool.call({ tool: 'mcp__working-agreement__run', argv: ['./check'] })
   await world.clock.advance(3000)
   options.issueLabels = { 1: ['ready-for-agent'] }
-  // The live run's last paint precedes the fact, so the run's moment has not seen it.
+  // why: the live run's last paint precedes the fact, so the run's moment has not seen it.
   await $.tool.call({ tool: 'Bash', command: 'gh issue edit 1 --remove-label needs-triage --add-label ready-for-agent' })
   await world.clock.settle()
   expect(readLabels(world)).toEqual(['ready-for-agent'])
@@ -74,7 +74,7 @@ test('two overlapping writers both keep their facts in the record', async ($, on
   await world.clock.advance(60000)
   options.issueLabels = { 1: ['ready-for-agent'] }
   options.issueGate = new Promise(resolve => { gate.open = resolve })
-  // The turn's full refresh reads the session, then waits on the issue read before it writes.
+  // why: the turn's full refresh reads the session, then waits on the issue read before it writes.
   const turn = endTurn($)
   await world.clock.settle()
   await startSkill($, 'diagnosing-bugs')

@@ -1,6 +1,7 @@
-import { readContentTree, readGitState, readRoot } from '../lib/git'
+import { captureContentTree, readGitState, readRoot } from '../lib/git'
 import type { GitState } from '../lib/git'
-import { unwrapOr } from '../lib/result'
+import { fail, unwrapOr } from '../lib/result'
+import type { Result } from '../lib/result'
 import type { EnginePort } from './engine-port'
 import { readCommonDir, temporaryPath, recordsPath } from './record-store'
 
@@ -31,7 +32,18 @@ export const readGit = async (port: EnginePort): Promise<GitState | null> => unw
  * @returns The key, or null when git cannot tell.
  */
 export async function readWorkingTreeKey(port: EnginePort, root?: string): Promise<string | null> {
+  return unwrapOr(await readWorkingTree(port, root), null)
+}
+
+/**
+ * Reads the key that identifies the working tree's content, naming why it could not be read.
+ *
+ * @param port - The engine calls.
+ * @param root - The worktree root; the chat checkout when omitted.
+ * @returns The key, or the error of the step that failed.
+ */
+export async function readWorkingTree(port: EnginePort, root?: string): Promise<Result<string>> {
   const common = await readCommonDir(port)
-  if (!common) return null
-  return readContentTree(port.processes, root ?? await port.readCwd(), await temporaryPath(port, recordsPath(common, 's')))
+  if (!common) return fail('the repository metadata cannot be located')
+  return captureContentTree(port.processes, root ?? await port.readCwd(), await temporaryPath(port, recordsPath(common, 's')))
 }

@@ -8,7 +8,7 @@ export function createQueue(): Queue {
   const state = { tail: Promise.resolve<unknown>(undefined) }
   return <T>(work: () => Promise<T>): Promise<T> => {
     const queued = state.tail.then(work)
-    // A failed caller must not prevent the next operation from running.
+    // why: a failed caller must not prevent the next operation from running.
     state.tail = queued.then(() => undefined, () => undefined)
     return queued
   }
@@ -23,7 +23,7 @@ export function createQueue(): Queue {
 export function createLimiter(limit: number): Queue {
   const state = { active: 0, waiting: [] as (() => void)[] }
   return async <T>(work: () => Promise<T>): Promise<T> => {
-    // A settling operation hands its slot straight to the next waiter, so a newcomer never takes it first.
+    // why: a settling operation hands its slot straight to the next waiter, so a newcomer never takes it first.
     if (state.active >= limit) await new Promise<void>(resolve => { state.waiting.push(resolve) })
     else state.active += 1
     try {

@@ -3,6 +3,7 @@ import type { HookFailure } from 'claude-code'
 import { describeHookError, markForAgent } from '../domain/messages'
 import { sessionMemory } from './session-memory'
 import type { GuardStat } from './session-memory'
+import { moduleState } from '../lib/module-state'
 
 /** A hook's budget as `next.budget` reads it, live. */
 interface Budget { readonly ms: number; readonly remainingMs: number }
@@ -41,6 +42,8 @@ export interface GuardUsage { guard: string; usedMs: number; budgetMs: number }
 export interface GuardCatchSpec<E, R> {
   /** Names the guard in its measurements. */
   guard: string
+  /** Names the guard to the agent in a timed-out deny, when its measurement name is engine jargon; the guard's name otherwise. */
+  label?: string
   check: GuardCheck<E, R>
   /** The guard's deny in its event's shape. */
   deny: (reason: string) => R
@@ -48,13 +51,36 @@ export interface GuardCatchSpec<E, R> {
   sleep: (delayMs: number, signal: AbortSignal) => Promise<void>
   /** Hears each timeout once the answer is known; it must not wait, since it runs inside the grace. */
   onTimeout?: (timeout: GuardTimeout) => void
+  /**
+   * Answers a call the guard had passed on before the engine dropped it, when the call's tool is answered by a hook beneath rather
+   * than by core: replayed, it would reach core, which answers that no hook did. Undefined replays the call.
+   */
+  answerDropped?: (event: E) => Promise<R | undefined>
 }
 
 /** The race between a retried check and its deadline: neither has won yet, the check passed the call on, or the deadline expired. */
 interface Race { state: 'pending' | 'passed' | 'expired' }
 
+/**
+ * The calls the guard passed on, by event, since the engine's `next.called` reads false in the `.catch` even after the guard called
+ * next, and by tool use id, for an engine that hands the `.catch` a copy of the event.
+ */
+const passed = moduleState(() => ({ events: new WeakSet<object>(), ids: new Set<string>() }))
+
 /** The error a failed guard check denies with. */
-export const checkFailed = markForAgent('The check failed, so the call is denied — retry; if it keeps failing, stop and tell the user.')
+const checkFailed = markForAgent('The check failed, so the call is denied — retry; if it keeps failing, stop and tell the user.')
+
+/**
+ * Words a guard's deny after its check failed: a timeout names the guard and the busy host, since it carries no error of its own
+ * and a bare `timeout` reads as a failing check; any other failure names its error.
+ * @param guard - The guard's name as the agent reads it.
+ * @param error - Why the check failed.
+ * @returns The deny reason.
+ */
+export function describeCheckFailure(guard: string, error: HookFailure): string {
+  if (error.kind !== 'timeout') return `${checkFailed} ${describeHookError(error)}`
+  return markForAgent(`The mod's ${guard} check timed out (the host may be busy), so this call is denied: retry it; if it keeps timing out, stop and tell the user.`)
+}
 
 /**
  * Reads a guard's measurements, created empty on first use.
@@ -88,14 +114,55 @@ export function measureGuard<E, R>(guard: string, check: GuardCheck<E, R>, onUsa
       stat.maxUsedMs = Math.max(stat.maxUsedMs, usedMs)
       onUsage?.({ guard, usedMs, budgetMs: next.budget.ms })
     }
-    const answer = await check(passed => { measure(); return next(passed) })
+    const answer = await check(passed => { measure(); markPassed(_event); markPassed(passed); return next(passed) })
     measure()
+    forgetPassed(_event)
     return answer
   }
 }
 
 /**
- * Builds a guard's `.catch` handler. A call already passed on is replayed; a failure other than a timeout is denied. A timeout
+ * Reads a call's tool use id, which the engine sets on a model's call.
+ * @param event - The call.
+ * @returns The id, or undefined.
+ */
+function readToolUseId(event: unknown): string | undefined {
+  const id: unknown = typeof event === 'object' && event !== null ? (event as Record<string, unknown>).tool_use_id : undefined
+  return typeof id === 'string' && id ? id : undefined
+}
+
+/**
+ * Remembers that the guard passed a call on.
+ * @param event - The call.
+ */
+function markPassed(event: unknown): void {
+  if (typeof event === 'object' && event !== null) passed.events.add(event)
+  const id = readToolUseId(event)
+  if (id) passed.ids.add(id)
+}
+
+/**
+ * Forgets a call once it was answered.
+ * @param event - The call.
+ */
+function forgetPassed(event: unknown): void {
+  const id = readToolUseId(event)
+  if (id) passed.ids.delete(id)
+}
+
+/**
+ * Tells whether the guard passed a call on before it failed.
+ * @param event - The call as the `.catch` sees it.
+ * @returns Whether it was passed on.
+ */
+function wasPassed(event: unknown): boolean {
+  const id = readToolUseId(event)
+  return typeof event === 'object' && event !== null && passed.events.has(event) || !!id && passed.ids.has(id)
+}
+
+/**
+ * Builds a guard's `.catch` handler. A call already passed on is answered by answerDropped when it knows the tool, and replayed
+ * otherwise; a failure other than a timeout is denied. A timeout
  * runs the check once more against a deadline of half the grace left: the deny lands before the engine drops the handler,
  * which would let the call run unchecked. A retry that passed the call on before the deadline stands; anything else is denied,
  * and a pass arriving after the deadline gets the deny instead of the chain, so the call never runs unchecked.
@@ -104,8 +171,11 @@ export function measureGuard<E, R>(guard: string, check: GuardCheck<E, R>, onUsa
  */
 export function guardCatch<E, R>(spec: GuardCatchSpec<E, R>): GuardCatch<E, R> {
   return async (event, next) => {
-    if (next.called) return next(event)
-    const denial = spec.deny(`${checkFailed} ${describeHookError(next.error)}`)
+    if (next.called || wasPassed(event)) {
+      forgetPassed(event)
+      return await spec.answerDropped?.(event) ?? next(event)
+    }
+    const denial = spec.deny(describeCheckFailure(spec.label ?? spec.guard, next.error))
     if (next.error.kind !== 'timeout') return denial
     const outcome = await retryCheck(event, next, spec, denial)
     const stat = readStat(spec.guard)
@@ -137,7 +207,7 @@ async function retryCheck<E, R>(event: E, next: CaughtNext<E, R>, spec: GuardCat
     if (race.state === 'pending') race.state = 'expired'
     return race.state === 'expired'
   }
-  // Only the pass disarms the deadline: a wait that fails for any other reason expires it, so the call is still denied in time.
+  // why: only the pass disarms the deadline: a wait that fails for any other reason expires it, so the call is still denied in time.
   const deadline = spec.sleep(next.budget.remainingMs / 2, control.signal).then(expire, expire)
   const retried = spec.check(proceed).then(answer => ({ answer }), () => null)
   const first = await Promise.race([retried, deadline.then(expired => expired ? 'expired' as const : 'disarmed' as const)])
@@ -145,7 +215,7 @@ async function retryCheck<E, R>(event: E, next: CaughtNext<E, R>, spec: GuardCat
   const settled = first === 'disarmed' ? await retried : first
   control.abort()
   if (settled) return { answer: settled.answer, isRecovered: true }
-  // A retry that failed after it passed the call on: the chain already ran, so its settled result is replayed.
+  // why: a retry that failed after it passed the call on already ran the chain, so its settled result is replayed.
   return race.state === 'passed' ? { answer: await next(event), isRecovered: true } : { answer: denial, isRecovered: false }
 }
 

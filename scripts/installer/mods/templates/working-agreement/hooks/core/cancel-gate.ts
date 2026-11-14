@@ -1,3 +1,4 @@
+import { handbackTool } from '../domain/coordinator'
 import type { Envelope } from '../domain/mail'
 import { unitAddress } from '../domain/mail'
 import { markForAgent, modToolPrefix } from '../domain/messages'
@@ -6,7 +7,7 @@ import type { Result } from '../lib/result'
 import { bestEffort } from './best-effort'
 import type { EnginePort } from './engine-port'
 import { takeMailBlock } from './mail-delivery'
-import { readOwedMail, readOwnAddresses, sendMail } from './mailbox'
+import { AddressReadError, readCancelMailbox, readOwedCancels, readOwedMail, sendMail } from './mailbox'
 import { readCommonDir, readSession, updateSession } from './record-store'
 import { withRecordLock } from './session-memory'
 
@@ -15,21 +16,6 @@ export interface CancelWatch { signal: AbortSignal; check: () => Promise<void>; 
 
 /** The one tool the gate leaves to the agent. */
 const sendTool = `${modToolPrefix}send`
-
-/** Claude Code's tool a subagent returns its report with: the gate's only way back to the main thread. Matched by exact name, so a rename fails closed. */
-const handbackTool = 'SubagentHandback'
-
-/**
- * Reads the cancels this unit session holds and owes a done, from arrival, read or not.
- * @param port - The engine calls.
- * @returns The cancels, empty outside a unit session.
- */
-async function readOwedCancels(port: EnginePort): Promise<Envelope[]> {
-  const common = await readCommonDir(port)
-  const unit = (await readOwnAddresses(port)).find(address => /^\d+$/.test(address))
-  if (!common || !unit) return []
-  return (await readOwedMail(port, common, unit)).filter(envelope => envelope.kind === 'cancel')
-}
 
 /**
  * Reads the cancels that gate this unit's tools: owed a done and not lifted by the user.
@@ -62,7 +48,8 @@ const describeReply = (cancels: readonly Envelope[]): string =>
  */
 export async function denyCancelledCall(port: EnginePort, tool: string, agentId: string | undefined): Promise<string | undefined> {
   if (tool === sendTool || (agentId && tool === handbackTool)) return undefined
-  const cancels = await readGatingCancels(port)
+  // why: an address read that failed raised the Mail fault the pane shows, and a cancel nobody could read never denies every tool; any other failure stays one.
+  const cancels = await readGatingCancels(port).catch((error: unknown) => { if (error instanceof AddressReadError) return []; throw error })
   if (!cancels.length) return undefined
   const ids = cancels.map(envelope => envelope.id).join(', ')
   if (agentId) return markForAgent(`Cancel ${ids} is open in this unit, so every tool but send and ${handbackTool} is denied: stop now and hand your report back `
@@ -127,6 +114,16 @@ export function watchCancels(port: EnginePort, signal: AbortSignal): CancelWatch
     },
     cancelId: () => found.id,
   }
+}
+
+/**
+ * Reads the directory a wait watches for a cancel, as the options of a Verify-queue wait take it.
+ * @param port - The engine calls.
+ * @returns The watch, or nothing outside a delegated unit.
+ */
+export async function readWatch(port: EnginePort): Promise<{ watch?: string }> {
+  const dir = await readCancelMailbox(port)
+  return dir ? { watch: dir } : {}
 }
 
 /**

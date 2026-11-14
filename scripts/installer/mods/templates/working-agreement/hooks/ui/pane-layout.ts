@@ -1,4 +1,5 @@
-import { keyWidth, panePadding, pillGap } from './theme'
+import type { FlowView } from '../../types'
+import { keyWidth, panePadding, pillGap, sectionGap } from './theme'
 
 /** The rows laid out so far, and the columns the last row has used. */
 interface LabelLayout {
@@ -6,6 +7,8 @@ interface LabelLayout {
   used: number
 }
 
+/** The narrowest text column a keyed row may leave whose wrap the acknowledgement still bounds; a narrower body acknowledges nothing. */
+const minBoundWidth = 8
 /**
  * The body columns of the dock at its default width in a 144-column terminal, the narrowest where a pane opened unasked
  * docks: the engine opens the dock at min(45%, 90, terminal − 70) columns, one of them its grip.
@@ -94,7 +97,7 @@ export function wrapWords(value: string, width: number): string[] {
  */
 export function fitFact(fact: string, width: number): string {
   if (fact.length <= width) return fact
-  // A space at the last column still ends a whole word, which the ellipsis then replaces.
+  // why: a space at the last column still ends a whole word, which the ellipsis then replaces.
   const space = fact.slice(0, width).lastIndexOf(' ')
   const head = space > 0 ? fact.slice(0, space) : fact.slice(0, Math.max(width - 1, 0))
   return `${head.replace(/[\s:,—]+$/, '')}…`
@@ -118,4 +121,34 @@ export function measureFactWidth(bodyColumns: number, label: string): number {
  */
 export function drawRule(columns: number): string {
   return '─'.repeat(Math.max(columns - 2 * panePadding.x, 1))
+}
+
+/**
+ * Names the notices and start failures of a view that a render certainly showed: with the window at the top, those whose note ends
+ * within its rows, each row measured at its most, the text above it included. When that extent cannot be bounded, none counts: a window
+ * scrolled past the top, a live run or a failed issue open drawn above the notes, whose rows this bound does not count, or a body too
+ * narrow to bound a row's wrap.
+ * A failure's note names no notice, so it counts only when the whole view fits.
+ * @param view - The view drawn.
+ * @param columns - The body's width.
+ * @param window - The window's offset and rows.
+ * @param window.offset - How far the window is scrolled.
+ * @param window.rows - How many rows it shows.
+ * @param hasLiveRun - Whether the render draws a live run.
+ * @returns The notices' keys and the failures' ids it showed.
+ */
+export function readShownNotices(view: FlowView, columns: number, window: { offset: number; rows: number }, hasLiveRun: boolean): string[] {
+  const width = columns - 2 * panePadding.x - keyWidth - 2
+  if (window.offset > 0 || hasLiveRun || view.openFailure || width < minBoundWidth) return []
+  // why: an upper bound: each line of a text wraps at the narrowest keyed column, a word wrap leaves a row at most half empty, and a list row wraps once more.
+  const rowsOf = (text: string): number => text.split('\n').reduce((sum, line) => sum + 2 * Math.ceil((line.length + 1) / width), 0) + 1
+  const above = panePadding.top + 2 + 8 * sectionGap + view.issues.length * 2 + (view.pending ? rowsOf(view.pending) : 0) + view.labels.length * 2
+    + view.meta.reduce((sum, row) => sum + rowsOf(row.value), 0) + view.steps.reduce((sum, step) => sum + 2 + (step.detail ? rowsOf(step.detail) : 0), 0)
+  const ends = view.notes.reduce<number[]>((list, note) => [...list, (list.at(-1) ?? above) + rowsOf(note.value)], [])
+  const total = (ends.at(-1) ?? above) + (view.violations ?? []).reduce((sum, note) => sum + rowsOf(note.text), 0) + 6
+  return (view.notices ?? []).filter(key => {
+    const id = key.split('@')[0] ?? key
+    const index = view.notes.findIndex(note => note.value.includes(`[${id.slice(0, 8)}]`))
+    return index >= 0 ? (ends[index] ?? Infinity) <= window.rows : total <= window.rows
+  })
 }

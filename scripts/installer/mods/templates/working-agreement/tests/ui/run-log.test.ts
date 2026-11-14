@@ -5,7 +5,7 @@ import type { Mounted } from 'claude-code/testing'
 import type { FlowView, RunCommandView, RunView, VerifyRecord } from '../../types'
 import type { EnginePort } from '../../hooks/core/engine-port'
 import { readSession, readUnit } from '../../hooks/core/record-store'
-import { withRunView } from '../../hooks/core/run-view'
+import { readRunLog, withRunView } from '../../hooks/core/run-view'
 import { sessionMemory } from '../../hooks/core/session-memory'
 import { handlePaneClose, handlePaneRender } from '../../hooks/handlers/pane-render'
 import type { PaneElements } from '../../hooks/ui/pane-sections'
@@ -14,7 +14,7 @@ import { diagnosed, diagnosisComment } from '../support/builders'
 import { checkTheme, expectText, mountPane, readFlowStatus, readKeyLabels, readPromptContext, serveDisplayed, textOf } from '../support/helpers'
 import type { DrawnNode } from '../support/helpers'
 import { keyWidth } from '../../hooks/ui/theme'
-import { configBlob, createTestPort, createWorld, records } from '../support/world'
+import { buildScope, configBlob, createTestPort, createWorld, markSpawned, records, scopeFile } from '../support/world'
 import type { World, Gate, Options } from '../support/world'
 
 interface RenderTable { elements?: PaneElements }
@@ -67,7 +67,8 @@ function savedRun(overrides: Partial<RunView> = {}): RunView {
   const defaults: RunView = { runId: 'saved', kind: 'Verify', status: 'failed', selection: 'rules: hooks/**', tree: '3f9e0c1abcdef', cwd: '/workspace/a-long-worktree',
     log: '/repo.git/working-agreement/runs/saved.log', at: 1000, duration: 106,
     commands: [command('passed', 'exit 0', 'first\n\nlast', 4), command('failed', 'exit 1', 'failure', 102), command('waiting', '', 'must not appear')] }
-  return { ...defaults, ...overrides }
+  // why: a partial override spread over the union loses which status it pairs with.
+  return { ...defaults, ...overrides } as RunView
 }
 
 function seedRun(on: On, run: RunView, options: Options = {}): World {
@@ -92,7 +93,7 @@ for (const columns of [30, 60]) {
     await readFlowStatus($)
     const before = await mountPane($, { columns })
     expect(textOf(await before.drawn())).toContain('✓ Verify')
-    // At both widths Commit, in its normal state, reads as the step alone on one row.
+    // why: at both widths Commit, in its normal state, reads as the step alone on one row.
     const commitRow = '▸ Commit'
     expect(textOf(await before.drawn())).toContain(commitRow)
     await expectOneRow(before, commitRow)
@@ -101,7 +102,7 @@ for (const columns of [30, 60]) {
     const pending = $.tool.call({ tool: 'mcp__working-agreement__verify' })
     await clock.settle()
     const pane = await mountPane($, { columns })
-    // The live run holds the verified tree, so the older pass no longer decides Verify.
+    // why: the live run holds the verified tree, so the older pass no longer decides Verify.
     await expectOneRow(pane, '▸ Verify')
     const liveText = textOf(await pane.drawn())
     expect(liveText).toContain('▸ Verify')
@@ -140,7 +141,7 @@ for (const tool of ['verify', 'run']) {
     if (tool === 'verify') {
       expect(live).toContain('○ check')
       await expectText(pane, '0:00', { color: 'text' })
-      // The header names the run and its clock; why the checks were selected stays in the Run log and /flow status.
+      // why: the header names the run and its clock; why the checks were selected stays in the Run log and /flow status.
       expect(live).not.toContain('no local check selected — left to CI')
       await expectText(pane, 'lint', { color: 'text', wrap: 'truncate-end' })
       await expectText(pane, 'check', { color: 'inactive', wrap: 'truncate-end' })
@@ -224,7 +225,7 @@ test('timeout clears the live section and leaves the short Verify fact', async (
   await clock.settle()
   const flow = await mountPane($)
   expect(textOf(await flow.drawn())).toContain('✓ Code')
-  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('already in flight')
+  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toMatch(/^verify refused: this session's verify call started at \S+ is still in flight \(running its command \(log: \/repo\.git\/working-agreement\/runs\/sid-\S+\.log\)\); its result goes to that call\. Wait for it to answer, then call verify again; \/flow status shows it\.$/)
   expect(textOf(await flow.drawn())).toContain('▸ Verify')
   await clock.advance(600)
   await pending
@@ -285,7 +286,7 @@ test('l switches the Flow pane to Run log; Flow or Esc returns and digit selecto
   await expectText(log, 'green-t', { color: 'inactive' })
   expect((await log.findAll({ type: 'Box' })).some(box => box.props['marginY'] === 1 && /^─+$/.test(textOf(box)))).toBe(true)
   const verify = textOf(await log.drawn())
-  expect(verify).toContain('Selectionno local check selected — left to CI')
+  expect(verify).toContain('Selectionno rule matched, so only always runs; targeted checks are left to CI')
   expect(verify).toContain('Cwd/repo')
   expect(verify).toContain('File/repo.git/working-agreement/runs/')
   expect(verify).toContain('✗ ./lintexit 1 · 0s│ Verify output')
@@ -315,6 +316,31 @@ test('l switches the Flow pane to Run log; Flow or Esc returns and digit selecto
   expect(textOf(await log.drawn())).toContain('▸ Diagnose')
   await expectTheme(log)
   await flow.unmount()
+})
+
+// contract: a run in a flow with no Diagnose step records no evidence, so Run log shows its outcome as not recorded, never as recorded
+test('a run outside Diagnose shows its outcome as not recorded in a neutral tone', async ($, on) => {
+  const options: Options = {
+    session: { flow: 'small-feature', info: { 1: { title: 'feature', labels: ['ready-for-agent'], comments: [] } } },
+    comments: { 1: [] }, issueLabels: { 1: ['ready-for-agent'] }, spawnCode: 1, spawnOutput: 'failing output',
+  }
+  const world = createWorld(on, { branch: 'feat', isDirty: true, tree: 'feat-tree' }, options)
+  const { clock } = world
+  // why: outside Diagnose only a delegated unit's run is queued; anywhere else run is unavailable.
+  markSpawned(world, [1])
+  world.files.set(scopeFile('coord'), buildScope('coord', [1]))
+  for (const [code, outcome] of [[1, 'fail'], [0, 'pass']] as const) {
+    options.spawnCode = code
+    expect((await $.tool.call({ tool: 'mcp__working-agreement__run', argv: ['./check'] })).result).toContain('no Diagnose evidence recorded')
+    const log = await mountRunLog($)
+    const text = textOf(await log.drawn())
+    expect(text).toContain(`run · ${outcome} · not recorded`)
+    expect(text).not.toMatch(/\b(red|green)\b|(?<!not )recorded/)
+    await expectText(log, `${outcome} · not recorded`, { color: 'text' })
+    await log.press({ key: 'flow' })
+    await log.unmount()
+    await clock.advance(1000)
+  }
 })
 
 test('a person close returns Run log to Flow but passes through from Flow', async (_$, on) => {
@@ -694,7 +720,7 @@ test('a cancelled run holds no record error for its cut sidecar save, while a fa
   const world = createWorld(on, { branch: 'feat', isDirty: true, tree: 'changed' }, { session: { flow: 'fix' } })
   const base = createTestPort(world)
   const call = { control: new AbortController(), isFailing: false }
-  // The engine cuts a cancelled call's `$` calls; a live call's write can still fail on its own.
+  // why: the engine cuts a cancelled call's `$` calls; a live call's write can still fail on its own.
   const port: EnginePort = { ...base, processes: { ...base.processes, run: (argv, init) => call.control.signal.aborted || (call.isFailing && argv[0] === 'mv')
     ? Promise.reject(new Error(`$.process.run(${argv[0]}) aborted`)) : base.processes.run(argv, init) } }
   const { unit } = await readSession(port)
@@ -703,7 +729,7 @@ test('a cancelled run holds no record error for its cut sidecar save, while a fa
     commands: [{ argv: ['./check'], status: 'running', duration: 0, outcome: '', output: '' }] }
   const runView = (signal: AbortSignal, work: () => void): Promise<string> => withRunView(port, 'sid', unit!, generation, initial, signal, async () => { work(); return 'cancelled' })
   const cancelled = runView(call.control.signal, () => call.control.abort())
-  // The test port's sleep ignores its signal, so the paint loop's wait ends only when the clock passes it.
+  // why: the test port's sleep ignores its signal, so the paint loop's wait ends only when the clock passes it.
   await world.clock.advance(1000)
   await cancelled
   expect(sessionMemory.recordError).toBe(null)
@@ -714,10 +740,25 @@ test('a cancelled run holds no record error for its cut sidecar save, while a fa
   expect(sessionMemory.recordError?.error).toContain('runs/1-1-sid.json: $.process.run(mv) aborted')
 })
 
+// contract: a run whose work throws before it finishes shows as not recorded with the error, never as cancelled or as a red
+test('a run that throws before it finishes shows the error in Run log, never cancelled or red', async (_$, on) => {
+  const world = createWorld(on, { branch: 'feat', isDirty: true, tree: 'changed' }, { session: { flow: 'fix' } })
+  const port = createTestPort(world)
+  const { unit } = await readSession(port)
+  const generation = (await readUnit(port, unit!)).generation
+  const initial: RunView = { runId: '1-1-sid', kind: 'Run', status: 'running', selection: '', tree: 'changed', cwd: '/repo', log: '/log', duration: 0, at: 0,
+    commands: [{ argv: ['./check'], status: 'running', duration: 0, outcome: '', output: '' }] }
+  const running = withRunView(port, 'sid', unit!, generation, initial, new AbortController().signal, () => Promise.reject(new Error('disk full')))
+    .then(() => null, (error: unknown) => error)
+  await world.clock.advance(1000)
+  expect(await running).toEqual(new Error('disk full'))
+  expect((await readRunLog(port))[0]).toMatchObject({ kind: 'Run', status: 'ended', label: 'did not finish: disk full. Log: /log', log: '/log' })
+})
+
 test('a Run log render the host abandons ends quietly, while an unabandoned failure still throws', async ($, on) => {
   const world = createWorld(on, { branch: 'feat', isDirty: true, tree: 'changed' }, { session: { flow: 'fix' } })
   const base = createTestPort(world)
-  // The host cuts an abandoned render's `$` calls.
+  // why: the host cuts an abandoned render's `$` calls.
   const port: EnginePort = { ...base, processes: { ...base.processes, run: () => Promise.reject(new Error('$.process.run(git) aborted')) } }
   world.paneViews.push('run-log')
   const table: RenderTable = {}

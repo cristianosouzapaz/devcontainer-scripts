@@ -92,7 +92,6 @@ export function describeRequirement(state: StepState, session: Session, position
   if (step.observe === 'verify.passed') return position.verify.factCode === 'verify-config-missing'
     ? "propose the minimum .claude/working-agreement.json: rules mapping path globs to the targeted check each change needs, as argvs taken from the project's docs, scripts or CI (workspaces, manifests, CI paths: filters), never the full suite, which CI runs; a change no rule matches is left to CI; argv only, strict keys (always, rules, timeoutMinutes, waitForCiLabels, issues, $schema), sub-packages as [\"sh\",\"-c\",\"cd pkg && …\"]; write it on the unit's branch as a normal change, ship it in its PR, then stop and ask the user to approve it from their own terminal with the command the pane names" : position.verify.isWaitingApproval
     ? `end your turn and ask the user to approve the Verify config from their own terminal, never from a session: ${position.verify.approval ?? 'the command the pane names'}` : position.verify.isRunning ? 'wait for the running Verify to end' : 'call the verify tool'
-  // Outside delegation the agent hands the user the commands; a delegated unit commits through the commit tool and never pushes.
   if (step.observe === 'commit') {
     const target = pullRequest?.baseRefName && pullRequest.baseRefName !== git?.base ? pullRequest.baseRefName : 'the default branch'
     const sharedBranch = position.slice?.isShared
@@ -107,7 +106,7 @@ export function describeRequirement(state: StepState, session: Session, position
       ? `stop and ask the user to run the commit commands ${step.skill} produced, then push the branch (never commit or push yourself; no need to run it again)${sharedBranch}`
       : `run the ${step.skill} skill, then stop and ask the user to run the commands it produced and push the branch (never commit or push yourself)${sharedBranch}`
   }
-  // The merge is a commit, so the agent hands it to the user, or under delegation to the coordinator's merge_child; the step follows the ancestry git then reports.
+  // why: the merge is a commit, which only the user (or under delegation the coordinator's merge_child) makes, so the step only follows the ancestry git then reports.
   if (step.observe === 'integrated') {
     const { integration } = position
     if (!integration) return 'retry; if it keeps failing, stop and tell the user'

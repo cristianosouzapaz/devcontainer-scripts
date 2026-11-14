@@ -111,7 +111,7 @@ function outputRows({ Box, Text }: PaneElements, output: string, live = false): 
 export function drawLiveRun(elements: PaneElements, run: RunView): RenderElement {
   const { Box, Text } = elements
   const current = run.commands.find(command => command.status === 'running')
-  // A Verify command comes from the config's runners; any other run shows the argv the agent gave.
+  // why: a Verify command comes from the config's runners and reads best summarized; any other run shows the argv the agent gave.
   const commandLine = (command: RunCommandView): string => run.kind === 'Verify' ? summarizeCommand(command.argv) : command.argv.join(' ')
   return <Box flexDirection="column">
     {runHeader(elements, run.kind, null, clock(run.duration))}
@@ -137,9 +137,12 @@ export function drawLiveRun(elements: PaneElements, run: RunView): RenderElement
 function runOutcome(run: RunView): OutcomeLabel {
   if (run.status === 'running') return { text: 'running', color: 'text' }
   if (run.status === 'tree changed') return { text: 'not recorded', color: 'warning' }
+  if (run.status === 'ended') return { text: run.label, color: 'warning' }
   if (run.status === 'cancelled') return { text: 'cancelled', color: 'inactive' }
   if (run.status === 'timed out') return { text: 'timed out', color: 'error' }
   if (run.kind === 'red' || run.kind === 'green') return { text: `${run.kind} recorded`, color: 'text' }
+  // why: a finished Run outside Diagnose is no evidence, so its outcome is told without a verdict colour.
+  if (run.kind === 'Run') return { text: `${run.status === 'passed' ? 'pass' : 'fail'} · not recorded`, color: 'text' }
   return { text: run.status, color: run.status === 'failed' ? 'error' : 'text' }
 }
 
@@ -149,7 +152,8 @@ function runOutcome(run: RunView): OutcomeLabel {
  * @returns The list label for the run's state or kind.
  */
 function listName(run: RunView): string {
-  return run.status === 'running' ? 'running' : run.status === 'tree changed' || run.status === 'cancelled' ? 'not recorded' : run.kind
+  return run.status === 'running' ? 'running' : run.status === 'tree changed' || run.status === 'cancelled' || run.status === 'ended' || run.kind === 'Run'
+    ? 'not recorded' : run.kind
 }
 
 /**
@@ -160,6 +164,7 @@ function listName(run: RunView): string {
 function listResult(run: RunView): string {
   if (run.status === 'running') return clock(run.duration)
   if (run.status === 'tree changed') return runOutcome(run).text
+  if (run.status === 'ended') return run.label
   if (run.kind === 'red' || run.kind === 'green') return run.status === 'cancelled' ? 'cancelled'
     : run.result ?? (run.status === 'timed out' ? 'timed out' : run.commands.find(command => command.status === 'failed')?.outcome ?? 'exit 0')
   return run.status
@@ -177,7 +182,7 @@ function commandBlock(elements: PaneElements, command: RunCommandView, run: RunV
   const { Box, Text } = elements
   const inactive = isInactiveCommand(command.status)
   const outcome = command.status === 'waiting' ? run.status === 'running' ? 'waiting' : 'not run'
-    : command.status === 'cancelled' ? 'killed'
+    : command.status === 'cancelled' ? command.outcome === 'cancelled' ? 'killed' : command.outcome
     : command.status === 'running' ? clock(command.duration)
     : command.status === 'timeout' ? command.outcome.replace('timed out after ', 'timed out · ')
     : `${command.outcome} · ${duration(command.duration)}`

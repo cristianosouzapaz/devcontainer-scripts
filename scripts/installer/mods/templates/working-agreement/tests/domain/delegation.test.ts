@@ -3,15 +3,19 @@ import { expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 import { approvalCommand, coordinator, diagnoseRuns, diagnosisComment, fixed, guarded, noFlow, verifyFile } from '../support/builders'
-import { callModTool, declareFlow, inside, readFlowStatus, readPromptContext, runFlowCommand, startSkill } from '../support/helpers'
-import { createIssueGithub, defaultIssueLabels, ticket } from '../support/issue-github'
+import { callModTool, declareFlow, inside, readFlowStatus, readPromptContext, readStatusRow, runFlowCommand, startSession, startSkill } from '../support/helpers'
+import { answerParents, createIssueGithub, defaultIssueLabels, ticket } from '../support/issue-github'
 import type { IssueGithub } from '../support/issue-github'
 import { test } from '../support/kit'
-import { buildScope, buildStat, configBlob, coordinatorHost, createWorld, hashIdentity, markSpawned, records, scopeFile, seedDelegation } from '../support/world'
-import type { Options } from '../support/world'
+import { findDelegation } from '../../hooks/core/delegation'
+import { readOwnAddresses } from '../../hooks/core/mailbox'
+import { deriveSessionId } from '../../hooks/core/spawn'
+import { buildScope, buildStat, common, configBlob, coordinatorHost, createTestPort, createWorld, hashIdentity, markSpawned, records, scopeFile, seedDelegation } from '../support/world'
+import type { Options, World } from '../support/world'
+import { tickMs } from '../../hooks/core/timing'
 
 const unitScope = buildScope('coord', [1])
-// The type and priority every issue carries, so an edit changes triage alone.
+// why: the type and priority every issue carries, so an edit changes triage alone.
 const typed = ['type::feat', 'priority::medium']
 const spec = { title: 'feat(mod): delegated spec', kind: 'spec', triage: 'ready-for-agent', type: 'feat', priority: 'medium',
   sections: { Problem: 'It.', Solution: 'This.', 'Acceptance criteria': '- [ ] works' } }
@@ -71,6 +75,7 @@ test('/flow delegate is refused outside a coordinator session and from a non-com
 test('/flow delegate parses the numbers first and records and appends the free text after them verbatim', async ($, on) => {
   const world = createWorld(on, { branch: 'feat' }, { session: coordinator, ...guarded() })
   const { clock, prompts } = world
+  await startSession($)
   expect((await runFlowCommand($, 'delegate #5 3 keep #4 for later:\n  tests first')).text).toContain('Delegating #3 #5')
   await clock.settle()
   expect(readScope(world)).toEqual({ v: 1, sessionId: 'sid', issues: [3, 5], coversCreated: false, instructions: ['keep #4 for later:\n  tests first'] })
@@ -80,10 +85,14 @@ test('/flow delegate parses the numbers first and records and appends the free t
   expect(prompts[0]).toEndWith("\n\nUser's instructions:\nkeep #4 for later:\n  tests first")
 })
 
+// contract: (pin, not a red: its change only lets the tick pass that delivers the second fixed prompt in its own idle window) /flow delegate submits a byte-identical fixed prompt for the same input
 test('/flow delegate submits a byte-identical fixed prompt for the same input, with no instructions heading without text', async ($, on) => {
   const { clock, prompts } = createWorld(on, { branch: 'feat' }, { session: coordinator, ...guarded() })
+  await startSession($)
   await runFlowCommand($, 'delegate #3')
   await runFlowCommand($, 'delegate #3')
+  // why: the second fixed prompt waits for the idle window the first one claimed, so a tick after it delivers it.
+  await clock.advance(2 * tickMs)
   await clock.settle()
   expect(prompts).toHaveLength(2)
   expect(prompts[0]).toBe(prompts[1] ?? '')
@@ -93,6 +102,7 @@ test('/flow delegate submits a byte-identical fixed prompt for the same input, w
 test('/flow delegate submits its start prompt when the issue reads after it outlast the deferred submit', async ($, on) => {
   const world = createWorld(on, { branch: 'feat' }, { session: coordinator, ...guarded(),
     ghDelayMs: args => args.some(arg => arg.includes('issue(number:')) ? 1000 : 0 })
+  await startSession($)
   const delegating = runFlowCommand($, 'delegate #3')
   await world.clock.advance(1000)
   expect((await delegating).text).toContain('Delegating #3')
@@ -103,6 +113,7 @@ test('/flow delegate submits its start prompt when the issue reads after it outl
 
 test('/flow delegate stop and a refused /flow delegate submit no prompt', async ($, on) => {
   const { clock, prompts } = createWorld(on, { branch: 'feat' }, { session: noFlow })
+  await startSession($)
   await runFlowCommand($, 'delegate #3')
   await runFlowCommand($, 'coordinate')
   await clock.settle()
@@ -127,7 +138,7 @@ test('/flow delegate without numbers adds each issue the coordinator creates', a
   const world = createWorld(on, { branch: 'feat' }, { session: coordinator, gh: createIssueGithub().gh })
   expect((await runFlowCommand($, 'delegate')).text).toContain('Delegating issues it creates · no signed-commit ruleset')
   expect(await createTicket($)).toContain('#101 is delegated')
-  // The scope keeps the push guard's answer when a created issue widens it.
+  // why: the scope keeps the push guard's answer when a created issue widens it.
   expect(readScope(world)).toEqual({ v: 1, sessionId: 'sid', issues: [101], coversCreated: true, isPushUnguarded: true })
 })
 
@@ -205,7 +216,7 @@ test('/flow delegate stop typed in another session ends an orphaned scope, keeps
   expect(reply).toContain('Orphaned delegation of coordinator gone stopped\n  Scope        #3 → yours again')
   expect(world.files.has(scopeFile('gone'))).toBe(false)
   expect(world.files.has(scopeFile('live'))).toBe(true)
-  // The flow log is the only record of who ended an orphaned scope: no pane, status or reply names that session.
+  // why: the flow log is the only record of who ended an orphaned scope: no pane, status or reply names that session.
   await world.clock.settle()
   const log = world.files.get(`${records}/log/${await hashIdentity('feat', [3])}.jsonl`) ?? ''
   expect(log.split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>).filter(entry => entry.event === 'delegation-ended'))
@@ -297,6 +308,17 @@ test('the diagnosis approval in a delegated unit is recorded as delegated', asyn
   expect(world.sessions.get('sid')?.units[0]?.delegated).toEqual(['/flow approve'])
 })
 
+// contract: a diagnosis approval that arrived through Remote Control in a delegated unit is recorded as delegated with the Remote Control note
+test('a Remote Control diagnosis approval in a delegated unit is recorded with the Remote Control note', async ($, on) => {
+  const world = createWorld(on, { branch: 'fix' }, {
+    session: { flow: 'fix', info: { 1: { title: 'bug', labels: ['ready-for-agent'] } } },
+    unit: { runs: [diagnoseRuns[0]!] }, comments: { 1: [diagnosisComment] }, issueLabels: { 1: ['ready-for-agent'] }, allowRemoteCommands: true,
+  })
+  seedDelegation(world, 'coord', [1], { spawned: [1, 3, 7] })
+  expect((await runFlowCommand($, `approve ${diagnosisComment.url}`, { kind: 'bridge' })).text).toContain('Diagnosis approved')
+  expect(world.sessions.get('sid')?.units[0]?.delegated).toEqual(['/flow approve (via Remote Control)'])
+})
+
 test('a session spawn did not start, though a live scope covers its issue, gets no delegated-unit rules and records no step as delegated', async ($, on) => {
   const world = createWorld(on, { branch: 'feat' }, smallFeatureOn1(['ready-for-agent']))
   world.files.set(scopeFile('coord'), unitScope)
@@ -316,6 +338,15 @@ test('declaring an issue whose spawned unit runs in another session is refused, 
   expect((await callModTool($, 'declare_flow', { flow: 'fix', issues: [3] })).deny).toBeUndefined()
 })
 
+// contract: declaring a native sub-issue of a delegated issue whose unit runs in another session is refused, naming that session
+test('declaring a sub-issue of an issue whose spawned unit runs in another session is refused, naming that session', async ($, on) => {
+  const world = createWorld(on, { branch: 'feat' }, { session: noFlow, gh: answerParents({ 31: 3 }) })
+  world.files.set(scopeFile('coord'), buildScope('coord', [3]))
+  markSpawned(world, [3], 'unit')
+  world.files.set(`${records}/host/unit.json`, JSON.stringify(coordinatorHost))
+  expect((await callModTool($, 'declare_flow', { flow: 'fix', issues: [31] })).deny).toContain('#31 is delegated: its unit runs in session unit (herdr agent issue-3)')
+})
+
 test('the user\'s steps stay the user\'s outside the scope and after /flow delegate stop', async ($, on) => {
   const world = createWorld(on, { branch: 'feat' }, smallFeatureOn1([]))
   seedDelegation(world, 'coord', [7], { spawned: [1, 3, 7] })
@@ -327,8 +358,38 @@ test('the user\'s steps stay the user\'s outside the scope and after /flow deleg
   world.files.delete(scopeFile('coord'))
   await runFlowCommand($, 'skip verify covered separately')
   expect(world.sessions.get('sid')?.units[0]?.delegated).toEqual(['/to-tickets'])
-  expect(await readFlowStatus($)).toContain('Delegation  stopped · took /to-tickets')
+  expect(await readFlowStatus($)).toContain('Delegation  not delegated · no coordinator\'s scope covers #1; check delegation/ under working-agreement in git rev-parse --git-common-dir · took /to-tickets')
 })
+
+for (const [name, arrange, row] of [
+  ['its spawn record names another session', (world: World) => { world.files.set(scopeFile('coord'), unitScope); markSpawned(world, [1], 'other') },
+    `not delegated · the spawn record for #1 (${records}/spawn/1.json) names session other, not this session sid`],
+  ['it has no spawn record', (world: World) => { world.files.set(scopeFile('coord'), unitScope) }, `not delegated · #1 has no spawn record (${records}/spawn/1.json)`],
+  ['no scope covers it', (world: World) => { markSpawned(world, [1]) },
+    'not delegated · no coordinator\'s scope covers #1; check delegation/ under working-agreement in git rev-parse --git-common-dir'],
+] as const) {
+  // contract: a unit that took delegated actions and finds no delegation names why on its Delegation row, with how to check, and a failed read shows unknown, never not delegated
+  test(`the Delegation row of a unit that took a delegated step says not delegated when ${name}`, async ($, on) => {
+    const world = createWorld(on, { branch: 'feat' }, { ...smallFeatureOn1([]), unit: { delegated: ['/to-tickets'] } })
+    arrange(world)
+    expect(readStatusRow(await readFlowStatus($), 'Delegation')).toBe(`Delegation  ${row} · took /to-tickets`)
+  })
+}
+
+for (const [name, options, check] of [
+  ['its spawn record cannot be read', { failRead: (path: string) => path === `${records}/spawn/1.json` }, `${records}/spawn/1.json`],
+  ['its issue\'s parent cannot be read from GitHub', { session: { flow: 'small-feature', issues: [31], info: { 31: { title: 'a', labels: [] } } },
+    gh: (args: string[]) => args.some(arg => arg.includes('{parent{number}}')) ? { exitCode: 1, stderr: 'HTTP 502' } : undefined }, 'the native parent of #31 on GitHub, with gh issue view 31'],
+] as const) {
+  test(`the Delegation row says unknown, never not delegated, when ${name}`, async ($, on) => {
+    const world = createWorld(on, { branch: 'feat' }, { ...smallFeatureOn1([]), ...options, unit: { delegated: ['/to-tickets'] } })
+    world.files.set(scopeFile('coord'), unitScope)
+    markSpawned(world, [1, 31])
+    const row = readStatusRow(await readFlowStatus($), 'Delegation')
+    expect(row).toMatch(/^Delegation {2}unknown · the delegation could not be read \(.+\); check /)
+    expect(row.endsWith(`; check ${check} · took /to-tickets`)).toBe(true)
+  })
+}
 
 for (const [name, scope] of [['in a delegated unit', unitScope], ['outside delegation', undefined]] as const) {
   test(`/flow approve verify <id> ${name} approves nothing and names the terminal command`, async ($, on) => {
@@ -527,4 +588,15 @@ test('with triage handed over, the coordinator sets ready-for-agent only after a
   expect(github.issues.get(3)?.labels).toContain('ready-for-agent')
   expect((await callModTool($, 'issue_edit', { number: 4, triage: 'ready-for-agent' })).text).toContain('ready-for-human stays the user\'s')
   expect(github.issues.get(4)?.labels).toContain('ready-for-human')
+})
+
+// contract: a started spawn record from before records kept the session id names the derived session, which delegation and the mailbox addresses find
+test('a legacy spawn record without a session id resolves to the derived session', async (_$, on) => {
+  const world = createWorld(on, { branch: 'feat' }, smallFeatureOn1([]))
+  world.files.set(scopeFile('coord'), unitScope)
+  world.files.set(`${records}/spawn/1.json`, JSON.stringify({ isStarted: true, isPrompted: true }))
+  world.chat.id = await deriveSessionId(common, 1)
+  const port = createTestPort(world)
+  expect((await findDelegation(port, [1], true))?.sessionId).toBe('coord')
+  expect(await readOwnAddresses(port)).toEqual(['1'])
 })

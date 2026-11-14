@@ -84,6 +84,9 @@ export const gitChecks: GitCheck[] = [
   { command: 'log --walk-reflogs --format=%gs refs/heads/other --', exitCode: 0, stdout: 'branch: Created from main' },
   { command: 'log --walk-reflogs --format=%gs refs/heads/feat --', exitCode: 0, stdout: '' },
   { command: 'log --walk-reflogs --format=%gs refs/heads/missing --', exitCode: 128, stdout: '' },
+  { command: 'log --walk-reflogs --format=%H%x09%gs refs/heads/other --', exitCode: 0, stdout: 'o1\tbranch: Created from main' },
+  { command: 'log --walk-reflogs --format=%H%x09%gs refs/heads/feat --', exitCode: 0, stdout: 'f2' },
+  { command: 'log --walk-reflogs --format=%H%x09%gs refs/heads/missing --', exitCode: 128, stdout: '' },
   { command: 'show-ref --verify --quiet refs/heads/other', exitCode: 0, stdout: '' },
   { command: 'show-ref --verify --quiet refs/heads/origin/main', exitCode: 1, stdout: '' },
   { command: 'show-ref --verify --quiet refs/heads/f1', exitCode: 1, stdout: '' },
@@ -107,6 +110,9 @@ export const gitChecks: GitCheck[] = [
   { command: 'cat-file blob m1:.claude/working-agreement.json', exitCode: 128, stdout: '' },
   { command: 'cat-file blob 576f0740b7d016020966b9b151be1cf68dc96342', label: 'the config blob by id', exitCode: 0, stdout: '{"always":[["./check"]]}' },
   { command: 'cat-file blob missing', exitCode: 128, stdout: '' },
+  { command: 'ls-tree --name-only cfg -- .claude/working-agreement.json', exitCode: 0, stdout: '.claude/working-agreement.json' },
+  { command: 'ls-tree --name-only m1 -- .claude/working-agreement.json', exitCode: 0, stdout: '' },
+  { command: 'ls-tree --name-only missing -- .claude/working-agreement.json', exitCode: 128, stdout: '' },
   { command: 'rev-parse cfg:.claude/working-agreement.json', exitCode: 0, stdout: 'config' },
   { command: 'rev-parse cfg^{tree}', exitCode: 0, stdout: 'config-tree' },
   { command: 'diff --name-only -z --no-renames --no-ext-diff m1 f2 -- :(top,glob)src/**', exitCode: 0, stdout: 'src/a.ts\0' },
@@ -146,9 +152,12 @@ export const gitChecks: GitCheck[] = [
   { command: 'branch -D missing', exitCode: 1, stdout: '' },
   { command: 'worktree remove --force /missing', exitCode: 128, stdout: '' },
   { command: 'worktree add --detach /linked m1', label: 'path taken', exitCode: 128, stdout: '' },
+  { command: 'worktree move /missing /moved', label: 'not a worktree', exitCode: 128, stdout: '' },
+  { command: '-C /detached update-ref --no-deref HEAD o1', exitCode: 0, stdout: '' },
+  { command: 'update-ref -d refs/heads/feat m1', label: 'moved branch', exitCode: 1, stdout: '' },
   { command: 'commit-tree --no-gpg-sign missing -p m1 -p f1 -F -', stdin: 'merge', label: 'unknown tree', exitCode: 128, stdout: '' },
   { command: 'update-ref refs/heads/feat m1 ', label: 'existing branch', exitCode: 128, stdout: '' },
-  // Last: the created branch outlives the row in the real repository.
+  // why: last, because the created branch outlives the row in the real repository.
   { command: 'update-ref refs/heads/spawned m1 ', exitCode: 0, stdout: '' },
   { command: 'update-ref refs/retired/1/20000101T000000Z m1 ', exitCode: 0, stdout: '' },
 

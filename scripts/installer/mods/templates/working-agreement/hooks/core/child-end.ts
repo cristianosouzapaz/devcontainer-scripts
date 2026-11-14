@@ -9,6 +9,7 @@ import { createQueue } from '../lib/queue'
 import { bestEffort } from './best-effort'
 import type { EnginePort } from './engine-port'
 import { observedEndPath, readObservedEnds, writeObservedEnd } from './record-store'
+import { moduleState } from '../lib/module-state'
 
 /** Holds a child's slice end as its readable branch shows it; null when no end is deliverable. */
 interface LiveEnd { state: 'live'; end: string | null }
@@ -23,7 +24,7 @@ interface UnknownEnd { state: UnknownEndKind }
 export type ChildEnd = LiveEnd | ObservedEnd | UnknownEnd
 
 // why: Each observation reads this session's file, compares and replaces it, so two judgements of one session take turns.
-const queueObservedEnd = createQueue()
+const observedEndQueue = moduleState(() => ({ run: createQueue() }))
 
 /**
  * Selects the slice end a child unit's integration and conclusion are judged on: only an unrewritten slice with a commit has one.
@@ -68,7 +69,7 @@ export function recordObservedEnd(port: EnginePort, identity: Identity, unit: Un
   const end = deliverableEnd(slice)
   const { generation } = unit
   if (!end || !generation || !isChildUnit(unit, git.base, isCloseOut)) return Promise.resolve()
-  return bestEffort(port, 'observed end write', () => queueObservedEnd(async () => {
+  return bestEffort(port, 'observed end write', () => observedEndQueue.run(async () => {
     // why: The file is this session's own, so one it cannot read is replaced rather than left to block every later write.
     const stored = parseObservedEnd(await readJson(port.files, await observedEndPath(port, identity)).catch(() => undefined))
     if (stored?.generation === generation && (stored.end === end || await isStoredEndKept(port, identity.branch, end, stored.end))) return

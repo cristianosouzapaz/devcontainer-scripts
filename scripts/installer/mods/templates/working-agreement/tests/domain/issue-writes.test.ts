@@ -11,6 +11,8 @@ import { createWorld, root } from '../support/world'
 const triage = triageLabels
 const typed = { types: ['feat', 'fix'], priorities: ['high', 'low'] }
 const typedLabels = [...triage, 'type::feat', 'type::fix', 'priority::high', 'priority::low']
+const graphqlFailure = { exitCode: 1, stderr: 'GraphQL: Something went wrong while executing your query.\nwhile adding labels (addLabelsToLabelable)\n' }
+const completeLabels = ['ready-for-agent', 'type::fix', 'priority::high']
 
 /**
  * Starts a world on a feature branch with this GitHub and, when given, this config, approved unless told otherwise.
@@ -141,7 +143,7 @@ test('a failed GitHub read refuses the write', async ($, on) => {
   createIssueWorld(on, github)
   const outcome = await callModTool($, 'issue_create', ticket)
   expect(outcome.isError).toBe(true)
-  expect(outcome.text).toContain('cannot read the repository labels: HTTP 502')
+  expect(outcome.text).toContain('cannot read the repository labels: GitHub unreachable after 3 attempts: HTTP 502')
   expect(writes(github)).toEqual([])
 })
 
@@ -225,7 +227,7 @@ for (const command of [
 test('a raw issue write quoted inside an argument is denied naming the matched words and a file for the text', async ($, on) => {
   createIssueWorld(on, createIssueGithub())
   const deny = await readBashDeny($, 'herdr agent prompt manager "the unit ran gh label edit x --color 000000"')
-  expect(deny).toContain('"gh label edit"')
+  expect(deny).toContain('`gh label edit`')
   expect(deny).toContain('from a file')
   expect(deny).not.toContain('writes are denied')
 })
@@ -249,4 +251,137 @@ test('/flow setup-labels is the user\'s and creates every configured label idemp
   expect(values(created.find(args => args[2] === 'type::feat') ?? [], '--color')).toEqual(['2da160'])
   expect((await runFlowCommand($, 'setup-labels')).text).toBe(first)
   expect(github.calls.filter(args => args[0] === 'label')).toEqual([...created, ...created])
+})
+
+test('issue_create that created the issue but cannot confirm it answers stopped, never refused', async ($, on) => {
+  const github = createIssueGithub({ isParentDropped: true })
+  createIssueWorld(on, github)
+  const outcome = await callModTool($, 'issue_create', ticket)
+  expect(outcome.isError).toBe(true)
+  expect(outcome.text).toContain('issue_create stopped: Created https://github.com/o/r/issues/101')
+  expect(outcome.text).not.toContain('refused')
+})
+
+test('issue_edit whose gh edit applied its changes and then failed answers stopped with what was applied and gh\'s real error', async ($, on) => {
+  const github = createIssueGithub()
+  const failing: IssueGithub = { ...github, gh: args => {
+    const answer = github.gh(args)
+    return args[0] === 'issue' && args[1] === 'edit'
+      ? { exitCode: 1, stderr: 'failed to update https://github.com/o/r/issues/7:\nGraphQL: Something went wrong while executing your query. (addBlockedBy)\n' } : answer
+  } }
+  createIssueWorld(on, failing)
+  const outcome = await callModTool($, 'issue_edit', { number: 7, triage: 'ready-for-human', type: 'fix', priority: 'high' })
+  expect(github.issues.get(7)?.labels).toEqual(['ready-for-human', 'type::fix', 'priority::high'])
+  expect(outcome.isError).toBe(true)
+  expect(outcome.text).toContain('issue_edit stopped: ')
+  expect(outcome.text).toContain('failed to update https://github.com/o/r/issues/7:')
+  expect(outcome.text).toContain('GraphQL: Something went wrong while executing your query. (addBlockedBy)')
+  expect(outcome.text).toContain('ready-for-human')
+  expect(outcome.text).not.toContain('refused')
+})
+
+/**
+ * Wraps a fake GitHub so one issue subcommand fails, after its change landed when told to.
+ * @param github - The fake GitHub.
+ * @param subcommand - The subcommand that fails, such as edit.
+ * @param failure - gh's answer.
+ * @param isLanded - Whether the change landed before gh failed.
+ * @returns The wrapped fake.
+ */
+const failIssueCall = (github: IssueGithub, subcommand: string, failure: { exitCode?: number; stdout?: string; stderr?: string }, isLanded: boolean): IssueGithub =>
+  ({ ...github, gh: args => {
+    if (args[0] !== 'issue' || args[1] !== subcommand) return github.gh(args)
+    if (isLanded) github.gh(args)
+    return failure
+  } })
+
+// contract: an edit whose only landed change is the @me assignee answers stopped naming the login, never that nothing was applied
+test('issue_edit whose @me assignee landed before gh failed answers stopped naming the login', async ($, on) => {
+  const github = createIssueGithub({ issues: { 7: { labels: completeLabels, assignees: [] } } })
+  createIssueWorld(on, failIssueCall(github, 'edit', graphqlFailure, true))
+  const outcome = await callModTool($, 'issue_edit', { number: 7, assignees: ['@me'] })
+  expect(outcome.text).toContain('issue_edit stopped: ')
+  expect(outcome.text).toContain('assignee me applied')
+})
+
+// contract: a failed edit keeps every line of gh's error, not only the first
+test('issue_edit that fails with nothing applied is refused with every line of the error gh gave', async ($, on) => {
+  createIssueWorld(on, failIssueCall(createIssueGithub(), 'edit', graphqlFailure, false))
+  const outcome = await callModTool($, 'issue_edit', { number: 7, triage: 'ready-for-human', type: 'fix', priority: 'high' })
+  expect(outcome.text).toContain('issue_edit refused: ')
+  expect(outcome.text).toContain('(addLabelsToLabelable)')
+  expect(outcome.text).toContain('nothing was applied')
+})
+
+// contract: a bare reopen that fails and leaves the issue closed is refused, never reported as an edit
+test('a bare reopen that fails and leaves the issue closed is refused', async ($, on) => {
+  const github = createIssueGithub({ issues: { 7: { labels: completeLabels, state: 'CLOSED', stateReason: 'COMPLETED' } } })
+  createIssueWorld(on, failIssueCall(github, 'reopen', graphqlFailure, false))
+  const outcome = await callModTool($, 'issue_edit', { number: 7, state: 'open' })
+  expect(outcome.text).toContain('issue_edit refused: ')
+  expect(outcome.text).toContain('#7 is still closed')
+  expect(outcome.text).not.toContain('Edited')
+})
+
+// contract: a bare reopen that landed before gh failed answers stopped, naming the issue open
+test('a bare reopen that landed before gh failed answers stopped, naming the issue open', async ($, on) => {
+  const github = createIssueGithub({ issues: { 7: { labels: completeLabels, state: 'CLOSED', stateReason: 'COMPLETED' } } })
+  createIssueWorld(on, failIssueCall(github, 'reopen', graphqlFailure, true))
+  const outcome = await callModTool($, 'issue_edit', { number: 7, state: 'open' })
+  expect(outcome.text).toContain('issue_edit stopped: #7 is open')
+  expect(outcome.text).not.toContain('Edited')
+})
+
+// contract: a create that gh reports done without an issue URL did not finish, naming where to check, never refused
+test('issue_create that exits zero without an issue URL answers that it did not finish', async ($, on) => {
+  createIssueWorld(on, failIssueCall(createIssueGithub(), 'create', { stdout: '' }, true))
+  const outcome = await callModTool($, 'issue_create', ticket)
+  expect(outcome.text).toContain('issue_create did not finish (')
+  expect(outcome.text).toContain('before creating it again')
+})
+
+// contract: a read GitHub answers not found keeps gh's own error after the classification
+test('an issue GitHub reports not found keeps the error gh gave', async ($, on) => {
+  const github = createIssueGithub()
+  createIssueWorld(on, { ...github, gh: args => args.join(' ').includes('issue(number:99)')
+    ? { exitCode: 1, stderr: 'GraphQL: Could not resolve to an Issue with the number of 99. (repository.issue)' } : github.gh(args) })
+  const outcome = await callModTool($, 'issue_edit', { number: 99, triage: 'ready-for-human' })
+  expect(outcome.text).toContain('not found: GraphQL: Could not resolve to an Issue with the number of 99.')
+})
+
+// contract: an edit whose @me assignee cannot be checked because the gh login cannot be read did not finish, naming the unread assignee
+test('issue_edit whose @me cannot be read back after gh failed answers that it did not finish', async ($, on) => {
+  const github = createIssueGithub({ issues: { 7: { labels: completeLabels, assignees: [] } } })
+  const state = { isEdited: false }
+  createIssueWorld(on, { ...github, gh: args => {
+    if (args[0] === 'issue' && args[1] === 'edit') {
+      github.gh(args)
+      state.isEdited = true
+      return graphqlFailure
+    }
+    return state.isEdited && args.join(' ').startsWith('api user') ? { exitCode: 1, stderr: 'HTTP 401: Bad credentials (https://api.github.com/user)' } : github.gh(args)
+  } })
+  const outcome = await callModTool($, 'issue_edit', { number: 7, assignees: ['@me'] })
+  expect(outcome.text).toContain('issue_edit did not finish (')
+  expect(outcome.text).toContain('assignee @me cannot be read back')
+})
+
+// contract: a comment that gh reports done without a comment URL did not finish, naming where to check, never refused
+test('issue_comment that exits zero without a comment URL answers that it did not finish', async ($, on) => {
+  createIssueWorld(on, failIssueCall(createIssueGithub(), 'comment', { stdout: '' }, true))
+  const outcome = await callModTool($, 'issue_comment', { number: 7, body: 'Resolved.' })
+  expect(outcome.text).toContain('issue_comment did not finish (')
+  expect(outcome.text).toContain('before posting it again')
+})
+
+// contract: a failed edit matches its assignee regardless of case, as GitHub reads a login back in the account's own spelling
+test('issue_edit whose assignee landed in another case before gh failed names it applied', async ($, on) => {
+  const github = createIssueGithub({ issues: { 7: { labels: completeLabels, assignees: [] } } })
+  createIssueWorld(on, { ...github, gh: args => {
+    if (args[0] !== 'issue' || args[1] !== 'edit') return github.gh(args)
+    github.gh(args.map(arg => arg === 'Alice' ? 'alice' : arg))
+    return graphqlFailure
+  } })
+  const outcome = await callModTool($, 'issue_edit', { number: 7, assignees: ['Alice'] })
+  expect(outcome.text).toContain('issue_edit stopped: #7: assignee Alice applied')
 })

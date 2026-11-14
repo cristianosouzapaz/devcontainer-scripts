@@ -22,7 +22,7 @@ export interface WindowAttribution {
 export async function readDismissals(port: EnginePort): Promise<Set<string>> {
   const common = await readCommonDir(port)
   const directory = recordsPath(common, 'd')
-  // The bucket directory may not exist yet.
+  // why: the bucket directory may not exist yet.
   const entries = common ? await port.files.list(directory).catch(() => []) : []
   const facts = await Promise.all(entries.filter(entry => entry.name.endsWith('.json')).map(async entry => {
     // why: A dismissal that cannot be read shows its violation open, the safe direction: it never hides a violation.

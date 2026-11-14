@@ -5,7 +5,7 @@ import { buildWriteCall } from '../../support/builders'
 import { declareFlow } from '../../support/helpers'
 import { createWorld } from '../../support/world'
 
-// With git answering, these feature-branch writes are allowed.
+// why: with git answering, these feature-branch writes are allowed, so a deny below comes from the failing read alone.
 const atCode = { unit: { skills: ['grilling', 'to-spec'] } }
 const write = buildWriteCall('src/a.ts')
 

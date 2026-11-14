@@ -6,10 +6,11 @@ import { composeSignScript, describeSigning, groupChains, nameSignScript } from 
 import { hashObject } from '../../hooks/lib/git'
 import type { SigningBranch, SigningChain, SigningPlan } from '../../hooks/domain/delegated-commits'
 import { coordinator, guarded, noFlow } from '../support/builders'
-import { callModTool, declareFlow, runFlowCommand } from '../support/helpers'
+import { callModTool, declareFlow, readFlowStatus, runFlowCommand } from '../support/helpers'
+import { answerParents } from '../support/issue-github'
 import { test } from '../support/kit'
 import { readDelegated } from '../support/parallel-worktrees'
-import { buildScope, configBlob, createTestPort, createWorld, delegatedFile, markSpawned, root, scopeFile } from '../support/world'
+import { buildScope, configBlob, createTestPort, createWorld, delegatedFile, hashIdentity, markSpawned, records, root, scopeFile } from '../support/world'
 import type { Checkout, Graph, Options, World } from '../support/world'
 
 /** Holds the history change the next opaque Bash call makes. */
@@ -21,6 +22,9 @@ interface Arranged { world: World; checkout: Checkout; pending: PendingChange }
 
 /** An approved Verify config whose runners are a project script and a tool, as any project may name its own. */
 const runnerConfig = '{"always":[["scripts/check.sh"]],"rules":[{"paths":["src/**"],"run":["tools/suite","unit"]}]}'
+
+/** Skill directories reached through symlinks: one into the repository, as `.claude/skills/<name>` points at `.agents/skills/<name>`, one out of it. */
+const skillLinks = { [`${root}/.claude/skills/ds`]: `${root}/.agents/skills/ds`, [`${root}/.claude/skills/out`]: '/tmp/s' }
 
 /**
  * Builds a repository whose unit branch `feat` and side branch `other` start at the default branch, with the git alias `pu`.
@@ -141,6 +145,27 @@ for (const command of ['bash /tmp/s/commit.sh', 'python3 -u /tmp/s/commit.py', '
   })
 }
 
+// contract: a tracked script reached through a symlinked directory runs under delegation
+test('a delegated unit runs a tracked script reached through a symlinked directory', async ($, on) => {
+  const { world, checkout } = arrange(on, true, { symlinks: skillLinks })
+  world.files.set(`${root}/.agents/skills/ds/scripts/check.py`, 'print(1)\n')
+  await declareFlow($, 'fix', [3])
+  // why: the index decides what ls-files counts as tracked, so a staged file stands in for a committed one.
+  checkout.staged = { '.agents/skills/ds/scripts/check.py': 'print(1)\n' }
+  expect((await $.tool.call({ tool: 'Bash', command: 'python3 .claude/skills/ds/scripts/check.py' })).deny).toBeUndefined()
+})
+
+for (const command of ['python3 .claude/skills/ds/scripts/new.py', 'bash .claude/skills/out/commit.sh']) {
+  // contract: an untracked script behind a symlink, or a symlink that leaves the repository, is still refused under delegation
+  test(`a delegated unit's ${command} behind a symlink is still refused as untracked`, async ($, on) => {
+    const { world } = arrange(on, true, { symlinks: skillLinks })
+    world.files.set(`${root}/.agents/skills/ds/scripts/new.py`, 'print(1)\n')
+    world.files.set('/tmp/s/commit.sh', 'echo hi\n')
+    await declareFlow($, 'fix', [3])
+    expect((await $.tool.call({ tool: 'Bash', command })).deny).toContain('untracked script')
+  })
+}
+
 for (const [command, isDelegated] of [['bash f', true], ['python3 -m pytest', true], ['bash /tmp/s/commit.sh', false]] as const) {
   test(`${command} runs ${isDelegated ? 'under' : 'without'} delegation`, async ($, on) => {
     const { world } = arrange(on, isDelegated)
@@ -170,6 +195,79 @@ test('a delegated unit\'s commit tool commits its staged work unsigned on its ow
   expect(world.sessions.get('sid')?.violations ?? []).toEqual([])
 })
 
+// contract: a commit the tool records is logged as one delegated-commit event, though the call's own window sees the same commit
+test('a delegated unit\'s commit through the tool is logged once', async ($, on) => {
+  const { world, checkout } = arrange(on)
+  await declareFlow($, 'small-feature', [3])
+  checkout.staged = { f: 'b' }
+  expect(await callModTool($, 'commit', { message: 'fix: change' })).toMatchObject({ isError: false })
+  await world.clock.settle()
+  const log = world.files.get(`${records}/log/${await hashIdentity('feat', [3])}.jsonl`) ?? ''
+  expect(log.split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>).filter(entry => entry.event === 'delegated-commit'))
+    .toEqual([expect.objectContaining({ shas: 'commit-a' })])
+})
+
+// contract: a commit through the commit tool after a passing Verify sends the unit back to Code, never sets Verify aside
+test('a delegated unit\'s commit through the tool after Verify still reads changed after Verify on Code', async ($, on) => {
+  const config = '{"always":[["check"]]}'
+  const { checkout } = arrange(on, true, { verifyFile: config, approvedConfig: config })
+  // why: the config is committed, so each commit leaves the slice clean, as a set-aside needs.
+  const blob = configBlob(config)
+  checkout.graph = { ...checkout.graph!, commits: { a: { parents: [], files: { f: 'a', '.claude/working-agreement.json': blob } } }, blobs: { [blob]: config } }
+  await declareFlow($, 'small-feature', [3])
+  await runFlowCommand($, 'skip grill settled on the issue')
+  await runFlowCommand($, 'skip spec settled on the issue')
+  checkout.staged = { f: 'b' }
+  expect(await callModTool($, 'commit', { message: 'feat: first' })).toMatchObject({ isError: false })
+  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('Verify passed')
+  checkout.staged = { f: 'c' }
+  expect(await callModTool($, 'commit', { message: 'feat: second' })).toMatchObject({ isError: false })
+  const status = await readFlowStatus($)
+  expect(status).toContain('▸ Code · changed after Verify')
+  expect(status).not.toContain('committed outside Verify')
+  // why: the user's re-sign gives the tool's commit a new id; its change still marks it as made through the tool.
+  const graph = checkout.graph!
+  const tip = graph.commits[graph.refs.feat!]!
+  checkout.graph = { ...graph, commits: { ...graph.commits, resigned: { ...tip, isSigned: true } }, refs: { ...graph.refs, feat: 'resigned' } }
+  const resigned = await readFlowStatus($)
+  expect(resigned).toContain('▸ Code · changed after Verify')
+  expect(resigned).not.toContain('committed outside Verify')
+})
+
+// contract: a unit spawned for a delegated group that declares the group and its native sub-issues is delegated, so its commit tool commits
+test('a unit that declares its delegated group and the group\'s sub-issues commits through the tool', async ($, on) => {
+  const { world, checkout } = arrange(on, true, { gh: answerParents({ 31: 3 }) })
+  await declareFlow($, 'small-feature', [3, 31])
+  checkout.staged = { f: 'b' }
+  expect(await callModTool($, 'commit', { message: 'fix: change' })).toMatchObject({ isError: false })
+  expect(readDelegated(world)).toEqual([expect.objectContaining({ v: 1, sha: 'commit-a', branch: 'feat' })])
+})
+
+// contract: a sub-issue's native parent, once read, keeps the unit delegated through a later GitHub outage
+test('a unit that declares its group\'s sub-issues keeps committing through a GitHub outage after the parent was read', async ($, on) => {
+  const github = { isDown: false }
+  const parents = answerParents({ 31: 3 })
+  const { world, checkout } = arrange(on, true, { gh: args => github.isDown ? { exitCode: 1, stderr: 'offline' } : parents(args) })
+  await declareFlow($, 'small-feature', [3, 31])
+  checkout.staged = { f: 'b' }
+  expect(await callModTool($, 'commit', { message: 'fix: change' })).toMatchObject({ isError: false })
+  github.isDown = true
+  checkout.staged = { f: 'c' }
+  expect(await callModTool($, 'commit', { message: 'fix: more' })).toMatchObject({ isError: false })
+  expect(readDelegated(world)).toHaveLength(2)
+})
+
+for (const [name, gh] of [['whose native parent is outside the scope', answerParents({ 31: 9 })], ['whose native parent cannot be read', () => ({ exitCode: 1, stderr: 'offline' })]] as const) {
+  // contract: a declared issue the scope neither names nor holds as a native parent, or whose parent cannot be read, keeps the unit undelegated
+  test(`a unit that declares an issue ${name} is refused the commit tool`, async ($, on) => {
+    const { world, checkout } = arrange(on, true, { gh })
+    await declareFlow($, 'small-feature', [3, 31])
+    checkout.staged = { f: 'b' }
+    expect(await callModTool($, 'commit', { message: 'fix: change' })).toEqual({ text: expect.stringContaining('only a delegated unit commits through this tool'), isError: true })
+    expect(readDelegated(world)).toEqual([])
+  })
+}
+
 for (const [name, isDelegated, branch] of [['without delegation', false, 'feat'], ['on another branch', true, 'other']] as const) {
   test(`the commit tool is refused ${name}`, async ($, on) => {
     const { world, checkout } = arrange(on, isDelegated)
@@ -193,8 +291,8 @@ for (const [command, isDelegated] of [['gh pr view 3', true], ['gh pr diff 3', t
 test('the word guard refuses git when the aliases are unreadable', () => {
   expect(findDeniedWord('git status', null)).toBeDefined()
   expect(findDeniedWord('ls st', ['st'])).toBeUndefined()
-  expect(findDeniedWord('GIT_DIR=/x git log', [])).toBe('GIT_DIR')
-  expect(findDeniedWord('bash -c "git log"', [])).toBe('bash -c')
+  expect(findDeniedWord('GIT_DIR=/x git log', [])).toBe('`GIT_DIR`')
+  expect(findDeniedWord('bash -c "git log"', [])).toBe('`bash -c`')
 })
 
 test('a script candidate is an interpreter\'s operand within its own simple command, and `.` sources only where a command starts', () => {

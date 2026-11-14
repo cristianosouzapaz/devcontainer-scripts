@@ -8,17 +8,14 @@ import { pluralize } from './messages'
  * wiki page's table classifies.
  */
 export const facts = {
-  // Grill, Spec, Triage, Map, Tickets
   issueFactsUnavailable: 'issue facts unavailable',
   issueUnreadable: 'issue unreadable',
   subIssuesUnreadable: 'sub-issues unreadable',
   needsInfo: 'needs-info',
   wontfix: 'wontfix',
-  // Diagnose
   issueCommentsUnavailable: 'issue comments unavailable',
   approvedCommentDeleted: 'approved comment deleted',
   waitingForApproval: 'waiting for /flow approve',
-  // Code and Commit
   redeclareOnBranch: "re-declare on the unit's branch",
   redeclareSliceUnavailable: 're-declare: slice unavailable',
   verifyBaseMoved: 'parent branch moved',
@@ -27,7 +24,6 @@ export const facts = {
   verifyTreeChangedInRun: 'code changed during Verify',
   uncommitted: 'uncommitted changes',
   verifyConfigUnapproved: 'config not approved',
-  // Verify
   verifyConfigMissing: 'no verify command configured',
   verifyConfigInvalid: 'config invalid — see /flow status',
   guardsOverridable: 'guards overridable — see /flow status',
@@ -42,7 +38,6 @@ export const facts = {
   verifyFailedExit: (code: number): string => `failed, exit ${code}`,
   verifyFailedSignal: 'failed, killed by a signal',
   verifyFailed: 'failed',
-  // PR
   merged: 'merged',
   mergedPr: (pr: number): string => `merged #${pr}`,
   githubUnreachable: 'GitHub unreachable',
@@ -60,7 +55,8 @@ export const facts = {
   ciNoChecks: 'CI: no checks reported',
   fixIssues: (count: number): string => `fix ${pluralize(count, 'issue')} with issue_edit`,
   auditPending: 'issue audit pending',
-  // Integrate
+  auditUnrecorded: 'issue audit not recorded',
+  auditUnknown: 'issue audit recording unknown',
   integrationUnreadable: 'integration unreadable',
   inParentPr: (pr: number): string => `in PR #${pr}`,
   awaitingParentPr: "awaiting the parent's PR",
@@ -68,9 +64,8 @@ export const facts = {
   endNeverObserved: 'branch deleted, end never observed',
   restoreBranch: 'restore the branch: deleted unmerged',
   strandedPr: (pr: number): string => `open a PR: #${pr} merged without it`,
-  // Delegation
   coordinatorGone: 'coordinator session gone',
   coordinatorUnknown: 'coordinator liveness unknown',
-  // Skipped
   branchDeleted: 'branch deleted',
+  committedOutsideVerify: 'committed outside Verify',
 } as const

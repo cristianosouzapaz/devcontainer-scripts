@@ -7,6 +7,7 @@ import { filterRecords, toStringOrEmpty } from '../lib/json'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
 import type { EnginePort } from './engine-port'
+import { readOwnScope } from './delegation'
 import { locatePosition } from './position'
 import { readDeclaration, readSessionMirrors } from './record-store'
 import type { SessionMirror } from './record-store'
@@ -21,8 +22,11 @@ type Base = { isReady: true; ref: string; parent: string } | { isReady: false; r
 /** The repository's default branch, by name and by the ref it resolves through. */
 interface DefaultBase { name: string; ref: string }
 
-/** An issue as spawn judges it: its title, its open blockers, and where its new unit branch would start, or what keeps it from starting. */
-interface IssueStart { title: string; blockers: number[]; base: Base }
+/**
+ * An issue as spawn judges it: its title, its open blockers, its native parent and that parent's unit branch, and where its new unit branch
+ * would start, or what keeps it from starting.
+ */
+interface IssueStart { title: string; blockers: number[]; parent: number | undefined; parentBranch: Result<string> | undefined; base: Base }
 
 /**
  * Reads where an issue's unit is, by the same rule spawn uses to tell an integrated dependency.
@@ -44,8 +48,8 @@ export async function readUnitState(port: EnginePort, issue: number, base: Defau
   const position = await locatePosition(port, { ...record, flow: declaration.flow, issues: record.unit.issues }, true)
   if (isUnitFinished(position) && !position?.current) return 'integrated'
   const observe = position?.current?.step.observe
-  // why: a unit reopened on a branch its parent already holds is working toward new work until its session says otherwise.
-  if ((observe !== 'integrated' && observe !== 'pr.created') || position?.slice?.isRewritten) return 'working'
+  // why: a unit reopened on a branch its parent already holds is working toward new work until its session says otherwise; a Verify set aside only frees the pane, so a tip no Verify ran on is never finished for spawn and plan.
+  if ((observe !== 'integrated' && observe !== 'pr.created') || position?.slice?.isRewritten || position?.verify.isSetAside) return 'working'
   return await isCollected() ? 'integrated' : 'finished'
 }
 
@@ -76,7 +80,7 @@ export async function findUnitBranch(port: EnginePort, issue: number): Promise<R
  * Reads an issue from GitHub and judges, by spawn's rules, whether a new unit branch may start for it and from where.
  * @param port - The engine calls.
  * @param issue - The issue number.
- * @returns The issue's title, open blockers and base, or why it is unreadable.
+ * @returns The issue's title, open blockers, native parent and its unit branch, and base, or why it is unreadable.
  */
 export async function readIssueStart(port: EnginePort, issue: number): Promise<Result<IssueStart>> {
   const read = await readGraphql(port.processes, `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){issue(number:${issue}){`
@@ -87,11 +91,17 @@ export async function readIssueStart(port: EnginePort, issue: number): Promise<R
   const title = toStringOrEmpty(fields.title)
   const blockers = filterRecords(isRecord(fields.blockedBy) ? fields.blockedBy.nodes : null).filter(node => node.state === 'OPEN').map(node => Number(node.number))
   const triage = filterRecords(isRecord(fields.labels) ? fields.labels.nodes : null).map(label => toStringOrEmpty(label.name)).find(label => triageLabels.includes(label))
-  const refuse = (reason: string): Result<IssueStart> => succeed({ title, blockers, base: { isReady: false, reason } })
+  const parent = isRecord(fields.parent) ? Number(fields.parent.number) : undefined
+  const parentBranch = parent === undefined ? undefined : await findUnitBranch(port, parent)
+  const refuse = (reason: string): Result<IssueStart> => succeed({ title, blockers, parent, parentBranch, base: { isReady: false, reason } })
   if (fields.state !== 'OPEN') return refuse(`#${issue} is closed`)
   if (triage !== 'ready-for-agent') return refuse(`#${issue} is ${triage ?? 'not triaged'}, and only a ready-for-agent issue gets a unit: triage stays the user's unless /flow delegate triage hands it over`)
-  const base = await resolveBase(port, blockers, isRecord(fields.parent) ? Number(fields.parent.number) : undefined)
-  return base.isReady ? succeed({ title, blockers, base }) : refuse(`#${issue} waits: ${base.reason}`)
+  // why: a sub-issue lands in its delegated parent's unit branch, so cut before that branch exists it would land in the default branch.
+  if (parent !== undefined && !parentBranch && (await readOwnScope(port))?.issues.includes(parent)) {
+    return refuse(`#${issue} waits: its parent #${parent} is delegated and has no unit branch yet: spawn #${parent}, or create its integration branch, then run plan and spawn again`)
+  }
+  const base = await resolveBase(port, blockers, parent, parentBranch)
+  return base.isReady ? succeed({ title, blockers, parent, parentBranch, base }) : refuse(`#${issue} waits: ${base.reason}`)
 }
 
 /**
@@ -100,10 +110,10 @@ export async function readIssueStart(port: EnginePort, issue: number): Promise<R
  * @param port - The engine calls.
  * @param blockers - The issue's open blocked-by dependencies.
  * @param parentIssue - The issue's native parent, if any.
+ * @param integration - The parent's unit branch, if it has one.
  * @returns The base ref, or what the unit waits for.
  */
-async function resolveBase(port: EnginePort, blockers: number[], parentIssue: number | undefined): Promise<Base> {
-  const integration = parentIssue === undefined ? undefined : await findUnitBranch(port, parentIssue)
+async function resolveBase(port: EnginePort, blockers: number[], parentIssue: number | undefined, integration: Result<string> | undefined): Promise<Base> {
   if (!integration) return await resolveDependencyBase(port, blockers)
   if (!integration.isOk) return { isReady: false, reason: integration.error }
   // why: a sub-issue blocked by its own parent would wait for a unit that finishes only with its PR; the parent is where it lands.

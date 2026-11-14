@@ -4,7 +4,7 @@ import { test } from '../support/kit'
 import { layoutLabelRows, measureLabelWidth } from '../../hooks/ui/pane-layout'
 import { keyWidth, panePadding } from '../../hooks/ui/theme'
 
-// A pill is ` label ` wide, two columns apart: `aa` and `bbb` take 4 + 2 + 5 = 11 columns.
+// why: a pill is ` label ` wide, two columns apart: `aa` and `bbb` take 4 + 2 + 5 = 11 columns.
 test('labels that fit share one row', () => {
   expect(layoutLabelRows(['aa', 'bbb'], 11)).toEqual([['aa', 'bbb']])
 })

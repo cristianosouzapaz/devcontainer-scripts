@@ -1,9 +1,10 @@
 import type { VerifyStage } from '../../types'
 import { parseIssuesConfig } from '../domain/issue-fields'
 import type { IssuesConfig } from '../domain/issue-fields'
-import { diffPaths, hashObject, runGit } from '../lib/git'
+import { diffPaths, hashObject, hasTreePath, runGit } from '../lib/git'
 import { parseJson } from '../lib/json'
-import { formatError } from '../lib/result'
+import { fail, formatError, formatErrorLine, succeed } from '../lib/result'
+import type { Result } from '../lib/result'
 import { isFiniteNumber, isNonEmptyString, isRecord, rejectUnknownFields } from '../lib/guards'
 import { bestEffort } from './best-effort'
 import type { EnginePort } from './engine-port'
@@ -18,14 +19,18 @@ interface VerifyConfig { always: string[][]; rules: VerifyRule[]; timeoutMinutes
 interface ValidConfig { kind: 'valid'; blob: string; config: VerifyConfig }
 interface MissingConfig { kind: 'missing'; fact: string }
 interface InvalidConfig { kind: 'invalid'; fact: string }
-/** A config as read: valid with its blob id, missing, or invalid with the error naming the field. */
-type ConfigResult = ValidConfig | MissingConfig | InvalidConfig
+/** A config whose tree holds its path, or that could not be listed, yet could not be read. */
+interface UnreadableConfig { kind: 'unreadable'; fact: string }
+/** A config as read: valid with its blob id, missing, invalid with the error naming the field, or unreadable with git's error. */
+type ConfigResult = ValidConfig | MissingConfig | InvalidConfig | UnreadableConfig
 /**
  * The commands selected for this exact slice at one stage, with the selected rules' path globs, each once; `stageNote` names the stage
  * and the matching rules of the other stage it leaves out.
  */
 interface VerifySelection { commands: string[][]; description: string; isLeftToCi: boolean; paths: string[]; stageNote: string }
 
+/** Why a change no rule matches still runs `always`: the targeted checks a rule would add are the ones left to CI. */
+const alwaysOnly = 'no rule matched, so only always runs; targeted checks are left to CI'
 /** The stages a rule may name. */
 const ruleStages: readonly RuleStage[] = ['unit', 'gate', 'both']
 /** The timeout used when a Verify config does not specify one. */
@@ -71,7 +76,7 @@ function parseConfig(text: string): VerifyConfig {
   if (!parsed.isOk) throw new Error('$: invalid JSON')
   const data = parsed.value
   if (!isRecord(data)) throw new Error('$: expected an object')
-  // A retired field fails instead of being ignored, so an approved config that relied on it is edited and approved again.
+  // why: a retired field fails instead of being ignored, so an approved config that relied on it is edited and approved again.
   const retired = ['verify', 'full'].find(key => key in data)
   if (retired !== undefined) throw new Error(`${retired}: retired field in ${configPath}, local Verify runs only rule-selected checks and leaves full suites to CI; regenerate the config, or move per-change checks into rules`)
   rejectUnknownFields(data, ['$schema', 'always', 'rules', 'timeoutMinutes', 'waitForCiLabels', 'issues'], '')
@@ -94,7 +99,8 @@ function parseConfig(text: string): VerifyConfig {
 }
 
 /**
- * Reads immutable config content, never the chat checkout's file.
+ * Reads immutable config content, never the chat checkout's file; the config is missing only when a listing of the tree git completed
+ * has no config path, so a failed read is never taken for an absent config.
  * @param port - Engine calls.
  * @param tree - The unit's content tree.
  * @returns A validated config with its blob id, or a short failing fact.
@@ -102,15 +108,28 @@ function parseConfig(text: string): VerifyConfig {
 export async function readVerifyConfig(port: EnginePort, tree: string | null): Promise<ConfigResult> {
   if (!tree) return { kind: 'missing', fact: facts.verifyConfigMissing }
   const ref = `${tree}:${configPath}`
-  const read = await runGit(port.processes, ['cat-file', 'blob', ref])
-  if (read.exitCode !== 0) return { kind: 'missing', fact: facts.verifyConfigMissing }
-  try {
-    const config = parseConfig(read.stdout)
-    const blob = await runGit(port.processes, ['rev-parse', ref])
-    if (blob.exitCode !== 0 || !blob.stdout.trim()) throw new Error('$: cannot resolve config blob')
-    return { kind: 'valid', config, blob: blob.stdout.trim() }
-  } catch (error) { return { kind: 'invalid', fact: formatError(error) } }
+  const read = await runGit(port.processes, ['cat-file', 'blob', ref]).catch((error: unknown) => formatErrorLine(error))
+  if (typeof read === 'string' || read.exitCode !== 0) {
+    const listed = await hasTreePath(port.processes, tree, configPath)
+    if (listed.isOk && !listed.value) return { kind: 'missing', fact: facts.verifyConfigMissing }
+    const error = typeof read === 'string' ? read : read.stderr.trim().split('\n')[0] || `git cat-file exited ${read.exitCode}`
+    return { kind: 'unreadable', fact: describeUnreadable(listed.isOk ? error : `${error}; listing the tree failed too: ${listed.error}`) }
+  }
+  const parsed = ((): Result<VerifyConfig> => { try { return succeed(parseConfig(read.stdout)) } catch (error) { return fail(formatError(error)) } })()
+  if (!parsed.isOk) return { kind: 'invalid', fact: parsed.error }
+  const blob = await runGit(port.processes, ['rev-parse', ref]).catch((error: unknown) => formatErrorLine(error))
+  if (typeof blob === 'string' || blob.exitCode !== 0 || !blob.stdout.trim()) {
+    return { kind: 'unreadable', fact: describeUnreadable(typeof blob === 'string' ? blob : blob.stderr.trim().split('\n')[0] || 'its blob id did not resolve') }
+  }
+  return { kind: 'valid', config: parsed.value, blob: blob.stdout.trim() }
 }
+
+/**
+ * Words a config git could not read, never as absent.
+ * @param error - Git's error.
+ * @returns The fact.
+ */
+const describeUnreadable = (error: string): string => `Verify config unreadable (${error})`
 
 /**
  * Reads a config by the blob id an approval names, whatever tree holds it now.
@@ -125,11 +144,18 @@ export async function readConfigBlob(port: EnginePort, blob: string): Promise<Co
 }
 
 /**
- * Lists the programs and scripts a config runs: the first word of each command, each once.
+ * Lists the commands a config runs, each once: a runner with its script arguments, so `npm test` is told from `npm install`.
  * @param config - A validated config.
- * @returns The runners.
+ * @returns The commands.
  */
-export const listConfigRunners = (config: VerifyConfig): string[] => [...new Set([...config.always, ...config.rules.map(rule => rule.run)].map(([runner]) => runner!))]
+export const listConfigCommands = (config: VerifyConfig): string[][] => dedupeCommands([...config.always, ...config.rules.map(rule => rule.run)])
+
+/**
+ * Keeps the first of each identical command.
+ * @param commands - The commands.
+ * @returns The commands, each once.
+ */
+export const dedupeCommands = (commands: string[][]): string[][] => [...new Map(commands.map(command => [JSON.stringify(command), command])).values()]
 
 /**
  * Parses the working tree's config afresh on every call, so an edit shows at the next refresh; a read error counts as invalid.
@@ -227,9 +253,10 @@ export async function selectVerify(port: EnginePort, config: VerifyConfig, base:
   const selected = matched.filter(rule => rule.stage === 'both' || rule.stage === stage)
   const leftOut = [...new Set(matched.filter(rule => !selected.includes(rule)).map(rule => rule.run.join(' ')))]
   const commands = mergeByRunner([...config.always, ...selected.map(rule => rule.run)])
-  const isLeftToCi = !isUnchanged && !matched.length
+  // why: with always commands running, a check was selected, so only a change that selects nothing at all is left wholly to CI.
+  const isLeftToCi = !isUnchanged && !matched.length && !commands.length
   const paths = [...new Set(selected.flatMap(rule => rule.paths))]
   const stageNote = `${stage} stage${!leftOut.length ? '' : `${stage === 'unit' ? ' · left to the gate: ' : ' · left out as unit-only: '}${leftOut.join(', ')}`}`
-  const reason = isUnchanged ? 'no change from the base' : isLeftToCi ? facts.leftToCi : paths.length ? `rules ${paths.join(', ')}` : 'no rule of this stage'
+  const reason = isUnchanged ? 'no change from the base' : isLeftToCi ? facts.leftToCi : !matched.length ? alwaysOnly : paths.length ? `rules ${paths.join(', ')}` : 'no rule of this stage'
   return { commands, isLeftToCi, paths, stageNote, description: `${reason} · ${stageNote}` }
 }

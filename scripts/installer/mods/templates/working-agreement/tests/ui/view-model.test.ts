@@ -2,6 +2,7 @@ import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
 import { flowDefinitions, resolveUnitFlow } from '../../hooks/domain/flow-definitions'
+import { facts } from '../../hooks/domain/facts'
 import { composeInstruction } from '../../hooks/domain/instruction'
 import type { Session, Unit } from '../../hooks/domain/records'
 import type { Position, StepState } from '../../hooks/domain/step-states'
@@ -116,6 +117,14 @@ test('done steps omit their facts with an open PR', () => {
   const view = buildView(session(), { ...position, states, current: null }, null, false)
   expect(view.steps.find(step => step.label === 'Verify')?.detail).toBeUndefined()
   expect(view.steps.find(step => step.label === 'PR #5')).toMatchObject({ symbol: symbol.done, state: 'done', detail: undefined })
+})
+
+// contract: a Verify step done with no local check selected keeps saying it was left to CI, since nothing ran on the unit's tree
+test('a done Verify step left to CI keeps its fact', () => {
+  const position = positionOf({}, flow.steps.length)
+  const states = position.states.map(entry => ({ ...entry, state: 'done' as const, fact: entry.step.observe === 'verify.passed' ? facts.leftToCi : undefined }))
+  const view = buildView(session(), { ...position, states, current: null }, null, false)
+  expect(view.steps.find(step => step.label === 'Verify')).toMatchObject({ symbol: symbol.done, state: 'done', detail: facts.leftToCi })
 })
 
 for (const handoff of [undefined, { state: 'failed', reason: 'failed' }, { state: 'running' }] as const) {

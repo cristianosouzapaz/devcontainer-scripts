@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadAgentPacks } from "../lib/agent-packs.js";
 import { readGlobalSkillSet } from "../lib/global-skill-set.js";
 import { readLockFile, reconcileArtifactAdapters, recordArtifact, skillSymlinkAdapter, writeLockFile } from "../lib/lock-file.js";
@@ -235,4 +235,4 @@ const askUser = async () => {
     }
 };
 
-if (import.meta.url === `file://${process.argv[1]}`) await askUser();
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await askUser();

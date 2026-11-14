@@ -114,7 +114,7 @@ test('row 7: a run whose queue lock is no longer live leaves every surface as be
   const world = createWorld(on, buildChanged(), fixOptions({ verifyRuns: [passedBefore] }, gate))
   const run = $.tool.call(verify)
   await world.clock.settle()
-  world.modified.set(`${records}/verify/lock`, world.clock.now() - 31000)
+  world.hostLocks.kill(`${records}/locks/verify`, 'sid/')
   await expectCodeCurrent($, world, 'changed after Verify')
   gate.open?.()
   await run
@@ -129,8 +129,8 @@ test('row 8: a Verify queued behind another session leaves Code current with its
   await world.clock.settle()
   expect(await readFlowStatus($)).toContain('▸ Code · changed after Verify\n')
   expect(readPaneCurrentStep(world.views)).toBe('Code')
-  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Verify', value: 'queued, 2nd of 2', tone: 'text' })
-  expect(readSidebarStep(world)).toBe('▸ Code · Verify queued, 2nd of 2')
+  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Queue', value: 'Verify waiting: 1 ahead (holder: unknown)', tone: 'text' })
+  expect(readSidebarStep(world)).toBe('▸ Code · Verify waiting (1 ahead)')
   releaseVerifyHolder(world)
   await world.clock.advance(1000)
   expect((await run).result).toContain('Verify passed')
@@ -202,7 +202,7 @@ for (const [tool, input] of [['Write', buildWriteCall('src/a.ts')], ['Bash', { t
     await $.session.start({ cwd: root, surface: null, isInteractive: false })
     await $.turn.start({ text: 'go', turnId: 't' })
     expect(readSurfaces(world)).toEqual({ pane: '▸ Commit', sidebar: '▸ Commit' })
-    // The tick's full read waits on its GitHub issue read until the test opens it, as on a slow link.
+    // why: the tick's full read waits on its GitHub issue read until the test opens it, as on a slow link.
     options.issueGate = new Promise(resolve => { github.open = resolve })
     const before = reads.issues
     await world.clock.advance(60000)
@@ -230,7 +230,7 @@ test('a Write starting while a full read is queued behind a running one waits on
   await $.turn.start({ text: 'go', turnId: 't' })
   options.issueGate = new Promise(resolve => { github.open = resolve })
   await world.clock.advance(60000)
-  // A watched ref changes while the tick's read waits on GitHub: its forced full read queues behind it.
+  // why: a watched ref changes while the tick's read waits on GitHub: its forced full read queues behind it.
   await $.classic.FileChanged({ file_path: `${common}/HEAD`, event: 'change' })
   const call = $.tool.call(buildWriteCall('src/a.ts'))
   await world.clock.settle()

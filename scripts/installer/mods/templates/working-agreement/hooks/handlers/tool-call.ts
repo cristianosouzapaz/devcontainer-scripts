@@ -11,11 +11,13 @@ import { logEvent } from '../core/flow-log'
 import { recordActivity } from '../core/liveness'
 import { isJudgedTool } from '../core/judged-tools'
 import { refreshView, reread, rereadAtCallStart } from '../core/pane-view'
+import { readProcessState } from '../core/process-state'
+import { recordTurnFact } from '../core/turn-evidence'
 import { readSession, updateSession } from '../core/record-store'
 import { sessionMemory, withRecordLock } from '../core/session-memory'
 import { isInsideHerdr, spawnGuide } from '../core/herdr-worktrees'
 import { flowDefinitions } from '../domain/flow-definitions'
-import { isGitCommit, judgeApprovalBash, judgeIssueBash, judgeMailboxWrite, judgeRecordsBash, judgeReservedFlowBash } from '../domain/bash-guards'
+import { isGitCommit, judgeApprovalBash, judgeHeredocBash, judgeIssueBash, judgeMailboxWrite, judgeRecordsBash, judgeReservedFlowBash } from '../domain/bash-guards'
 import { markForAgent, modToolPrefix } from '../domain/messages'
 import { recordHandoffDocument } from '../features/handoff'
 import { toStringOrEmpty } from '../lib/json'
@@ -36,12 +38,16 @@ const agentWorktreeNote = 'a subagent with isolation: worktree does not see the 
  * @returns The tool's result, or a deny.
  */
 export async function handleToolCall(port: EnginePort, event: Frozen<Args<'tool.call'>>, next: ToolChain): Promise<EventResult<'tool.call'>> {
+  // why: a tool event proves no turn, as a subagent's or a hook's that an interrupt left running would not; it only moves the time of a record that holds the turn read here, so a call that ends after its turn did records nothing.
+  const state = await readProcessState(port)
   // why: a coordinator's tick reads a turn with no tool event for long as stalled, so each call's start and end both count as one.
-  await bestEffort(port, 'activity', () => recordActivity(port, 'tool'), undefined)
+  await bestEffort(port, 'activity', () => recordActivity(port, 'tool', state), undefined)
+  // why: a model that works after an empty doorbell makes it a work turn, which its Stop holds like any other.
+  if (!event.agentId && state?.turn?.isEmptyDoorbell) await recordTurnFact(port, 'worked', state.turn.id, held => held.turn ? { ...held, turn: { ...held.turn, isEmptyDoorbell: false } } : held)
   try {
     return await handleGuarantees(port, event, () => handleGatedCall(port, event, next))
   } finally {
-    await bestEffort(port, 'activity', () => recordActivity(port, 'tool'), undefined)
+    await bestEffort(port, 'activity', () => recordActivity(port, 'tool', state), undefined)
   }
 }
 
@@ -53,10 +59,10 @@ export async function handleToolCall(port: EnginePort, event: Frozen<Args<'tool.
  * @returns The refusal or dispatched tool result.
  */
 async function handleGatedCall(port: EnginePort, event: Frozen<Args<'tool.call'>>, next: ToolChain): Promise<EventResult<'tool.call'>> {
-  // The mod's own tools answer without next, so no permission check reaches them: the coordinator guard runs first.
+  // why: the mod's own tools answer without next, so no permission check reaches them, and the coordinator guard must run first.
   const coordinatorDeny = await denyCoordinatorCall(port, event)
   if (coordinatorDeny) return { deny: coordinatorDeny }
-  // A cancel gates every tool but send, the mod's own included, until the unit replies or the user lifts it.
+  // why: a cancel gates every tool but send, the mod's own included, until the unit replies or the user lifts it.
   const cancelDeny = await denyCancelledCall(port, event.tool, event.agentId)
   if (cancelDeny) return { deny: cancelDeny }
   if (event.tool.startsWith(modToolPrefix)) return next(event)
@@ -69,15 +75,18 @@ async function handleGatedCall(port: EnginePort, event: Frozen<Args<'tool.call'>
     }
     return next(event)
   }
-  // The Verify config approval and the user's /flow steps are the user's, from their own terminal, in every session: no agent command names the script or types a step.
+  // why: the Verify config approval and the user's /flow steps are the user's, from their own terminal, in every session: no agent command names the script or types a step.
   const approvalDeny = event.tool === 'Bash'
     ? judgeApprovalBash(toStringOrEmpty(args.command)) ?? judgeReservedFlowBash(toStringOrEmpty(args.command), (await port.readHerdrEnv()).socketPath)
     : undefined
   if (approvalDeny) return { deny: approvalDeny }
-  // Every GitHub issue write goes through the issue tools, which check its fields; a raw one is refused before it runs.
+  // why: a heredoc that ends early runs the rest of its body as shell, in any session.
+  const heredocDeny = event.tool === 'Bash' ? judgeHeredocBash(toStringOrEmpty(args.command)) : undefined
+  if (heredocDeny) return { deny: heredocDeny }
+  // why: every GitHub issue write goes through the issue tools, which check its fields; a raw one is refused before it runs.
   const issueDeny = event.tool === 'Bash' ? judgeIssueBash(toStringOrEmpty(args.command)) : undefined
   if (issueDeny) return { deny: issueDeny }
-  // The records, the mailbox among them, are written only through the mod's own code, as a best effort.
+  // why: the records, the mailbox among them, are written only through the mod's own code; this guard is a best effort.
   const mailDeny = event.tool === 'Bash' ? judgeRecordsBash(toStringOrEmpty(args.command))
     : isJudgedTool(event.tool) ? judgeMailboxWrite(toStringOrEmpty(args.file_path ?? args.notebook_path)) : undefined
   if (mailDeny) return { deny: mailDeny }
@@ -87,12 +96,12 @@ async function handleGatedCall(port: EnginePort, event: Frozen<Args<'tool.call'>
   if (unapprovedDeny) return { deny: unapprovedDeny }
   const herdrDeny = await denyOutsideHerdr(port, event.tool)
   if (herdrDeny) return { deny: herdrDeny }
-  // A Bash command may change the tree: the view is recomputed before it runs, from the tree as it stands, unless a read is in flight.
+  // why: a Bash command may change the tree, so the view is recomputed before it runs, from the tree as it stands, unless a read is in flight.
   if (event.tool === 'Bash') await bestEffort(port, 'call start reread', () => rereadAtCallStart(port), undefined)
   if (!isJudgedTool(event.tool)) return event.tool === 'Agent' ? appendAgentWorktreeNote(args, await next(event)) : next(event)
   const verdict = await judgeToolCall(port, args)
   if (verdict.decision === 'deny') {
-    // The deny never waits for the lock: a hook past its budget fails, and its .catch denies without the verdict's reason.
+    // why: the deny never waits for the lock: a hook past its budget fails, and its .catch denies without the verdict's reason.
     void bestEffort(port, 'blocked edit record', () => withRecordLock(async () => {
       const written = await updateSession(port, session => ({ ...session, blocked: { ...session.blocked, edits: session.blocked.edits + 1 } }))
       if (written) logEvent(port, written.session, 'deny', { tool: event.tool, reason: verdict.reason })
@@ -119,7 +128,7 @@ async function runWrite(port: EnginePort, write: () => Promise<EventResult<'tool
     return await write()
   } finally {
     sessionMemory.pendingWrites -= 1
-    // The next call starts without waiting on this read.
+    // why: deferred so the next call starts without waiting on this read.
     port.defer(() => { void bestEffort(port, 'call end reread', () => reread(port, false), undefined) })
   }
 }

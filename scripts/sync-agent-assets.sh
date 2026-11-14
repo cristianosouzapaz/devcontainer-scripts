@@ -76,30 +76,37 @@ fail_with_captured() {
 	log_fatal "${message}"
 }
 
-# report_names <captured>: logs the assets an installer touched as items and sets _SCOPE_COUNT to their number
+# report_names <captured> [quiet]: logs the assets an installer touched as items and sets _SCOPE_COUNT to their number
+# Returns: 0 when the installer reported an outcome, 1 when it reported none.
 # Notes: names come from the "… synced: a, b" summary the first-party installers print,
-#   else from "<name> added" lines; none at all logs "already up to date".
+#   else from "<name> added" lines; a parenthesized summary is an outcome naming nothing.
+#   Only consola success lines count — "✔ text", or "[success] text" under CI or test
+#   environments: a failed add's error text can itself end in " added". quiet only counts,
+#   for a caller that already shows the captured lines.
 report_names() {
-	local captured="$1" clean summary name
+	local captured="$1" quiet="${2:-}" clean summary name
 	local -a names=()
 
-	clean="$(printf '%s\n' "${captured}" | strip_ansi)"
+	clean="$(printf '%s\n' "${captured}" | strip_ansi | sed -nE 's/^(✔ |\[success\] )//p')"
 	summary="$(printf '%s\n' "${clean}" | sed -nE 's/.*synced: (.+)$/\1/p' | tail -n1)"
 
-	if [[ -n "${summary}" ]]; then
+	if [[ "${summary}" == '('* ]]; then
+		_SCOPE_COUNT=0
+		if [[ "${quiet}" != quiet ]]; then log_item_success "${summary//[()]/}"; fi
+		return 0
+	elif [[ -n "${summary}" ]]; then
 		IFS=', ' read -r -a names <<< "${summary}"
 	else
-		mapfile -t names < <(printf '%s\n' "${clean}" | sed -nE 's/^[^[:alnum:]]*([[:alnum:]_-]+) added$/\1/p')
+		mapfile -t names < <(printf '%s\n' "${clean}" | sed -nE 's/^(.+) added$/\1/p')
 	fi
 
 	_SCOPE_COUNT="${#names[@]}"
-	if [[ "${_SCOPE_COUNT}" -eq 0 ]]; then
-		log_item_success "already up to date"
-		return 0
+	if [[ "${quiet}" != quiet ]]; then
+		for name in "${names[@]}"; do
+			log_item_success "${name}"
+		done
 	fi
-	for name in "${names[@]}"; do
-		log_item_success "${name}"
-	done
+	[[ "${_SCOPE_COUNT}" -gt 0 ]]
 }
 
 # sync_installer <assets_ref> <scripts_repo>: re-fetches the installer at the ref, exiting on failure
@@ -124,23 +131,29 @@ count_label() {
 # sync_scope <heading> <entry> <fatal_message> [slow] [tolerate]: runs one installer scope and exposes its stable outcome
 # Notes: third-party failures are nonfatal because existing installed assets remain usable;
 #   their partial outcome is persisted for diagnostics instead of being mistaken for success.
+#   A scope that exits 0 but reports no outcome failed too: a working installer always
+#   reports what it synced, so silence means its entry never ran. consola's level is pinned
+#   so a test or debug environment cannot silence that report.
 sync_scope() {
 	local heading="$1" entry="$2" fatal="$3" slow="${4:-}" tolerance="${5:-}" rc=0
 	_SCOPE_OUTCOME='ok'
 	log_detail "${heading}"
 	if [[ "${slow}" == "slow" ]]; then start_spinner "Updating the shared skills store"; fi
-	run_captured node "${DEVCONTAINER_INSTALLER_DIR}/${entry}" --global || rc=$?
+	CONSOLA_LEVEL=3 run_captured node "${DEVCONTAINER_INSTALLER_DIR}/${entry}" --global || rc=$?
 	spinner_cleanup
+	_SCOPE_COUNT=0
+	if [[ "$rc" -eq 0 ]]; then report_names "${_CAPTURED}" || rc=1; fi
 	if [[ "$rc" -ne 0 ]]; then
 		if [[ "$tolerance" != 'tolerate' ]]; then
 			fail_with_captured "${fatal}"
 		fi
 		_SCOPE_OUTCOME='partial'
+		# why: the assets that did sync still count toward the summary, and emit_captured already shows their lines
+		report_names "${_CAPTURED}" quiet || true
 		emit_captured "${_CAPTURED}"
 		log_item_warning "${fatal}; retaining existing third-party assets"
 		return 0
 	fi
-	report_names "${_CAPTURED}"
 	if [[ "${slow}" == "slow" ]] && printf '%s\n' "${_CAPTURED}" | grep -q 'skills update -g failed'; then
 		log_item_warning "shared-store refresh reported nothing tracked (per-skill add already covered it)"
 		_SCOPE_OUTCOME='partial'

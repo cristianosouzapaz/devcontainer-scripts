@@ -1,20 +1,26 @@
 import { bodyLimit, mailFileName, parseEnvelope, userAddress } from '../domain/mail'
 import type { Envelope } from '../domain/mail'
 import { deriveReplyId, withArticle } from '../domain/mail-reply'
+import { stop } from '../domain/outcome'
 import { isNonEmptyString, isRecord, isStringArray } from '../lib/guards'
 import { readJson } from '../lib/json'
 import { executeProcess } from '../lib/process'
+import { fail, formatErrorLine, succeed } from '../lib/result'
+import type { Result } from '../lib/result'
+import { logFailure } from './best-effort'
 import type { EnginePort } from './engine-port'
 import { findMessage, mailPath, readOwnAddresses, sendMail } from './mailbox'
 import { atomicCreate, atomicReplace, readCommonDir, recordsPath } from './record-store'
 import { isFromRetiredSession } from './retire'
 import { withRecordLock } from './session-memory'
-import { readProgressFile } from './spawn'
-import { ackDeadlineMs, replyDeadlineMs } from './timing'
+import { replyDeadlineMs } from './timing'
 import { readForward } from './user-inbox'
 
-/** A message that ran out of attempts or went stale: it ends its conversation, and the replies that still came are recorded on it. */
-interface DeadLetter { v: 1; id: string; reason: string; at: string; envelope: Envelope; replies: string[] }
+/** A message that ran out of attempts or went stale: it ends its conversation; the replies that still came, and who was not told of it, are recorded on it. */
+interface DeadLetter { v: 1; id: string; reason: string; at: string; envelope: Envelope; replies: string[]; untold?: string[] }
+
+/** How many dead letters there are, and how many of them have a notice that was not delivered. */
+interface DeadLetterCounts { deadLetters: number; untold: number }
 
 /** A message's latest attempt in its receiver's mailbox, with the directory it is in and the file's time: its send while in new/, its ack once in cur/. */
 interface Attempt { box: 'new' | 'cur'; envelope: Envelope; mtimeMs: number }
@@ -27,8 +33,8 @@ const repliedKinds: readonly string[] = ['question', 'blocked', 'cancel']
 
 /**
  * Sends a new attempt of every message this session sent whose deadline expired, or dead-letters it after the last attempt; run by the
- * session's tick. An assign must be acked within the ack deadline of each attempt's send; a question, blocked or cancel replied to within
- * the reply deadline of each attempt's ack. Spawn's start assignment, mail to the user and a forwarded question are never retried.
+ * session's tick. A question, blocked or cancel must be replied to within the reply deadline of each attempt's ack; a message never acked,
+ * however long its receiver's turn, waits on the receiver's liveness instead. Mail to the user and a forwarded question are never retried.
  * @param port - The engine calls.
  * @returns Once every expired message got its new attempt or its dead letter.
  */
@@ -37,7 +43,7 @@ export async function retryOwnMail(port: EnginePort): Promise<void> {
   const own = await readOwnAddresses(port)
   if (!common || !own.length) return
   const now = await port.now()
-  // The mail directory may not exist yet.
+  // why: the mail directory may not exist yet, so a failed listing reads as empty.
   for (const { name: receiver } of await port.files.list(recordsPath(common, 'mail')).catch(() => [])) {
     // why: a question to the user never expires, and the user's mailbox holds nothing else that waits.
     if (receiver === userAddress) continue
@@ -77,37 +83,56 @@ export async function recordLateReply(port: EnginePort, common: string, inReplyT
 
 /**
  * Sets aside a message whose expects no longer holds, before it is acknowledged: it leaves new/ for the dead letters, and only the injection
- * whose move wins records it. A stale inform is recorded and dropped; any other kind is dead-lettered as stale and its sender told.
+ * whose move wins records it, dead-lettered as stale with its sender told.
  * @param port - The engine calls.
  * @param address - The mailbox it reached.
  * @param name - Its file name.
  * @param envelope - The message.
+ * @param reason - The stale reason, naming the step it was written for and the step the unit was at.
  * @returns Once set aside, or when another injection moved it first.
  */
-export async function setStaleAside(port: EnginePort, address: string, name: string, envelope: Envelope): Promise<void> {
+export async function setStaleAside(port: EnginePort, address: string, name: string, envelope: Envelope, reason: string): Promise<void> {
   const common = await readCommonDir(port)
   if (!common) return
   await executeProcess(port.processes, ['mkdir', '-p', '--', recordsPath(common, 'deadletters')])
   const moved = await executeProcess(port.processes, ['mv', '-f', '--', `${mailPath(common, address, 'new')}/${name}`, recordsPath(common, 'deadletters', `${name.slice(0, -'.json'.length)}.mail`)])
   if (moved.exitCode !== 0) return
-  if (envelope.kind !== 'inform') return deadLetter(port, common, envelope, 'stale', address)
-  const record: DeadLetter = { v: 1, id: envelope.id, reason: 'stale', at: new Date(await port.now()).toISOString(), envelope, replies: [] }
-  await withRecordLock(() => atomicCreate(port, recordsPath(common, 'deadletters'), deadLetterPath(common, envelope.id), JSON.stringify(record)))
+  logFailure(port, 'dead-letter notice', await deadLetter(port, common, envelope, reason, address))
 }
 
 /**
- * Counts the dead letters about some issues; a stale inform, dropped rather than dead-lettered, is not one.
+ * Reads every dead letter; an inform is not one: its records predate expects being refused on an inform, when a stale one was dropped untold.
  * @param port - The engine calls.
- * @param issues - The issues, such as a coordinator's scope.
- * @returns How many.
+ * @returns The dead letters.
  */
-export async function countDeadLetters(port: EnginePort, issues: readonly number[]): Promise<number> {
+async function readDeadLetters(port: EnginePort): Promise<DeadLetter[]> {
   const common = await readCommonDir(port)
-  if (!common) return 0
-  // The bucket exists only once a message was dead-lettered.
+  if (!common) return []
+  // why: the bucket exists only once a message was dead-lettered, so a failed listing reads as empty.
   const names = (await port.files.list(recordsPath(common, 'deadletters')).catch(() => [])).filter(({ name }) => name.endsWith('.json'))
   const letters = await Promise.all(names.map(async ({ name }) => readDeadLetter(port, common, name.slice(0, -'.json'.length))))
-  return letters.filter(letter => letter && letter.envelope.kind !== 'inform' && issues.includes(letter.envelope.issue)).length
+  return letters.filter((letter): letter is DeadLetter => !!letter && letter.envelope.kind !== 'inform')
+}
+
+/**
+ * Counts the dead letters about some issues, and those whose notice to the user or the sender was not delivered.
+ * @param port - The engine calls.
+ * @param issues - The issues, such as a coordinator's scope.
+ * @returns How many, and how many with an undelivered notice.
+ */
+export async function countDeadLetters(port: EnginePort, issues: readonly number[]): Promise<DeadLetterCounts> {
+  const letters = (await readDeadLetters(port)).filter(letter => issues.includes(letter.envelope.issue))
+  return { deadLetters: letters.length, untold: letters.filter(letter => letter.untold?.length).length }
+}
+
+/**
+ * Lists the dead letters whose notice to the user or the sender was not delivered, for /flow status.
+ * @param port - The engine calls.
+ * @returns One line each, naming the message and who was not told.
+ */
+export async function listUntoldDeadLetters(port: EnginePort): Promise<string[]> {
+  return (await readDeadLetters(port)).flatMap(letter => letter.untold?.length
+    ? [`dead letter ${letter.id} about #${letter.envelope.issue} · ${letter.untold.join('; ')}`] : [])
 }
 
 /**
@@ -128,7 +153,7 @@ function parseDeadLetter(value: unknown, id: string): DeadLetter | null {
   if (!isRecord(value) || value.v !== 1 || value.id !== id || !isNonEmptyString(value.reason) || typeof value.at !== 'string' || !isStringArray(value.replies)) return null
   const envelope = isRecord(value.envelope) && typeof value.envelope.to === 'string'
     ? parseEnvelope(mailFileName({ id, attempt: Number(value.envelope.attempt) }), JSON.stringify(value.envelope), value.envelope.to) : null
-  return envelope ? { v: 1, id, reason: value.reason, at: value.at, envelope, replies: value.replies } : null
+  return envelope ? { v: 1, id, reason: value.reason, at: value.at, envelope, replies: value.replies, ...isStringArray(value.untold) ? { untold: value.untold } : {} } : null
 }
 
 /**
@@ -140,9 +165,9 @@ function parseDeadLetter(value: unknown, id: string): DeadLetter | null {
  */
 async function readLatestAttempts(port: EnginePort, common: string, address: string): Promise<Attempt[]> {
   const read = await Promise.all((['new', 'cur'] as const).map(async box => {
-    // A mailbox directory may not exist yet.
+    // why: a mailbox directory may not exist yet, so a failed listing reads as empty.
     const entries = await port.files.list(mailPath(common, address, box)).catch(() => [])
-    // A file another session moved meanwhile reads as gone.
+    // why: another session may move a file meanwhile, so one that cannot be read counts as gone.
     return Promise.all(entries.map(async ({ name, mtimeMs }) => {
       const envelope = parseEnvelope(name, await port.files.read(`${mailPath(common, address, box)}/${name}`).catch(() => ''), address)
       return envelope ? [{ box, envelope, mtimeMs }] : []
@@ -157,8 +182,8 @@ async function readLatestAttempts(port: EnginePort, common: string, address: str
 }
 
 /**
- * Tells whether a message's latest attempt is past its deadline and still waits: an assign not acked, or a question, blocked or cancel
- * acked and not replied to. A message never acked waits on the receiver's liveness, not on a new attempt.
+ * Tells whether a message's latest attempt is past its deadline and still waits: a question, blocked or cancel acked and not replied to.
+ * A message never acked waits on the receiver's liveness, not on a new attempt: a busy receiver's Stop delivers it, and a stalled or dead one is reported.
  * @param port - The engine calls.
  * @param common - The git common directory.
  * @param attempt - The latest attempt.
@@ -167,33 +192,27 @@ async function readLatestAttempts(port: EnginePort, common: string, address: str
  */
 async function isOverdue(port: EnginePort, common: string, attempt: Attempt, now: number): Promise<boolean> {
   const { box, envelope, mtimeMs } = attempt
-  const isAssignLate = envelope.kind === 'assign' && box === 'new' && now - mtimeMs >= ackDeadlineMs
-  const isReplyLate = repliedKinds.includes(envelope.kind) && box === 'cur' && now - mtimeMs >= replyDeadlineMs
-  if (!isAssignLate && !isReplyLate) return false
+  if (!repliedKinds.includes(envelope.kind) || box !== 'cur' || now - mtimeMs < replyDeadlineMs) return false
   if (await readDeadLetter(port, common, envelope.id) || await isFromRetiredSession(port, envelope)) return false
-  // why: spawn's start assignment has its own start check, and a later spawn waits for that same message, so it never gets a second attempt.
-  if (isAssignLate) return (await readProgressFile(port, common, envelope.issue, false)).assignId !== envelope.id
   // why: a forwarded question is the user's to answer, and a question to the user never expires.
   return !await findMessage(port, common, envelope.from, deriveReplyId(envelope.id, envelope.to)) && !await readForward(port, common, envelope.id)
 }
 
 /**
- * Sends a message's next attempt, labelled a repeat at injection, or dead-letters it after the last one. An attempt still unread leaves new/
- * first, so the model never gets two attempts as new; when the receiver acked it meanwhile the move fails and no repeat is sent.
+ * Sends a message's next attempt, labelled a repeat at injection, or dead-letters it after the last one; only an acked attempt expires.
  * @param port - The engine calls.
  * @param common - The git common directory.
  * @param attempt - The expired attempt.
  * @returns Once sent or dead-lettered.
  */
 async function expire(port: EnginePort, common: string, attempt: Attempt): Promise<void> {
-  const { box, envelope } = attempt
+  const { envelope } = attempt
   if (envelope.attempt >= maxAttempts) {
-    return deadLetter(port, common, envelope, box === 'new' ? `not acknowledged after ${maxAttempts} attempts` : `not replied to after ${maxAttempts} attempts`, envelope.from)
+    logFailure(port, 'dead-letter notice', await deadLetter(port, common, envelope, `not replied to after ${maxAttempts} attempts`, envelope.from))
+    return
   }
   const staging = mailPath(common, envelope.to, 'tmp')
   const inbox = mailPath(common, envelope.to, 'new')
-  // why: named like a staged file, so the mailbox's staging sweep removes it.
-  if (box === 'new' && (await executeProcess(port.processes, ['mv', '-f', '--', `${inbox}/${mailFileName(envelope)}`, `${staging}/.tmp-retried-${mailFileName(envelope)}`])).exitCode !== 0) return
   const next = { ...envelope, attempt: envelope.attempt + 1 }
   await atomicCreate(port, staging, `${inbox}/${mailFileName(next)}`, JSON.stringify(next))
 }
@@ -205,15 +224,30 @@ async function expire(port: EnginePort, common: string, attempt: Attempt): Promi
  * @param envelope - The message, as its latest attempt holds it.
  * @param reason - Why it is dead-lettered.
  * @param writer - The session whose mod writes the two informs, from its own address: the sender for a retry, the receiver for a stale message.
- * @returns Once recorded and both told.
+ * @returns The dead letter, or a stop naming who was not told; a message already dead-lettered succeeds with nothing to say.
  */
-async function deadLetter(port: EnginePort, common: string, envelope: Envelope, reason: string, writer: string): Promise<void> {
+async function deadLetter(port: EnginePort, common: string, envelope: Envelope, reason: string, writer: string): Promise<Result<string>> {
   const record: DeadLetter = { v: 1, id: envelope.id, reason, at: new Date(await port.now()).toISOString(), envelope, replies: [] }
   const isNew = await withRecordLock(() => atomicCreate(port, recordsPath(common, 'deadletters'), deadLetterPath(common, envelope.id), JSON.stringify(record)))
-  if (!isNew) return
+  if (!isNew) return succeed('')
   const about = `${withArticle(envelope.kind)} ${envelope.id} from ${envelope.from} to ${envelope.to} about #${envelope.issue}`
   const told = { kind: 'inform' as const, author: 'mod' as const, from: writer, issue: envelope.issue }
-  await sendMail(port, { ...told, to: userAddress, body: `Dead letter: ${about}, ${reason}. Its text:\n${envelope.body}`.slice(0, bodyLimit) })
-  await sendMail(port, { ...told, to: envelope.from, body: `Your ${envelope.kind} ${envelope.id} to ${envelope.to} about #${envelope.issue} was dead-lettered to the user's mailbox: ${reason}. `
-    + 'A reply that still comes reaches this mailbox and is recorded on the dead letter.' })
+  const user = await sendMail(port, { ...told, to: userAddress, body: `Dead letter: ${about}, ${reason}. Its text:\n${envelope.body}`.slice(0, bodyLimit) })
+    .catch((error: unknown) => fail(formatErrorLine(error)))
+  // why: once the record exists the message is never dead-lettered again, so who was not told is kept on it rather than lost.
+  const keepUntold = (untold: string[]): Promise<string> => withRecordLock(async () => {
+    const letter = await readDeadLetter(port, common, envelope.id) ?? record
+    await atomicReplace(port, deadLetterPath(common, envelope.id), JSON.stringify({ ...letter, untold }))
+  }).then(() => '', (error: unknown) => formatErrorLine(error))
+  const userUntold = user.isOk ? [] : [`the user was not told (${user.error})`]
+  // why: /flow status lists only a dead letter whose record keeps who was not told, so the sender hears that only once it is kept.
+  const userUnkept = userUntold.length ? await keepUntold(userUntold) : ''
+  const userNote = user.isOk ? '' : `, but the user was not told (${user.error}); ${userUnkept
+    ? `the dead letter is at ${deadLetterPath(common, envelope.id)}, which /flow status cannot list (${userUnkept})` : 'the dead letter is kept, and /flow status lists it'}`
+  const sender = await sendMail(port, { ...told, to: envelope.from, body: `Your ${envelope.kind} ${envelope.id} to ${envelope.to} about #${envelope.issue} was dead-lettered to the user's mailbox: ${reason}${userNote}. `
+    + 'A reply that still comes reaches this mailbox and is recorded on the dead letter.' }).catch((error: unknown) => fail(formatErrorLine(error)))
+  const untold = [...userUntold, ...sender.isOk ? [] : [`${envelope.from} was not told (${sender.error})`]]
+  if (!untold.length) return succeed(`dead-lettered ${envelope.id}`)
+  const unkept = sender.isOk ? userUnkept : await keepUntold(untold)
+  return stop(`dead-lettered ${envelope.id}; ${untold.join('; ')}${unkept ? `; not kept on the dead letter (${unkept})` : ''}`)
 }

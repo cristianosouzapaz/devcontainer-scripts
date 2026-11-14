@@ -1,7 +1,7 @@
-import { readFileSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadAgentPacks, selectAgentPacks } from "../lib/agent-packs.js";
 import { copilotTarget } from "../lib/constants.js";
 import { readGlobalSkillSet } from "../lib/global-skill-set.js";
@@ -416,7 +416,7 @@ const askUser = async () => {
     }
 };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
     if (process.argv[2] === "--global") {
         try {
             await installGlobal();

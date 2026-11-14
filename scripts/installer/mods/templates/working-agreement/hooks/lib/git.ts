@@ -1,7 +1,7 @@
 import { executeProcess, hasExitedZero, runProcess } from './process'
 import { removeFile } from './files'
 import type { ProcessOutput, ProcessPort } from './process'
-import { succeed } from './result'
+import { fail, succeed } from './result'
 import type { Result } from './result'
 
 /** The checkout branch, HEAD, default branch and upstream state. */
@@ -86,6 +86,19 @@ export async function readGitState(processes: ProcessPort): Promise<Result<GitSt
 }
 
 /**
+ * Reads the branch ref the worktree's HEAD names, telling a detached HEAD from a read git could not make.
+ * @param processes - The process runner.
+ * @returns The ref, such as `refs/heads/main`, null for a detached HEAD, or why git could not read it.
+ */
+export async function readHeadRef(processes: ProcessPort): Promise<Result<string | null>> {
+  const run = await runProcess(processes, gitArgv(['symbolic-ref', '-q', 'HEAD']))
+  if (!run.isOk) return run
+  // why: symbolic-ref -q exits 1 with no output for a detached HEAD; any other failure is a read git could not make.
+  if (run.value.exitCode > 1) return fail(run.value.stderr.trim() || `git exited ${run.value.exitCode}`)
+  return succeed(run.value.exitCode === 0 ? run.value.stdout.trim() : null)
+}
+
+/**
  * Reads a git fact only when the command succeeds.
  * @param processes - The process runner.
  * @param args - The git arguments.
@@ -144,33 +157,70 @@ export async function listNewCommits(processes: ProcessPort, tips: string[], exc
  * @returns The content tree, or null if any command fails or the temporary index vanished during the capture.
  */
 export async function readContentTree(processes: ProcessPort, root: string, temporary: string): Promise<string | null> {
-  const paths = await readGitOutput(processes, ['-C', root, 'rev-parse', '--path-format=absolute', '--git-path', 'index', '--show-object-format'])
-  const [index, format] = paths?.split('\n') ?? []
-  if (!index) return null
+  const captured = await captureContentTree(processes, root, temporary)
+  return captured.isOk ? captured.value : null
+}
+
+/**
+ * Stages tracked and untracked content in a temporary index, as readContentTree does, naming why a capture failed.
+ * @param processes - The process runner.
+ * @param root - The worktree holding the branch.
+ * @param temporary - The unique temporary index path under the common metadata directory.
+ * @returns The content tree, or the failing step's error.
+ */
+export async function captureContentTree(processes: ProcessPort, root: string, temporary: string): Promise<Result<string>> {
+  const paths = hasExitedZero(await runProcess(processes, gitArgv(['-C', root, 'rev-parse', '--path-format=absolute', '--git-path', 'index', '--show-object-format'])))
+  if (!paths.isOk) return paths
+  const [index, format] = paths.value.stdout.trim().split('\n')
+  if (!index) return fail(`git names no index for ${root}`)
   const stamp = `${temporary}.stamp`
   const live = `${temporary}.live`
   try {
     const directory = temporary.slice(0, temporary.lastIndexOf('/'))
-    if (!hasExitedZero(await runProcess(processes, ['mkdir', '-p', '--', directory])).isOk) return null
-    // why: git rechecks by content an entry written in the index's own mtime second, so a copy with a later mtime would trust stale stat data; stamping before copying means an index swapped in between can only leave the copy older, rechecking more.
-    // The copy and stamp may thus be days old, so the fresh live marker, touched first, keeps another chat's sweep off the running capture.
+    const made = hasExitedZero(await runProcess(processes, ['mkdir', '-p', '--', directory]))
+    if (!made.isOk) return made
+    // why: git rechecks by content an entry written in the index's own mtime second, so a copy with a later mtime would trust stale stat data; stamping before copying means an index swapped in between can only leave the copy older, rechecking more. The copy and stamp may thus be days old, so the fresh live marker, touched first, keeps another chat's sweep off the running capture.
     const copied = hasExitedZero(await runProcess(processes, ['sh', '-c', 'touch -- "$4" && if [ -e "$1" ]; then touch -r "$1" "$3" && cp -- "$1" "$2" && touch -r "$3" "$2"; fi', 'copy-index', index, temporary, stamp, live]))
-    if (!copied.isOk) return null
+    if (!copied.isOk) return copied
     const command = ['env', `GIT_INDEX_FILE=${temporary}`, ...gitArgv(['-c', 'core.splitIndex=false', '-C', root])]
     const added = hasExitedZero(await runProcess(processes, [...command, 'add', '-A']))
-    if (!added.isOk) return null
+    if (!added.isOk) return added
     const tree = hasExitedZero(await runProcess(processes, [...command, 'write-tree']))
-    const content = tree.isOk ? tree.value.stdout.trim() : null
-    if (content !== emptyTrees.get(format ?? '')) return content
+    if (!tree.isOk) return tree
+    const content = tree.value.stdout.trim()
+    if (content !== emptyTrees.get(format ?? '')) return succeed(content)
     // why: git reads an index deleted under it as empty and recreates it, so the empty tree of a worktree holding files is the only trace of that deletion.
-    const listed = await readGitOutput(processes, ['-C', root, 'ls-files', '-z', '-t', '--cached', '--deleted', '--others', '--exclude-standard'])
-    if (listed === null) return null
-    // --deleted lists each tracked file missing from the worktree a second time, so files are present only when entries outnumber twice the deletions.
-    const entries = listed.split('\0').filter(Boolean)
-    return entries.length > 2 * entries.filter(entry => entry.startsWith('R ')).length ? null : content
+    const listed = hasExitedZero(await runProcess(processes, gitArgv(['-C', root, 'ls-files', '-z', '-t', '--cached', '--deleted', '--others', '--exclude-standard'])))
+    if (!listed.isOk) return listed
+    // why: --deleted lists each tracked file missing from the worktree a second time, so files are present only when entries outnumber twice the deletions.
+    const entries = listed.value.stdout.split('\0').filter(Boolean)
+    return entries.length > 2 * entries.filter(entry => entry.startsWith('R ')).length ? fail('its index was deleted while it was read') : succeed(content)
   } finally {
     await removeFile(processes, temporary, `${temporary}.lock`, stamp, live)
   }
+}
+
+/**
+ * Tells whether a tree holds a path, from a listing git completed, so absence is never inferred from a failed read.
+ * @param processes - The process runner.
+ * @param tree - The tree or commit.
+ * @param path - The path from the tree's root.
+ * @returns Whether the path is in the tree, or the listing's error.
+ */
+export async function hasTreePath(processes: ProcessPort, tree: string, path: string): Promise<Result<boolean>> {
+  const listed = hasExitedZero(await runProcess(processes, gitArgv(['ls-tree', '--name-only', tree, '--', path])), `git ls-tree exited non-zero on ${tree}`)
+  return listed.isOk ? succeed(listed.value.stdout.split('\n').includes(path)) : listed
+}
+
+/**
+ * Tells whether git lists a worktree at a path, from a listing git completed.
+ * @param processes - The process runner.
+ * @param path - The worktree's path.
+ * @returns Whether it is listed, or the listing's error.
+ */
+export async function isWorktreeListed(processes: ProcessPort, path: string): Promise<Result<boolean>> {
+  const listed = hasExitedZero(await runProcess(processes, gitArgv(['worktree', 'list', '--porcelain'])), 'git worktree list exited non-zero')
+  return listed.isOk ? succeed(listed.value.stdout.split('\n').includes(`worktree ${path}`)) : listed
 }
 
 /**
@@ -190,13 +240,24 @@ export function runGit(processes: ProcessPort, args: string[], stdin?: string): 
  * @returns The worktrees, or null when git cannot list them.
  */
 export async function readWorktrees(processes: ProcessPort): Promise<Worktree[] | null> {
-  const text = await readGitOutput(processes, ['worktree', 'list', '--porcelain'])
-  return text === null ? null : text.split('\n\n').filter(Boolean).map(block => {
+  const listed = await listWorktrees(processes)
+  return listed.isOk ? listed.value : null
+}
+
+/**
+ * Reads every listed worktree, naming why the list could not be read.
+ * @param processes - The engine's process runner.
+ * @returns The worktrees, or the list's failure.
+ */
+async function listWorktrees(processes: ProcessPort): Promise<Result<Worktree[]>> {
+  const run = hasExitedZero(await runProcess(processes, gitArgv(['worktree', 'list', '--porcelain'])))
+  if (!run.isOk) return fail(run.error)
+  return succeed(run.value.stdout.trim().split('\n\n').filter(Boolean).map(block => {
     const lines = block.split('\n')
     return { root: lines.find(line => line.startsWith('worktree '))?.slice(9) ?? '',
       head: lines.find(line => line.startsWith('HEAD '))?.slice(5) ?? '',
       branch: lines.find(line => line.startsWith('branch '))?.slice(7) ?? '' }
-  })
+  }))
 }
 
 /**
@@ -217,6 +278,17 @@ export async function readWorktreeStatus(processes: ProcessPort, root?: string):
  */
 export async function findWorktreeRoot(processes: ProcessPort, branch: string): Promise<string | undefined> {
   return (await readWorktrees(processes))?.find(worktree => worktree.branch === `refs/heads/${branch}`)?.root
+}
+
+/**
+ * Finds the worktree that holds a branch, telling a branch checked out nowhere from a list that could not be read.
+ * @param processes - The engine's process runner.
+ * @param branch - The branch name.
+ * @returns The worktree's root, undefined when no worktree holds the branch, or the list's failure.
+ */
+export async function locateWorktreeRoot(processes: ProcessPort, branch: string): Promise<Result<string | undefined>> {
+  const listed = await listWorktrees(processes)
+  return listed.isOk ? succeed(listed.value.find(worktree => worktree.branch === `refs/heads/${branch}`)?.root) : listed
 }
 
 /**

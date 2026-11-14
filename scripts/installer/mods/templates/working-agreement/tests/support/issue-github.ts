@@ -16,7 +16,10 @@ interface IssueGithubOptions {
 }
 
 /** The fake GitHub, its state and its call log. */
-export interface IssueGithub { calls: string[][]; issues: Map<number, FakeIssue>; comments: FakeComment[]; gh: NonNullable<Options['gh']> }
+export interface IssueGithub { calls: string[][]; issues: Map<number, FakeIssue>; comments: FakeComment[]; faults: IssueGithubFaults; gh: NonNullable<Options['gh']> }
+
+/** The faults a test switches on after the fake is built. */
+interface IssueGithubFaults { isCommentReadFailing: boolean }
 
 /** The triage labels every repository carries. */
 export const triageLabels = ['needs-triage', 'needs-info', 'ready-for-agent', 'ready-for-human', 'wontfix']
@@ -41,6 +44,23 @@ export const ticket = {
 export const values = (args: string[], flag: string): string[] => args.flatMap((arg, index) => arg === flag ? [args[index + 1] ?? ''] : [])
 
 /**
+ * Answers the mod's read of several issues' native parents as GitHub would, one aliased field per issue, and nothing else.
+ * @param parents - Each sub-issue's parent.
+ * @returns The world's gh answer.
+ */
+export const answerParents = (parents: Record<number, number>): NonNullable<Options['gh']> => args => {
+  const asked = [...(args.find(arg => arg.startsWith('query=')) ?? '').matchAll(/(i\d+):issue\(number:(\d+)\)\{parent\{number\}\}/g)]
+  if (!asked.length) return undefined
+  const repository: Record<string, { parent: { number: number } | null }> = {}
+  for (const [, alias = '', number = ''] of asked) {
+    const parent = parents[Number(number)]
+    repository[alias] = { parent: parent ? { number: parent } : null }
+  }
+  return { stdout: JSON.stringify({ data: { repository } }) }
+}
+
+
+/**
  * Builds a GitHub that keeps issues, labels and comments in memory and records every gh call.
  * @param options - Its labels, issues, native types and faults.
  * @returns The fake.
@@ -48,6 +68,7 @@ export const values = (args: string[], flag: string): string[] => args.flatMap((
 export function createIssueGithub(options: IssueGithubOptions = {}): IssueGithub {
   const calls: string[][] = []
   const comments: FakeComment[] = []
+  const faults: IssueGithubFaults = { isCommentReadFailing: false }
   const seeded = Object.entries(options.issues ?? { 7: { labels: ['needs-triage'] } })
   const issues = new Map<number, FakeIssue>(seeded.map(([number, issue]) =>
     [Number(number), { labels: [], assignees: ['me'], parent: null, blockedBy: [], state: 'OPEN', stateReason: null, ...issue }]))
@@ -59,6 +80,7 @@ export function createIssueGithub(options: IssueGithubOptions = {}): IssueGithub
     }
     const listed = /^api repos\/\{owner\}\/\{repo\}\/issues\/(\d+)\/comments --paginate/.exec(args.join(' '))
     if (listed) {
+      if (faults.isCommentReadFailing) return { exitCode: 1, stderr: 'HTTP 504: Gateway Timeout' }
       return { stdout: comments.filter(comment => comment.issue === Number(listed[1]))
         .map(({ url, body, author = 'me', createdAt = new Date(0).toISOString() }) => JSON.stringify({ url, body, createdAt, author })).join('\n') }
     }
@@ -66,6 +88,8 @@ export function createIssueGithub(options: IssueGithubOptions = {}): IssueGithub
     const audited = fetched && issues.get(Number(fetched[1]))
     if (audited) return { stdout: JSON.stringify({ title: 'feat: x', body: '', labels: audited.labels, assignees: audited.assignees }) }
     const query = args.at(-1) ?? ''
+    const parents = answerParents(Object.fromEntries([...issues].flatMap(([number, issue]) => issue.parent ? [[number, issue.parent]] : [])))(args)
+    if (parents) return parents
     if (args[1] === 'graphql' && query.includes('issueTypes')) {
       const types = options.issueTypes ?? null
       return { stdout: JSON.stringify({ data: { repository: { issueTypes: types && { nodes: types.map(name => ({ name })) } } } }) }
@@ -116,5 +140,5 @@ export function createIssueGithub(options: IssueGithubOptions = {}): IssueGithub
     if (args[0] === 'label' && args[1] === 'create') return { stdout: '' }
     return undefined
   }
-  return { calls, issues, comments, gh }
+  return { calls, issues, comments, faults, gh }
 }

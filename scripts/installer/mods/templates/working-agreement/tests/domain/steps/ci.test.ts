@@ -63,7 +63,7 @@ for (const before of ['pending', 'success']) {
     const options: Options = { ...pushedCloseOut, statuses: { c1: [{ context: 'test', state: before }] } }
     const { clock, views } = createWorld(on, { branch: 'feat', ahead: 1 }, options)
     await $.session.start({ cwd: root, surface: null, isInteractive: false })
-    // A ref change reads GitHub past the cache between two ticks, so the next tick finds that read under a minute old.
+    // why: a ref change reads GitHub past the cache between two ticks, so the next tick finds that read under a minute old.
     await clock.advance(1000)
     await $.classic.FileChanged({ file_path: `${common}/HEAD`, event: 'change' })
     await clock.settle()
@@ -97,7 +97,7 @@ test('a call-start reread after a new commit under an open PR makes no GitHub ca
   const world = createWorld(on, checkout, { ...pushedCloseOut, afterTool: () => { marks.at = world.runs.length } })
   await $.session.start({ cwd: root, surface: null, isInteractive: false })
   await world.clock.settle()
-  // A new commit on the unit branch moves the slice end to a sha no GitHub cache holds.
+  // why: a new commit on the unit branch moves the slice end to a sha no GitHub cache holds.
   checkout.ahead = 2
   marks.before = world.runs.length
   await $.tool.call({ tool: 'Bash', command: 'true' })

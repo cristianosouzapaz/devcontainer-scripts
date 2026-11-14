@@ -8,7 +8,7 @@ import type { PullRequest } from '../../hooks/domain/records'
 import { factPrefixColumns, fitFact, maxFactLength, measureFactWidth } from '../../hooks/ui/pane-layout'
 import { panePadding } from '../../hooks/ui/theme'
 
-// A five-digit PR or issue number, and the longest exit code a process reports.
+// why: the worst case a fact must fit is a five-digit PR or issue number and the longest exit code a process reports.
 const worstNumber = 99999
 const worstExit = -2147483648
 
@@ -22,7 +22,7 @@ const render = (name: string, template: string | ((value: number) => string)): s
   typeof template === 'string' ? template : template(name === 'verifyFailedExit' ? worstExit : worstNumber)
 
 test('the fact limit is the default dock body at 144 terminal columns less the padding and the widest step prefix', () => {
-  // The engine docks at min(45%, 90, terminal − 70) columns, one of them its grip: 63 body columns at 144.
+  // why: the engine docks at min(45%, 90, terminal − 70) columns, one of them its grip: 63 body columns at 144.
   expect(63 - 2 * panePadding.x - factPrefixColumns).toBe(maxFactLength)
   expect(factPrefixColumns).toBe(2 + 'PR #12345'.length + 3)
   expect(maxFactLength).toBe(45)

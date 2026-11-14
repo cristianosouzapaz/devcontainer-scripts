@@ -9,8 +9,8 @@ import { readIssueComments } from '../lib/github'
 import type { EnginePort } from './engine-port'
 import { readSession, readUnit } from './record-store'
 
-/** A unit's Diagnose as an approval sees it: its judgement on fresh comments, with the unit and those comments. */
-export interface DiagnoseWait { judgement: DiagnoseJudgement; unit: Unit; comments: IssueComment[] }
+/** A unit's Diagnose as an approval sees it: its judgement on fresh comments, with the unit, those comments and the first comment read that failed. */
+export interface DiagnoseWait { judgement: DiagnoseJudgement; unit: Unit; comments: IssueComment[]; unread?: string }
 
 /**
  * Judges a unit's Diagnose on comments read fresh from GitHub, so an approval or a refusal never rests on a stale cache.
@@ -26,12 +26,14 @@ export async function readDiagnoseWait(port: EnginePort, identity: Identity, flo
   if (unit.skips?.some(skip => skip.step === 'diagnose')) return null
   const info: Record<string, IssueInfo> = {}
   const comments: IssueComment[] = []
+  const failures: string[] = []
   for (const issue of identity.issues) {
     const read = await readIssueComments(port.processes, issue)
     info[issue] = read.isOk ? { title: '', labels: [], comments: read.value } : { error: read.error }
     if (read.isOk) comments.push(...read.value)
+    else failures.push(`could not read #${issue}: ${read.error}`)
   }
-  return { judgement: judgeDiagnose(unit, identity.issues, info), unit, comments }
+  return { judgement: judgeDiagnose(unit, identity.issues, info), unit, comments, ...(failures.length ? { unread: failures[0] } : {}) }
 }
 
 /**

@@ -2,7 +2,7 @@ import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
 import { diagnoseRuns, diagnosisComment, noFlow, verifyFile } from '../support/builders'
 import { endTurn, readCurrentStep } from '../support/helpers'
-import { createWorld } from '../support/world'
+import { createWorld, root, seedDelegation } from '../support/world'
 import type { Options } from '../support/world'
 
 const newer = { url: 'https://github.com/o/r/issues/1#issuecomment-2', createdAt: new Date(5).toISOString() }
@@ -16,6 +16,15 @@ test('Diagnose waiting for approval suggests approving the newest comment after 
   const { suggestions } = createWorld(on, { branch: 'fix' }, awaitingApproval())
   await endTurn($)
   expect(suggestions).toEqual([`/flow approve ${newer.url}`])
+})
+
+test('a delegated unit waiting for approval suggests nothing: its coordinator approves through approve_unit', async ($, on) => {
+  const world = createWorld(on, { branch: 'fix' }, awaitingApproval())
+  seedDelegation(world, 'coord', [1])
+  await $.session.start({ cwd: root, surface: null, isInteractive: false })
+  await endTurn($)
+  expect(await readCurrentStep($)).toBe('Diagnose')
+  expect(world.suggestions).toEqual([])
 })
 
 test('Verify with an unapproved config suggests nothing: no command typed in a session approves it', async ($, on) => {

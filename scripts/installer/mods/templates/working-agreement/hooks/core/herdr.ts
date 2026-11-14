@@ -11,9 +11,10 @@ import { nameViolationKind } from './guarantees'
 import { sessionMemory, holdError } from './session-memory'
 import { tickMs } from './timing'
 import { isCoordinatorSession } from '../domain/coordinator'
+import { moduleState } from '../lib/module-state'
 
 const herdrTimeoutMs = 5000
-const queueReport = createQueue()
+const reportQueue = moduleState(() => ({ run: createQueue() }))
 /** The report lifetime spans two and a half background refresh intervals. */
 const herdrReportTtlMs = 2.5 * tickMs
 
@@ -32,10 +33,10 @@ export function reportHerdr(port: EnginePort, session: Session, position: Positi
     ? ` #${session.issues[0]}${session.issues.length > 1 ? ` +${session.issues.length - 1}` : ''}`
     : ` · ${session.unit?.branch ?? position.git?.branch ?? ''}`}${isDelegated ? ' · delegated' : ''}`
     : isCoordinatorSession(session) ? `Coordinator${isDelegated ? ' · delegating' : ''}` : ''
-  // A finished unit has no current step; its last done step, or its delivery once concluded, stands for it.
+  // why: a finished unit has no current step; its last done step, or its delivery once concluded, stands for it.
   const shown = position?.isConcluded ? position.states.find(state => isDeliveryStep(state.step))
     : position?.current ?? position?.states.findLast(state => state.state === 'done')
-  const step = shown && position ? `${symbol[markStep(shown, position, isTreeChanged).mark]} ${formatStepLabel(shown.step, position.pullRequest)}${position.verify.queued ? ` · Verify ${position.verify.queued}` : ''}` : ''
+  const step = shown && position ? `${symbol[markStep(shown, position, isTreeChanged).mark]} ${formatStepLabel(shown.step, position.pullRequest)}${position.verify.queued ? ` · ${position.verify.queued.sidebar}` : ''}` : ''
   const violations = (session.violations ?? []).filter(record => record.kind !== 'unchecked' && !dismissed.has(record.factId)).sort((a, b) => b.end - a.end)
   const newest = violations[0]
   // why: the sidebar has no key to say a violation, so the mark does; the words are the pane's, which cannot tell whose call it was.
@@ -46,7 +47,7 @@ export function reportHerdr(port: EnginePort, session: Session, position: Positi
       const { environment, paneId } = await port.readHerdrEnv()
       if (environment !== '1' || !paneId) return
       const result = await executeProcess(port.processes, [
-        // herdr 0.9.5's parser rejects options before the pane id, although its usage line puts the id last.
+        // why: herdr 0.9.5's parser rejects options before the pane id, although its usage line puts the id last.
         'herdr', 'pane', 'report-metadata', paneId, '--source', 'working-agreement', '--ttl-ms', String(herdrReportTtlMs),
         ...[unit, step, alert].flatMap((value, index) => ['--token', `${['flow_unit', 'flow_step', 'flow_alert'][index]}=${[...value].slice(0, 80).join('')}`]),
       ], { timeoutMs: herdrTimeoutMs })
@@ -63,6 +64,6 @@ export function reportHerdr(port: EnginePort, session: Session, position: Positi
       sessionMemory.herdrError = holdError(sessionMemory.herdrError, message, now)
     }
   }
-  // report holds the error in the herdr error window.
-  return queueReport(report).catch(() => {})
+  // why: report already holds the error in the herdr error window, so the rejection is dropped here.
+  return reportQueue.run(report).catch(() => {})
 }

@@ -46,7 +46,7 @@ export default function (pi: ExtensionAPI): void {
     try {
       await report(paneId, "pi-summary", ["--token", `summary=${summarize(event.text)}`, "--ttl-ms", summaryTtlMs]);
     } catch (error) {
-      // The summary is decoration: an unreachable Herdr must not fail the prompt.
+      // why: the summary is decoration, so an unreachable Herdr must not fail the prompt.
       if (!isHerdrFailure(error)) throw error;
     }
   });
@@ -58,7 +58,7 @@ export default function (pi: ExtensionAPI): void {
     try {
       await report(paneId, "pi-context", ["--token", `context=⛁ ${Math.round(usage.percent)}%${tokens}`]);
     } catch (error) {
-      // The context row is decoration: an unreachable Herdr must not fail the turn.
+      // why: the context row is decoration, so an unreachable Herdr must not fail the turn.
       if (!isHerdrFailure(error)) throw error;
     }
   });
@@ -68,7 +68,7 @@ export default function (pi: ExtensionAPI): void {
       try {
         await report(paneId, source, ["--clear-token", token]);
       } catch (error) {
-        // Herdr may have stopped before Pi finishes shutting down.
+        // why: Herdr may have stopped before Pi finishes shutting down.
         if (!isHerdrFailure(error)) throw error;
       }
     }

@@ -12,7 +12,6 @@ const prefix = '[working-agreement]'
 /** A Small feature past Commit, with Code and Verify skipped. */
 const committed: Options = { unit: { skips: [{ step: 'code', reason: 'covered' }, { step: 'verify', reason: 'covered' }] } }
 
-// What the user reads: a plain sentence, no prefix of the mod's name, opening with a capital, a hash or a slash.
 function isPlain(text: string | undefined): boolean {
   return !!text && !text.includes(prefix) && /^[A-Z#/]/.test(text) && text.endsWith('.')
 }

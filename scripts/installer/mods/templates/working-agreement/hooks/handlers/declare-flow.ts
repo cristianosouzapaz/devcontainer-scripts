@@ -22,7 +22,7 @@ export async function handleDeclareFlowCall(port: EnginePort, event: Frozen<Args
   const issues = args.issues ?? []
   const declared = await withRecordLock(() => declareFlow(port, toStringOrEmpty(args.flow), issues, 'agent'))
   if (declared.isOk) return { result: markForAgent(declared.value.reply) }
-  // A refusal before any unit exists has no log to go to.
+  // why: a refusal before any unit exists has no log to go to, so a failed log write is ignored.
   void readSession(port).then(session => logEvent(port, session, 'deny', { tool: event.tool, reason: declared.error }), () => {})
   return { deny: markForAgent(declared.error) }
 }

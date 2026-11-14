@@ -22,12 +22,16 @@ import { isCoordinatorSession } from '../domain/coordinator'
 import type { unitTools } from '../domain/coordinator'
 import { coversIssues } from '../domain/delegation'
 import { markForAgent } from '../domain/messages'
+import { describeOutcome, describeUnknown } from '../domain/outcome'
 import { isIssueNumber, isSafeInteger } from '../lib/guards'
 import { fail, formatErrorLine, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
 
 /** One unit tool's name. */
 type UnitTool = (typeof unitTools)[number]
+
+/** What a coordinator reads before retrying a unit tool that did not finish. */
+export const unitCheck = 'plan and unit_read'
 
 /**
  * Runs a unit tool for a coordinator session, refusing it in any other session.
@@ -37,9 +41,11 @@ type UnitTool = (typeof unitTools)[number]
  * @returns What the tool did, or an error result naming why it did not.
  */
 export async function handleUnitCall(port: EnginePort, tool: UnitTool, event: Frozen<Args<'tool.call'>>): Promise<EventResult<'tool.call'>> {
-  // why: an escaping throw becomes the register's generic check failure, which hides herdr's own error.
-  const result = await runUnitTool(port, tool, { ...event }).catch((error: unknown) => fail(formatErrorLine(error)))
-  return result.isOk ? { result: result.value } : { result: markForAgent(`${tool} refused: ${result.error}`), isError: true }
+  // why: an escaping throw would become the register's generic answer, which hides herdr's own error; a throw cannot tell what the tool changed.
+  const settled = await runUnitTool(port, tool, { ...event }).then(succeed, (error: unknown) => fail(formatErrorLine(error)))
+  if (!settled.isOk) return { result: markForAgent(describeUnknown(tool, settled.error, unitCheck)), isError: true }
+  const result = settled.value
+  return result.isOk ? { result: result.value } : { result: markForAgent(describeOutcome(tool, result)), isError: true }
 }
 
 /**
@@ -110,9 +116,14 @@ async function promptUnit(port: EnginePort, issue: number, text: unknown, kind: 
   if (kind !== undefined && kind !== 'inform' && kind !== 'assign' && kind !== 'cancel') return fail('kind must be inform, assign or cancel')
   const command = text.trim()
   // why: anything reaching the unit while its host waits to see it ready would start its first turn and fail that start.
-  if (await isUnitStarting(port, issue)) {
+  const starting = await isUnitStarting(port, issue)
+  if (starting.kind === 'yes') {
     return fail(`#${issue}'s session is being started by spawn right now, and a message reaching it before its host reports it ready would make that start fail. `
       + 'Nothing was sent: retry unit_prompt once spawn has returned')
+  }
+  if (starting.kind === 'unknown') {
+    return fail(`cannot tell whether spawn is starting #${issue} (${starting.reason}), and a message reaching it mid-start would make that start fail. `
+      + `Nothing was sent: check that no spawn of #${issue} is still running and that its start marker can be read, then retry unit_prompt`)
   }
   // why: a message is never an approval; a user's step reaches a unit only as a step message after its decision's checks.
   const step = /^\/flow\s+(approve|skip|follow-up)\b/.exec(command)?.[1]
@@ -172,19 +183,20 @@ async function escalateDelegated(port: EnginePort, issue: number, reason: unknow
 }
 
 /**
- * Retires a unit of an issue this coordinator delegates, recording the retirement as a delegated decision on the issue before anything is removed.
+ * Retires a unit of an issue this coordinator delegates, recording the retirement as a delegated decision on the issue once its work is set aside.
  * @param port - The engine calls.
  * @param issue - The issue number.
  * @param reason - Why the unit is redone, the decision's reason.
- * @returns What was archived and removed, or the refusal.
+ * @returns What was kept and removed, or the refusal.
  */
 async function retireDelegated(port: EnginePort, issue: number, reason: unknown): Promise<Result<string>> {
   const delegated = await requireDelegated(port, issue, reason, 'reason must say why the unit is redone',
     `#${issue} is not in this coordinator's delegation scope, so retiring its unit is the user's: /flow retire ${issue}`)
   if (!delegated.isOk) return delegated
   return retireUnit(port, issue, () => succeed(undefined), async (plan, archive) => {
-    const posted = await commentIssue(port, { number: issue, body: composeRetirementDecision(plan, archive, delegated.value) })
-    return posted.isOk ? succeed(posted.value) : fail(`the delegated decision was not posted: ${posted.error}`)
+    const body = composeRetirementDecision(plan, archive, delegated.value)
+    const posted = await commentIssue(port, { number: issue, body })
+    return posted.isOk ? succeed(posted.value) : fail(`the delegated decision was not posted (${posted.error}); post it on #${issue} with issue_comment:\n\n${body}`)
   })
 }
 
@@ -213,7 +225,10 @@ async function requireDelegated(port: EnginePort, issue: number, reason: unknown
 function composeRetirementDecision(plan: RetirementPlan, archive: Archive, reason: string): string {
   return ['## Delegated decision', '', '### Question', `Retire #${plan.issue}'s unit on ${plan.branch} and respawn it?`, '',
     '### Alternatives considered', '- Keep the unit and steer it with unit_prompt.', '- Leave it for the user\'s /flow retire.', '',
-    '### Choice', `Retired: ${plan.branch} (${plan.tip.slice(0, 7)}) is archived as \`${archive.ref}\`${archive.patch ? `, its uncommitted changes as \`${archive.patch}\`` : ''}; `
-      + `its workspace, worktree, branch, records and transcript are removed; its mailbox's ${describeMail(plan.mail)} move into the archive. Restore with \`${archive.restore}\`.`, '',
+    '### Choice', `Retired: ${plan.branch} (${plan.tip.slice(0, 7)}) is kept as \`${archive.ref}\``
+      + `${plan.workspace ? '; its session is closed' : ''}${archive.checkout ? `; its checkout is moved aside to \`${archive.checkout}\` with every file it held` : ''}`
+      + `; its branch, records and transcript are removed; `
+      + `its mailbox's ${describeMail(plan.mail)} move into the archive. Resume with \`${archive.restore}\``
+      + `${archive.reclaim ? `; reclaiming the checkout's disk is the user's: \`${archive.reclaim}\`` : ''}.`, '',
     '### Reason', reason, '', '### Cost of going back', 'low'].join('\n')
 }

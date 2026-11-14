@@ -66,8 +66,8 @@ export async function mergeParent(port: EnginePort): Promise<Result<string>> {
     await runGit(port.processes, ['merge', '--abort'])
     return fail(`git merge failed, so it was aborted: ${`${merge.stdout}\n${merge.stderr}`.trim()}`)
   }
-  const sha = await recordHead(port, branch, 'a merge commit')
-  if (!sha.isOk) return sha
-  logEvent(port, session, 'delegated-merge', { parent, sha: sha.value, kind: 'parent' })
-  return succeed(`Merged ${parent} into ${branch} (merge ${sha.value}), unsigned and recorded as delegated; run Verify on the merged tree, then merge_child merges it into ${parent}.`)
+  const head = await recordHead(port, branch, 'a merge commit')
+  if (!head.isOk) return head
+  logEvent(port, session, 'delegated-merge', { parent, sha: head.value.sha, kind: 'parent' })
+  return succeed(`Merged ${parent} into ${branch} (merge ${head.value.sha}), unsigned and recorded as delegated; run Verify on the merged tree, then merge_child merges it into ${parent}.`)
 }

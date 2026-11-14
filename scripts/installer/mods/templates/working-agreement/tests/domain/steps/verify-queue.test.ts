@@ -2,37 +2,21 @@ import { expect } from 'claude-code/testing'
 import { buildChangedCheckout } from '../../support/builders'
 
 import type { EnginePort } from '../../../hooks/core/engine-port'
-import { breakStaleLock, leaveVerifyQueue, readVerifyQueue, waitVerifyTurn } from '../../../hooks/core/verify-queue'
-import type { QueueWait } from '../../../hooks/core/verify-queue'
-import { inside, readFlowStatus, seedVerifyHolder } from '../../support/helpers'
+import { hostLockPath } from '../../../hooks/core/host-lock'
+import type { HostLockOutcome } from '../../../hooks/core/host-lock'
+import { readVerifyQueue, waitCiIdle, withVerifyTurn } from '../../../hooks/core/verify-queue'
+import type { VerifyWait } from '../../../hooks/core/verify-queue'
+import { createModuleHarness, reloadModule } from '../../support/reload'
+import { inside, mountPane, outlastBudget, readFlowStatus, releaseVerifyHolder, seedVerifyHolder, slowClockReads, textOf } from '../../support/helpers'
 import { test } from '../../support/kit'
-import { buildStat, common, createTestPort, createWorld, records } from '../../support/world'
+import { common, createTestPort, createWorld } from '../../support/world'
 import type { Gate, Options, World } from '../../support/world'
-
-// why: the engine types leave out the timer globals, yet only a real-time wait outlasts a hook's budget.
-declare function setTimeout(handler: () => void, delayMs: number): unknown
 
 const changed = buildChangedCheckout()
 const file = JSON.stringify({ always: [['check']] })
 const approved: Options = { verifyFile: file, approvedConfig: file }
-const dir = `${records}/verify`
+const lock = hostLockPath(common, 'verify')
 const verify = { tool: 'mcp__working-agreement__verify' } as const
-
-/**
- * Lets the seeded holder finish and release the lock.
- * @param world - The test world.
- */
-function releaseHolder(world: World): void {
-  for (const path of [...world.files.keys()]) if (path.startsWith(`${dir}/lock/`) || path.startsWith(`${dir}/q/000000000000000-holder/`)) world.files.delete(path)
-}
-
-/**
- * Ages a seeded lock and holder ticket past their lease.
- * @param world - The test world.
- */
-function expireHolder(world: World): void {
-  for (const path of [`${dir}/lock`, `${dir}/q/000000000000000-holder`]) world.modified.set(path, world.clock.now() - 31000)
-}
 
 /**
  * Builds a direct-dispatch port for another session on the same repository.
@@ -43,127 +27,111 @@ function expireHolder(world: World): void {
 const sessionPort = (world: World, sid: string): EnginePort => ({ ...createTestPort(world), readSessionId: async () => sid })
 
 /**
- * Lists the queue's tickets.
+ * Lists the ids queued for the Verify lock, the holder's first.
  * @param world - The test world.
- * @returns The ticket names.
+ * @returns The ids.
  */
-const listTickets = async (world: World): Promise<string[]> => (await world.boundaries.files.list(`${dir}/q`).catch(() => [])).map(entry => entry.name)
+const listQueue = (world: World): string[] => (world.hostLocks.queues.get(lock) ?? []).map(ticket => ticket.id)
 
+/**
+ * Queues another session for the Verify lock, holding it for no work once its turn comes.
+ * @param world - The test world.
+ * @param sid - The session id.
+ * @param signal - Ends the wait.
+ * @param call - What it queues for.
+ * @returns How the hold ended.
+ */
+const queue = (world: World, sid: string, signal = new AbortController().signal, call: VerifyWait['call'] = 'verify'): Promise<HostLockOutcome<void>> =>
+  withVerifyTurn(sessionPort(world, sid), common, sid, async () => {}, { call, deadline: world.clock.now() + 600000, signal, onMove: async () => {} })
+
+// contract: a queued Verify shows its place in the view, the pane title and the status, and runs once the holder ends, leaving no ticket
 test('a queued Verify shows its place everywhere and runs when the holder finishes', async ($, on) => {
   const world = createWorld(on, { ...changed }, { ...approved, herdrEnv: inside })
   seedVerifyHolder(world)
   const run = $.tool.call(verify)
   await world.clock.settle()
-  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Verify', value: 'queued, 2nd of 2', tone: 'text' })
-  expect(world.runs.some(command => command.startsWith('herdr ') && command.includes('· Verify queued, 2nd of 2'))).toBe(true)
-  // The wait is another session's run, so nobody has to act: the note keeps the plain tone, and status shows it once.
-  expect(((await readFlowStatus($)) ?? '').split('\n').filter(line => line.includes('queued, 2nd of 2'))).toEqual(['Verify      queued, 2nd of 2'])
+  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Queue', value: 'Verify waiting: 1 ahead (holder: unknown)', tone: 'text' })
+  expect(world.runs.some(command => command.startsWith('herdr ') && command.includes('· Verify waiting (1 ahead)'))).toBe(true)
+  // why: the wait is another session's run, so nobody has to act: the note keeps the plain tone, and status shows it once.
+  expect(((await readFlowStatus($)) ?? '').split('\n').filter(line => line.includes('1 ahead'))).toEqual(['Queue       Verify waiting: 1 ahead (holder: unknown)'])
   expect(world.sessions.get('sid')?.units[0]?.verifyRuns ?? []).toEqual([])
-  releaseHolder(world)
+  releaseVerifyHolder(world)
   await world.clock.advance(1000)
   expect((await run).result).toContain('Verify passed')
-  expect(await listTickets(world)).toEqual([])
-  expect(world.files.has(`${dir}/lock/owner.json`)).toBe(false)
-  expect(world.views.at(-1)?.notes.some(note => note.key === 'Verify')).toBe(false)
+  expect(listQueue(world)).toEqual([])
+  expect(world.views.at(-1)?.notes.some(note => note.key === 'Queue')).toBe(false)
 })
 
+// contract: waiters for the Verify lock are served in arrival order
 test('waiters are served first come, first served', async (_$, on) => {
   const world = createWorld(on, { ...changed }, approved)
   seedVerifyHolder(world)
   const served: string[] = []
-  const turns = new Map<string, QueueWait>()
   const waits: Promise<void>[] = []
   for (const sid of ['c', 'a', 'b']) {
-    const port = sessionPort(world, sid)
-    waits.push(waitVerifyTurn(port, common, sid, world.clock.now() + 600000, new AbortController().signal, async () => {}).then(wait => {
-      served.push(sid)
-      turns.set(sid, wait)
-    }))
-    await world.clock.advance(1)
-  }
-  expect(await readVerifyQueue(sessionPort(world, 'b'))).toBe('queued, 4th of 4')
-  releaseHolder(world)
-  for (const [index, sid] of ['c', 'a', 'b'].entries()) {
-    await world.clock.advance(1000)
-    expect(served).toEqual(['c', 'a', 'b'].slice(0, index + 1))
-    if (sid === 'c') expect(await readVerifyQueue(sessionPort(world, 'b'))).toBe('queued, 3rd of 3')
-    const wait = turns.get(sid)
-    if (wait?.kind === 'acquired') await leaveVerifyQueue(sessionPort(world, sid), wait.turn)
-  }
-  await Promise.all(waits)
-  expect(await listTickets(world)).toEqual([])
-})
-
-test('a killed holder and a dead waiter stop blocking the queue once their leases expire', async ($, on) => {
-  const world = createWorld(on, { ...changed }, approved)
-  seedVerifyHolder(world)
-  world.files.set(`${dir}/q/000000000000001-dead/lease`, '')
-  world.modified.set(`${dir}/q/000000000000001-dead`, world.clock.now() - 31000)
-  const run = $.tool.call(verify)
-  await world.clock.settle()
-  expect(await readFlowStatus($)).toContain('queued, 2nd of 2')
-  expireHolder(world)
-  await world.clock.settle()
-  await world.clock.advance(1000)
-  expect((await run).result).toContain('Verify passed')
-  expect(await listTickets(world)).toEqual([])
-})
-
-for (const [label, pidns, isBroken] of [['the same', 'pid:[1]', true], ['another', 'pid:[2]', false]] as const) {
-  test(`a dead holder pid on ${label} pid namespace ${isBroken ? 'is broken before its lease expires' : 'waits for its lease'}`, async ($, on) => {
-    const config = JSON.stringify({ always: [['check']], timeoutMinutes: 0.05 })
-    const world = createWorld(on, { ...changed }, { verifyFile: config, approvedConfig: config, pidNamespace: 'pid:[1]' })
-    world.files.set('/proc/self/stat', buildStat(100, '5000'))
-    world.files.set('/proc/sys/kernel/random/boot_id', 'boot\n')
-    seedVerifyHolder(world, { pidns, bootId: 'boot', pid: 4242, pidStart: '77' })
-    const run = $.tool.call(verify)
+    waits.push(queue(world, sid).then(hold => { if (hold.kind === 'done') served.push(sid) }))
     await world.clock.settle()
-    await world.clock.advance(isBroken ? 0 : 4000)
-    expect((await run).result).toContain(isBroken ? 'Verify passed' : 'Verify queued, timed out')
-  })
-}
-
-test('a stale lock broken by two waiters at once has a single winner', async (_$, on) => {
-  const world = createWorld(on, { ...changed }, approved)
-  seedVerifyHolder(world)
-  expireHolder(world)
-  const broken = await Promise.all(['a', 'b'].map(sid => breakStaleLock(sessionPort(world, sid), dir, sid)))
-  expect(broken.filter(Boolean)).toHaveLength(1)
-  expect([...world.files.keys()].some(path => path.startsWith(`${dir}/lock`))).toBe(false)
-  seedVerifyHolder(world)
-  expireHolder(world)
-  const served: string[] = []
-  const control = new AbortController()
-  const waits: Promise<unknown>[] = []
-  for (const sid of ['a', 'b']) {
-    waits.push(waitVerifyTurn(sessionPort(world, sid), common, sid, world.clock.now() + 600000, control.signal, async () => {})
-      .then(wait => { if (wait.kind === 'acquired') served.push(sid) }))
-    await world.clock.advance(1)
   }
-  await world.clock.advance(1000)
-  await world.clock.advance(1000)
-  expect(served).toEqual(['a'])
-  expect(await readVerifyQueue(sessionPort(world, 'b'))).toBe('queued, 2nd of 2')
-  control.abort()
-  await world.clock.advance(1000)
+  expect((await readVerifyQueue(sessionPort(world, 'b')))?.pane).toBe('Verify waiting: 3 ahead (holder: unknown)')
+  releaseVerifyHolder(world)
   await Promise.all(waits)
+  expect(served).toEqual(['c', 'a', 'b'])
+  expect(listQueue(world)).toEqual([])
 })
 
+// contract: a waiter whose wait is abandoned leaves the queue at once, and the waiter behind it moves up
+test('an abandoned wait withdraws its ticket at once', async (_$, on) => {
+  const world = createWorld(on, { ...changed }, approved)
+  seedVerifyHolder(world)
+  const control = new AbortController()
+  const first = queue(world, 'first', control.signal)
+  await world.clock.settle()
+  const second = queue(world, 'second')
+  await world.clock.settle()
+  expect((await readVerifyQueue(sessionPort(world, 'second')))?.pane).toBe('Verify waiting: 2 ahead (holder: unknown)')
+  control.abort()
+  expect((await first).kind).toBe('cancelled')
+  await world.clock.settle()
+  expect((await readVerifyQueue(sessionPort(world, 'second')))?.pane).toBe('Verify waiting: 1 ahead (holder: unknown)')
+  releaseVerifyHolder(world)
+  expect((await second).kind).toBe('done')
+})
+
+// contract: a holder process that ends while the commands run stops them, records nothing and frees the lock
 test('a lock lost while running records no Verify result', async ($, on) => {
   const gate: Gate = {}
   const world = createWorld(on, { ...changed }, { ...approved, spawnGate: new Promise(resolve => { gate.open = resolve }) })
   const run = $.tool.call(verify)
   await world.clock.settle()
-  const thief = JSON.stringify({ sid: 'thief', ticket: '000000000000009-thief', token: 'stolen' })
-  world.files.set(`${dir}/lock/owner.json`, thief)
-  gate.open?.()
-  expect((await run).result).toContain('Verify lock lost')
+  expect(world.hostLocks.kill(lock, 'sid/')).toBe(true)
+  const result = (await run).result
+  expect(result).toContain('Verify lock lost: the host process holding it ended')
   expect(world.sessions.get('sid')?.units[0]?.verifyRuns).toEqual([])
-  expect(world.files.get(`${dir}/lock/owner.json`)).toBe(thief)
-  expect(await listTickets(world)).toEqual([])
+  expect(listQueue(world)).toEqual([])
 })
 
-test('a queued Verify times out without a record or a ticket', async ($, on) => {
+for (const tool of ['verify', 'run'] as const) {
+  // contract: Run log shows a Verify or run stopped by a lost lock with that reason, never as cancelled
+  test(`a lock lost while ${tool} runs shows in Run log as lock lost, not cancelled`, async ($, on) => {
+    const gate: Gate = {}
+    const world = createWorld(on, { ...changed }, { ...approved, ...tool === 'run' ? { session: { flow: 'fix' } } : {},
+      spawnGate: new Promise(resolve => { gate.open = resolve }) })
+    const run = $.tool.call(tool === 'run' ? { tool: 'mcp__working-agreement__run', argv: ['check'] } : verify)
+    await world.clock.settle()
+    world.hostLocks.kill(lock, 'sid/')
+    expect((await run).result).toContain('Verify lock lost: the host process holding it ended')
+    await readFlowStatus($)
+    const pane = await mountPane($)
+    await pane.press({ key: 'l' })
+    const text = textOf(await pane.drawn())
+    expect(text).toContain(`${tool === 'run' ? 'run' : 'Verify'} · not recorded · lock lost`)
+    expect(text).not.toContain('cancelled')
+    await pane.unmount()
+  })
+}
+
+// contract: a Verify that times out in the queue writes no record, withdraws its ticket and drops its queued row
+test('a queued Verify times out without a record, a ticket or a queued row', async ($, on) => {
   const config = JSON.stringify({ always: [['check']], timeoutMinutes: 0.01 })
   const world = createWorld(on, { ...changed }, { verifyFile: config, approvedConfig: config })
   seedVerifyHolder(world)
@@ -171,12 +139,13 @@ test('a queued Verify times out without a record or a ticket', async ($, on) => 
   await world.clock.advance(1000)
   expect((await run).result).toContain('Verify queued, timed out after 0.01 min')
   expect(world.sessions.get('sid')?.units[0]?.verifyRuns ?? []).toEqual([])
-  expect(await listTickets(world)).toEqual(['000000000000000-holder'])
+  expect(listQueue(world)).toEqual(['holder/0'])
+  expect(world.views.at(-1)?.notes.some(note => note.key === 'Verify')).toBe(false)
 })
 
 test('sessions on different repositories do not wait for each other', async ($, on) => {
   const world = createWorld(on, { ...changed }, approved)
-  seedVerifyHolder(world, {}, '/other.git')
+  seedVerifyHolder(world, '/other.git')
   expect((await $.tool.call(verify)).result).toContain('Verify passed')
 })
 
@@ -191,24 +160,25 @@ function waitingForCi(jobs: Options['actionsJobs'], timeoutMinutes = 30): Option
   return { verifyFile: config, approvedConfig: config, actionsJobs: jobs }
 }
 
+// contract: a holder waiting for CI on its runner shows CI running to every reader and keeps the queue's order until the job ends
 test('a Verify waits for a CI job on its runner and runs in queue order when it ends', async ($, on) => {
   const options = { ...waitingForCi([{ status: 'in_progress', labels: ['self-hosted', 'home'] }]), herdrEnv: inside }
   const world = createWorld(on, { ...changed }, options)
   const run = $.tool.call(verify)
   await world.clock.settle()
-  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Verify', value: 'queued: CI running', tone: 'text' })
-  expect(world.runs.some(command => command.startsWith('herdr ') && command.includes('· Verify queued: CI running'))).toBe(true)
-  expect(await readFlowStatus($)).toContain('queued: CI running')
+  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Queue', value: 'Verify holds the queue, waiting for CI', tone: 'text' })
+  expect(world.runs.some(command => command.startsWith('herdr ') && command.includes('· Verify waiting for CI'))).toBe(true)
+  expect(await readFlowStatus($)).toContain('Verify holds the queue, waiting for CI')
   await world.clock.advance(1)
-  const next = waitVerifyTurn(sessionPort(world, 'next'), common, 'next', world.clock.now() + 600000, new AbortController().signal, async () => {})
+  const next = queue(world, 'next')
   await world.clock.advance(1)
-  expect(await readVerifyQueue(sessionPort(world, 'next'))).toBe('queued, 2nd of 2')
+  expect((await readVerifyQueue(sessionPort(world, 'next')))?.pane).toBe('Verify waiting: 1 ahead (holder: #1 verify)')
   options.actionsJobs = [{ status: 'completed', labels: ['home'] }]
   await world.clock.advance(30000)
   expect((await run).result).toMatch(/^Verify passed/)
   await world.clock.advance(1000)
-  expect((await next).kind).toBe('acquired')
-  expect(world.views.at(-1)?.notes.some(note => note.key === 'Verify')).toBe(false)
+  expect((await next).kind).toBe('done')
+  expect(world.views.at(-1)?.notes.some(note => note.key === 'Queue')).toBe(false)
 })
 
 for (const [label, options] of [
@@ -224,7 +194,7 @@ for (const [label, options] of [
 test('an unreadable CI state runs Verify and says so', async ($, on) => {
   const world = createWorld(on, { ...changed }, waitingForCi('gh: API rate limit exceeded (HTTP 403)'))
   const result = (await $.tool.call(verify)).result
-  expect(result).toContain('CI state unknown')
+  expect(result).toContain('CI state unknown (rate limited, retry later: gh: API rate limit exceeded (HTTP 403)), ran anyway')
   expect(result).toContain('Verify passed')
   expect(world.sessions.get('sid')?.units[0]?.verifyRuns).toHaveLength(1)
 })
@@ -235,23 +205,116 @@ test('a CI wait past the timeout runs Verify anyway', async ($, on) => {
   await world.clock.settle()
   await world.clock.advance(600)
   const result = (await run).result
-  expect(result).toContain('CI still running after 0.01 min, ran anyway')
+  expect(result).toContain('CI still running when the 0.01 min wait ran out, ran anyway')
   expect(result).toContain('Verify passed')
 })
 
-test('a Verify queued past the hook budget behind another session still runs', { timeoutMs: 30000 }, async ($, on) => {
-  const world = createWorld(on, { ...changed }, approved)
-  seedVerifyHolder(world)
+// contract: a lock lost during the CI wait, before any command ran, says nothing ran and records nothing
+test('a lock lost during the CI wait says no command ran', async ($, on) => {
+  const world = createWorld(on, { ...changed }, waitingForCi([{ status: 'in_progress', labels: ['home'] }]))
   const run = $.tool.call(verify)
-  // The engine counts a hook's clock waits against its ten-second budget in real time, so the queue moves for longer than that.
-  await Array.from({ length: 22 }).reduce(async (previous: Promise<void>) => {
-    await previous
-    await world.clock.advance(1000)
-    await new Promise<void>(resolve => setTimeout(resolve, 500))
-  }, Promise.resolve())
-  releaseHolder(world)
+  await world.clock.settle()
+  world.hostLocks.kill(lock, 'sid/')
   await world.clock.advance(1000)
-  const answer = await run
-  expect(answer.deny).toBeUndefined()
-  expect(answer.result).toContain('Verify passed')
+  expect((await run).result).toBe('Verify lock lost before any command ran: the host process holding it ended; nothing ran and no record was written.')
+  expect(world.sessions.get('sid')?.units[0]?.verifyRuns ?? []).toEqual([])
+})
+
+// contract: a CI wait whose hook budget falls below the floor ends with the budget outcome, before the engine drops the call
+test('a CI wait stops at the budget floor', async (_$, on) => {
+  const world = createWorld(on, { ...changed }, waitingForCi([{ status: 'in_progress', labels: ['home'] }]))
+  const port: EnginePort = { ...sessionPort(world, 'ci'), budgetLeft: () => 2000 }
+  const hold = await withVerifyTurn(port, common, 'ci', turn => waitCiIdle(port, turn, ['home'], { deadline: world.clock.now() + 600000, signal: new AbortController().signal, onMove: async () => {} }),
+    { call: 'verify', deadline: world.clock.now() + 600000, signal: new AbortController().signal, onMove: async () => {} })
+  expect(hold).toEqual({ kind: 'done', value: { kind: 'budget' } })
+})
+
+// contract: a Verify queued behind another session for longer than the hook budget returns its own result, never core's missing-hook text nor the guard's pre-call deny
+test('a Verify queued past the hook budget behind another session gets its own result', { timeoutMs: 90_000 }, async ($, on) => {
+  const world = createWorld(slowClockReads(on), { ...changed }, approved)
+  seedVerifyHolder(world)
+  const answer = JSON.stringify(await outlastBudget(world, $.tool.call(verify)))
+  expect(answer).not.toContain('no tool.call hook answered')
+  expect(answer).not.toContain('pre-call check timed out')
+  expect(answer).toContain('Verify passed')
+})
+
+// contract: a Diagnose run waiting in the queue names itself, how many are ahead and the holder, never a Verify it did not call
+test('a run waiting in the queue shows Run waiting with the holder, in the pane and the sidebar', async ($, on) => {
+  const world = createWorld(on, { branch: 'fix', isDirty: true, tree: 'red' }, { session: { flow: 'fix' }, spawnCode: 7, herdrEnv: inside })
+  seedVerifyHolder(world)
+  const run = $.tool.call({ tool: 'mcp__working-agreement__run', argv: ['./check'] })
+  await world.clock.settle()
+  // why: the seeded holder's ticket names no kind, as a session older than the kinds writes it, so its kind is unknown.
+  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Queue', value: 'Run waiting: 1 ahead (holder: unknown)', tone: 'text' })
+  expect(world.views.at(-1)?.notes.some(note => note.key === 'Verify')).toBe(false)
+  expect(world.runs.some(command => command.startsWith('herdr ') && command.includes('· Run waiting (1 ahead)'))).toBe(true)
+  releaseVerifyHolder(world)
+  await world.clock.advance(1000)
+  expect((await run).result).toContain('red recorded')
+})
+
+// contract: a holder waiting for CI shows the CI state, and keeps it after another ticket is ordered before its own
+test('a Verify holding the queue for CI shows the CI wait, even behind a re-ordered ticket', async ($, on) => {
+  const world = createWorld(on, { ...changed }, { ...waitingForCi([{ status: 'in_progress', labels: ['self-hosted', 'home'] }]), herdrEnv: inside })
+  const run = $.tool.call(verify)
+  await world.clock.settle()
+  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Queue', value: 'Verify holds the queue, waiting for CI', tone: 'text' })
+  expect(world.runs.some(command => command.startsWith('herdr ') && command.includes('· Verify waiting for CI'))).toBe(true)
+  // why: a ticket that sorts before the holder's, as one re-created under a lower arrival number does, makes the list name it first.
+  world.hostLocks.seed(lock, 'other/0', false)
+  await world.clock.advance(1000)
+  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Queue', value: 'Verify holds the queue, waiting for CI', tone: 'text' })
+  expect(world.views.at(-1)?.notes.some(note => /waiting: \d+ ahead/.test(note.value))).toBe(false)
+  world.hostLocks.kill(lock, 'sid/')
+  await world.clock.advance(1000)
+  await run
+})
+
+// contract: a waiter names the holder by its call and its session's issues, and each waiter names its own call
+test('a waiter names the holder by call and issues, and a merge gate waits by name', async (_$, on) => {
+  const world = createWorld(on, { ...changed }, { ...approved, session: { flow: 'fix', issues: [731] } })
+  const release: { open?: () => void } = {}
+  const holding = withVerifyTurn(createTestPort(world), common, 'sid', () => new Promise<void>(resolve => { release.open = resolve }),
+    { call: 'verify', deadline: world.clock.now() + 600000, signal: new AbortController().signal, onMove: async () => {} })
+  await world.clock.settle()
+  const run = queue(world, 'run', undefined, 'run')
+  await world.clock.advance(1)
+  const gate = queue(world, 'gate', undefined, 'merge gate')
+  await world.clock.advance(1)
+  expect(await readVerifyQueue(sessionPort(world, 'run'))).toEqual({ pane: 'Run waiting: 1 ahead (holder: #731 verify)', sidebar: 'Run waiting (1 ahead)' })
+  expect(await readVerifyQueue(sessionPort(world, 'gate'))).toEqual({ pane: 'Merge gate waiting: 2 ahead (holder: #731 verify)', sidebar: 'Merge gate waiting (2 ahead)' })
+  release.open?.()
+  await world.clock.advance(1000)
+  expect((await holding).kind).toBe('done')
+  expect((await run).kind).toBe('done')
+  expect((await gate).kind).toBe('done')
+})
+
+// contract: a holder waiting for CI still shows as holding after the mod reloads during the hold
+test('a reload during a CI hold still shows the holder as holding', async (_$, on) => {
+  const world = createWorld(on, { ...changed }, waitingForCi([{ status: 'in_progress', labels: ['home'] }]))
+  const harness = createModuleHarness(world)
+  const stop = new AbortController()
+  const hold = withVerifyTurn(harness.port, common, 'sid', turn => waitCiIdle(harness.port, turn, ['home'], { deadline: world.clock.now() + 600000, signal: stop.signal, onMove: async () => {} }),
+    { call: 'verify', deadline: world.clock.now() + 600000, signal: stop.signal, onMove: async () => {} })
+  await world.clock.settle()
+  world.hostLocks.seed(lock, 'other/0', false)
+  const holding = { pane: 'Verify holds the queue, waiting for CI', sidebar: 'Verify waiting for CI' }
+  expect(await readVerifyQueue(harness.port)).toEqual(holding)
+  await reloadModule(harness)
+  expect(await readVerifyQueue(harness.port)).toEqual(holding)
+  stop.abort()
+  await world.clock.advance(1000)
+  expect((await hold).kind).toBe('done')
+})
+
+// contract: a ticket whose own call cannot be read, as an older load of the session writes it, starts its row with the wait alone, never a guessed call
+test('a waiter or holder of unknown call names no call', async (_$, on) => {
+  const world = createWorld(on, { ...changed }, approved)
+  world.hostLocks.seed(lock, 'waiter/1', false)
+  world.hostLocks.seed(lock, 'holder/1')
+  expect(await readVerifyQueue(sessionPort(world, 'waiter'))).toEqual({ pane: 'Waiting: 1 ahead (holder: unknown)', sidebar: 'Waiting (1 ahead)' })
+  world.files.set(hostLockPath(common, 'verify.ci'), 'holder/1')
+  expect(await readVerifyQueue(sessionPort(world, 'holder'))).toEqual({ pane: 'Holds the queue, waiting for CI', sidebar: 'Waiting for CI' })
 })

@@ -51,7 +51,7 @@ for (const [outcome, overrides, fact] of [
     expect(status).toContain(fact)
     expect(await readCurrentStep($)).toBe(outcome === 'a pass' ? 'Commit' : 'Verify')
     checkout.tree = 'two'
-    // The fact names what the tree changed after, so a commit right after a pass explains why Commit is empty.
+    // why: the fact names what the tree changed after, so a commit right after a pass explains why Commit is empty.
     expect(await readFlowStatus($)).toContain(outcome === 'a pass' ? '▸ Code · changed after Verify' : '▸ Code · changed after Verify failed')
     expect(await readPromptContext($)).toContain('Next action: call the verify tool on this tree')
   })

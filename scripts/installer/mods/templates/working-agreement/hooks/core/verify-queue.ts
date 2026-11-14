@@ -1,320 +1,230 @@
 import { readLabelledJobs } from '../lib/github'
-import { readJson } from '../lib/json'
-import { isRecord, isSafeInteger } from '../lib/guards'
 import { executeProcess } from '../lib/process'
 import type { EnginePort } from './engine-port'
-import { readHost, readStartTime } from './host'
-import type { Host } from './host'
-import { atomicReplace, readCommonDir, recordsPath } from './record-store'
+import { hostLockPath, readHostLock, withHostLock } from './host-lock'
+import type { HostLockOutcome } from './host-lock'
+import { atomicReplace, readCommonDir, readSession, recordsPath } from './record-store'
+import { minuteMs } from './timing'
+import { moduleState } from '../lib/module-state'
+import type { QueueLine } from '../domain/step-states'
 
-/** Holds the lock owner's record, which a holder rereads before it records a result. */
-interface Owner extends Host { sid: string; ticket: string; token: string }
-/** The queue's tickets split by whether their lease is fresh, each in arrival order. */
-interface Tickets { live: string[]; stale: string[] }
-/** Holds a session's place in the queue once it holds the lock. */
-export interface VerifyTurn { dir: string; ticket: string; token: string }
-/** Holds the turn a wait won. */
-interface Acquired { kind: 'acquired'; turn: VerifyTurn }
-/** Marks a wait that ended without the lock, leaving no ticket behind. */
-interface Unserved { kind: 'timeout' | 'cancelled' }
-/** Names how a wait for the lock ended. */
-export type QueueWait = Acquired | Unserved
-/** Names how a holder's wait for the CI runner ended: no labelled job, an unreadable CI state, the queue timeout, or a cancel. */
-type CiWait = 'idle' | 'unknown' | 'timeout' | 'cancelled'
+/** The call a ticket waits or holds for, as its id names it; `unknown` for a ticket that names none, as an older session writes it. */
+type QueueCall ='run' | 'verify' | 'merge gate' | 'unknown'
 
-/** How often a holder or a waiter renews its lease. */
-const renewMs = 5000
-/** How old a lease may grow before another session treats it as dead. */
-const staleMs = 30000
-/** How often a waiter rereads the queue. */
-const pollMs = 1000
+/** A ticket's id read back: who it is, what it queues for, and the issues of the session that queued it. */
+interface Ticket { id: string; call: QueueCall; issues: string }
+
+/** A held Verify turn: the session's id in the queue, and the signal that aborts once its holder process ends. */
+export interface VerifyTurn { common: string; id: string; lost: AbortSignal }
+
+/** How a Verify-queue wait is bounded, watched and reported. */
+export interface VerifyWait {
+  /** When the wait gives up, in epoch ms. */
+  deadline: number
+  signal: AbortSignal
+  /** Called whenever the session's position or the queue's length changes, and once the hold ends. */
+  onMove: () => Promise<void>
+  /** The directory a cancel arrives in, from readCancelMailbox: a change in it runs onPoke. */
+  watch?: string
+  /** The run log, whose process-group file the holder reads to stop a command its dead session left running. */
+  log?: string
+  /** Runs as the wait starts and whenever the watched directory changes, during the wait and the work, and may abort the signal: the cancel watch. */
+  onPoke?: () => Promise<void>
+  /** What the session queues for, which every reader of the queue names it by. */
+  call: Exclude<QueueCall, 'unknown'>
+}
+
+/** A CI wait that ended without the runner known to be free, yet lets the commands run: an unreadable CI state, or the queue timeout. */
+export type CiObservation = { kind: 'unknown'; error: string } | { kind: 'timeout'; minutes: number }
+
+/**
+ * Names how a holder's wait for the CI runner ended: no labelled job, an unreadable CI state with its error, the queue timeout with the
+ * minutes waited, a cancel, or the hook budget's floor.
+ */
+export type CiWait = { kind: 'idle' | 'cancelled' | 'budget' } | CiObservation
+
+/** The CI wait's bounds and listeners. */
+export interface CiWaitOptions {
+  deadline: number
+  signal: AbortSignal
+  /** Called when the CI wait starts or ends. */
+  onMove: () => Promise<void>
+  /** Runs after each step of a pause, and may abort the signal: the cancel watch, so a cancel ends the wait within a step. */
+  onStep?: () => Promise<void>
+}
+
+/** The lock's name in the records' locks directory. */
+const lockName = 'verify'
 /** How often a holder asks GitHub whether a CI job holds the runner: each poll costs several API calls. */
 const ciPollMs = 30000
-// A zero-padded epoch sorts tickets by arrival as plain names.
-const ticketPattern = /^\d{15}-.+$/
-const sequence = { value: 0 }
+/** The longest pause between two looks at a CI wait's signal. */
+const stepMs = 1000
+/** The budget a CI wait keeps in hand: the time a poll, the release and the answer take. */
+const budgetFloorMs = 3000
+// why: sessions older than the host lock take the Verify lock as this mkdir and break it once its lease is this old.
+const legacyStaleMs = 30000
+// why: two module loads of one process are live together after a reload, and their sequences start over independently, so each load names its holds apart.
+const sequence = moduleState(() => ({ nonce: crypto.randomUUID().replaceAll('-', '').slice(0, 12), value: 0 }))
+/** The calls a ticket can name. */
+const calls = ['merge gate', 'verify', 'run'] as const
 
 /**
- * Idles in a host `sleep`: a process call in flight stops the hook's budget clock, which a `$.clock` wait runs down,
- * so a queued wait outlasts the engine's ten-second hook budget; steps of one poll let an abort end it within one.
- * @param port - The engine calls.
- * @param ms - How long to idle.
- * @param signal - Ends the idle at the next step.
- * @param onStep - Runs before each step, and may abort the signal.
+ * Names the marker a holder writes while CI holds the runner; it names the holder, so a marker a dead holder left reads as nothing.
+ * @param common - The git common directory.
+ * @returns The marker's path.
  */
-async function idle(port: EnginePort, ms: number, signal: AbortSignal, onStep: () => Promise<void>): Promise<void> {
-  const until = await port.now() + ms
-  while (!signal.aborted) {
-    const left = until - await port.now()
-    if (left <= 0) return
-    await onStep()
-    if (signal.aborted) return
-    await executeProcess(port.processes, ['sleep', String(Math.min(pollMs, left) / 1000)])
-  }
-}
-
-/** Does nothing at an idle step: the wait has no check of its own. */
-const noStep = async (): Promise<void> => {}
+const ciMarkerPath = (common: string): string => hostLockPath(common, `${lockName}.ci`)
 
 /**
- * Reads the lock's owner record.
- * @param port - The engine calls.
- * @param dir - The queue directory.
- * @returns The owner, or null while the lock is free, half-written or unreadable.
- */
-async function readOwner(port: EnginePort, dir: string): Promise<Owner | null> {
-  const value = await readJson(port.files, `${dir}/lock/owner.json`).catch(() => undefined)
-  if (!isRecord(value) || ![value.sid, value.ticket, value.token].every(field => typeof field === 'string')) return null
-  const text = (field: unknown): string | null => typeof field === 'string' ? field : null
-  return { sid: String(value.sid), ticket: String(value.ticket), token: String(value.token), pidns: text(value.pidns), pidStart: text(value.pidStart),
-    bootId: text(value.bootId), pid: isSafeInteger(value.pid) && value.pid > 0 ? value.pid : null }
-}
-
-/**
- * Lists the tickets whose lease is fresh, in arrival order.
- * @param port - The engine calls.
- * @param dir - The queue directory.
- * @param now - The time the leases are judged at.
- * @returns The live tickets and the stale ones.
- */
-async function readTickets(port: EnginePort, dir: string, now: number): Promise<Tickets> {
-  const names = (await port.files.list(`${dir}/q`).catch(() => [])).map(entry => entry.name).filter(name => ticketPattern.test(name)).sort()
-  const ages = await Promise.all(names.map(async name => now - await readMtime(port, `${dir}/q/${name}`)))
-  return { live: names.filter((_, index) => ages[index]! <= staleMs), stale: names.filter((_, index) => ages[index]! > staleMs) }
-}
-
-/**
- * Reads a lease directory's modification time, which a listing reports as zero for directories.
- * @param port - The engine calls.
- * @param path - The directory.
- * @returns Its modification time in epoch ms, or zero once it is gone.
- */
-async function readMtime(port: EnginePort, path: string): Promise<number> {
-  return (await port.files.stat(path).catch(() => null))?.mtimeMs ?? 0
-}
-
-/**
- * Judges the lock dead when its lease expired, or when its owner's process is gone or its pid reused on this same host.
- * @param port - The engine calls.
- * @param dir - The queue directory.
- * @param now - The time the lease is judged at.
- * @param host - The reader's own host identity.
- * @returns Whether a waiter may break the lock.
- */
-async function isLockStale(port: EnginePort, dir: string, now: number, host: Host): Promise<boolean> {
-  const lock = await port.files.stat(`${dir}/lock`).catch(() => null)
-  if (!lock) return false
-  if (now - lock.mtimeMs > staleMs) return true
-  const owner = await readOwner(port, dir)
-  // A pid means nothing across pid namespaces or reboots, so there only the lease decides.
-  if (!owner?.pid || !host.pidns || !host.bootId || owner.pidns !== host.pidns || owner.bootId !== host.bootId) return false
-  return readStartTime(await port.files.read(`/proc/${owner.pid}/stat`).catch(() => '')) !== owner.pidStart
-}
-
-/**
- * Breaks a stale lock: the rename without -f has a single winner among waiters breaking it at once.
- * @param port - The engine calls.
- * @param dir - The queue directory.
- * @param sid - The breaking session.
- * @returns Whether this session moved the lock away.
- */
-export async function breakStaleLock(port: EnginePort, dir: string, sid: string): Promise<boolean> {
-  const moved = `${dir}/lock.stale-${sid}`
-  if ((await executeProcess(port.processes, ['mv', '--', `${dir}/lock`, moved])).exitCode !== 0) return false
-  await executeProcess(port.processes, ['rm', '-rf', '--', moved])
-  return true
-}
-
-/**
- * Takes the lock with an atomic mkdir, breaking it first when its holder is dead.
- * @param port - The engine calls.
- * @param dir - The queue directory.
- * @param owner - The record the new holder writes.
- * @returns Whether this session now holds the lock.
- */
-async function tryLock(port: EnginePort, dir: string, owner: Owner): Promise<boolean> {
-  if ((await executeProcess(port.processes, ['mkdir', '--', `${dir}/lock`])).exitCode === 0) {
-    await atomicReplace(port, `${dir}/lock/owner.json`, JSON.stringify(owner))
-    return true
-  }
-  return await isLockStale(port, dir, await port.now(), owner) && await breakStaleLock(port, dir, owner.sid) && tryLock(port, dir, owner)
-}
-
-/**
- * Removes a session's ticket, and the lock when it still owns it.
- * @param port - The engine calls.
- * @param turn - The session's ticket and token.
- */
-export async function leaveVerifyQueue(port: EnginePort, turn: VerifyTurn): Promise<void> {
-  if ((await readOwner(port, turn.dir))?.token === turn.token) await executeProcess(port.processes, ['rm', '-rf', '--', `${turn.dir}/lock`])
-  await executeProcess(port.processes, ['rm', '-rf', '--', `${turn.dir}/q/${turn.ticket}`])
-}
-
-/**
- * Waits first come, first served for the repository's Verify lock, renewing the ticket's lease; only the head tries the lock.
+ * Runs work once this session holds the repository's Verify lock, waiting first come, first served behind every other session's Run,
+ * Verify and merge gate. The wait and the work keep one stream pull in flight, so neither runs the hook's budget down.
  * @param port - The engine calls.
  * @param common - The repository's common directory, shared by its worktrees.
  * @param sid - The waiting session.
- * @param deadline - When the wait gives up.
- * @param signal - The dispatch's cancellation signal.
- * @param onMove - Called whenever the session's position or the queue's length changes.
- * @param onStep - Runs at each idle step, and may abort the signal.
- * @returns The held turn, or how the wait ended without one; either way without a ticket left behind.
+ * @param work - What runs under the lock, given the held turn.
+ * @param wait - The deadline, the signal and the listeners.
+ * @returns The work's value, or how the wait ended without the lock.
  */
-export async function waitVerifyTurn(port: EnginePort, common: string, sid: string, deadline: number, signal: AbortSignal, onMove: () => Promise<void>,
-  onStep = noStep): Promise<QueueWait> {
-  const dir = recordsPath(common, 'verify')
-  const start = await port.now()
-  const turn: VerifyTurn = { dir, ticket: `${String(start).padStart(15, '0')}-${sid}`, token: `${start}-${++sequence.value}-${sid}` }
-  const mkdir = async (...args: string[]) => {
-    const run = await executeProcess(port.processes, ['mkdir', ...args])
-    if (run.exitCode !== 0) throw new Error(run.stderr || 'cannot create the Verify queue')
+export async function withVerifyTurn<T>(port: EnginePort, common: string, sid: string, work: (turn: VerifyTurn) => Promise<T>, wait: VerifyWait): Promise<HostLockOutcome<T>> {
+  // why: the id names the hold as well as the session, so the CI marker of an earlier hold of the same session never reads as this one's; its tail names the call and the issues for every reader.
+  const issues = (await readSession(port)).issues.map(issue => ` #${issue}`).join('')
+  const id = `${sid}/${await port.now()}-${sequence.nonce}-${++sequence.value} ${wait.call}${issues}`
+  try {
+    return await withHostLock(port, hostLockPath(common, lockName), id, held => work({ common, id, lost: held.lost }), {
+      signal: wait.signal, deadline: wait.deadline, onPosition: wait.onMove,
+      legacy: { dir: recordsPath(common, 'verify', 'lock'), staleMs: legacyStaleMs },
+      ...wait.watch ? { watch: wait.watch } : {}, ...wait.onPoke ? { onPoke: wait.onPoke } : {}, ...wait.log ? { killGroup: `${wait.log}.pgid` } : {},
+    })
+  } finally {
+    // why: the pane shows the session's place, so a hold that ends, however, shows it gone at once, as every move inside it does.
+    await wait.onMove()
   }
-  await mkdir('-p', '--', `${dir}/q`)
-  await mkdir('--', `${dir}/q/${turn.ticket}`)
-  const state = { shown: '', renewed: start }
-  const owner: Owner = { sid, ticket: turn.ticket, token: turn.token, ...await readHost(port) }
-  const outcome = await (async (): Promise<QueueWait> => {
-    while (!signal.aborted) {
-      const now = await port.now()
-      if (now >= deadline) return { kind: 'timeout' }
-      if (now - state.renewed >= renewMs) {
-        await executeProcess(port.processes, ['touch', '--', `${dir}/q/${turn.ticket}`])
-        state.renewed = now
-      }
-      const { live, stale } = await readTickets(port, dir, now)
-      for (const name of stale) await executeProcess(port.processes, ['rm', '-rf', '--', `${dir}/q/${name}`])
-      // A ticket another session pruned while this one was suspended comes back under its own arrival time.
-      if (!live.includes(turn.ticket)) await mkdir('--', `${dir}/q/${turn.ticket}`)
-      const shown = `${live.indexOf(turn.ticket)}/${live.length}`
-      if (shown !== state.shown) {
-        state.shown = shown
-        await onMove()
-      }
-      if (live[0] === turn.ticket && await tryLock(port, dir, owner)) return { kind: 'acquired', turn }
-      // A dead holder's ticket can outlive its process by a lease; the next in line clears both rather than wait it out.
-      if (live[1] === turn.ticket && live[0] === (await readOwner(port, dir))?.ticket && await isLockStale(port, dir, now, owner)
-        && await breakStaleLock(port, dir, sid)) {
-        await executeProcess(port.processes, ['rm', '-rf', '--', `${dir}/q/${live[0]}`])
-        continue
-      }
-      await idle(port, pollMs, signal, onStep)
-    }
-    return { kind: 'cancelled' }
-  })().catch(async (error: unknown) => {
-    // why: the wait's own error is the one reported; a ticket left behind ages out with its lease.
-    await leaveVerifyQueue(port, turn).catch(() => {})
-    throw error
-  })
-  if (outcome.kind !== 'acquired') await leaveVerifyQueue(port, turn)
-  return outcome
-}
-
-/**
- * Renews the holder's lock and ticket leases until stopped.
- * @param port - The engine calls.
- * @param turn - The held turn.
- * @returns A stop that resolves once renewal ended.
- */
-export function holdVerifyTurn(port: EnginePort, turn: VerifyTurn): () => Promise<void> {
-  const control = new AbortController()
-  const renewal = (async () => {
-    while (!control.signal.aborted) {
-      // An abort ends the wait.
-      try { await port.clock.sleep(renewMs, control.signal) } catch { return }
-      // why: a missed renewal only ages the lease, and the next one, a renewal period later, renews it again.
-      await executeProcess(port.processes, ['touch', '--', `${turn.dir}/lock`, `${turn.dir}/q/${turn.ticket}`]).catch(() => null)
-    }
-  })()
-  return async () => { control.abort(); await renewal }
 }
 
 /**
  * Holds the lock while a queued or in-progress CI job asks for one of the runner labels, so the waiters behind keep their order;
- * a marker inside the lock tells every reader of the queue that CI holds it.
+ * a marker naming the holder tells every reader of the queue that CI holds it. Each poll pauses in one host `sleep`.
  * @param port - The engine calls.
  * @param turn - The held turn.
  * @param labels - The runner labels that identify this machine's runner.
- * @param deadline - When the wait gives up, the same bound as the wait for the lock.
- * @param signal - The dispatch's cancellation signal.
- * @param onMove - Called when the CI wait starts or ends.
- * @param onStep - Runs at each idle step, and may abort the signal.
+ * @param options - The deadline, the signal and the listeners.
  * @returns How the wait ended.
  */
-export async function waitCiIdle(port: EnginePort, turn: VerifyTurn, labels: string[], deadline: number, signal: AbortSignal, onMove: () => Promise<void>,
-  onStep = noStep): Promise<CiWait> {
-  const marker = `${turn.dir}/lock/ci`
+export async function waitCiIdle(port: EnginePort, turn: VerifyTurn, labels: string[], options: CiWaitOptions): Promise<CiWait> {
+  const marker = ciMarkerPath(turn.common)
   const state = { isMarked: false }
+  const signal = AbortSignal.any([options.signal, turn.lost])
+  const started = await port.now()
   try {
     while (!signal.aborted) {
+      // why: past the floor the wait ends while the hook can still answer, before the engine drops the call.
+      if (port.budgetLeft && port.budgetLeft() < budgetFloorMs) return { kind: 'budget' }
       const busy = await readLabelledJobs(port.processes, labels)
-      if (!busy.isOk) return 'unknown'
-      if (!busy.value) return 'idle'
+      if (!busy.isOk) return { kind: 'unknown', error: busy.error }
+      if (!busy.value) return { kind: 'idle' }
       const now = await port.now()
-      if (now >= deadline) return 'timeout'
+      if (now >= options.deadline) return { kind: 'timeout', minutes: (now - started) / minuteMs }
       if (!state.isMarked) {
-        await atomicReplace(port, marker, 'running')
+        await atomicReplace(port, marker, turn.id)
         state.isMarked = true
-        await onMove()
+        await options.onMove()
       }
-      await idle(port, Math.min(ciPollMs, deadline - now), signal, onStep)
+      // why: the holder's pull is in flight during the work, so these host sleeps cost no hook budget; steps of a second end the pause within one of a cancel.
+      const pause = Math.min(ciPollMs, options.deadline - now)
+      for (const step of Array.from({ length: Math.ceil(pause / stepMs) }, (_, index) => Math.min(stepMs, pause - index * stepMs))) {
+        if (signal.aborted) break
+        await executeProcess(port.processes, ['sleep', String(step / 1000)])
+        await options.onStep?.()
+      }
     }
-    return 'cancelled'
+    return { kind: 'cancelled' }
   } finally {
     if (state.isMarked) {
-      // why: a marker left behind only delays the next holder's CI check; the wait's outcome stands either way.
+      // why: a marker left behind names a hold that ended, which no reader counts; the wait's outcome stands either way.
       await executeProcess(port.processes, ['rm', '-f', '--', marker]).catch(() => null)
-      await onMove()
+      await options.onMove()
     }
   }
 }
 
 /**
- * Confirms the lock still carries the holder's token, which a waiter breaking it as stale replaced.
- * @param port - The engine calls.
- * @param turn - The held turn.
- * @returns Whether the holder still owns the lock.
+ * Words what a CI wait could not establish, the line the gate and the unit's Verify both lead their answer with.
+ * @param ci - How the wait ended.
+ * @param isCommandStarted - Whether a command then started, the only case that ran anyway.
+ * @returns The line, or null when the wait established that the runner was free or ended the run.
  */
-export async function isTurnHeld(port: EnginePort, turn: VerifyTurn): Promise<boolean> {
-  return (await readOwner(port, turn.dir))?.token === turn.token
+export function describeCiWait(ci: CiWait, isCommandStarted: boolean): string | null {
+  const fact = ci.kind === 'unknown' ? `CI state unknown (${ci.error})`
+    : ci.kind === 'timeout' ? `CI still running when the ${Math.round(ci.minutes * 100) / 100} min wait ran out` : null
+  return fact && isCommandStarted ? `${fact}, ran anyway` : fact
 }
 
 /**
- * Tells whether this session holds the repository's Verify lock and the lock is live, judged as a waiter would before breaking it.
+ * Tells whether this session holds the repository's Verify lock, judged by the kernel lock alone.
  * @param port - The engine calls.
- * @returns Whether a run of this session still holds its queue turn.
+ * @returns Whether a run of this session holds its queue turn.
  */
 export async function isOwnTurnLive(port: EnginePort): Promise<boolean> {
   const common = await readCommonDir(port)
   if (!common) return false
-  const dir = recordsPath(common, 'verify')
-  if ((await readOwner(port, dir))?.sid !== await port.readSessionId()) return false
-  return !await isLockStale(port, dir, await port.now(), await readHost(port))
+  const read = await readHostLock(port, hostLockPath(common, lockName))
+  const queue = read.isOk ? read.value : null
+  return !!queue?.isHeld && queue.ids[0]?.startsWith(`${await port.readSessionId()}/`) === true
 }
 
+
 /**
- * Names a position the way the pane and the sidebar print it.
- * @param position - The one-based position.
- * @returns The ordinal, such as 2nd.
+ * Reads a ticket's id back: the call and issues its tail names after the first space, or `unknown` with none for an id with no tail.
+ * @param id - The id, as the queue lists it.
+ * @returns The ticket.
  */
-function formatOrdinal(position: number): string {
-  const tens = position % 100
-  return `${position}${tens >= 11 && tens <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][position % 10] ?? 'th'}`
+function parseTicket(id: string): Ticket {
+  const tail = id.includes(' ') ? id.slice(id.indexOf(' ') + 1) : ''
+  const call = calls.find(name => tail === name || tail.startsWith(`${name} #`)) ?? 'unknown'
+  return { id, call, issues: call === 'unknown' ? '' : tail.slice(call.length).trim() }
 }
 
 /**
- * Reads this session's place in the repository's Verify queue from the queue directory.
+ * Starts a row with the call it names, or with the rest alone when the call is unknown, so no row names a call it cannot read.
+ * @param call - The call.
+ * @param rest - What follows the call, such as `waiting (1 ahead)`.
+ * @returns The row with its first letter in capitals, such as `Merge gate waiting (1 ahead)` or `Waiting (1 ahead)`.
+ */
+function startRow(call: QueueCall, rest: string): string {
+  const row = call === 'unknown' ? rest : `${call} ${rest}`
+  return `${row.charAt(0).toUpperCase()}${row.slice(1)}`
+}
+
+/**
+ * Words this session's wait in the queue for the pane and the sidebar alike.
+ * @param own - This session's ticket.
+ * @param ahead - How many tickets are ahead of it.
+ * @param holder - The holder's ticket, or null while nobody holds the lock.
+ * @returns The two lines.
+ */
+function formatWaiting(own: Ticket, ahead: number, holder: Ticket | null): QueueLine {
+  const named = holder && holder.call !== 'unknown' ? `${holder.issues ? `${holder.issues} ` : ''}${holder.call}` : 'unknown'
+  return { pane: startRow(own.call, `waiting: ${ahead} ahead${holder ? ` (holder: ${named})` : ''}`), sidebar: startRow(own.call, `waiting (${ahead} ahead)`) }
+}
+
+/**
+ * Reads this session's place in the repository's Verify queue, judged by the kernel lock and the mark its holder leaves on its ticket.
  * @param port - The engine calls.
- * @returns The queued fact, such as `queued, 2nd of 3` or `queued: CI running`, or null when the session waits for nothing or holds the lock for its run.
+ * @returns The place worded for the pane and the sidebar, or null when the session waits for nothing or holds the lock for its own work.
  */
-export async function readVerifyQueue(port: EnginePort): Promise<string | null> {
+export async function readVerifyQueue(port: EnginePort): Promise<QueueLine | null> {
   const common = await readCommonDir(port)
   if (!common) return null
   const sid = await port.readSessionId()
-  const dir = recordsPath(common, 'verify')
-  const { live } = await readTickets(port, dir, await port.now())
-  const index = live.findIndex(name => name.endsWith(`-${sid}`))
+  const read = await readHostLock(port, hostLockPath(common, lockName))
+  if (!read.isOk) return null
+  const queue = read.value
+  const index = queue.ids.findIndex(id => id.startsWith(`${sid}/`))
   if (index < 0) return null
-  if (index === 0 && (await readOwner(port, dir))?.sid === sid) return await port.files.exists(`${dir}/lock/ci`) ? 'queued: CI running' : null
-  return `queued, ${formatOrdinal(index + 1)} of ${live.length}`
+  const own = parseTicket(queue.ids[index] ?? '')
+  if (index === 0 && queue.isHeld) {
+    const marker = await port.files.read(ciMarkerPath(common)).catch(() => '')
+    return marker.trim() === own.id ? { pane: startRow(own.call, 'holds the queue, waiting for CI'), sidebar: startRow(own.call, 'waiting for CI') } : null
+  }
+  return formatWaiting(own, index, queue.isHeld ? parseTicket(queue.ids[0] ?? '') : null)
 }

@@ -46,7 +46,7 @@ export async function pruneRecords(engine: EnginePort): Promise<void> {
   const git = await readGit(port)
   if (!git || await readGithubStatus(port, true) !== 'connected') return
   const mirrors = await readSessionMirrors(port)
-  // A failed listing must not read as no declarations.
+  // why: a failed listing must not read as no declarations.
   const declarations = await readDeclarations(port).catch(() => null)
   if (!declarations) return
   const entries = mirrors.flatMap(mirror => mirror.session.units)
@@ -58,10 +58,13 @@ export async function pruneRecords(engine: EnginePort): Promise<void> {
   if (own.some(isRemoved)) await updateSession(port, current => current.units.some(isRemoved) ? { ...current, units: current.units.filter(unit => !isRemoved(unit)) } : null)
   const expiry = await port.now() - temporaryExpiryMs
   for (const mirror of mirrors.filter(mirror => mirror.session.sessionId !== session.sessionId)) {
-    // why: A mirror with no unit holds nothing a rule judged delivered, so it may still be a live flowless chat's until it
-    // outlives the expiry of a crashed session's temporary files.
+    // why: A mirror with no unit holds nothing a rule judged delivered, so it may still be a live flowless chat's until it outlives the expiry of a crashed session's temporary files.
     const isGone = mirror.session.units.length > 0 ? mirror.session.units.every(isRemoved) : mirror.mtimeMs !== null && mirror.mtimeMs < expiry
-    if (isGone) logFailure(port, 'session mirror delete', hasExitedZero(await removeFile(port.processes, mirror.path)))
+    if (!isGone) continue
+    logFailure(port, 'session mirror delete', hasExitedZero(await removeFile(port.processes, mirror.path)))
+    // why: the revision beside a mirror shares its name, so it goes with it.
+    const revision = mirror.path.replace(/\.json$/, '.rev')
+    if (await port.files.exists(revision).catch(() => false)) logFailure(port, 'session mirror revision delete', hasExitedZero(await removeFile(port.processes, revision)))
   }
   for (const identity of listIdentities([...entries, ...declarations])) {
     const isDeclarationRemoved = removals.some(removal => removal?.isDeclarationRemoved(identity))
@@ -98,7 +101,7 @@ async function judgeConcluded(port: EnginePort, { git, entries, declarations }: 
     return conclusion.isOk ? { unit, isConcluded: !!conclusion.value } : null
   }))
   if (judgements.some(judgement => judgement === null)) return null
-  // The session's own entries are re-read fresh, so an entry is matched by its identity and lifetime.
+  // why: the session's own entries are re-read fresh, so an entry is matched by its identity and lifetime.
   const isConcluded = (unit: UnitEntry): boolean => judgements.some(judgement => judgement?.isConcluded
     && sameIdentity(judgement.unit.identity, unit.identity) && judgement.unit.generation === unit.generation)
   return { isEntryRemoved: isConcluded, isDeclarationRemoved: identity => entries.some(entry => isConcluded(entry) && sameIdentity(entry.identity, identity)) }
@@ -114,8 +117,7 @@ async function judgeConcluded(port: EnginePort, { git, entries, declarations }: 
 async function judgeRetired(port: EnginePort, { git, entries, declarations }: Sweep): Promise<Removal | null> {
   const branches = await readLocalBranches(port.processes)
   if (!branches) return null
-  // why: A hop still copies a default-branch Follow-up's evidence, and its issue is closed from the start; a hop
-  // needs the declaration, so entries left without one have nothing to keep them.
+  // why: A hop still copies a default-branch Follow-up's evidence, and its issue is closed from the start; a hop needs the declaration, so entries left without one have nothing to keep them.
   const isFollowUp = (identity: Identity): boolean => declarations.some(record => sameIdentity(record.identity, identity) && record.flow === 'follow-up')
   const ended = listIdentities([...entries, ...declarations]).filter(identity => identity.issues.length > 0
     && (!branches.has(identity.branch) || (isUnitOnBase(identity, git) && !isFollowUp(identity))))
@@ -146,7 +148,7 @@ async function pruneFiles(port: EnginePort): Promise<void> {
   const common = await readCommonDir(port)
   if (!common) return
   const sid = await port.readSessionId()
-  // Existence keeps an owner live even if its mirror cannot be parsed.
+  // why: existence keeps an owner live even if its mirror cannot be parsed.
   const sessions = await port.files.list(recordsPath(common, 's'))
   const live = new Set([`${sid}.json`, ...sessions.map(entry => entry.name)])
   const mirrors = await readSessionMirrors(port, true)
@@ -156,7 +158,7 @@ async function pruneFiles(port: EnginePort): Promise<void> {
   // why: A session writes its mirror only on its first record change, so owner liveness cannot keep a temporary file.
   const expiry = await port.now() - temporaryExpiryMs
   for (const bucket of recordBuckets) {
-    // The bucket directory may not exist yet.
+    // why: the bucket directory may not exist yet.
     const entries = await port.files.list(recordsPath(common, bucket)).catch(() => [])
     // why: a content capture's copy and stamp carry the index's own mtime, so only its fresh .live marker shows the capture is running.
     const capturing = new Set(entries.flatMap(({ name, mtimeMs }) => name.endsWith('.live') && mtimeMs >= expiry ? [name.slice(0, -'.live'.length)] : []))
@@ -173,7 +175,7 @@ async function pruneFiles(port: EnginePort): Promise<void> {
       }
     }
   }
-  // A failed listing must not read as no declarations, which would delete every log.
+  // why: a failed listing must not read as no declarations, which would delete every log.
   const declared = new Set((await port.files.list(recordsPath(common, 'u'))).map(entry => entry.name))
   await sweepBucket(port, common, 'log', async name => {
     const hash = name.match(/^([0-9a-f]+)\.jsonl$/)?.[1]

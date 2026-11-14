@@ -2,14 +2,16 @@ import type { DelegationScope, FlowView, GithubFailure } from '../../types'
 import type { KeyedRow } from './theme'
 import type { Session } from '../domain/records'
 import { formatLocalTime } from '../lib/time'
+import { firstLineOf } from '../lib/result'
 import { formatStepLabel, isUnitFinished, listDeclaredLabels, markStep, projectDisplayStates } from '../domain/step-states'
 import type { Position } from '../domain/step-states'
 import { facts } from '../domain/facts'
+import { describeAuditNote } from '../domain/issue-audit'
 import { symbol } from './symbols'
 import { pluralize } from '../domain/messages'
 
-/** Holds the user's open questions, the answers not yet recorded on their issues, and the dead letters. */
-interface InboxCounts { open: number; unrecorded: number; deadLetters: number }
+/** Holds the user's open questions, the answers not yet recorded on their issues, the dead letters, and those whose notice was not delivered. */
+interface InboxCounts { open: number; unrecorded: number; deadLetters: number; untold: number }
 
 /**
  * Lists issue numbers, a run of three or more consecutive ones as a range, so a wide scope stays a few pane lines.
@@ -37,13 +39,14 @@ export function scopeRows(scope: DelegationScope): KeyedRow[] {
 
 /**
  * Words a coordinator's inbox row: the questions waiting for the user, which never expire, the issue comments not yet recorded, and the
- * messages about its issues dead-lettered to the user.
- * @param counts - The open questions, the unrecorded comments and the dead letters.
+ * messages about its issues dead-lettered to the user, marking those whose notice was not delivered.
+ * @param counts - The open questions, the unrecorded comments, the dead letters and those with an undelivered notice.
  * @returns The Inbox row.
  */
 export function inboxRow(counts: InboxCounts): KeyedRow {
   const value = [`${pluralize(counts.open, 'open question')} for you`, ...counts.open ? ['/flow inbox'] : [],
-    ...counts.unrecorded ? [`${counts.unrecorded} not recorded on the issue`] : [], ...counts.deadLetters ? [pluralize(counts.deadLetters, 'dead letter')] : []].join(' · ')
+    ...counts.unrecorded ? [`${counts.unrecorded} not recorded on the issue`] : [], ...counts.deadLetters ? [pluralize(counts.deadLetters, 'dead letter')] : [],
+    ...counts.untold ? [`${counts.untold} with a notice not delivered · /flow status`] : []].join(' · ')
   return { key: 'Inbox', value, tone: counts.open || counts.unrecorded || counts.deadLetters ? 'warn' : 'text' }
 }
 
@@ -57,25 +60,30 @@ export function handoffNotes(session: Session): KeyedRow[] {
 }
 
 /**
- * Lists every finding of the session's issue audit, or why the audit is pending, so a non-compliant issue is never hidden.
+ * Lists every finding of the session's issue audit, or why the audit is pending, so a non-compliant issue is never hidden; while the
+ * record may lack the last audit's result, a note says so above what the record holds.
  * @param session - The current session.
- * @returns One note per finding, one for a pending audit, or none.
+ * @returns One note per finding, one for a pending audit, which keeps the findings it established, one for a result not on the record,
+ * one for a window a handoff left unsearched, or none.
  */
 export function auditNotes(session: Session): KeyedRow[] {
   const result = session.audit?.result
-  if (result?.state === 'pending') return [{ key: 'Issue audit', value: `pending · ${result.reason}`, tone: 'warn' }]
-  return result?.state === 'violations'
-    ? result.findings.map((finding): KeyedRow => ({ key: `Issue #${finding.issue}`, value: `${finding.field}: expected ${finding.expected}, has ${finding.actual}`, tone: 'error' }))
-    : []
+  const unrecorded: KeyedRow[] = session.auditNote ? [{ key: 'Issue audit', value: describeAuditNote(session.auditNote), tone: 'error' }] : []
+  // why: the unsearched window is told, never held: no later read can search it, so it names the search to run by hand instead.
+  const unsearched: KeyedRow[] = session.audit?.unsearched ? [{ key: 'Issue audit', value: session.audit.unsearched, tone: 'warn' }] : []
+  const pending: KeyedRow[] = result?.state === 'pending' ? [{ key: 'Issue audit', value: `pending · ${result.reason}`, tone: 'warn' }] : []
+  const findings = result?.state === 'violations' || result?.state === 'pending' ? result.findings ?? [] : []
+  return [...unrecorded, ...unsearched, ...pending,
+    ...findings.map((finding): KeyedRow => ({ key: `Issue #${finding.issue}`, value: `${finding.field}: expected ${finding.expected}, has ${finding.actual}`, tone: 'error' }))]
 }
 
 /**
  * Words a GitHub failure for the pane's GitHub row, in the phrase `/flow status` uses.
  * @param failure - The failure.
- * @returns The row's text: the reason, and the time of the kept issue facts when known.
+ * @returns The row's text: the reason's first line, as the row is one line of the pane, and the time of the kept issue facts when known.
  */
 function formatGithubFailure(failure: GithubFailure): string {
-  return `read failed (${failure.reason})${failure.readAt === null ? '' : ` · facts from ${formatLocalTime(failure.readAt, false)}`}`
+  return `read failed (${firstLineOf(failure.reason)})${failure.readAt === null ? '' : ` · facts from ${formatLocalTime(failure.readAt, false)}`}`
 }
 
 /**
@@ -106,14 +114,14 @@ export function buildView(session: Session, position: Position, githubFailure: G
   }
   const merge = position.current?.step.observe === 'integrated' && position.integration?.state === 'pending' ? position.integration.command : undefined
   if (merge) notes.push({ key: 'Merge', value: merge, tone: 'text' })
-  // A queued Verify waits only for another session's run, so nobody has to act and it keeps the plain tone.
-  if (position.verify.queued) notes.push({ key: 'Verify', value: position.verify.queued, tone: 'text' })
-  // The approval is the user's, in their own terminal: the note names the command, and warns once the unit waits for it.
+  // why: a queued call waits only for another session's call or for CI, so nobody has to act and it keeps the plain tone.
+  if (position.verify.queued) notes.push({ key: 'Queue', value: position.verify.queued.pane, tone: 'text' })
+  // why: the approval is the user's, in their own terminal, so the note names the command and warns once the unit waits for it.
   if (position.verify.approval) notes.push({ key: 'Approve', value: position.verify.approval, tone: position.verify.isWaitingApproval && !position.isWorking ? 'warn' : 'text' })
   notes.push(...handoffNotes(session), ...auditNotes(session))
   const isFinished = !position.slice?.isRewritten && isUnitFinished(position)
   const states = projectDisplayStates(position.states)
-  // Every step before the current one is settled, and none after it has been reached.
+  // why: every step before the current one is settled and none after it has been reached, so the current index counts the settled steps.
   const currentIndex = states.findIndex(entry => entry.state === 'current')
   const settled = currentIndex >= 0 ? currentIndex : states.filter(entry => entry.state !== 'pending').length
   return {
@@ -140,8 +148,10 @@ export function buildView(session: Session, position: Position, githubFailure: G
         detail: isRewritten ? undefined : isRunUnrecorded ? facts.verifyTreeChangedInRun : isMerged ? (entry.step.observe === 'integrated' ? entry.fact : facts.merged)
           : entry.state === 'skipped' ? entry.reason
           : entry.state === 'current' ? entry.fact
-          // An integrated child's Integrate names where its delivery stands, because the unit is finished and shows no current step.
-          : entry.state === 'done' && entry.step.observe === 'integrated' ? entry.fact : undefined,
+          // why: an integrated child's Integrate names where its delivery stands, because the unit is finished and shows no current step.
+          : entry.state === 'done' && entry.step.observe === 'integrated' ? entry.fact
+          // why: a Verify done with nothing run locally passed on no command, so it keeps saying its checks were left to CI.
+          : entry.state === 'done' && entry.fact === facts.leftToCi ? entry.fact : undefined,
         ...(entry.detail && (isCurrentFact || (!isRewritten && entry.state === 'skipped') || (entry.state === 'done' && entry.step.observe === 'integrated')) ? { fullDetail: entry.detail } : {}),
       }
     }),

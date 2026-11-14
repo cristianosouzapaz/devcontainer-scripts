@@ -2,6 +2,7 @@ import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
 import { tickMs } from '../../hooks/core/timing'
+import { listRecordNames } from '../../hooks/core/record-store'
 import { readJson } from '../../hooks/lib/json'
 import { buildChangedCheckout, buildSavedSession, buildVerifyRun, modToolNames, noFlow, verifyFile } from '../support/builders'
 import { readCurrentStep, readPromptContext } from '../support/helpers'
@@ -25,6 +26,23 @@ test('a present file whose read rejects, or that is not JSON, is a failed read; 
   options.readFailurePrefix = `${records}/x/`
   await expect(readJson(port.files, `${records}/x/kept.json`)).rejects.toThrow()
 })
+
+// contract: a record bucket no record was ever written to lists as empty, its absence confirmed by an ancestor's listing
+test('a record bucket that does not exist lists as empty', async (_$, on) => {
+  const world = createWorld(on, { branch: 'feat' }, { isMissingListFailed: true })
+  await world.ready
+  expect(await listRecordNames(createTestPort(world), `${records}/never`)).toEqual([])
+})
+
+for (const [name, unlisted] of [['its parent lists it', [`${records}/bucket`]], ['its parent cannot be listed either', [`${records}/bucket`, records]]] as const) {
+  // contract: a bucket whose listing and stat fail with EACCES throws rather than reading as no records
+  test(`a record bucket whose listing and stat fail with EACCES throws when ${name}`, async (_$, on) => {
+    const world = createWorld(on, { branch: 'feat' }, { listFails: directory => (unlisted as readonly string[]).includes(directory),
+      statFails: path => path === `${records}/bucket` })
+    world.files.set(`${records}/bucket/a.json`, '{"v":1}')
+    await expect(listRecordNames(createTestPort(world), `${records}/bucket`)).rejects.toThrow()
+  })
+}
 
 test("a unit declaration whose read rejects never drops the unit's Verify runs: the state is unreadable", async ($, on) => {
   const options = verified()

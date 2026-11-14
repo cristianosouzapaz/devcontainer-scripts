@@ -12,6 +12,8 @@ readonly _INVENTORY_SH_LOADED=1
 
 # why: tests point the readers at a whole assembled document; the shipped tree never sets it
 _DEVCONTAINER_INVENTORY="${DEVCONTAINER_INVENTORY:-}"
+# why: seconds a sign-in probe may take; a status command answers in well under a second, so the bound only costs time when a CLI hangs
+_AGENT_PROBE_TIMEOUT="${_AGENT_PROBE_TIMEOUT:-10}"
 # shellcheck disable=SC2016 # jq variables, not shell expansions.
 readonly _INVENTORY_ASSEMBLE_FILTER='
 	($owners | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: (.[1] | split(" ") | map(select(length > 0)))}) | from_entries) as $declared |
@@ -312,7 +314,7 @@ inventory_asset_source() {
 # Returns: the command's status; 124 or 137 for a timeout, 125 when timeout is unavailable.
 agent_probe() {
 	command -v timeout >/dev/null 2>&1 || return 125
-	timeout --kill-after=2s 10s "$@"
+	timeout --kill-after=2s "${_AGENT_PROBE_TIMEOUT}s" "$@"
 }
 
 # agent_identity <agent_id>: prints the account the agent is logged in as, through its pack's agent_<id>_identity hook

@@ -79,9 +79,9 @@ test('an issue the user\'s account opened this session that references a unit is
 test('a GitHub read failure keeps the audit pending and the PR step held, never compliant', async ($, on) => {
   const world = createAuditWorld(on, createGithub(new Map([[101, 'HTTP 502']])), [101])
   await endTurn($)
-  expect(readNotes(world)).toEqual(['Issue audit: pending · cannot read #101: HTTP 502'])
+  expect(readNotes(world)).toEqual(['Issue audit: pending · cannot read #101: GitHub unreachable after 3 attempts: HTTP 502'])
   const status = await readFlowStatus($)
-  expect(status).toContain('issue audit pending (cannot read #101: HTTP 502)')
+  expect(status).toContain('issue audit pending (cannot read #101: GitHub unreachable after 3 attempts: HTTP 502)')
   expect(status).not.toContain('✓ PR #5')
 })
 

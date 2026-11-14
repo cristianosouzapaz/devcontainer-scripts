@@ -14,7 +14,7 @@ import type { Options, World } from '../support/world'
 interface ChildWorld { world: World; options: Options }
 
 const coordinatorPane = 'w22:p8'
-const doorbell = '[working-agreement] Mail arrived in this session\'s mailbox; it is delivered with this prompt.'
+const doorbell = '[working-agreement] Checking this session\'s mailbox; any mail comes with this prompt.'
 const turn: UnitTurn = { issues: [7], step: { id: 'code', label: 'Code', isHuman: false }, reason: 'answer' }
 // why: a Fix keeps Triage, the user's step, current until GitHub labels its issue.
 const atTriage: Options = { session: { flow: 'fix', info: { 1: { title: 'bug', labels: [] } } }, issueLabels: { 1: [] }, unit: { base: 'p1', baseBranch: 'par' } }
@@ -31,7 +31,7 @@ function createChild(on: Parameters<typeof createWorld>[0], scope: object | null
   changes: Options = {}): ChildWorld {
   const options: Options = { ...parChild(), herdrEnv: inside, ...changes }
   const world = createWorld(on, childCheckout(), options)
-  // The engine answers no classic hook itself; the session that hears the notification is the end of its chain.
+  // why: the engine answers no classic hook itself; the session that hears the notification is the end of its chain.
   on('classic.Notification', () => ({}))
   if (scope) world.files.set(scopeFile('coord'), JSON.stringify(scope))
   markSpawned(world, [1])
@@ -218,6 +218,39 @@ test('an inform waiting when the unit resumes is rung by the idle tick, not at i
   expect((await stop($)).block).toBeUndefined()
 })
 
+// contract: an empty doorbell turn in which the model calls a tool is a work turn, so its turn end is asked for a message
+test('an empty doorbell turn that runs a tool is asked for a message at its end', async ($, on) => {
+  createChild(on, undefined, { unit: { base: 'p1', baseBranch: 'par' } })
+  await $.classic.UserPromptSubmit({ prompt: doorbell, permission_mode: 'default' } as never)
+  await $.turn.start({ text: doorbell, turnId: 't' })
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  expect((await stop($)).block).toContain('with no message to its coordinator')
+})
+
+// contract: a subagent's tool call is not the model working, so an empty doorbell turn stays exempt from the turn-end ask
+test('an empty doorbell turn in which only a subagent runs a tool ends without being asked for a message', async ($, on) => {
+  createChild(on, undefined, { unit: { base: 'p1', baseBranch: 'par' } })
+  await $.classic.UserPromptSubmit({ prompt: doorbell, permission_mode: 'default' } as never)
+  await $.turn.start({ text: doorbell, turnId: 't' })
+  await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'a1' } as never)
+  expect((await stop($)).block).toBeUndefined()
+})
+
+// contract: a doorbell turn that found no mail asks for nothing, so its turn end is not asked for a message; mail its Stop delivers ends that exemption
+test('an empty doorbell turn ends without being asked for a message, until its Stop delivers mail', async ($, on) => {
+  const { world } = createChild(on, undefined, { unit: { base: 'p1', baseBranch: 'par' } })
+  const prompt = await $.classic.UserPromptSubmit({ prompt: doorbell, permission_mode: 'default' } as never) as { additionalContext?: string[]; block?: string }
+  expect(prompt.block).toBeUndefined()
+  expect(prompt.additionalContext?.join('\n')).toContain('No mail is waiting')
+  await $.turn.start({ text: doorbell, turnId: 't' })
+  expect((await stop($)).block).toBeUndefined()
+  await $.classic.UserPromptSubmit({ prompt: doorbell, permission_mode: 'default' } as never)
+  await $.turn.start({ text: doorbell, turnId: 't2' })
+  deliver(world, 'work', 'assign', 'Fix the parser.')
+  expect((await stop($)).block).toContain('Fix the parser.')
+  expect((await stop($, true)).block).toContain('with no message to its coordinator')
+})
+
 test('a unit at one of the user\'s steps is not asked for a message', async ($, on) => {
   createChild(on, undefined, atTriage)
   await $.turn.start({ text: 'work', turnId: 't' })
@@ -233,6 +266,68 @@ test('a doorbell turn that delivered only informs ends without being asked for a
   expect((await stop($)).block).toBeUndefined()
 })
 
+// contract: the turn-end ask offers an inform when no assign or cancel is owed, never naming an owed step, and names done with the owed assign's id otherwise; each once per state
+test('the turn-end ask offers an inform unless an assign is owed, never names a step, and asks once per state', async ($, on) => {
+  const { world } = createChild(on, undefined, { unit: { base: 'p1', baseBranch: 'par' } })
+  await $.turn.start({ text: 'work', turnId: 't' })
+  const idle = (await stop($)).block
+  expect(idle).toContain('inform for a report')
+  expect(idle).not.toContain('done')
+  expect((await stop($, true)).block).toBeUndefined()
+  world.files.set(`${records}/mail/1/cur/zq9.1.json`, JSON.stringify({ v: 2, id: 'zq9', kind: 'step', from: 'coordinator-coord', to: '1', issue: 1, in_reply_to: '',
+    seq: 1, created_at: '2026-11-03T00:00:00.000Z', expects: '', attempt: 1, body: '/flow approve x', refs: [], author: 'agent', options: [] }))
+  // why: a done the mod kept for a resend leaves the step claimed and owed, and the mod, not the agent, closes it.
+  world.files.set(`${records}/owed/zq9.json`, JSON.stringify({ step: 'zq9', replyId: 'zq9-re-1', to: 'coordinator-coord', issue: 1, outcome: 'Step zq9 applied.',
+    attempts: 0, error: '', isTold: false }))
+  await $.turn.start({ text: 'more work', turnId: 't2' })
+  const stepped = (await stop($)).block
+  expect(stepped).toContain('inform for a report')
+  expect(stepped).not.toContain('zq9')
+  expect(stepped).not.toContain('done')
+  expect((await stop($, true)).block).toBeUndefined()
+  deliver(world, 'job', 'assign', 'Build it.')
+  await $.classic.UserPromptSubmit({ prompt: doorbell, permission_mode: 'default' } as never)
+  await $.turn.start({ text: doorbell, turnId: 't3' })
+  const owed = (await stop($)).block
+  expect(owed).toContain('done in reply to assign job')
+  expect(owed).not.toContain('inform')
+  expect((await stop($, true)).block).toBeUndefined()
+})
+
+// contract: a turn end whose owed mail cannot be listed says so and how to check, and offers neither done nor inform, whose legality it cannot establish, once per state
+test('a turn end whose mailbox cannot be listed offers only question or blocked and says the owed mail is unknown, once', async ($, on) => {
+  const fault = { isArmed: false }
+  const { world } = createChild(on, undefined, { unit: { base: 'p1', baseBranch: 'par' }, listFails: directory => fault.isArmed && directory === `${records}/mail/1/cur` })
+  world.files.set(`${records}/mail/1/cur/job.1.json`, JSON.stringify({ v: 2, id: 'job', kind: 'assign', from: 'coordinator-coord', to: '1', issue: 1, in_reply_to: '',
+    seq: 1, created_at: '2026-11-03T00:00:00.000Z', expects: '', attempt: 1, body: 'Build it.', refs: [], author: 'agent', options: [] }))
+  fault.isArmed = true
+  await $.turn.start({ text: 'work', turnId: 't' })
+  const blocks = [(await stop($)).block, (await stop($, true)).block].filter(Boolean).join('\n')
+  expect(blocks).toContain('so whether an assign or cancel waits on its done is unknown, and so is whether done or inform is legal now; check with ls')
+  expect(blocks).toContain('Report with send before you end it: question for a decision')
+  expect(blocks).not.toContain('inform for a report')
+  expect(blocks).not.toContain('done in reply to')
+  expect((await stop($, true)).block).toBeUndefined()
+})
+
+// contract: a turn end whose owed mailbox lists but one of its message files cannot be read names that file and how to check it, never a listing failure, and offers neither done nor inform
+test('a turn end whose owed message cannot be read names the file, not a listing, and offers only question or blocked, once', async ($, on) => {
+  const fault = { isArmed: false }
+  const job = `${records}/mail/1/cur/job.1.json`
+  const { world } = createChild(on, undefined, { unit: { base: 'p1', baseBranch: 'par' }, failRead: path => fault.isArmed && path === job })
+  world.files.set(job, JSON.stringify({ v: 2, id: 'job', kind: 'assign', from: 'coordinator-coord', to: '1', issue: 1, in_reply_to: '',
+    seq: 1, created_at: '2026-11-03T00:00:00.000Z', expects: '', attempt: 1, body: 'Build it.', refs: [], author: 'agent', options: [] }))
+  fault.isArmed = true
+  await $.turn.start({ text: 'work', turnId: 't' })
+  const blocks = [(await stop($)).block, (await stop($, true)).block].filter(Boolean).join('\n')
+  expect(blocks).toContain(`The mod could not read job.1.json in ${records}/mail/1/cur, which this unit's owed mail is read from`)
+  expect(blocks).toContain(`check with cat ${job}. Report with send before you end it: question for a decision`)
+  expect(blocks).not.toContain('could not list')
+  expect(blocks).not.toContain('inform for a report')
+  expect(blocks).not.toContain('done in reply to')
+  expect((await stop($, true)).block).toBeUndefined()
+})
+
 test('a unit back in a state it was already asked about is not asked again', async ($, on) => {
   const { world } = createChild(on, undefined, { unit: { base: 'p1', baseBranch: 'par' } })
   await $.turn.start({ text: 'work', turnId: 't' })
@@ -240,7 +335,7 @@ test('a unit back in a state it was already asked about is not asked again', asy
   deliver(world, 'job', 'assign', 'Build it.')
   await $.classic.UserPromptSubmit({ prompt: doorbell, permission_mode: 'default' } as never)
   await $.turn.start({ text: doorbell, turnId: 't2' })
-  expect((await stop($)).block).toContain('Open and owed a reply: assign job.')
+  expect((await stop($)).block).toContain('done in reply to assign job once it is finished')
   expect((await callModTool($, 'send', { kind: 'done', in_reply_to: 'job', body: 'Built.' })).isError).toBe(false)
   await $.turn.start({ text: 'later', turnId: 't3' })
   expect((await stop($)).block).toBeUndefined()

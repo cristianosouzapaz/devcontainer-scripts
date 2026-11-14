@@ -28,13 +28,14 @@ interface UnitFlow { flow: FlowDefinition; unit: Unit; git: GitState | null; isC
  * @param session - The session.
  * @param isLocal - Whether cached GitHub facts are preferred.
  * @param isForced - Whether the unit's GitHub facts must be refreshed.
+ * @param pinned - The unit branch's tip its caller already read, which the slice is judged at instead of the branch read again, writing no observed end.
  * @returns The position, or null with no flow declared.
  */
-export async function locatePosition(port: EnginePort, session: Session, isLocal = false, isForced = false): Promise<Position | null> {
+export async function locatePosition(port: EnginePort, session: Session, isLocal = false, isForced = false, pinned?: string): Promise<Position | null> {
   const located = await readUnitFlow(port, session)
   if (!located) return null
   const { flow: definition, unit, git } = located
-  // A child's remembered conclusion is checked against its slice end, which only its slice read gives.
+  // why: a child's remembered conclusion must be checked against its slice end, which only its slice read gives, so it is not trusted here.
   const held = session.unit && !located.isChild ? sessionMemory.concluded.get(unitMemoryKey(session.unit, unit))?.pullRequest : undefined
   /**
    * Completes the located evidence with the declared unit's step states.
@@ -44,7 +45,7 @@ export async function locatePosition(port: EnginePort, session: Session, isLocal
   const finish = (evidence: Evidence): Position => withStates({ ...evidence, flow: definition, unit }, session)
   const empty: Evidence = { git: null, slice: null, verify: { fact: '', isVerified: false, isReached: false }, checks: 'off', isConcluded: true }
   if (held) return finish({ ...empty, pullRequest: held })
-  const slice = git && session.unit ? await readUnitSlice(port, session.unit, unit, git, session.flow === 'close-out') : null
+  const slice = git && session.unit ? await readUnitSlice(port, session.unit, unit, git, session.flow === 'close-out', pinned) : null
   const judged = located.isChild && git && session.unit && unit.baseBranch
     ? await judgeChild(port, session.unit, unit, unit.baseBranch, git, slice, isLocal, isForced) : null
   const candidates = judged ? judged.candidates : git && session.unit ? await readCandidates(port, session.unit.branch, isLocal, isForced) : null

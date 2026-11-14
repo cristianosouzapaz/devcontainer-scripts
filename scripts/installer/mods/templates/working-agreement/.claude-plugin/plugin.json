@@ -1,6 +1,6 @@
 {
   "name": "working-agreement",
-  "version": "2.7.0",
+  "version": "2.8.0",
   "description": "Enforces and shows the AGENTS.md work flows",
   "author": {
     "name": "cristianosouzapaz"
@@ -23,6 +23,12 @@
       "type": "boolean",
       "title": "Continue units at a usage limit",
       "description": "Whether spawned unit sessions wait for a usage limit to reset and continue on their own instead of stopping on its dialog",
+      "default": false
+    },
+    "allowRemoteCommands": {
+      "type": "boolean",
+      "title": "Allow /flow commands through Remote Control",
+      "description": "Whether the user's human-only /flow commands (delegate, approve, skip, follow-up...) are accepted when they arrive through Remote Control; only the local terminal may turn it on",
       "default": false
     }
   }

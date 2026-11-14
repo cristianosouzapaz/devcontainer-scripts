@@ -196,7 +196,7 @@ function drawNoteRow(elements: PaneElements, row: FlowRow, props: NotesProps): R
         <Text color={toneColor[row.tone]} weight="semibold">{row.key}</Text>
       </Box>
       {row.key === 'Merge'
-        // The command stays out of the pane, where it would wrap over several lines; the button copies it.
+        // why: the command stays out of the pane, where it would wrap over several lines; the button copies it.
         ? <Box flexShrink={0}>
           <Button key="copy" label="copy" hotkey="m" onPress={press => props.copyMerge(press.surface)} />
           {props.mergeCopy && <Text color={props.mergeCopy.isCopied ? 'text' : toneColor.warn}>{props.mergeCopy.isCopied ? '  copied' : `  ${props.mergeCopy.reason}`}</Text>}

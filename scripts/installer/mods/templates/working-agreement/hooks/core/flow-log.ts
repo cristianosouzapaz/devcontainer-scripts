@@ -10,6 +10,7 @@ import type { EnginePort } from './engine-port'
 import { unitLogPath } from './record-store'
 import { sameIdentity } from '../domain/records'
 import { holdError, sessionMemory } from './session-memory'
+import { moduleState } from '../lib/module-state'
 
 /** The step states this module last logged, for one chat's unit lifetime. */
 interface StepBaseline { key: string; states: Record<string, FlowStep['state']> }
@@ -20,19 +21,19 @@ interface StepMemory { baseline: StepBaseline | null }
 /** A logged event's own fields; the line adds when, which chat and which unit. */
 type Detail = Record<string, unknown>
 
-// A longer free-text field is cut so a line keeps its detail under the byte cap.
+// why: a longer free-text field is cut so a line keeps its detail under the byte cap.
 const maxDetailLength = 500
-// PIPE_BUF on Linux: a write this small reaches tee through its stdin pipe whole, and tee appends it with one
-// O_APPEND write, which no other session's append can split.
+// why: PIPE_BUF on Linux: a write this small reaches tee through its stdin pipe whole, and tee appends it with one O_APPEND write, which no other session's append can split.
 const maxWriteBytes = 4096
 const encoder = new TextEncoder()
-const queueLog = createQueue()
-const steps: StepMemory = { baseline: null }
+const logQueue = moduleState(() => ({ run: createQueue() }))
+const steps = moduleState((): StepMemory => ({ baseline: null }))
 
 /**
  * Appends one event to the session unit's log in the background; a session with no unit logs nothing.
  *
- * Nothing reads the log back, and a failure never reaches the caller: it is held for `/flow status` and the debug log.
+ * Only the issue audit reads the log back, for the time the unit's flow was declared, which its window and its search by hand start
+ * from; a failure never reaches the caller: it is held for `/flow status` and the debug log.
  * @param port - The engine calls.
  * @param session - The session the event belongs to, as written when the event is backed by a record write.
  * @param event - The event name.
@@ -46,7 +47,7 @@ export function logEvent(port: EnginePort, session: Session, event: string, deta
   enqueue(port, async () => {
     const bounded = { at: await port.now(), session: session.sessionId, generation: readGeneration(session) }
     const line = `${JSON.stringify({ ...bounded, branch: unit.branch, issues: unit.issues, event, ...fields })}\n`
-    // A line past the cap keeps only its bounded fields rather than risk a split write; the file still names the unit.
+    // why: a line past the cap keeps only its bounded fields rather than risk a split write; the file still names the unit.
     await append(port, await unitLogPath(port, unit), isWhole(line) ? line : `${JSON.stringify({ ...bounded, event, isTruncated: true })}\n`)
   })
 }
@@ -66,12 +67,12 @@ export function logSteps(port: EnginePort, session: Session, painted: FlowStep[]
   const key = JSON.stringify([session.sessionId, session.unit, readGeneration(session)])
   const previous = steps.baseline
   steps.baseline = { key, states }
-  // A null would read as a judged empty value, so a slice part the judgement lacked is left out.
+  // why: a null would read as a judged empty value, so a slice part the judgement lacked is left out.
   const judged = { ...(slice?.base ? { base: slice.base } : {}), ...(slice?.tree ? { tree: slice.tree } : {}) }
   if (previous?.key !== key) return logEvent(port, session, 'snapshot', { steps: states, ...judged, cause: causes })
   for (const step of painted) {
     const from = previous.states[step.id]
-    // A skipped step's detail is its reason, which the skip line already holds.
+    // why: a skipped step's detail is its reason, which the skip line already holds, so only current and done steps log a fact.
     const fact = step.detail && (step.state === 'current' || step.state === 'done') ? { fact: step.detail } : {}
     if (from !== step.state) logEvent(port, session, 'step', { step: step.id, from: from ?? null, to: step.state, ...fact, ...judged, cause: causes })
   }
@@ -86,7 +87,7 @@ export function logSteps(port: EnginePort, session: Session, painted: FlowStep[]
 export function carryLog(port: EnginePort, from: Identity, to: Identity): void {
   enqueue(port, async () => {
     const source = await unitLogPath(port, from)
-    // The unit may have no log yet.
+    // why: the unit may have no log yet, so a missing one reads as empty.
     const text = await port.files.read(source).catch(() => '')
     const target = await unitLogPath(port, to)
     for (const chunk of chunkLines(text)) await append(port, target, chunk)
@@ -130,7 +131,7 @@ function readGeneration(session: Session): string | undefined {
  * @param work - The write.
  */
 function enqueue(port: EnginePort, work: () => Promise<void>): void {
-  void queueLog(() => bestEffort(port, 'log append', async () => {
+  void logQueue.run(() => bestEffort(port, 'log append', async () => {
     try { await work() } catch (error) {
       sessionMemory.logError = holdError(sessionMemory.logError, formatError(error), await port.now())
       throw error
@@ -148,7 +149,7 @@ function enqueue(port: EnginePort, work: () => Promise<void>): void {
 async function append(port: EnginePort, path: string, text: string): Promise<void> {
   const write = async () => hasExitedZero(await runProcess(port.processes, ['tee', '-a', '--', path], undefined, { stdin: text }))
   if ((await write()).isOk) return
-  // The log bucket does not exist before a clone's first line.
+  // why: the log bucket does not exist before a clone's first line.
   await runProcess(port.processes, ['mkdir', '-p', '--', path.slice(0, path.lastIndexOf('/'))])
   const retried = await write()
   if (!retried.isOk) throw new Error(retried.error)

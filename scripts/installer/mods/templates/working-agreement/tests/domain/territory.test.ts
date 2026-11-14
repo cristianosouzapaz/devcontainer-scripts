@@ -92,8 +92,7 @@ const pushes: Scenario[] = [
   })(), change: checkout => { checkout.graph!.refs['origin/sibling'] = 'sm' } },
 ]
 
-// Each placed pair is a branch tip, or a detached HEAD named by its worktree root, that the mod's own spawn or merge_child set during another
-// session's call; the held child commits in that call too.
+// why: each placed pair is a branch tip, or a detached HEAD named by its worktree root, that the mod's own spawn or merge_child set during another session's call, and the held child commits in that call too.
 const placements: Placement[] = [
   { name: "spawn's new branch on merge_child's merge of the user's sibling commit (the live example)", isJudged: false,
     checkout: parallelCheckout(), placed: [['parent', 'pm'], ['spawned', 'pm']], change: checkout => {
@@ -158,10 +157,10 @@ for (const scenario of scenarios) {
     await world.clock.settle()
     const violations = world.sessions.get('sid')?.violations ?? []
     if (scenario.isJudged) {
-      // Moving a default-branch checkout also changes its tree, a separate fact.
+      // why: moving a default-branch checkout also changes its tree, a separate fact.
       expect(violations.filter(record => record.kind === 'commit')).toHaveLength(1)
       expect(context).toContain('a commit appeared')
-      // The transition log is the unit's, so a session without one logs nowhere.
+      // why: the transition log is the unit's, so a session without one logs nowhere.
       if (scenario.options?.session !== noFlow) expect(violationLines(world.files).filter(line => line.includes('"kind":"commit"'))).toHaveLength(1)
       return
     }
@@ -240,7 +239,7 @@ test('territory: a unit branch deleted during the call has no slice, so a merge 
   expect(world.sessions.get('sid')?.violations?.map(({ kind, fact }) => ({ kind, fact }))).toEqual([{ kind: 'commit', fact: { shas: ['l1'] } }])
 })
 
-// The first prefix fails the unit-branch read that scopes a held tip; the second fails the slice-reachability read of the merge.
+// why: the first prefix fails the unit-branch read that scopes a held tip; the second fails the slice-reachability read of the merge.
 for (const failing of ['git rev-parse --verify --quiet refs/heads/child', 'git rev-list pm --not p0']) {
   test(`territory: an unreadable placement (${failing}) leaves only that tip's commits unchecked`, async ($, on) => {
     const checkout = parallelCheckout()

@@ -53,7 +53,7 @@ test('approve_unit refuses a red command other than the one recorded before the 
   const world = await arrangeCoordinator(on, decision(`Approve ${diagnosis.url}.`, 'The red ./other fails.'))
   const result = await callModTool($, 'approve_unit', { ...message, red: './other' })
   expect(result.isError).toBe(true)
-  expect(result.text).toContain('which the unit recorded as: ./check')
+  expect(result.text).toContain('the unit\'s records hold no red run of `./other` before the diagnosis; the reds they hold before it are: ["./check"]')
   expect(prompts(world)).toEqual([])
 })
 

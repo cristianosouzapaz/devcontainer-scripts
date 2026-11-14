@@ -26,8 +26,8 @@ export const keyWidth = 12
 /** Every fixed label a keyed row can carry, on the pane, in the run log and in `/flow status`; each is shorter than `keyWidth`. */
 export const keyLabels = [
   'Approve', 'Blocked', 'Branch', 'CI', 'Changed', 'Checkout', 'Checks', 'Classic', 'Commits', 'Config', 'Cwd', 'Decision', 'Delegating', 'Delegation',
-  'File', 'GitHub', 'Guards', 'Handoff', 'Inbox', 'Issue', 'Issue audit', 'Issues', 'Labels', 'Level', 'Log', 'Merge', 'Mod', 'Notice', 'PR',
-  'Records', 'Retired', 'Rulesets', 'Run', 'Selection', 'Slice', 'Spawned', 'Step', 'Tree', 'Triage', 'Unchecked', 'Verify', 'Violation',
+  'File', 'GitHub', 'Guards', 'Handoff', 'Inbox', 'Issue', 'Issue audit', 'Issues', 'Labels', 'Level', 'Log', 'Mail', 'Merge', 'Mod', 'Notice', 'PR', 'Process',
+  'Queue', 'Records', 'Retired', 'Retries', 'Rulesets', 'Run', 'Selection', 'Slice', 'Spawned', 'Start', 'Step', 'Tools', 'Tree', 'Triage', 'Unchecked', 'Verify', 'Violation',
   'Worktree', 'herdr',
 ] as const
 

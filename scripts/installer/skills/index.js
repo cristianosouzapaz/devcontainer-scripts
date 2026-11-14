@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readlinkSync } from "node:fs";
+import { existsSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { loadAgentPacks, selectAgentPacks } from "../lib/agent-packs.js";
 import { loadJsonCatalog } from "../lib/catalog.js";
 import { readGlobalSkillSet } from "../lib/global-skill-set.js";
@@ -223,13 +224,14 @@ const normalizeGlobalAdapters = (entry, packs, selected) => {
 /**
  * Non-interactive `--global` path: add every skills.json entry marked `global` to the shared store,
  * then refresh them, normalizing each skill's symlink adapters to an absolute canonical target.
- * A single skill's failure is logged and skipped; a failed `skills update -g` is tolerated
+ * A single skill's failure is logged and skipped, so the others still sync, then sets a non-zero
+ * exit status so the caller sees the sync as partial; a failed `skills update -g` is tolerated
  * because the per-skill re-add above is the real freshness guarantee.
  * @param {{ run?: (args: string[]) => void }} [options] - CLI runner override for tests.
- * @returns {void} Nothing.
+ * @returns {void} Nothing; a failed skill add or adapter link sets `process.exitCode` to 1.
  * @throws {TypeError} If options or its runner are malformed.
  * @throws {Error} If the manifest is invalid or a runner throws a non-Error value.
- * @effects Reads the coding-agent packs and `CODING_AGENTS`, starts the supplied CLI runner for each manifest entry and the final update command, and may create the selected agents' adapter symlinks and repair any existing one below the current user home directory.
+ * @effects Reads the coding-agent packs and `CODING_AGENTS`, starts the supplied CLI runner for each manifest entry and the final update command, may create the selected agents' adapter symlinks and repair any existing one below the current user home directory, and sets the process exit status.
  */
 export const installGlobalSkills = (options = {}) => {
     if (options === null || typeof options !== "object" || Array.isArray(options)
@@ -240,6 +242,7 @@ export const installGlobalSkills = (options = {}) => {
     const external = loadGlobalSkillsManifest();
     const packs = loadAgentPacks();
     const selected = new Set(selectAgentPacks(packs, process.env.CODING_AGENTS).map((pack) => pack.id));
+    let anyFailed = false;
     for (const entry of external) {
         consola.start(`Adding ${entry.name} to the shared skills store`);
         try {
@@ -247,6 +250,7 @@ export const installGlobalSkills = (options = {}) => {
         } catch (error) {
             if (!isCliFailure(error)) throw error;
             consola.error(`Failed to add ${entry.name}: ${error.message}`);
+            anyFailed = true;
             continue;
         }
         try {
@@ -255,6 +259,7 @@ export const installGlobalSkills = (options = {}) => {
         } catch (error) {
             if (!isCliFailure(error)) throw error;
             consola.error(`${entry.name} added, but its agent adapters could not be linked: ${error.message}`);
+            anyFailed = true;
         }
     }
     try {
@@ -264,6 +269,7 @@ export const installGlobalSkills = (options = {}) => {
         if (!isCliFailure(error)) throw error;
         consola.warn(`skills update -g failed (non-fatal): ${error.message}`);
     }
+    if (anyFailed) process.exitCode = 1;
 };
 
 /**
@@ -307,7 +313,7 @@ const askUser = async () => {
     }
 };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
     if (process.argv[2] === "--global") {
         try {
             installGlobalSkills();

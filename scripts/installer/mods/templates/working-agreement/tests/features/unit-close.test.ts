@@ -1,14 +1,18 @@
 import { expect } from 'claude-code/testing'
 
 import { coordinator } from '../support/builders'
-import { callModTool, inside, readPromptContext } from '../support/helpers'
+import { callModTool, holdSpawnLock, inside, readPromptContext } from '../support/helpers'
 import { test } from '../support/kit'
-import { gatedCheckout, gateOptions, seedDelegatedChild } from '../support/parallel-worktrees'
-import { createWorld, records, scopeFile } from '../support/world'
+import { gatedCheckout, gateOptions, seedDelegatedChild, tipA } from '../support/parallel-worktrees'
+import { reportStalledUnits } from '../../hooks/core/liveness'
+import { tickMs } from '../../hooks/core/timing'
+import { buildStat, coordinatorHost, createTestPort, createWorld, records, root, scopeFile } from '../support/world'
 import type { Options, World } from '../support/world'
 
 /** A herdr workspace the fake server holds: its label, its checkout, and whether its agent runs and works. */
 interface Workspace { id: string; label: string; path: string; hasAgent: boolean; isWorking: boolean }
+
+const childProcess = { pid: 300, pidStart: '8000' }
 
 /**
  * Answers herdr like a live server holding these workspaces, closing one on `workspace close`.
@@ -31,7 +35,7 @@ const herdrServer = (workspaces: Workspace[]): Options['herdrReply'] => args => 
     return JSON.stringify({ result: { panes: [{ pane_id: `${workspace?.id}:p1`, ...(workspace?.hasAgent ? { agent: 'claude' } : {}) }] } })
   }
   if (noun === 'agent' && verb === 'wait') {
-    // herdr takes an agent's name or the pane it runs in as its target.
+    // why: herdr takes an agent's name or the pane it runs in as its target.
     const workspace = workspaces.find(each => each.label === `wa-spawn:${args[2]?.replace('issue-', '')}` || args[2] === `${each.id}:p1`)
     return workspace?.isWorking ? { exitCode: 1, stderr: 'timeout' } : '{}'
   }
@@ -56,6 +60,16 @@ async function arrange(on: Parameters<typeof createWorld>[0], unit: Partial<Work
 }
 
 /**
+ * Starts the child's session process, recorded as its mod records it, under the session id its spawn record names.
+ * @param world - The world.
+ */
+function startChildProcess(world: World): void {
+  world.files.set(`${records}/spawn/2.json`, JSON.stringify({ isStarted: true, isPrompted: true, sessionId: 'child' }))
+  world.files.set(`${records}/host/child.json`, JSON.stringify({ ...coordinatorHost, ...childProcess }))
+  world.files.set(`/proc/${childProcess.pid}/stat`, buildStat(childProcess.pid, childProcess.pidStart))
+}
+
+/**
  * Lists the workspace closes a world asked herdr for.
  * @param world - The world.
  * @returns The command lines.
@@ -64,7 +78,7 @@ const closes = (world: World): string[] => world.herdrCalls.map(call => call.arg
 
 test('merge_child closes the idle child\'s spawned workspace, keeping its worktree, branch and records, and says so', async ($, on) => {
   const { world, workspaces } = await arrange(on)
-  const merged = await callModTool($, 'merge_child', { child: 'a' })
+  const merged = await callModTool($, 'merge_child', { child: 'a', tip: tipA })
   expect(merged).toEqual({ text: expect.stringContaining('#2\'s session is closed; its worktree, branch and records stay, and spawn 2 resumes it.'), isError: false })
   expect(closes(world)).toEqual(['herdr workspace close w2'])
   expect(workspaces).toEqual([])
@@ -79,13 +93,13 @@ test('merge_child closes a start assignment the child never replied done to, and
   const assign = { v: 1, id: 'a1', kind: 'assign', from: 'coordinator-sid', to: '2', issue: 2, in_reply_to: '', seq: 1, created_at: '2026-01-01T00:00:00.000Z',
     expects: '', attempt: 1, body: 'Work on issue #2.', refs: [], author: 'agent' }
   world.files.set(`${records}/mail/2/cur/a1.1.json`, JSON.stringify(assign))
-  const merged = await callModTool($, 'merge_child', { child: 'a' })
+  const merged = await callModTool($, 'merge_child', { child: 'a', tip: tipA })
   expect(merged.text).toContain('#2\'s start assignment (message a1) is closed: integrated without a done.')
 })
 
 test('a child mid-turn is left running, and a coordinator prompt after its turn ends closes it', async ($, on) => {
   const { world, workspaces } = await arrange(on, { isWorking: true })
-  const merged = await callModTool($, 'merge_child', { child: 'a' })
+  const merged = await callModTool($, 'merge_child', { child: 'a', tip: tipA })
   expect(merged.text).toContain('#2\'s session is mid-turn, so its workspace is closed when that turn ends.')
   expect(closes(world)).toEqual([])
   const waiting = readPromptContext($)
@@ -97,11 +111,37 @@ test('a child mid-turn is left running, and a coordinator prompt after its turn 
   expect(closes(world)).toEqual(['herdr workspace close w2'])
 })
 
+// contract: a deferred close whose spawn lock is lost between staging its write and the rename never renames over a competing writer's record
+test('a deferred close that loses the spawn lock before its rename leaves a competing writer\'s record in place', async ($, on) => {
+  const race = { isArmed: false, competitor: '' }
+  const { world } = await arrange(on, { isWorking: true }, true, gatedCheckout(), { afterWrite: path => {
+    if (!race.isArmed || !path.startsWith(`${records}/spawn/.tmp-`)) return
+    race.isArmed = false
+    world.hostLocks.kill(`${records}/locks/spawn`, 'sid')
+    race.competitor = JSON.stringify({ isStarted: true, isPrompted: true, sessionId: 'handed-off' })
+    world.files.set(`${records}/spawn/2.json`, race.competitor)
+  } })
+  race.isArmed = true
+  await callModTool($, 'merge_child', { child: 'a', tip: tipA })
+  expect(world.files.get(`${records}/spawn/2.json`)).toBe(race.competitor)
+})
+
+// contract: a child mid-turn at its merge is closed by the coordinator's next tick once its turn ends, without waiting for a prompt
+test('a child mid-turn at its merge is closed at the coordinator\'s tick after its turn ends, with no prompt', async ($, on) => {
+  const { world, workspaces } = await arrange(on, { isWorking: true })
+  await $.session.start({ cwd: root, surface: null, isInteractive: false })
+  expect((await callModTool($, 'merge_child', { child: 'a', tip: tipA })).text).toContain('#2\'s session is mid-turn')
+  workspaces[0]!.isWorking = false
+  await world.clock.advance(tickMs)
+  await world.clock.settle()
+  expect(closes(world)).toEqual(['herdr workspace close w2'])
+})
+
 test('merge_child closes the idle child\'s session when its merge stands but is not recorded as delegated', async ($, on) => {
   const live = gatedCheckout()
-  const moveChild = () => { live.graph = { ...live.graph!, commits: { ...live.graph!.commits, a3: { parents: ['a2'], files: live.graph!.commits.a2!.files } }, refs: { ...live.graph!.refs, a: 'a3' } } }
+  const moveChild = () => { live.graph = { ...live.graph!, commits: { ...live.graph!.commits, a3: { parents: [tipA], files: live.graph!.commits[tipA]!.files } }, refs: { ...live.graph!.refs, a: 'a3' } } }
   const { world } = await arrange(on, {}, true, live, { afterSpawn: moveChild })
-  const merged = await callModTool($, 'merge_child', { child: 'a' })
+  const merged = await callModTool($, 'merge_child', { child: 'a', tip: tipA })
   expect(merged.text).toContain('not recorded as delegated')
   expect(merged.text).toContain('#2\'s session is closed')
   expect(closes(world)).toEqual(['herdr workspace close w2'])
@@ -109,7 +149,7 @@ test('merge_child closes the idle child\'s session when its merge stands but is 
 
 test('a child session spawn did not open is never closed', async ($, on) => {
   const { world } = await arrange(on, { label: 'claude-1234abcd:a' }, false)
-  const merged = await callModTool($, 'merge_child', { child: 'a' })
+  const merged = await callModTool($, 'merge_child', { child: 'a', tip: tipA })
   expect(merged.text).toContain('Merged a into par')
   expect(merged.text).not.toContain('session is')
   expect(closes(world)).toEqual([])
@@ -118,15 +158,14 @@ test('a child session spawn did not open is never closed', async ($, on) => {
 test('without delegation merge_child closes nothing', async ($, on) => {
   const { world } = await arrange(on)
   world.files.delete(scopeFile('sid'))
-  expect((await callModTool($, 'merge_child', { child: 'a' })).isError).toBe(true)
+  expect((await callModTool($, 'merge_child', { child: 'a', tip: tipA })).isError).toBe(true)
   expect(closes(world)).toEqual([])
 })
 
 test('the close never runs while a spawn holds the lock', async ($, on) => {
   const { world } = await arrange(on)
-  world.files.set(`${records}/spawn/lock/held`, '')
-  world.modified.set(`${records}/spawn/lock`, world.clock.now())
-  const merging = callModTool($, 'merge_child', { child: 'a' })
+  holdSpawnLock(world)
+  const merging = callModTool($, 'merge_child', { child: 'a', tip: tipA })
   await world.clock.advance(31000)
   expect((await merging).text).toContain('#2\'s session is not closed: another spawn holds the lock')
   expect(closes(world)).toEqual([])
@@ -136,6 +175,29 @@ test('the close never runs while a spawn holds the lock', async ($, on) => {
 test('merge_child removes the integrated child\'s stall record', async ($, on) => {
   const { world } = await arrange(on)
   world.files.set(`${records}/stalls/2.json`, JSON.stringify({ v: 1, session: 'child', stall: 'mail', key: 'child:mail:m1' }))
-  await callModTool($, 'merge_child', { child: 'a' })
+  await callModTool($, 'merge_child', { child: 'a', tip: tipA })
+  expect(world.files.has(`${records}/stalls/2.json`)).toBe(false)
+})
+
+// contract: a coordinator tick that runs while merge_child closes the integrated child's session, its process already ended and its workspace still listed, reports no death and records no stall
+test('a tick during merge_child\'s close of the integrated child sends the user no dead report', async ($, on) => {
+  const held: { world?: World; reached?: () => void } = {}
+  const reached = new Promise<void>(resolve => { held.reached = resolve })
+  // why: herdr ends the agent first, and the workspace leaves its list only when the close returns.
+  const herdrDelayMs = (args: string[]): number => {
+    if (args[0] !== 'workspace' || args[1] !== 'close') return 0
+    held.world?.files.delete(`/proc/${childProcess.pid}/stat`)
+    held.reached?.()
+    return 1000
+  }
+  const { world } = await arrange(on, {}, true, gatedCheckout(), { herdrDelayMs })
+  held.world = world
+  startChildProcess(world)
+  const merging = callModTool($, 'merge_child', { child: 'a', tip: tipA })
+  await reached
+  await reportStalledUnits(createTestPort(world))
+  await world.clock.advance(1000)
+  expect((await merging).text).toContain('#2\'s session is closed')
+  expect([...world.files.keys()].filter(path => path.startsWith(`${records}/mail/user/new/`))).toEqual([])
   expect(world.files.has(`${records}/stalls/2.json`)).toBe(false)
 })

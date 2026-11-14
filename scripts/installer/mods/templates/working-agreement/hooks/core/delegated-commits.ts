@@ -2,8 +2,9 @@ import { findDeniedWord, findHeavyTestRun, isGitCommit, listScriptCandidates } f
 import { composeSignScript, groupChains, nameSignScript, parseDelegatedCommit } from '../domain/delegated-commits'
 import type { DelegatedCommit, SigningBranch, SigningChain, SigningPlan } from '../domain/delegated-commits'
 import { markForAgent } from '../domain/messages'
+import { stop } from '../domain/outcome'
 import type { Identity } from '../domain/records'
-import { hashObject, isAncestor, readDefaultRef, readGitOutput, readParentBranch, readWorktrees, runGit } from '../lib/git'
+import { hashObject, isAncestor, readDefaultRef, readGitOutput, readHeadRef, readParentBranch, readWorktrees, runGit } from '../lib/git'
 import { readBranchRulesets } from '../lib/github'
 import { readJson } from '../lib/json'
 import { executeProcess } from '../lib/process'
@@ -17,11 +18,13 @@ import { logEvent } from './flow-log'
 import { atomicReplace, listRecordNames, readCommonDir, readSession, recordsPath } from './record-store'
 import { readGit } from './repository'
 import type { RefSnapshot } from './territory'
-import { readApprovedRunners } from './verify'
+import { readApprovedCommands } from './verify'
 
-// why: Any unit session writes here and the coordinator reads every unit's records, so they live under the common directory;
-// one file per change key means two writers never share a file.
+// why: any unit session writes here and the coordinator reads every unit's records, so they live under the common directory; one file per change key means two writers never share a file.
 const bucket = 'delegated'
+
+/** What to read before retrying a delegated commit or parent merge that did not finish. */
+export const commitCheck = 'git log -1 and git status'
 
 /**
  * Reads the unit of this session when a coordinator delegates it.
@@ -66,15 +69,16 @@ async function readUnsigned(port: EnginePort, shas: string[]): Promise<string[] 
 /**
  * Reads every delegated-commit record of the repository; an unreadable one is skipped.
  * @param port - The engine calls.
- * @returns The records, or null when the records directory exists but cannot be listed.
+ * @returns The records, or null when the repository metadata cannot be located or the records directory exists but cannot be listed.
  */
 export async function readDelegatedCommits(port: EnginePort): Promise<DelegatedCommit[] | null> {
   const common = await readCommonDir(port)
-  if (!common) return []
+  if (!common) return null
   const directory = recordsPath(common, bucket)
   const names = await listRecordNames(port, directory).catch(() => null)
   if (!names) return null
   const records = await Promise.all(names.filter(name => name.endsWith('.json'))
+    // why: one record that cannot be read is skipped, so it never hides every other delegated commit.
     .map(async name => parseDelegatedCommit(await readJson(port.files, recordsPath(common, bucket, name)).catch(() => undefined))))
   return records.filter((record): record is DelegatedCommit => record !== null)
 }
@@ -92,8 +96,10 @@ async function findUntrackedScript(port: EnginePort, command: string): Promise<s
   for (const candidates of listScriptCandidates(command)) {
     for (const candidate of candidates) {
       const path = candidate.startsWith('/') ? candidate : `${cwd}/${candidate}`
-      if ((await port.files.stat(path).catch(() => null))?.kind !== 'file') continue
-      if ((await runGit(port.processes, ['-C', cwd, 'ls-files', '--error-unmatch', '--', path])).exitCode !== 0) return candidate
+      const stat = await port.files.stat(path).catch(() => null)
+      if (stat?.kind !== 'file') continue
+      // why: git does not follow a symlinked directory, so a tracked script reached through one is asked about by its real path.
+      if ((await runGit(port.processes, ['-C', cwd, 'ls-files', '--error-unmatch', '--', stat.realPath ?? path])).exitCode !== 0) return candidate
       break
     }
   }
@@ -111,16 +117,16 @@ export async function denyDelegatedCommand(port: EnginePort, command: string): P
   if (!await readDelegatedUnit(port, false).catch(() => true)) return undefined
   if (isGitCommit(command)) return markForAgent('Under delegation a Bash git commit is refused before it runs: stage the work with git add, then commit it with the commit tool, '
     + 'which commits unsigned on this unit\'s branch and records it as delegated.')
-  const heavy = findHeavyTestRun(command, await readApprovedRunners(port))
-  if (heavy) return markForAgent(`Under delegation a test run from Bash is refused before it runs (${heavy}): it would load the host outside the Verify queue `
+  const heavy = findHeavyTestRun(command, await readApprovedCommands(port))
+  if (heavy) return markForAgent(`Under delegation a test run from Bash is refused before it runs (\`${heavy}\`): it would load the host outside the Verify queue `
     + 'and slow another unit\'s Verify past its timeouts. Run a targeted test through the run tool, which waits its turn in the queue, and the unit\'s own check through the verify tool.')
   const aliases = await runGit(port.processes, ['config', '--get-regexp', '^alias\\.'])
-  // git config exits 1 when no alias is set.
+  // why: git config exits 1 when no alias is set, so that exit means no aliases rather than a failed read.
   const names = aliases.exitCode === 0 ? aliases.stdout.split('\n').filter(Boolean).map(line => line.split(' ')[0]?.slice('alias.'.length) ?? '')
     : aliases.exitCode === 1 ? [] : null
   const word = findDeniedWord(command, names)
   const script = word === undefined ? await findUntrackedScript(port, command) : undefined
-  if (script) return markForAgent(`Under delegation running an untracked script is refused before it runs (${script}): the word guard cannot read a file's contents. `
+  if (script) return markForAgent(`Under delegation running an untracked script is refused before it runs (\`${script}\`): the word guard cannot read a file's contents. `
     + 'Run its commands directly, or a script tracked in the repository; a commit goes through the commit tool.')
   return word === undefined ? undefined : markForAgent(`Under delegation this command is refused before it runs (it names ${word}): `
     + 'a delegated unit only commits on its own branch; pushes, merges, rebases, ref rewrites and PR writes are the user\'s on their return. '
@@ -156,10 +162,10 @@ export async function commitDelegated(port: EnginePort, message: string): Promis
   if (elsewhere) return fail(elsewhere)
   const run = await runUnsignedGit(port, ['commit'], ['-F', '-'], message)
   if (run.exitCode !== 0) return fail(`git commit failed — stage the work with git add first: ${`${run.stdout}\n${run.stderr}`.trim()}`)
-  const sha = await recordHead(port, unit.branch, 'a commit')
-  if (!sha.isOk) return sha
-  logEvent(port, await readSession(port), 'delegated-commit', { shas: sha.value })
-  return succeed(`Committed ${sha.value} on ${unit.branch}, unsigned and recorded as delegated; the user signs and pushes it on their return.`)
+  const head = await recordHead(port, unit.branch, 'a commit')
+  if (!head.isOk) return head
+  if (head.value.isNew) logEvent(port, await readSession(port), 'delegated-commit', { shas: head.value.sha })
+  return succeed(`Committed ${head.value.sha} on ${unit.branch}, unsigned and recorded as delegated; the user signs and pushes it on their return.`)
 }
 
 /**
@@ -169,7 +175,9 @@ export async function commitDelegated(port: EnginePort, message: string): Promis
  * @returns The refusal, or null when the branch is checked out here.
  */
 export async function refuseOtherCheckout(port: EnginePort, branch: string): Promise<string | null> {
-  return await readGitOutput(port.processes, ['symbolic-ref', '-q', 'HEAD']) === `refs/heads/${branch}` ? null : `this worktree does not have the unit's branch ${branch} checked out.`
+  const head = await readHeadRef(port.processes)
+  if (!head.isOk) return `git could not read which branch this worktree has checked out (${head.error}).`
+  return head.value === `refs/heads/${branch}` ? null : `this worktree does not have the unit's branch ${branch} checked out.`
 }
 
 /**
@@ -177,11 +185,12 @@ export async function refuseOtherCheckout(port: EnginePort, branch: string): Pro
  * @param port - The engine calls.
  * @param branch - The unit's branch.
  * @param made - The commit as the refusal names it, such as `a commit`.
- * @returns The commit's id, or the refusal when it cannot be read or recorded.
+ * @returns The commit's id and whether this write first recorded it, or a stop when it cannot be read or recorded.
  */
-export async function recordHead(port: EnginePort, branch: string, made: string): Promise<Result<string>> {
+export async function recordHead(port: EnginePort, branch: string, made: string): Promise<Result<{ sha: string; isNew: boolean }>> {
   const sha = await readGitOutput(port.processes, ['rev-parse', 'HEAD'])
-  return sha && await recordDelegated(port, [sha], branch) ? succeed(sha) : fail(`${made} was made on ${branch} but is not recorded as delegated — tell the user.`)
+  const added = sha ? await recordDelegated(port, [sha], branch) : null
+  return sha && added ? succeed({ sha, isNew: added.length > 0 }) : stop(`${made} was made on ${branch}; it is not recorded as delegated — tell the user.`)
 }
 
 /**
@@ -203,25 +212,46 @@ export async function claimDelegatedCommits(port: EnginePort, before: RefSnapsho
   const isHeld = (snapshot: RefSnapshot): boolean => snapshot.worktrees.some(wt => wt.root === snapshot.root && wt.branch === ref)
   const isDetachedMoved = after.worktrees.some(wt => !wt.branch && before.worktrees.find(held => held.root === wt.root)?.head !== wt.head)
   if (moved.length !== 1 || moved[0] !== ref || !isHeld(before) || !isHeld(after) || isDetachedMoved) return []
-  if (!await recordDelegated(port, shas, unit.branch)) return []
-  logEvent(port, await readSession(port), 'delegated-commit', { shas: shas.join(' ') })
+  const added = await recordDelegated(port, shas, unit.branch)
+  if (!added) return []
+  // why: the commit tool records its commit inside the same call's window, so only a commit this claim first records is logged here.
+  if (added.length) logEvent(port, await readSession(port), 'delegated-commit', { shas: added.join(' ') })
   return shas
 }
 
 /**
- * Records unsigned commits as delegated on a branch, each by its change, all of them or none.
+ * Records unsigned commits as delegated on a branch, each by its change, all of them or none; a record already in place is not written again.
  * @param port - The engine calls.
  * @param shas - The commits.
  * @param branch - The branch they were made on.
- * @returns Whether every commit was recorded; a signed commit or an unreadable change records none.
+ * @returns The commits this write first recorded, or null when none can be recorded: a signed commit or an unreadable change records none.
  */
-export async function recordDelegated(port: EnginePort, shas: string[], branch: string): Promise<boolean> {
+export async function recordDelegated(port: EnginePort, shas: string[], branch: string): Promise<string[] | null> {
   const common = await readCommonDir(port)
-  if (!common || (await readUnsigned(port, shas))?.length !== shas.length) return false
+  if (!common || (await readUnsigned(port, shas))?.length !== shas.length) return null
   const records = await Promise.all(shas.map(async sha => ({ sha, key: await readChangeKey(port, sha) })))
-  if (records.some(record => record.key === null)) return false
-  for (const { sha, key } of records) await atomicReplace(port, recordsPath(common, bucket, `${key}.json`), JSON.stringify({ v: 1, key, sha, branch }))
-  return true
+  if (records.some(record => record.key === null)) return null
+  const added: string[] = []
+  for (const { sha, key } of records) {
+    const path = recordsPath(common, bucket, `${key}.json`)
+    const text = JSON.stringify({ v: 1, key, sha, branch })
+    if (await port.files.read(path).catch(() => null) === text) continue
+    await atomicReplace(port, path, text)
+    added.push(sha)
+  }
+  return added
+}
+
+/**
+ * Tells whether a commit carries the change of a delegated-commit record, so a delegated commit keeps counting once the user re-signs it.
+ * @param port - The engine calls.
+ * @param sha - The commit.
+ * @returns Whether a record holds its change, or null when its change or the records cannot be read.
+ */
+export async function isDelegatedChange(port: EnginePort, sha: string): Promise<boolean | null> {
+  const key = await readChangeKey(port, sha)
+  const records = key ? await readDelegatedCommits(port) : null
+  return key && records ? records.some(record => record.key === key) : null
 }
 
 /**

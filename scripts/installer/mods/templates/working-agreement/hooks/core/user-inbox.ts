@@ -172,13 +172,13 @@ async function answerQuestion(port: EnginePort, common: string, id: string, said
   if (!sent.isOk) return fail(sent.error.includes('replied to once') ? `question ${id} is already answered` : sent.error)
   await markShown(port, common, userAddress, [question])
   const forward = await readForward(port, common, id)
-  if (forward) {
-    await sendMail(port, { kind: 'inform', author: 'mod', from: userAddress, to: forward.coordinator, issue: question.issue,
-      body: `The user answered #${question.issue}'s question ${id}, which you forwarded; the answer went to the unit:\n${body}` }).catch(() => null)
-  }
+  const told = forward ? await sendMail(port, { kind: 'inform', author: 'mod', from: userAddress, to: forward.coordinator, issue: question.issue,
+    body: `The user answered #${question.issue}'s question ${id}, which you forwarded; the answer went to the unit:\n${body}` })
+    .catch((error: unknown) => fail(formatErrorLine(error))) : succeed('')
+  const untold = forward && !told.isOk ? ` ${forward.coordinator} was not told (${told.error}): tell it in the coordinator's pane.` : ''
   const answer = await findMessage(port, common, question.from, replyId)
   const recorded = answer ? await recordComment(port, common, question.issue, replyId, composeAnswerComment(answer)) : ''
-  return succeed(`Answered ${id} to ${question.from}: ${body.split('\n')[0]}.${recorded}`)
+  return succeed(`Answered ${id} to ${question.from}: ${body.split('\n')[0]}.${untold}${recorded}`)
 }
 
 /**
@@ -275,7 +275,7 @@ const commentPath = (common: string, id: string): string => recordsPath(common, 
  * @returns The valid records.
  */
 async function readComments(port: EnginePort, common: string): Promise<CommentRecord[]> {
-  // The bucket exists only once a comment was owed.
+  // why: the bucket exists only once a comment was owed.
   const names = await port.files.list(recordsPath(common, 'comments')).catch(() => [])
   const read = await Promise.all(names.filter(({ name }) => name.endsWith('.json')).map(async ({ name }): Promise<CommentRecord[]> => {
     const value: unknown = await readJson(port.files, recordsPath(common, 'comments', name))

@@ -126,12 +126,19 @@ export interface AuditFinding { issue: number; field: string; expected: string; 
 export interface AuditCompliant { state: 'compliant' }
 /** At least one audited issue misses a required field. */
 export interface AuditViolations { state: 'violations'; findings: AuditFinding[] }
-/** The audit could not read GitHub or the config, so it proves nothing either way. */
-export interface AuditPending { state: 'pending'; reason: string }
+/** The audit could not read GitHub or the config, or could not search, so it proves nothing either way; the findings it did establish are kept. */
+export interface AuditPending { state: 'pending'; reason: string; findings?: AuditFinding[] }
 /** Where the latest audit of the session's issues stands. */
 export type AuditResult = AuditCompliant | AuditViolations | AuditPending
-/** The issues the session wrote, from when its window opened, and the latest audit of them; absent before either. */
-export interface IssueAudit { since: number; issues: number[]; result?: AuditResult }
+/** The issues the session wrote and the latest audit of them, with the window a handoff carried from the chat before it; absent before either. */
+export interface IssueAudit {
+  /** When the window of the chat a handoff came from opened, as `/clear` restarts this chat's own start; absent in a chat no handoff started. */
+  since?: number
+  issues: number[]
+  result?: AuditResult
+  /** Names a window before `since` that no audit searched, as a handoff that could read neither the start nor the declaration leaves; it holds nothing back. */
+  unsearched?: string
+}
 /** Holds the versioned, authoritative chat record and its disk mirror. */
 export interface SessionRecord {
   v: 1
@@ -281,7 +288,7 @@ export type RunKind = 'Verify' | 'Run' | 'red' | 'green'
 /** Names the terminal statuses backed by a recorded outcome. */
 export type RecordedRunStatus = 'passed' | 'failed' | 'timed out'
 /** Names where a whole run stands, live or settled. */
-export type RunStatus = 'running' | 'cancelled' | 'tree changed' | RecordedRunStatus
+export type RunStatus = 'running' | 'cancelled' | 'tree changed' | 'ended' | RecordedRunStatus
 /** Holds the fields every run display shares, whatever its status. */
 export interface RunViewFields {
   runId: string
@@ -298,10 +305,12 @@ export interface RunViewFields {
 }
 /** A run stopped because the worktree changed under it, with the files that changed when known. */
 export interface ChangedRunView extends RunViewFields { status: 'tree changed'; changed?: string[] }
-/** A run in any status other than a changed tree. */
-export interface SettledRunView extends RunViewFields { status: Exclude<RunStatus, 'tree changed'> }
+/** A run that ended with no record known to be written for a reason other than a cancel or a changed tree, labelled with that reason. */
+export interface EndedRunView extends RunViewFields { status: 'ended'; label: string }
+/** A run in any status other than a changed tree or an ended run's own label. */
+export interface SettledRunView extends RunViewFields { status: Exclude<RunStatus, 'tree changed' | 'ended'> }
 /** A live run, a terminal display, or a completed record summary. */
-export type RunView = SettledRunView | ChangedRunView
+export type RunView = SettledRunView | ChangedRunView | EndedRunView
 /** Everything the Flow pane draws; the session's state holds it, or null with no flow declared. */
 export interface FlowView {
   flow: string
@@ -318,11 +327,114 @@ export interface FlowView {
   openFailure?: OpenFailure
   hasRunLog?: boolean
   selectedRunId?: string
+  /** The notices this view shows, each by its id and revision, which a completed render that shows it acknowledges. */
+  notices?: string[]
+}
+
+/** A published view: the number of the load that painted it, kept beside the view so a view of none carries it too, and the view. */
+export interface ViewEnvelope { seq: number; view: FlowView | null }
+
+/** The main loop's running turn, from its `turn.start` to the `turn.complete` that names its id; an empty id is a turn carried over from a module that recorded none. */
+export interface ProcessTurn { id: string; hasSent: boolean; isInformOnly: boolean; isEmptyDoorbell: boolean }
+/** A prompt that entered (its UserPromptSubmit) and has not started its turn yet, with what its turn inherits; `isClaim` marks the idle window a start delivery took before its prompt entered. */
+export interface EnteredPrompt { enteredAt: number; isInformOnly: boolean; isEmptyDoorbell: boolean; isClaim?: boolean }
+/** A start kept for the current step, whose prompt is composed when it is taken. */
+export interface StepStart { kind: 'step'; lead: string }
+/** A start kept for a new coordinator, with the user's words. */
+export interface CoordinateStart { kind: 'coordinate'; text: string }
+/** A start kept for a delegation, with its issues and the user's instructions. */
+export interface DelegateStart { kind: 'delegate'; issues: number[]; instructions: string }
+/** A start prompt kept while the session was busy, as data, since the host holds only JSON. */
+export type PendingStart = StepStart | CoordinateStart | DelegateStart
+/** A start in the session's keeping, with the id its command delivers it by; it stays kept until an attempt to submit it is known to have entered, or ends with a notice. */
+export interface KeptStart { id: string; start: PendingStart }
+/** Which of the mod's own prompts an attempt submits: a kept start, the Verify approval wake, or the mailbox doorbell. */
+export type AttemptRoute = 'start' | 'wake' | 'doorbell'
+/**
+ * What is known of an attempt's submit: still pending in the load that made it, unknown with why, entered, or dropped by the engine with
+ * why; entered and dropped are established and never change again, and unknown changes only to one of them.
+ */
+export type AttemptStatus = { kind: 'pending' } | { kind: 'unknown'; cause: string } | { kind: 'entered' } | { kind: 'dropped'; cause: string }
+/**
+ * One submit of one of the mod's own prompts, written before the engine is called, owned by the load that made it: its id, the load,
+ * the route and what it submits (the kept start's id, the wake's config blob, or the doorbell), how to name it, when its claim took the
+ * idle window, at which turn epoch, and what is known of it. Any load may record a receipt on it by id; only the recorded load settles it
+ * or releases it.
+ */
+export interface Attempt {
+  id: string; owner: string; route: AttemptRoute; subject: string; kind: PendingStart['kind']; label: string; at: number; epoch: number; status: AttemptStatus
+  /** A digest of the prompt it submits, by which the prompt's own entry is told from a prompt the user typed; absent from an attempt an earlier version wrote. */
+  digest?: string
+}
+/**
+ * An obligation the mod ended without knowing it entered, or with nothing to start, which the pane shows until a completed render of
+ * its Flow view drew it: its id (the attempt's, the start's, or an overflow's, new at each fold), what it was for (the kept start's id,
+ * the wake's config blob, or the doorbell), its route, kind and name, and why it ended and what to do.
+ */
+export interface Notice {
+  id: string; subject: string; route: AttemptRoute; kind: PendingStart['kind']; label: string; cause: string
+  /** The outcome its submit's answer established after the notice was written, which the pane then shows in place of an unknown one. */
+  outcome?: 'entered' | 'dropped'
+  /** Names this content of the notice, new at each change, so a render acknowledges only the content it drew; absent from a notice an earlier version wrote. */
+  rev?: string
+  /** For an overflow notice, how many of the notices it folded had their outcome established as entered or dropped. */
+  established?: { entered: number; dropped: number }
+}
+/** An established answer for an attempt that had already ended: its id and what it was for, and the outcome the engine answered. */
+export interface Receipt { id: string; subject: string; route: AttemptRoute; kind: PendingStart['kind']; label: string; outcome: 'entered' | 'dropped' }
+/**
+ * What the records an earlier version of the mod left said when this process state was seeded, each kept once read so a later write over
+ * the record never replaces it: the process the host record named (null for none), and whether the activity record held a turn and at
+ * which epoch; a field still `unread` could not be read yet, and while any is, whether a turn runs is unknown.
+ */
+export interface LegacyEvidence { host: ProcessHost | null | 'unread'; activity: { isTurn: boolean; epoch: number } | 'unread' }
+/**
+ * What this process knows of its session's turn and its waits, held by the host so it outlives a reload of the mod and starts empty in
+ * a new process; `shape` names this version, and a value of another shape reads as none.
+ */
+export interface ProcessState {
+  shape: 'v2'
+  /** Names this process, so a session mirror written by a module of another process is never judged older than one of this. */
+  generation: string
+  /** Counts the turn starts and ends this session's processes saw, rising across processes; the activity record carries the value it was written from, so an older observation never replaces a newer one. */
+  epoch: number
+  turn: ProcessTurn | null
+  prompt: EnteredPrompt | null
+  /** The single start a state written before the queue kept; it is taken first, and every write leaves it null. */
+  pendingStart: PendingStart | null
+  /** The starts kept while the session was busy, oldest first; absent from a state written before the queue. */
+  pendingStarts?: KeptStart[]
+  /** Every submit of the mod's own prompts not settled yet, oldest first; absent from a state written before attempts were kept. */
+  attempts?: Attempt[]
+  /** What an earlier version's records said, kept while whether a turn runs is not settled from them; absent once settled. */
+  legacy?: LegacyEvidence
+  /** The obligations the mod ended without knowing they entered, or with nothing to start, until a render showed them; absent while none. */
+  notices?: Notice[]
+  /** Established answers whose attempt had ended, which any load leaves here and the recorded load turns into notices; absent while none. */
+  receipts?: Receipt[]
+  /** The turns whose end was written, newest last, so a start heard after its own end never sets its turn running again; absent while none. */
+  endedTurns?: string[]
+  /** The mod load that last started in this process, so a delivery a reload interrupted submits nothing; absent from a state written before it was kept. */
+  loadId?: string
+  /** A heartbeat an earlier version of the mod wrote for the recorded load; read as nothing, and dropped by the next load that records itself. */
+  loadBeat?: number
+  /** The config blob this session's Verify call was last refused for, unapproved: the unit then waits for its approval. */
+  verifyAskedBlob: string | null
+  /** The unapproved config blob this session's unit last waited on, until its approval is followed up. */
+  approvalWait: string | null
+  /** The approved config blobs this delegated session was prompted to verify, each once. */
+  wokenBlobs: string[]
+  /** The approved config blob whose wake is claimed and not yet known to have entered, so a reload that cancels the deferred submit does not lose it. */
+  pendingWake: string | null
+  /** The latest states a delegated unit's turn end asked a message for, so each asks once even across a reload. */
+  turnEndKeys: string[]
+  /** Why the last turn-end audit's result was not written to each chat's session record, by session id, until a later audit writes one; absent while none failed. */
+  auditUnrecorded?: Record<string, string>
 }
 
 declare module 'claude-code' {
   interface PluginState {
-    // The validator reads this shape in place: it stays inline.
-    'working-agreement': { view: FlowView | null; liveRun: RunView | null; paneView: 'flow' | 'run-log'; session: SessionRecord }
+    // why: the validator reads this shape in place, so it stays inline.
+    'working-agreement': { view: ViewEnvelope | null; liveRun: RunView | null; paneView: 'flow' | 'run-log'; session: SessionRecord; process: ProcessState; loadSeq: number }
   }
 }

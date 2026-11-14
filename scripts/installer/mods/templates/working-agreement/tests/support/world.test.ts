@@ -6,7 +6,7 @@ import { noFlow } from './builders'
 import { declareFlow, startSkill } from './helpers'
 import { configBlob, createWorld, root } from './world'
 
-// A test cannot read the session store itself, but any plugin may read another's value through it.
+// why: a test cannot read the session store itself, but any plugin may read another's value through it.
 const reader: Plugin = { name: 'reader', register: on => {
   on('command.run', { command: 'read-twice' }, async $ => {
     const first = (await $.state.get({ plugin: 'working-agreement', key: 'session' })).version

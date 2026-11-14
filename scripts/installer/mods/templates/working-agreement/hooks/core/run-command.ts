@@ -1,9 +1,12 @@
 import { executeProcess } from '../lib/process'
+import { formatErrorLine } from '../lib/result'
 import type { ProcessSpawnResult } from 'claude-code'
 import type { EnginePort } from './engine-port'
 
-/** A completed command, or a stop owned by the mod rather than inferred from signals. */
-export type CommandRun = EndedCommand | CancelledCommand | TimedOutCommand
+/** A completed command, or a stop owned by the mod rather than inferred from signals, with what its wrapper said of its start. */
+export type CommandRun = (EndedCommand | CancelledCommand | TimedOutCommand) & { start: CommandStart }
+/** Whether the wrapper's start token arrived: started, never seen, a first output that was not the token, or no spawn at all for a request already stopped. */
+type CommandStart = 'started' | 'unstarted' | 'unconfirmed' | 'unspawned'
 /** Holds a command that ended or timed out without cancellation. */
 export type FinishedCommand = EndedCommand | TimedOutCommand
 interface EndedCommand { kind: 'ended'; code: number | null; signal: string | null; duration: number }
@@ -11,9 +14,22 @@ type CommandStop = 'cancelled' | 'timeout'
 interface CancelledCommand { kind: 'cancelled'; duration: number }
 interface TimedOutCommand { kind: 'timeout'; duration: number }
 /**
- * Holds a command, its immutable execution context and its cancellation signal.
+ * Holds a command, its immutable execution context, its cancellation signal and who hears of its start and of a failed group kill.
  */
-export interface RunRequest { argv: string[]; cwd: string; tree: string; log: string; deadline: number; signal: AbortSignal }
+export interface RunRequest {
+  argv: string[]
+  cwd: string
+  tree: string
+  log: string
+  deadline: number
+  signal: AbortSignal
+  /** Called once the wrapper's start token arrives: its process group exists and its pgid file is written. */
+  onStarted?: () => void
+  /** Called when the first output is not the start token, so the start cannot be confirmed either way. */
+  onStartUnconfirmed?: (detail: string) => void
+  /** Called when the stop's group kill threw or exited non-zero, so whether the command still runs is unknown. */
+  onKillFailed?: (error: string) => void
+}
 interface Cancellation { resolve?: (reason: 'cancelled') => void }
 interface RunState { kind: CommandRun['kind']; status: ProcessSpawnResult }
 
@@ -32,17 +48,15 @@ const failingLinesCap = 20
 /** Bats TAP and bun test result lines that report a failed test, as a pattern both RegExp and `grep -E` read alike. */
 const failingPattern = '^(not ok |\\(fail\\) )'
 const failingLine = new RegExp(failingPattern)
+/** The one line the wrapper prints on the engine's stream, once its pgid file is written; nothing else reaches that stream. */
+const startToken = /^wa-started \d+\n$/
 /** The 50 ms polls a stopped group gets after SIGTERM before SIGKILL: time for the log readers to flush. */
 const killGraceTicks = 40
 
-// Positional args carry all user content. The command remains the direct child;
-// every reader inherits fd 9, holding the engine pipe through its final write.
-// Draining after head closes prevents SIGPIPE; tee gives the rolling tail every
-// original byte. Readers ignore TERM so they can persist bytes already in flight.
-// An empty overflow file is removed here, since a cancelled run never reaches finishLog.
-// The wrapper leads its own process group, whose id it records for killGroup.
+// why: positional args carry all user content so none is parsed as shell; the start token goes to the engine's stream only after the pgid file exists, so a start reported is a group a stop can kill, and never reaches the log; every reader inherits fd 9 to hold the engine pipe through its final write; draining after head closes prevents SIGPIPE and tee gives the rolling tail every original byte; readers ignore TERM to persist bytes already in flight; an empty overflow file is removed here since a cancelled run never reaches finishLog; and the wrapper records its process group id for killGroup.
 const wrapper = `log=$1; header=$2; shift 2
-printf "%s\\n" "$$" >"$log.pgid"
+printf "%s\\n" "$$" >"$log.pgid" || exit
+printf "wa-started %s\\n" "$$" || exit
 printf "%s\\n" "$header" >>"$log"
 limit=$((${logCapBytes} - $(wc -c <"$log")))
 [ "$limit" -ge 0 ] || limit=0
@@ -69,13 +83,11 @@ mkfifo "$log.fifo-in" "$log.fifo-tail" || exit
   wait
 ) &
 exec "$@" >"$log.fifo-in" 2>&1`
-// The engine kills only the child it spawned (its descendant walk is a best-effort snapshot), so the
-// wrapper first becomes a group leader: setsid on Linux, perl's setpgrp on macOS, which ships no setsid.
-// Neither forks, since the engine's child never leads a group, so the engine still holds the leader.
+// why: the engine kills only the child it spawned (its descendant walk is a best-effort snapshot), so the wrapper first becomes a group leader, via setsid on Linux or perl's setpgrp on macOS, which ships no setsid; neither forks, since the engine's child never leads a group, so the engine still holds the leader.
 const leader = `w='${wrapper.replaceAll("'", "'\\''")}'
 command -v setsid >/dev/null 2>&1 && exec setsid sh -c "$w" "$0" "$@"
 exec perl -e 'setpgrp(0, 0); exec @ARGV or die "cannot exec sh: $!\\n"' sh -c "$w" "$0" "$@"`
-// A pgid cannot be reused while any member lives, and ESRCH means the group is already gone.
+// why: a pgid cannot be reused while any member lives, and ESRCH means the group is already gone.
 const killGroup = `log=$1; pgid=$(cat "$log.pgid" 2>/dev/null) || exit 0; rm -f "$log.pgid"
 kill -TERM "-$pgid" 2>/dev/null || exit 0
 i=0; while [ "$i" -lt ${killGraceTicks} ] && kill -0 "-$pgid" 2>/dev/null; do sleep 0.05; i=$((i + 1)); done
@@ -84,13 +96,16 @@ const findFailing = `grep -E '${failingPattern}' "$1" | head -n ${failingLinesCa
 const finishLog = `set -e; log=$1; footer=$2; if [ -s "$log.overflow" ]; then head -c ${logCapBytes} "$log" >"$log.tmp"; mv -f "$log.tmp" "$log"; printf "\\n[output truncated]\\n" >>"$log"; cat "$log.output" >>"$log"; fi; printf "\\n%s\\n" "$footer" >>"$log"; cat "$log.output"; rm -f "$log.output" "$log.output.chunk" "$log.output.next" "$log.overflow" "$log.tmp" "$log.pgid"`
 
 /**
- * Returns the command's exact exit status or the mod's cancellation or timeout stop; a stop ends the command's whole process group before the stream closes.
+ * Returns the command's exact exit status or the mod's cancellation or timeout stop; a stop ends the command's whole process group before the
+ * stream closes, and a request already stopped spawns nothing.
  * @param port - Engine calls.
- * @param request - Command, immutable context, log destination and cancellation.
- * @returns Exact process status and the mod's own stop reason.
+ * @param request - Command, immutable context, log destination, cancellation and listeners.
+ * @returns Exact process status, the mod's own stop reason and whether the wrapper's start token arrived.
  */
 export async function runCommand(port: EnginePort, request: RunRequest): Promise<CommandRun> {
   const started = await port.now()
+  // why: a stop that landed before the spawn, such as while the queue granted the lock, must start nothing.
+  if (request.signal.aborted) return { kind: 'cancelled', duration: 0, start: 'unspawned' }
   const control = new AbortController()
   const cancelled: Cancellation = {}
   const onAbort = () => cancelled.resolve?.('cancelled')
@@ -106,18 +121,26 @@ export async function runCommand(port: EnginePort, request: RunRequest): Promise
   const stream = port.processes.spawn({ argv: ['sh', '-c', leader, 'verify', request.log,
     `\nargv: ${JSON.stringify(request.argv)}\ncwd: ${request.cwd}\ntree: ${request.tree}`, ...request.argv], cwd: request.cwd })
   const result: RunState = { kind: 'ended', status: { code: null, signal: null } }
-  const pull = { done: false }
+  const pull: { done: boolean; start: CommandStart } = { done: false, start: 'unstarted' }
   try {
     while (true) {
       const pulled = await Promise.race([stream.next(), stop, timeout])
       if (pulled === 'cancelled' || pulled === 'timeout') { result.kind = pulled; break }
       if (pulled.done) { pull.done = true; result.status = pulled.value; break }
+      if (pull.start !== 'unstarted' || pulled.value.stream !== 'stdout') continue
+      pull.start = startToken.test(pulled.value.text) ? 'started' : 'unconfirmed'
+      if (pull.start === 'started') request.onStarted?.()
+      else request.onStartUnconfirmed?.(`its first output was ${JSON.stringify(pulled.value.text.slice(0, 80))}, not the wrapper's start token`)
     }
   } finally {
-    try { if (!pull.done) await executeProcess(port.processes, ['sh', '-c', killGroup, 'verify-kill', request.log]) }
-    catch (error) { port.logDebug(`run group kill failed: ${error instanceof Error ? error.message : String(error)}`) }
+    try {
+      if (!pull.done) {
+        const killed = await executeProcess(port.processes, ['sh', '-c', killGroup, 'verify-kill', request.log])
+        if (killed.exitCode !== 0) request.onKillFailed?.(killed.stderr.trim() || `the group kill exited ${killed.exitCode}`)
+      }
+    } catch (error) { request.onKillFailed?.(formatErrorLine(error)) }
     finally {
-      // An abandoned dispatch does not terminate the child unless the consumer leaves the stream.
+      // why: an abandoned dispatch does not terminate the child unless the consumer leaves the stream.
       try { await stream.return({ code: null, signal: null }) }
       finally {
         control.abort()
@@ -125,7 +148,7 @@ export async function runCommand(port: EnginePort, request: RunRequest): Promise
       }
     }
   }
-  return { kind: request.signal.aborted ? 'cancelled' : result.kind, ...result.status, duration: (await port.now() - started) / 1000 }
+  return { kind: request.signal.aborted ? 'cancelled' : result.kind, ...result.status, duration: (await port.now() - started) / 1000, start: pull.start }
 }
 
 /**

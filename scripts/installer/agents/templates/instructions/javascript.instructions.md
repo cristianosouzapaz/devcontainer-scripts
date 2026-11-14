@@ -3,7 +3,7 @@ name: "JavaScript Rules"
 description: "Use when writing or reviewing JavaScript or JSX. Covers modules, immutable bindings, validation, asynchronous failures, state, and documentation."
 applyTo: "**/*.{js,mjs,cjs,jsx}"
 metadata:
-  kit-version: "2.0.0"
+  kit-version: "2.1.0"
   kit-tags: language
 ---
 
@@ -62,3 +62,4 @@ metadata:
 - **D8:** JSDoc for exported functions MUST describe their contract, parameters, return value, and relevant failures.
 - **D9:** JSDoc MUST match the documented declaration's behavior.
 - **D10:** Comments MUST NOT be the only enforcement of a runtime contract.
+- **D11:** An own-line comment that explains code MUST be a single `// why: <reason>` line.

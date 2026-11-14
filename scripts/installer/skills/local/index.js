@@ -1,7 +1,7 @@
-import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, statSync, symlinkSync, unlinkSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { assertRelativePath, loadAgentPacks, selectAgentPacks } from "../../lib/agent-packs.js";
 import { getArtifactVersion, readLockFile, recordArtifact, skillSymlinkAdapter, writeLockFile } from "../../lib/lock-file.js";
 import { readKitMetadata, stripKitMetadata } from "../../lib/template-metadata.js";
@@ -319,7 +319,7 @@ export const installGlobalLocalSkills = async (options = {}) => {
     consola.success(`Global local skills synced: ${synced || "(no local skill sets kit-global)"}`);
 };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
     if (process.argv[2] === "--global") {
         try {
             await installGlobalLocalSkills();

@@ -68,16 +68,19 @@ persistent_data_summary_mounts() {
 
 # persistent_data_summary_github_identity: prints the account name from gh auth status, failing when not authenticated
 # Stdout: the account name, one line
+# Returns: 1 when not authenticated; any other non-zero status from the probe unchanged.
 # Notes: asks the CLI rather than reading hosts.yml.
 persistent_data_summary_github_identity() {
-	local output
+	local output rc=0
 	command -v gh >/dev/null 2>&1 || return 1
-	output="$(gh auth status 2>&1)" || return 1
+	output="$(agent_probe gh auth status 2>&1)" || rc=$?
+	[[ "$rc" -eq 0 ]] || return "$rc"
 	sed -n 's/.*Logged in to [^ ]* account \([^ ]*\).*/\1/p' <<<"$output" | head -1
 }
 
 # persistent_data_summary_identity <identity>: prints the account behind an identity, from the agent pack's identity hook or persistent_data_summary_<identity>_identity, failing for an unknown identity or when not authenticated
 # Stdout: the account, one line
+# Returns: 1 when not authenticated or the identity is unknown; 124 or 137 when the probe timed out; any other status when the check itself failed.
 persistent_data_summary_identity() {
 	local probe="$1" identity_function
 
@@ -87,6 +90,26 @@ persistent_data_summary_identity() {
 		return
 	fi
 	agent_identity "$probe"
+}
+
+# persistent_data_summary_identity_state <identity>: prints the sign-in state behind an identity probe, as "<state>|<text>"
+# Stdout: "signed-in|<account>", "signed-out|", "no-answer|no answer in <n>s" or "unchecked|could not check", one line
+# Notes: only status 1 means signed out; a probe that never answered or failed says nothing about the sign-in.
+persistent_data_summary_identity_state() {
+	local identity probe_rc=0
+
+	identity="$(persistent_data_summary_identity "$1")" || probe_rc=$?
+	case "$probe_rc" in
+	0 | 1)
+		if [[ "$probe_rc" -eq 0 && -n "$identity" ]]; then
+			printf 'signed-in|%s\n' "$identity"
+		else
+			printf '%s\n' 'signed-out|'
+		fi
+		;;
+	124 | 137) printf 'no-answer|no answer in %ss\n' "$_AGENT_PROBE_TIMEOUT" ;;
+	*) printf '%s\n' 'unchecked|could not check' ;;
+	esac
 }
 
 # persistent_data_summary_row <width> <name> <value>: prints a row of a block, the name padded to width, or as "name: value" in structured logs
@@ -136,12 +159,13 @@ persistent_data_summary_data() {
 # persistent_data_summary_sign_ins: logs the Sign-ins block, one row per authentication category, and sets SIGN_IN_ACTIONS to a login action per missing sign-in
 # Notes: a category whose CLI is missing reads "not installed", and one whose volume is
 #   not mounted "not mounted": neither is a missing sign-in, so neither is an action.
+#   Nor is a probe that timed out ("no answer in <n>s") or failed otherwise ("could not check").
 #   An agent CODING_AGENTS does not select gets no row.
 persistent_data_summary_sign_ins() {
 	local shared_root project_root shared_mounted project_mounted shared_volume workspace_volume
-	local category_id fields label binary probe hint scope mounted identity width=0
+	local category_id fields label binary probe hint scope mounted width=0
 	local -a ids=() sign_in_rows=()
-	local row state kind text
+	local row state kind text probe_state detail
 
 	SIGN_IN_ACTIONS=()
 	persistent_data_summary_mounts || return 0
@@ -161,13 +185,16 @@ persistent_data_summary_sign_ins() {
 		elif [[ "$mounted" != "true" ]]; then
 			state='info|not mounted'
 		else
-			identity="$(persistent_data_summary_identity "$probe")" || identity=""
-			if [[ -n "$identity" ]]; then
-				state="success|signed in (${identity})"
-			else
+			IFS='|' read -r probe_state detail <<<"$(persistent_data_summary_identity_state "$probe")"
+			case "$probe_state" in
+			signed-in) state="success|signed in (${detail})" ;;
+			signed-out)
 				state='info|not signed in'
 				SIGN_IN_ACTIONS+=("${label} not signed in: run \`${hint}\`")
-			fi
+				;;
+			# why: a probe that never answered or failed says nothing about the sign-in, so asking the user to log in would be a false alarm
+			*) state="info|${detail}" ;;
+			esac
 		fi
 		sign_in_rows+=("${label}|${state}")
 		((${#label} > width)) && width=${#label}
@@ -187,5 +214,5 @@ persistent_data_summary_sign_ins() {
 }
 
 export -f persistent_data_summary_list_mounts persistent_data_summary_mounts \
-	persistent_data_summary_github_identity persistent_data_summary_identity \
+	persistent_data_summary_github_identity persistent_data_summary_identity persistent_data_summary_identity_state \
 	persistent_data_summary_row persistent_data_summary_data persistent_data_summary_sign_ins

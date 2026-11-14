@@ -189,7 +189,7 @@ test('an older observation overtaken by a newer painted one logs no step', async
   await declareFlow($, 'small-feature', [1])
   await clock.settle()
   options.statusGate = new Promise<void>(resolve => { gate.open = resolve })
-  // The turn-end read takes the session before the skip, then waits on git status while the skip paints.
+  // why: the turn-end read takes the session before the skip, then waits on git status while the skip paints.
   const older = endTurn($)
   await clock.settle()
   await runFlowCommand($, 'skip verify covered separately')

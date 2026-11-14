@@ -19,7 +19,7 @@ const fixIssue: Options = { session: { flow: 'fix', info: { 1: { title: 'bug', l
 const readStepRow = async ($: Engine, mark: string): Promise<string | undefined> =>
   (await readFlowStatus($))?.split('\n').map(line => line.trim()).find(line => line.startsWith(`${mark} `))
 
-// Each test puts a step in its normal state: the unit is on the normal path, so the row names the step alone.
+// why: each test puts a step in its normal state: the unit is on the normal path, so the row names the step alone.
 
 test('Grill before its issue is ready shows the step alone', async ($, on) => {
   createWorld(on, { branch: 'feat' }, { session: noFlow, issueLabels: { 1: ['needs-triage'] } })
@@ -107,9 +107,9 @@ test('a Verify waiting its turn in the queue keeps its waiting fact while the st
   seedVerifyHolder(world)
   const run = $.tool.call({ tool: 'mcp__working-agreement__verify' })
   await world.clock.settle()
-  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Verify', value: 'queued, 2nd of 2', tone: 'text' })
+  expect(world.views.at(-1)?.notes).toContainEqual({ key: 'Queue', value: 'Verify waiting: 1 ahead (holder: unknown)', tone: 'text' })
   expect(await readStepRow($, '▸')).toBe('▸ Code')
-  expect(await readFlowStatus($)).toContain('queued, 2nd of 2')
+  expect(await readFlowStatus($)).toContain('Verify waiting: 1 ahead (holder: unknown)')
   releaseVerifyHolder(world)
   await world.clock.advance(1000)
   await run

@@ -1,9 +1,11 @@
 import { listDecisions } from '../domain/delegated-decision'
 import { describeSigning } from '../domain/delegated-commits'
+import { describeEmptyScope } from '../domain/delegation'
 import type { DelegatedCommit } from '../domain/delegated-commits'
 import { facts } from '../domain/facts'
 import { isUnitFinished } from '../domain/step-states'
-import { isAncestor } from '../lib/git'
+import { readGitOutput, runGit } from '../lib/git'
+import type { ProcessPort } from '../lib/process'
 import { keyedLine } from '../ui/status-text'
 import type { KeyLabel } from '../ui/theme'
 import { bestEffort } from './best-effort'
@@ -39,8 +41,7 @@ async function reportIssue(port: EnginePort, issue: number, commits: DelegatedCo
   const step = !mirrors ? unknown : !unit ? 'no unit' : !position ? unknown : position.current?.step.label ?? (isUnitFinished(position) ? 'finished' : unknown)
   const shas = unit && commits ? commits.filter(entry => entry.branch === unit.branch).map(entry => entry.sha.slice(0, 7)) : null
   const parent = position?.unit.baseBranch
-  const merge = !unit ? 'none' : !position ? unknown : !parent ? 'none'
-    : await isAncestor(port.processes, `refs/heads/${unit.branch}`, `refs/heads/${parent}`) ? `into ${parent}` : 'none'
+  const merge = !unit ? 'none' : !position ? unknown : !parent ? 'none' : await describeMerge(port.processes, unit.branch, parent)
   const comments = await readMarkedComments(port.processes, issue)
   const decisions = comments.isOk ? listDecisions(comments.value) : null
   const notices = unit ? await bestEffort(port, 'report notices', async () => (await readNotices(port, unit.branch))?.sent ?? [], null) : []
@@ -55,8 +56,30 @@ async function reportIssue(port: EnginePort, issue: number, commits: DelegatedCo
     keyedLine('Merge', merge),
     ...listRows('Decision', decisions, entry => `${entry.cost} · ${entry.question} · ${entry.url}`),
     ...listRows('Notice', notices, text => text),
-    ...archives ? archives.map(archive => keyedLine('Retired', `${archive.ref} · restore: ${archive.restore}`)) : [keyedLine('Retired', unknown)],
+    ...archives ? archives.map(archive => keyedLine('Retired', `${archive.ref} · resume: ${archive.restore}${archive.reclaim ? ` · reclaim: ${archive.reclaim}` : ''}`)) : [keyedLine('Retired', unknown)],
   ]
+}
+
+/**
+ * Words whether a unit's branch is merged into its parent: a branch inside its parent counts as merged only when its reflog proves it
+ * moved past the commit it was cut at, since a branch with no commit since its cut is inside its parent too.
+ * @param processes - The engine's process runner.
+ * @param branch - The unit's branch.
+ * @param parent - The branch it was cut from.
+ * @returns `into <parent>`, `none`, `none (no commits since the cut)`, or the unknown state with how to check it.
+ */
+async function describeMerge(processes: ProcessPort, branch: string, parent: string): Promise<string> {
+  const unproven = `merge state unknown (branch history unavailable); check with git log ${parent}..${branch}`
+  // why: --is-ancestor exits 1 for a branch outside its parent; any other failure says nothing either way.
+  const ancestry = await runGit(processes, ['merge-base', '--is-ancestor', `refs/heads/${branch}`, `refs/heads/${parent}`]).catch(() => null)
+  if (ancestry?.exitCode === 1) return 'none'
+  if (ancestry?.exitCode !== 0) return unproven
+  const reflog = await readGitOutput(processes, ['log', '--walk-reflogs', '--format=%H%x09%gs', `refs/heads/${branch}`, '--'])
+  const tip = await readGitOutput(processes, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])
+  // why: only the creation entry names the cut; an expired or rewritten reflog's oldest entry is some later move.
+  const cut = /^(\S+)\tbranch: Created from \S/.exec(reflog?.split('\n').at(-1) ?? '')?.[1]
+  if (!tip || !cut) return unproven
+  return tip === cut ? 'none (no commits since the cut)' : `into ${parent}`
 }
 
 /**
@@ -83,7 +106,7 @@ export async function composeReport(port: EnginePort): Promise<string> {
   const issues = scope === undefined ? null : [...scope?.issues ?? []].sort((a, b) => a - b)
   const sections = issues === null ? [`Delegated issues: ${unknown}`] : issues.length
     ? await Promise.all(issues.map(async issue => (await reportIssue(port, issue, commits, mirrors)).join('\n')))
-    : ['This coordinator delegates no issue.']
+    : [describeEmptyScope(scope)]
   const signing = await bestEffort(port, 'signing plan', () => composeSigningReturn(port), undefined)
   return `${sections.join('\n\n')}${signing === undefined ? `\n\nSigning: ${unknown}` : describeSigning(signing)}`
 }

@@ -2,7 +2,7 @@ import { expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 import { createEmptySession } from '../../hooks/domain/records'
-import { callModTool, endTurn, inside, runFlowCommand } from '../support/helpers'
+import { callModTool, endTurn, inside, runFlowCommand, startSession } from '../support/helpers'
 import { test } from '../support/kit'
 import { childCheckout, parChild } from '../support/parallel-worktrees'
 import { coordinatorHost, createWorld, markSpawned, records, scopeFile } from '../support/world'
@@ -14,7 +14,7 @@ interface Mail { id: string; kind: string; from: string; to: string; issue: numb
 const unitBox = `${records}/mail/1`
 const coordinatorBox = `${records}/mail/coordinator-coord`
 const userBox = `${records}/mail/user`
-const doorbell = '[working-agreement] Mail arrived in this session\'s mailbox; it is delivered with this prompt.'
+const doorbell = '[working-agreement] Checking this session\'s mailbox; any mail comes with this prompt.'
 
 /**
  * Builds child `a`, at Integrate, as the unit session sid of issue 1 that coordinator `coord` delegates; its session record is mirrored, so the
@@ -28,6 +28,7 @@ async function arrange($: Engine, on: Parameters<typeof createWorld>[0]): Promis
   world.files.set(scopeFile('coord'), JSON.stringify({ v: 1, sessionId: 'coord', issues: [1], coversCreated: false, host: coordinatorHost }))
   markSpawned(world, [1])
   world.seedChat('coord', { ...createEmptySession('coord'), role: 'coordinator' })
+  await startSession($)
   await endTurn($)
   return world
 }
@@ -71,31 +72,55 @@ async function prompt($: Engine, world: World, args: Record<string, unknown>): R
 const ring = async ($: Engine): Promise<string> =>
   ((await $.classic.UserPromptSubmit({ prompt: doorbell, permission_mode: 'default' } as never)) as { additionalContext?: string[] }).additionalContext?.join('\n') ?? ''
 
-// contract: expects is refused at send for a cancel, for any form but step:<id>, and for a step the unit's flow does not have; nothing is sent
-test('unit_prompt refuses an expects on a cancel, in another form, or naming an unknown step, and sends nothing', async ($, on) => {
+// contract: expects is refused at send for a cancel, for an inform, for any form but step:<id>, and for a step the unit's flow does not have; nothing is sent
+test('unit_prompt refuses an expects on a cancel or an inform, in another form, or naming an unknown step, and sends nothing', async ($, on) => {
   const world = await arrange($, on)
   expect((await prompt($, world, { text: 'Stop.', kind: 'cancel', expects: 'step:integrate' })).text).toContain('a cancel stops the unit whatever its step')
-  expect((await prompt($, world, { text: 'x', expects: 'tree:abc' })).text).toContain('expects must be step:<id>')
+  expect((await prompt($, world, { text: 'FYI.', expects: 'step:integrate' })).text).toContain('an inform asks for nothing and is never dead-lettered, so it carries no expects')
+  expect((await prompt($, world, { text: 'x', kind: 'assign', expects: 'tree:abc' })).text).toContain('expects must be step:<id>')
   expect((await prompt($, world, { text: 'x', kind: 'assign', expects: 'step:cod' })).text).toContain('cod is not a step of #1\'s flow')
   expect(readBox(world, unitBox, 'new')).toEqual([])
 })
 
-// contract: a message whose expects holds at injection is delivered with it; one whose step no longer holds is never injected: a stale assign is dead-lettered as "stale" with its sender and the user told, a stale inform recorded and dropped, uncounted
-test('expects is checked at injection: a held step delivers, a stale assign is dead-lettered and a stale inform dropped', async ($, on) => {
+// contract: a message whose expects holds at injection is delivered with it; one whose step no longer holds is never injected: it is dead-lettered as "stale" with its sender and the user told
+test('expects is checked at injection: a held step delivers, a stale assign is dead-lettered', async ($, on) => {
   const world = await arrange($, on)
   expect((await prompt($, world, { text: 'Merge the parent.', kind: 'assign', expects: 'step:integrate' })).isError).toBe(false)
   expect(readBox(world, unitBox, 'new')).toMatchObject([{ kind: 'assign', expects: 'step:integrate' }])
   expect(await ring($)).toContain('Merge the parent.')
   expect((await prompt($, world, { text: 'Write the code.', kind: 'assign', expects: 'step:code' })).isError).toBe(false)
   const [stale] = readBox(world, unitBox, 'new')
-  expect((await prompt($, world, { text: 'FYI, code.', expects: 'step:code' })).isError).toBe(false)
-  expect(await ring($)).toBe('')
+  expect(await ring($)).not.toContain('Write the code.')
   expect(readBox(world, unitBox, 'new')).toEqual([])
   expect(readBox(world, unitBox, 'cur').map(mail => mail.body)).toEqual(['Merge the parent.'])
   expect(readBox(world, userBox, 'new')).toMatchObject([{ kind: 'inform', from: '1', author: 'mod' }])
-  expect(readBox(world, userBox, 'new')[0]!.body).toContain(`Dead letter: an assign ${stale!.id} from coordinator-coord to 1 about #1, stale`)
+  expect(readBox(world, userBox, 'new')[0]!.body).toContain(`Dead letter: an assign ${stale!.id} from coordinator-coord to 1 about #1, stale: written for step:code, the unit was at step:integrate`)
   expect(readBox(world, coordinatorBox, 'new').filter(mail => mail.body.includes('was dead-lettered'))).toMatchObject([{ from: '1', author: 'mod' }])
   become(world, 'coordinator')
   await runFlowCommand($, '')
   expect(world.views.at(-1)?.meta.find(row => row.key === 'Inbox')?.value).toContain('1 dead letter')
+})
+
+// contract: a mailbox holding only stale mail rings no doorbell: the mail is set aside at ring time
+test('stale-only mail rings no doorbell and is set aside', async ($, on) => {
+  const world = await arrange($, on)
+  expect((await prompt($, world, { text: 'Write the code.', kind: 'assign', expects: 'step:code' })).isError).toBe(false)
+  const [name] = [...world.files.keys()].filter(path => path.startsWith(`${unitBox}/new/`))
+  await $.classic.FileChanged({ file_path: name, event: 'add' } as never)
+  await world.clock.settle()
+  expect(world.prompts.filter(text => text === doorbell)).toEqual([])
+  expect(readBox(world, unitBox, 'new')).toEqual([])
+})
+
+// contract: a stale-inform record set aside before expects was refused on an inform is still not counted as a dead letter
+test('an old stale-inform record is not counted as a dead letter', async ($, on) => {
+  const world = await arrange($, on)
+  const envelope = { v: 1, kind: 'inform', from: 'coordinator-coord', to: '1', issue: 1, in_reply_to: '', seq: 1, created_at: '2026-11-01T00:00:00.000Z', expects: 'step:code', attempt: 1, body: 'FYI, code.', refs: [], author: 'agent' }
+  for (const [id, kind] of [['e4c01c80', 'inform'], ['a5d02d91', 'assign']] as const) {
+    world.files.set(`${records}/deadletters/${id}.json`, JSON.stringify({ v: 1, id, reason: 'stale', at: '2026-11-01T00:00:00.000Z', envelope: { ...envelope, id, kind }, replies: [] }))
+  }
+  become(world, 'coordinator')
+  await runFlowCommand($, '')
+  expect(world.views.at(-1)?.meta.find(row => row.key === 'Inbox')?.value).toContain('1 dead letter')
+  expect(world.views.at(-1)?.meta.find(row => row.key === 'Inbox')?.value).not.toContain('2 dead letters')
 })

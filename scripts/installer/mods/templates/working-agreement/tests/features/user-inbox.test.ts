@@ -22,7 +22,7 @@ const unitSession = 'unit-12'
 const coordinatorBox = `${records}/mail/coordinator-sid`
 const unitBox = `${records}/mail/12`
 const userBox = `${records}/mail/user`
-const doorbell = '[working-agreement] Mail arrived in this session\'s mailbox; it is delivered with this prompt.'
+const doorbell = '[working-agreement] Checking this session\'s mailbox; any mail comes with this prompt.'
 const choices = ['Keep the store in memory', 'Write it to disk']
 
 /**
@@ -152,6 +152,25 @@ test('/flow inbox shows the question, and the user\'s answer reaches the unit, w
   expect(block).toContain('typed by the user in /flow inbox')
 })
 
+// contract: the user's answer reaches the unit even when the inform to the forwarding coordinator fails, and the reply says the coordinator was not told, with the error
+test('a user answer whose inform to the forwarding coordinator fails says the coordinator was not told', async ($, on) => {
+  const fault = { isArmed: false }
+  const { world } = arrange(on, { beforeRun: argv => {
+    if (!fault.isArmed || argv[0] !== 'ln' || !(argv.at(-1) ?? '').startsWith(`${coordinatorBox}/new/`)) return
+    fault.isArmed = false
+    throw new Error('disk full')
+  } })
+  const question = await askCoordinator($, world)
+  await send($, { kind: 'question', to: 'user', forward: question.id, body: 'Your call.' })
+  await runFlowCommand($, 'inbox')
+  fault.isArmed = true
+  const answered = await runFlowCommand($, `inbox answer ${question.id} b`)
+  expect(answered.text).toContain(`Answered ${question.id} to 12`)
+  expect(answered.text).toMatch(/coordinator-sid was not told \([^)]+\)/)
+  expect(readBox(world, unitBox, 'new')).toMatchObject([{ kind: 'answer', in_reply_to: question.id }])
+  expect(readBox(world, coordinatorBox, 'new').filter(mail => mail.body.startsWith('The user answered'))).toEqual([])
+})
+
 // contract: after a forward the coordinator's own answer to the question is refused, a unit cannot address the user, and a question to the user needs at least two options
 test('a forwarded question takes only the user\'s answer, a unit cannot address the user, and a question to the user needs two options', async ($, on) => {
   const { world } = arrange(on)
@@ -189,7 +208,7 @@ test('/flow inbox is refused unless typed at the prompt', async ($, on) => {
   await send($, { kind: 'question', to: 'user', issue: 12, body: 'Ship tonight?', options: ['Ship', 'Wait'] })
   const [question] = readBox(world, userBox, 'new')
   for (const args of ['inbox', `inbox answer ${question!.id} a`]) {
-    expect((await runFlowCommand($, args, { kind: 'plugin', name: 'working-agreement' })).text).toContain('is the user\'s to run from the prompt')
+    expect((await runFlowCommand($, args, { kind: 'plugin', name: 'working-agreement' })).text).toContain('is the user\'s to run at the local terminal')
   }
   expect(readBox(world, userBox, 'new')).toHaveLength(1)
   expect(readBox(world, coordinatorBox, 'new')).toEqual([])

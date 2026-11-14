@@ -1,11 +1,13 @@
 import { expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
+import { denyCancelledCall } from '../../hooks/core/cancel-gate'
+import { readFault } from '../../hooks/core/fault-registry'
 import { createEmptySession } from '../../hooks/domain/records'
 import { buildChangedCheckout, coordinator } from '../support/builders'
 import { callModTool, inside, runFlowCommand, seedVerifyHolder } from '../support/helpers'
 import { test } from '../support/kit'
-import { buildScope, createWorld, markSpawned, records, scopeFile, seedDelegation } from '../support/world'
+import { buildScope, createTestPort, createWorld, markSpawned, records, root, scopeFile, seedDelegation } from '../support/world'
 import type { Gate, Options, World } from '../support/world'
 
 /** A message as its file holds it. */
@@ -14,7 +16,7 @@ interface Mail { id: string; kind: string; from: string; in_reply_to: string; bo
 const unitSession = 'unit-12'
 const coordinatorBox = `${records}/mail/coordinator-sid`
 const unitBox = `${records}/mail/12`
-const doorbell = '[working-agreement] Mail arrived in this session\'s mailbox; it is delivered with this prompt.'
+const doorbell = '[working-agreement] Checking this session\'s mailbox; any mail comes with this prompt.'
 const verify = { tool: 'mcp__working-agreement__verify' } as const
 const changed = buildChangedCheckout()
 
@@ -96,6 +98,30 @@ test('a cancel denies every tool but send until the unit replies done', async ($
   expect((await $.tool.call({ tool: 'Bash', command: 'ls' })).deny).toBeUndefined()
 })
 
+// contract: the cancel gate passes over only a failed read of the session's own mailbox addresses, which raises the Mail fault; a failed session or repository read is never taken for no cancel
+test('the cancel gate surfaces a failed session or repository read, and passes over only a failed address read, raising the Mail fault', async ($, on) => {
+  const options: Options = {}
+  const world = createWorld(on, { branch: 'main' }, Object.assign(options, { session: coordinator, herdrEnv: inside }))
+  world.files.set(scopeFile('sid'), buildScope('sid', [12]))
+  markSpawned(world, [12], unitSession)
+  world.seedChat(unitSession, createEmptySession(unitSession))
+  await assignThenCancel($, world)
+  const port = createTestPort(world)
+  const reads = { count: 0 }
+  // why: the address read reads the session state first, so only the gate's own later session read fails.
+  const failedSession = { ...port, readSessionState: async () => { if (++reads.count > 1) throw new Error('state read failed'); return port.readSessionState() } }
+  await expect(denyCancelledCall(failedSession, 'Bash', undefined)).rejects.toThrow('state read failed')
+  // why: a new cwd reader misses the repository memo, so the gate reads the common directory again.
+  const failedRepository = { ...port, readCwd: async () => root, processes: { ...port.processes, run: async (argv: string[], init: Parameters<typeof port.processes.run>[1]) => {
+    if (argv.includes('--git-common-dir')) throw new Error('git failed')
+    return port.processes.run(argv, init)
+  } } }
+  await expect(denyCancelledCall(failedRepository, 'Bash', undefined)).rejects.toThrow('git failed')
+  options.listFails = directory => directory === `${records}/spawn`
+  expect(await denyCancelledCall(port, 'Bash', undefined)).toBeUndefined()
+  expect(readFault('mail-addresses')).toContain('listing failed')
+})
+
 // contract: a main-thread deny is an injection point: it delivers the unread mail in its text and acks it, so the next deny and prompt deliver it no more
 test('a main-thread deny delivers and acks the unread mail exactly once', async ($, on) => {
   const world = arrange(on)
@@ -171,7 +197,7 @@ test('/flow lift is refused unless the user types it against an open cancel', as
   expect((await runFlowCommand($, 'lift')).text).toContain('nothing to lift')
   become(world, 'coordinator')
   await assignThenCancel($, world)
-  expect((await runFlowCommand($, 'lift', { kind: 'model' } as never)).text).toContain('the user\'s to run from the prompt')
+  expect((await runFlowCommand($, 'lift', { kind: 'model' } as never)).text).toContain('the user\'s to run at the local terminal')
   expect((await $.tool.call({ tool: 'Bash', command: 'ls' })).deny).toBeDefined()
   become(world, 'coordinator')
   expect((await $.tool.call({ tool: 'Bash', command: 'herdr agent prompt issue-12 "/flow lift"' })).deny).toContain('/flow lift is the user\'s alone')
@@ -194,7 +220,7 @@ for (const [label, call] of [
   ['Verify', verify],
   ['a run', { tool: 'mcp__working-agreement__run', argv: ['check'] }],
 ] as const) {
-  // contract: a unit queued behind another session's Verify stops waiting within one poll step of a cancel, leaving no ticket
+  // contract: a unit queued behind another session's Verify stops waiting within one poll step of a cancel, leaving no ticket, and its pane stops showing it queued as soon as the ticket leaves
   test(`${label} queued behind another session stops waiting when a cancel arrives`, async ($, on) => {
     const file = JSON.stringify({ always: [['check']] })
     const world = createWorld(on, { ...changed }, { verifyFile: file, approvedConfig: file, herdrEnv: inside })
@@ -205,11 +231,12 @@ for (const [label, call] of [
     deliverCancel(world, 'cancel-1')
     await world.clock.advance(1000)
     expect((await waiting).result).toContain('Stopped waiting for the Verify queue: cancel cancel-1')
-    expect(await world.boundaries.files.list(`${records}/verify/q`)).toHaveLength(1)
+    expect(world.hostLocks.queues.get(`${records}/locks/verify`)?.map(ticket => ticket.id)).toEqual(['holder/0'])
+    expect(world.views.at(-1)?.notes.some(note => note.key === 'Verify')).toBe(false)
   })
 }
 
-// contract: a Verify waiting for a CI job on its runner stops waiting within one poll step of a cancel
+// contract: a Verify waiting for a CI job on its runner stops waiting within one poll step of a cancel, and its pane stops showing the CI wait
 test('a Verify waiting on CI stops waiting when a cancel arrives', async ($, on) => {
   const config = JSON.stringify({ always: [['check']], waitForCiLabels: ['home'] })
   const options: Options = { verifyFile: config, approvedConfig: config, actionsJobs: [{ status: 'in_progress', labels: ['home'] }], herdrEnv: inside }
@@ -220,6 +247,7 @@ test('a Verify waiting on CI stops waiting when a cancel arrives', async ($, on)
   deliverCancel(world, 'cancel-1')
   await world.clock.advance(1000)
   expect((await waiting).result).toContain('Stopped waiting for CI: cancel cancel-1')
+  expect(world.views.at(-1)?.notes.some(note => note.key === 'Verify')).toBe(false)
 })
 
 // contract: a cancel arriving while a Verify command already runs lets it finish and record its result

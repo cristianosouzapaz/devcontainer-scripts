@@ -11,7 +11,7 @@ import { keyWidth } from '../../hooks/ui/theme'
 import { buildView } from '../../hooks/ui/view-model'
 import { renderStatusText } from '../../hooks/ui/status-text'
 import { pushedCloseOut, diagnoseRuns, diagnosisComment } from '../support/builders'
-import { checkTheme, expectText, mountPane, readFlowStatus, readPromptContext, serveDisplayed, textOf } from '../support/helpers'
+import { checkTheme, expectText, mountPane, readFlowStatus, readPromptContext, serveDisplayed, startSession, textOf } from '../support/helpers'
 import type { DrawnNode } from '../support/helpers'
 import { createWorld } from '../support/world'
 
@@ -47,15 +47,15 @@ for (const columns of [30, 60]) {
     await expectText(ui, '▸ ', { color: 'suggestion' })
     await expectText(ui, '○ ', { color: 'inactive' })
     await expectText(ui, '↷ ', { color: 'inactive' })
-    // At 30 columns a fact is cut at a word boundary, so its first words survive; with a red and no comments read, Diagnose is off the normal path.
+    // why: at 30 columns a fact is cut at a word boundary, so its first words survive; with a red and no comments read, Diagnose is off the normal path.
     await expectText(ui, columns === 30 ? 'issue…' : 'issue comments unavailable', { color: 'text', wrap: 'truncate-end' })
     await expectText(ui, columns === 30 ? 'optional for…' : 'optional for this unit', { color: 'inactive', wrap: 'truncate-end' })
     await expectText(ui, 'feature/a-long-branch-name', { color: 'text', wrap: 'truncate-middle' })
-    // A keyed row is toned as a note is: the key carries the tone, the value and its suffix stay plain.
+    // why: a keyed row is toned as a note is: the key carries the tone, the value and its suffix stay plain.
     await expectText(ui, 'frozen', { color: 'text' })
     await expectText(ui, 'Branch', { color: 'inactive' })
     await expectText(ui, 'GitHub', { color: 'warning' })
-    // The GitHub row wraps under the value column, so its first line starts the failure.
+    // why: the GitHub row wraps under the value column, so its first line starts the failure.
     expect((await ui.findAll({ type: 'Text' })).find(node => node.text.startsWith('read failed') && node.props['color'] === 'text' && node.props['wrap'] === 'wrap')).toBeDefined()
     await expectText(ui, columns === 30 ? ' ready-for-a… ' : ' ready-for-agent ', { color: 'text', backgroundColor: 'subtle', wrap: 'truncate-end' })
     for (const [key, color] of [['Checkout', 'warning'], ['Violation', 'error'], ['Unchecked', 'warning'], ['Blocked', 'error'], ['Handoff', 'error']]) await expectText(ui, key!, { color, weight: 'semibold' })
@@ -166,6 +166,8 @@ for (const action of ['start', 'continue'] as const) {
     const { chat, commands, prompts, sessions, views, clock } = createWorld(on, { branch: 'feat', ahead: 1 }, action === 'start'
       ? { ...pushedCloseOut, session: { ...pushedCloseOut.session, isLong: true } }
       : { session: { isLong: true } })
+    // why: only the start action asserts that no prompt follows; a session start's length check would redraw the continue footer.
+    if (action === 'start') await startSession($)
     await readFlowStatus($)
     const ui = await mountPane($, { columns: 60 })
     const key = action === 'start' ? 'n' : 'c'

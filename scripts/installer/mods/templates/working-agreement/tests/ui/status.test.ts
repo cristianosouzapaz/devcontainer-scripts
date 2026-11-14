@@ -28,7 +28,7 @@ test('status prints every group with the declared unit facts and reads status en
   const text = result.text ?? ''
   for (const fact of ['Issue       #1 open', 'Slice       c0..c1', `Worktree    ${root}`, 'PR          https://github.test/pull/5',
     'CI          c1 · mods: pending · docs: passing', `.claude/working-agreement.json @ blob ${configBlob(verifyFile).slice(0, 7)} · approved`,
-    'Selection   ./scripts/check.sh · no local check selected — left to CI', 'GitHub      last ok ', 'Rulesets    main · pull_request · you can bypass: always',
+    'Selection   ./scripts/check.sh · no rule matched, so only always runs; targeted checks are left to CI', 'GitHub      last ok ', 'Rulesets    main · pull_request · you can bypass: always',
     'Classic     main · protection off', 'Mod         1.2.3']) expect(text, fact).toContain(fact)
   expect(text.split('\n').filter(row => row.startsWith('GitHub'))).toHaveLength(1)
   expect('context' in result).toBe(false)
@@ -83,7 +83,7 @@ test('status reports classic protection on and off and its read error by HTTP st
   options.protectionError = { status: 500, message: 'full\nbranch error' }
   expect(await readFlowStatus($)).toContain('Classic     not read: HTTP 500 · full\nbranch error')
   options.protectionError = { message: 'error connecting to api.github.com\ncheck your internet connection' }
-  expect(await readFlowStatus($)).toContain('Classic     not read: error connecting to api.github.com\ncheck your internet connection')
+  expect(await readFlowStatus($)).toContain('Classic     not read: GitHub unreachable after 3 attempts: error connecting to api.github.com')
 })
 
 test('status includes full violation attribution and dismissed and unchecked records with open first', async ($, on) => {
@@ -101,7 +101,7 @@ test('status includes full violation attribution and dismissed and unchecked rec
   expect(rows[0]).toContain('Violation   A commit appeared during an agent call (it may be yours) · ')
   expect(rows[1]).toContain('older-call')
   expect(rows[0]).toContain(' · open')
-  // The key says the row is unchecked, so its value repeats neither the word nor a state.
+  // why: the key says the row is unchecked, so its value repeats neither the word nor a state.
   expect(rows[2]).toMatch(/^Unchecked {3}reason not recorded, for 1 call, latest tool-use-full-one · .*, agent-full-two$/)
   expect(rows[3]).toContain(' · dismissed')
   expect(rows.join('\n')).not.toContain('✗')
@@ -134,7 +134,8 @@ test('status shows record write failure times count and full path and clears on 
   const world = createWorld(on, { branch: 'feat' }, { session: noFlow, renameFailures: 2 })
   await $.session.start({ cwd: root, surface: null, isInteractive: false })
   await world.clock.advance(60000)
-  const path = `${records}/s/sid.json`
+  // why: a mirror publish renames its revision before the mirror, so the first failed rename names the revision.
+  const path = `${records}/s/sid.rev`
   const row = readStatusRow(await readFlowStatus($), 'Records')
   expect(row).toContain('Records     record write · ')
   expect(row).toContain(' · since ')
@@ -175,7 +176,8 @@ test('status and pane accept external origins while changing commands remain com
     expect((await runFlowCommand($, 'status', origin)).text).toContain('Slice       ')
     expect((await runFlowCommand($, '', origin)).text).toBe('Flow pane opened.')
     for (const command of ['skip code reason', 'approve verify', 'trivial', 'follow-up #1', 'handoff']) {
-      expect((await runFlowCommand($, command, origin)).text, `${origin.kind}: ${command}`).toContain("is the user's to run from the prompt")
+      const refusal = origin.kind === 'bridge' ? 'arrived through Remote Control, which is off' : "is the user's to run at the local terminal"
+      expect((await runFlowCommand($, command, origin)).text, `${origin.kind}: ${command}`).toContain(refusal)
     }
   }
 })
@@ -289,7 +291,7 @@ test("an out-of-territory commit adds no pane note or status row", async ($, on)
 test('a commit only an unreadable slice could place shows the unchecked note with its count and an unchecked status row', async ($, on) => {
   const checkout = parallelCheckout()
   checkout.graph!.commits.m0x = { parents: [], files: {} }
-  // The rewritten base leaves the slice unreadable, and only the slice could place a merge into the held parent.
+  // why: the rewritten base leaves the slice unreadable, and only the slice could place a merge into the held parent.
   const { views } = createWorld(on, checkout, { unit: { base: 'm0x', baseBranch: 'parent' }, afterTool: () => checkout.graph = withCommit(checkout.graph!, 'pm', ['p0', 'c1'], 'parent') })
   for (const command of ['first merge', 'second merge']) {
     expect((await $.tool.call({ tool: 'Bash', command })).context ?? []).toEqual([])

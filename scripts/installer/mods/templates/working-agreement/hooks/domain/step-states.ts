@@ -33,6 +33,9 @@ interface ActiveStepState extends StepStateFields { state: Exclude<FlowStepState
 /** Holds a step and the facts permitted by its resolved state. */
 export type StepState = SkippedStepState | ActiveStepState
 
+/** A session's place in the Verify queue, worded once for the pane's `Queue` row and once for the sidebar's step suffix. */
+export interface QueueLine { pane: string; sidebar: string }
+
 /** Holds the Verify fact and whether selected commands passed on the current slice. */
 interface VerifyState {
   fact?: string
@@ -50,10 +53,12 @@ interface VerifyState {
   approvalBlob?: string
   /** Whether this session's Verify run holds the slice's tree and base, which no older record then decides. */
   isRunning?: boolean
-  /** This session's place in the repository's Verify queue, such as `queued, 2nd of 3`, while it waits for another session's Verify. */
-  queued?: string
+  /** This session's place in the repository's Verify queue while it waits there or holds it for CI, worded for the pane and the sidebar. */
+  queued?: QueueLine
   /** The run that decides Verify, as `<run id> in <unit>`, named by /flow status. */
   run?: string
+  /** Whether the mod sets Verify aside: the clean slice end is a commit the commit tool did not record, made after a Verify of the unit on another tree. */
+  isSetAside?: boolean
 }
 
 /** Holds whether a GitHub-judged step is done and the first fact that prevents it. */
@@ -279,7 +284,7 @@ function judgeIntegrate(integration: Integration | undefined): IntegrateJudgemen
   if (integration.state === 'stranded') {
     return { done: false, fact: facts.strandedPr(integration.pullRequest), detail: `parent PR #${integration.pullRequest} merged without this unit's commits — deliver it with another PR` }
   }
-  // Not yet in the parent is Integrate's normal state: the Merge note carries the command.
+  // why: not yet in the parent is Integrate's normal state, so it carries no fact: the Merge note already names the command.
   return { done: false }
 }
 
@@ -344,12 +349,12 @@ const isStepFailed = (entry: StepState): boolean =>
 export function markStep(entry: StepState, position: Position, isTreeChanged: boolean): StepMark {
   const isRewritten = !!position.slice?.isRewritten
   const isCurrent = entry.state === 'current'
-  // The unrecorded run explains Code only while Code waits on a Verify run; any other Code blocker, an approval included, stays shown.
+  // why: the unrecorded run explains Code only while Code waits on a Verify run; any other Code blocker, an approval included, must stay shown.
   const isRunUnrecorded = isTreeChanged && !isRewritten && isCurrent && !entry.isWaitingApproval && (entry.step.id === 'verify' || entry.factCode === 'verify-not-run')
   const isMerged = !isRewritten && position.isConcluded && isDeliveryStep(entry.step) && !!position.pullRequest
   const isFailed = !isRewritten && !isRunUnrecorded && isStepFailed(entry)
   return {
-    // A unit whose turn runs still acts, so its step reads in progress rather than waiting on someone else.
+    // why: a unit whose turn runs still acts, so its step reads in progress rather than waiting on someone else.
     mark: isRewritten ? 'rewritten' : isMerged ? 'done' : isFailed ? 'failed' : isCurrent && entry.isWaitingApproval && !position.isWorking ? 'waitingApproval' : entry.state,
     isMerged, isFailed, isRunUnrecorded, isRewritten,
   }
@@ -434,7 +439,6 @@ const isIssueStep = (step: Step): step is IssueStep => ['grill', 'spec', 'triage
  * @returns Completion or the first fact preventing the step from completing.
  */
 const judgeIssueStep = (id: IssueStepId, declared: (IssueInfo | undefined)[]): IssueJudgement => {
-  // Spec and Grill both wait on the readiness label.
   const spec = (): IssueJudgement => judgeIssues(declared, info => info.labels.includes('ready-for-agent') ? undefined : {})
   if (id === 'grill' || id === 'spec') return spec()
   if (id === 'triage') return judgeIssues(declared, info => {
@@ -478,12 +482,11 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
   const declared = session.issues.map(number => session.info[number])
   const issueJudgements: Map<Step, IssueJudgement> = new Map(steps.filter(isIssueStep).map(step => [step, judgeIssueStep(step.id, declared)]))
   const integrate = judgeIntegrate(evidence.integration)
-  // why: Integrate facts with no slice come from a deleted child branch: an observed end stands for the work before
-  // Integrate, while an unknown end proves none of it, so those steps are set aside rather than done.
+  // why: Integrate facts with no slice come from a deleted child branch: an observed end stands for the work before Integrate, while an unknown end proves none of it, so those steps are set aside rather than done.
   const isBranchGone = !slice && !!evidence.integration
   const isEndUnknown = isBranchGone && evidence.integration?.state === 'unknown-end'
-  // A session's non-compliant issues hold its delivery back, since nothing else catches a write that bypassed the issue tools.
-  const auditBlocker = describeAuditBlocker(session.audit?.result)
+  // why: a session's non-compliant issues hold its delivery back, since nothing else catches a write that bypassed the issue tools.
+  const auditBlocker = describeAuditBlocker(session.audit?.result, session.auditNote)
 
   const isDone = (step: Step): boolean => {
     if (evidence.isConcluded) return true
@@ -493,7 +496,6 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
     if (step.isUnlocking) return isCodeWritten && verify.isReached
     if (step.observe === 'verify.passed') return isCodeChanged && verify.isVerified
     if (step.observe === 'commit') return isCommitDone
-    // Only a qualifying open PR can complete delivery before conclusion.
     if (step.observe === 'pr.created') {
       return evidence.pullRequest?.state === 'OPEN' && isCiGreen && !auditBlocker
     }
@@ -503,6 +505,7 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
   const settled = steps.map((step): FlowStepState | null => {
     if (isDone(step)) return 'done'
     if (unit.skips?.some(skip => skip.step === step.id) || step.isOptional || (isEndUnknown && step.observe !== 'integrated')) return 'skipped'
+    if (step.observe === 'verify.passed' && verify.isSetAside) return 'skipped'
     return null
   })
   const currentIndex = settled.indexOf(null)
@@ -520,7 +523,7 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
         : !slice ? facts.redeclareSliceUnavailable
         : step.isUnlocking ? (isCodeWritten ? describeMissingVerify(unit, slice) : undefined)
         : slice.commits === 0 ? undefined : facts.uncommitted } : {}),
-      // While the unit still works, an unapproved config is a note on Code, never a wait: the unit has more to do before it.
+      // why: while the unit still works, an unapproved config is a note on Code, never a wait: the unit has more to do before it.
       ...(step.isUnlocking && !isBranchGone && !isOnDefault && slice && !verify.isReached && verify.approval ? { fact: facts.verifyConfigUnapproved } : {}),
       ...(step.isUnlocking && !isOnDefault && isCodeWritten && !verify.isReached ? { factCode: 'verify-not-run' as const } : {}),
       ...(step.observe === 'verify.passed' ? { fact: verify.fact, detail: verify.detail, factCode: verify.factCode } : {}),
@@ -533,8 +536,9 @@ export function resolveStepStates(flow: FlowDefinition, session: Session, unit: 
     }
     if (state === 'skipped') {
       const unread = step.isOptional && judgement?.isError ? judgement : undefined
-      const chosen = unit.skips?.find(skip => skip.step === step.id)?.reason ?? (isEndUnknown && step.observe !== 'integrated' ? facts.branchDeleted : undefined)
-      // A skipped step's detail words its reason, never the step's own fact.
+      const chosen = unit.skips?.find(skip => skip.step === step.id)?.reason ?? (isEndUnknown && step.observe !== 'integrated' ? facts.branchDeleted
+        : step.observe === 'verify.passed' && verify.isSetAside ? facts.committedOutsideVerify : undefined)
+      // why: a skipped step's detail must word its skip reason, never the step's own fact, so the shared detail is dropped.
       const { detail, ...rest } = shared
       return { ...rest, state, reason: chosen ?? unread?.fact, ...(!chosen && unread?.detail ? { detail: unread.detail } : {}) }
     }

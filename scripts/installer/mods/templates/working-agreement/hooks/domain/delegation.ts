@@ -14,6 +14,28 @@ export type { DelegationScope } from '../../types'
  */
 export type DelegateRequest = { kind: 'stop' } | { kind: 'add'; issues: number[]; isTriage: boolean; instructions: string }
 
+/**
+ * Why this session is or is not a unit's delegated session: the scope that delegates it; a spawn record that names another session; no
+ * spawn record naming any session; no scope covering the unit; or a read that failed, with the file to check.
+ */
+export type DelegationLookup = { kind: 'scope'; scope: DelegationScope }
+  | { kind: 'other-session'; issue: number; path: string; recorded: string; current: string }
+  | { kind: 'no-record'; issues: number[]; paths: string[] }
+  | { kind: 'no-scope'; issues: number[] }
+  | { kind: 'unreadable'; error: string; path: string }
+
+/**
+ * What a handoff's rebind established for one of the unit's issues: its record now names the new session; it names neither session
+ * or does not exist, so it was left alone; it named the previous session and was not changed; or whether it names the new one is unknown.
+ */
+export type IssueRebind = { issue: number; path: string } & ({ kind: 'rebound' } | { kind: 'unrelated' | 'unchanged'; reason: string } | { kind: 'unknown'; error: string })
+
+/**
+ * What a handoff's rebind established: no record named the previous session and no scope covers the unit; or each issue's outcome, with
+ * the scope read's failure when no record named the previous session and whether a scope covers the unit could not be told.
+ */
+export type RebindOutcome = { kind: 'undelegated' } | { kind: 'checked'; issues: IssueRebind[]; scopeError?: string }
+
 /** The mod tool that proposes `/flow delegate` in the prompt box. */
 export const suggestDelegateTool = `${modToolPrefix}suggest_delegate`
 
@@ -130,4 +152,29 @@ export function describeScope(scope: DelegationScope, isRulesetShown = true): st
   const named = formatIssueReferences(scope.issues, ' ')
   const triage = scope.triage && formatIssueReferences(scope.triage, ' ')
   return [named, scope.coversCreated ? 'issues it creates' : '', triage ? `triage ${triage}` : '', isRulesetShown && scope.isPushUnguarded ? 'no signed-commit ruleset' : ''].filter(Boolean).join(' · ')
+}
+
+/**
+ * Words a delegation scope that names no issue yet.
+ * @param scope - The coordinator's scope, if any.
+ * @returns The sentence, which says when the coordinator takes the issues it creates.
+ */
+export function describeEmptyScope(scope: DelegationScope | null | undefined): string {
+  return scope?.coversCreated ? 'This coordinator delegates the issues it creates; none yet.' : 'This coordinator delegates no issue.'
+}
+
+/**
+ * Words why a unit session that took delegated actions finds no delegation, each reason with how to check it.
+ * @param lookup - The lookup, any kind but a scope.
+ * @returns The Delegation row's text.
+ */
+export function describeNoDelegation(lookup: Exclude<DelegationLookup, { kind: 'scope' }>): string {
+  if (lookup.kind === 'other-session') {
+    return `not delegated · the spawn record for #${lookup.issue} (${lookup.path}) names session ${lookup.recorded}, not this session ${lookup.current}`
+  }
+  if (lookup.kind === 'no-record') return `not delegated · ${formatIssueReferences(lookup.issues, ', ')} ${lookup.issues.length > 1 ? 'have' : 'has'} no spawn record (${lookup.paths.join(', ')})`
+  if (lookup.kind === 'no-scope') {
+    return `not delegated · no coordinator's scope covers ${formatIssueReferences(lookup.issues, ', ')}; check delegation/ under working-agreement in git rev-parse --git-common-dir`
+  }
+  return `unknown · the delegation could not be read (${lookup.error}); check ${lookup.path}`
 }

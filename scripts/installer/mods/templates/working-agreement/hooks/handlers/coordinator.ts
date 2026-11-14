@@ -1,13 +1,18 @@
 import type { Args, EventResult, Frozen } from 'claude-code'
 
 import { maxBatchChildren, mergeChildren } from '../core/child-merge'
+import type { ChildTip } from '../core/child-merge'
 import { composePlan } from '../core/plan'
 import type { EnginePort } from '../core/engine-port'
 import { readSession } from '../core/record-store'
 import { coordinatorDeny, explainCoordinatorDeny, isAllowedForCoordinator, isCoordinatorSession, judgeCoordinatorCall } from '../domain/coordinator'
-import { answerTool, markForAgent } from '../domain/messages'
+import { answerSettledTool, markForAgent } from '../domain/messages'
+import { describeOutcome } from '../domain/outcome'
 import { isIssueNumber } from '../lib/guards'
-import { fail, formatErrorLine } from '../lib/result'
+import { fail, formatErrorLine, settle } from '../lib/result'
+
+/** What a coordinator reads before retrying a merge_child that did not finish: the parent may have moved and the children's sessions closed. */
+export const mergeChildCheck = 'plan and git log -1 on the parent branch'
 
 /**
  * Tells whether this session holds the coordinator role; a read that fails rejects, which every caller turns into a deny.
@@ -95,20 +100,38 @@ export async function handleSuggestDelegateCall(port: EnginePort, event: Frozen<
 const isBranchName = (name: unknown): name is string => typeof name === 'string' && /^[\w.][\w./-]*$/.test(name)
 
 /**
+ * Tells a full commit SHA from anything else a tool call may carry, such as an abbreviation or a branch name.
+ * @param sha - The untrusted value.
+ * @returns Whether it is 40 lower-case hex digits.
+ */
+const isFullSha = (sha: unknown): sha is string => typeof sha === 'string' && /^[0-9a-f]{40}$/.test(sha)
+
+/**
+ * Tells one `children` entry of merge_child from anything else.
+ * @param entry - The untrusted value.
+ * @returns Whether it is a branch name with a full SHA as its tip.
+ */
+const isChildTip = (entry: unknown): entry is ChildTip => typeof entry === 'object' && entry !== null && !Array.isArray(entry)
+  && isBranchName((entry as Record<string, unknown>).branch) && isFullSha((entry as Record<string, unknown>).tip)
+
+/**
  * Runs the coordinator's merge of finished child units into their parent branch, which the mod refuses for any pair it does not know.
  * @param port - The engine calls.
- * @param event - The tool call, whose `child` is one child branch, or whose `children` are up to three stacked in order.
+ * @param event - The tool call, whose `child` and `tip` name one child, or whose `children` are up to three `{ branch, tip }` stacked in order.
  * @param signal - The call's cancellation signal.
  * @returns The merge, or the refusal the agent reports to the user.
  */
 export async function handleMergeChildCall(port: EnginePort, event: Frozen<Args<'tool.call'>>, signal: AbortSignal): Promise<EventResult<'tool.call'>> {
   const input = { ...event } as Record<string, unknown>
-  const children: unknown = input.children ?? (input.child === undefined ? undefined : [input.child])
-  if ((input.child !== undefined) === (input.children !== undefined) || !Array.isArray(children) || !children.every(isBranchName)) {
-    return { result: markForAgent(`give child, one branch name, or children, 1 to ${maxBatchChildren} branch names.`), isError: true }
+  const children: unknown = input.children ?? (input.child === undefined ? undefined : [{ branch: input.child, tip: input.tip }])
+  const isSingle = input.child !== undefined
+  // why: the batch's shape is checked before dispatch, so a malformed call gets its usage, never an answer from a read it should not have made.
+  if (isSingle === (input.children !== undefined) || (!isSingle && input.tip !== undefined) || !Array.isArray(children) || !children.every(isChildTip)
+    || !children.length || children.length > maxBatchChildren || new Set(children.map(child => child.branch)).size !== children.length) {
+    return { result: markForAgent(`give child with tip, or children as 1 to ${maxBatchChildren} { branch, tip } entries; tip is the full 40-hex SHA from the review's GO, `
+      + 'never an abbreviation or a branch name.'), isError: true }
   }
-  const merged = await mergeChildren(port, children, signal)
-  return answerTool('merge_child', merged)
+  return answerSettledTool('merge_child', await settle(mergeChildren(port, children, signal)), mergeChildCheck)
 }
 
 /**
@@ -118,5 +141,5 @@ export async function handleMergeChildCall(port: EnginePort, event: Frozen<Args<
  */
 export async function handlePlanCall(port: EnginePort): Promise<EventResult<'tool.call'>> {
   const plan = await composePlan(port).catch((error: unknown) => fail(formatErrorLine(error)))
-  return plan.isOk ? { result: plan.value } : { result: markForAgent(`plan refused: ${plan.error}`), isError: true }
+  return plan.isOk ? { result: plan.value } : { result: markForAgent(describeOutcome('plan', plan)), isError: true }
 }

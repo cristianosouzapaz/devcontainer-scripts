@@ -1,8 +1,9 @@
 import { expect } from 'claude-code/testing'
 import { test } from '../support/kit'
 import { noFlow, diagnosed, diagnosisComment } from '../support/builders'
-import { declareFlow, readFlowStatus, readStepStates, releaseVerifyHolder, seedVerifyHolder } from '../support/helpers'
-import { buildScope, createWorld, markSpawned, records, scopeFile } from '../support/world'
+import { seedGeneration } from '../support/parallel-worktrees'
+import { declareFlow, outlastBudget, readFlowStatus, readStepStates, releaseVerifyHolder, seedVerifyHolder, slowClockReads } from '../support/helpers'
+import { buildScope, createWorld, declarationFile, markSpawned, records, scopeFile } from '../support/world'
 import type { Checkout, Options } from '../support/world'
 
 const argv = ['./check']
@@ -144,6 +145,17 @@ test("run waits behind another session's Verify and runs once it finishes", asyn
   expect([...files.keys()].filter(path => path.startsWith(`${records}/verify/`))).toEqual([])
 })
 
+// contract: a run queued behind another session for longer than the hook budget returns its own result, never core's missing-hook text nor the guard's pre-call deny
+test('a run queued for longer than the hook budget gets its own result, never the engine\'s missing-hook text', { timeoutMs: 90_000 }, async ($, on) => {
+  const world = createWorld(slowClockReads(on), { branch: 'fix', isDirty: true, tree: 'red' }, { session: { flow: 'fix' }, spawnCode: 7 })
+  seedVerifyHolder(world)
+  // why: the whole answer, since a dropped call is answered by a deny or by core's text rather than by the run's result.
+  const answer = JSON.stringify(await outlastBudget(world, $.tool.call({ tool: 'mcp__working-agreement__run', argv })))
+  expect(answer).not.toContain('no tool.call hook answered')
+  expect(answer).not.toContain('pre-call check timed out')
+  expect(answer).toContain('red recorded')
+})
+
 for (const first of ['run', 'verify']) {
   test(`run and verify share an in-flight guard when ${first} starts first`, async ($, on) => {
     const options: Options = { session: { flow: 'fix' }, verifyFile: '{"always":[["./check"]],"timeoutMinutes":0.01}', spawnGate: new Promise(() => {}) }
@@ -151,7 +163,10 @@ for (const first of ['run', 'verify']) {
     const { clock, sessions } = createWorld(on, { branch: 'fix', isDirty: true, tree: 'changed' }, options)
     const pending = $.tool.call({ tool: `mcp__working-agreement__${first}`, ...(first === 'run' ? { argv } : {}) })
     await clock.settle()
-    for (const tool of ['run', 'verify']) expect((await $.tool.call({ tool: `mcp__working-agreement__${tool}`, ...(tool === 'run' ? { argv } : {}) })).result).toBe('a run is already in flight')
+    for (const tool of ['run', 'verify']) {
+      const busy = String((await $.tool.call({ tool: `mcp__working-agreement__${tool}`, ...(tool === 'run' ? { argv } : {}) })).result)
+      expect(busy).toMatch(new RegExp(`^${tool} refused: this session's ${first} call started at \\S+ is still in flight \\(running its command \\(log: /repo\\.git/working-agreement/runs/sid-\\S+\\.log\\)\\); its result goes to that call\\.`))
+    }
     await clock.advance(600)
     expect((await pending).result).toContain('timed out after 0.01 min')
     const unit = sessions.get('sid')?.units[0]
@@ -177,6 +192,87 @@ for (const tool of ['run', 'verify']) {
     else expect((await readStepStates(world)).Verify).toBe('done')
   })
 }
+
+for (const tool of ['run', 'verify']) {
+  for (const end of ['re-declared', 'concluded'] as const) {
+    // contract: a command that finished after its unit's lifetime ended writes no record, and the answer names how it ended with the command's outcome, output and log, never a cancel
+    test(`${tool} that finishes after the unit was ${end} says so with its outcome, never cancelled`, async ($, on) => {
+      const options: Options = { session: { flow: 'fix' }, unit: { generation: 'first' }, verifyFile: '{"always":[["./check"]]}', spawnCode: 7, spawnOutput: 'boom output' }
+      options.approvedConfig = options.verifyFile!
+      const world = createWorld(on, { branch: 'fix', isDirty: true, tree: 'changed' }, options)
+      const identity = { branch: 'fix', issues: [1] }
+      await seedGeneration(world, identity, 'first')
+      const path = await declarationFile(identity)
+      options.afterSpawn = () => {
+        if (end === 'concluded') world.files.delete(path)
+        else world.files.set(path, JSON.stringify({ ...JSON.parse(world.files.get(path) ?? '{}') as object, generation: 'second' }))
+      }
+      const result = String((await $.tool.call({ tool: `mcp__working-agreement__${tool}`, ...(tool === 'run' ? { argv } : {}) })).result)
+      const ran = tool === 'run' ? 'Run stopped: the command ran (exit 7)' : 'Verify stopped: the commands ran (failed)'
+      expect(result).toContain(`${ran}; no record written: the unit was ${end} meanwhile. Log: ${records}/runs/`)
+      expect(result).toContain('boom output')
+      expect(result).not.toContain('cancelled')
+      expect(world.sessions.get('sid')?.units.every(unit => (tool === 'run' ? unit.runs : unit.verifyRuns).length === 0)).toBe(true)
+    })
+  }
+}
+
+// contract: a Verify on a recorded base other than the merge-base, whose unit is re-declared while it runs, tells that end with its outcome, never a tree change
+test('verify on a recorded base that finishes after the unit was re-declared says so, never that the commands changed the tree', async ($, on) => {
+  const options: Options = { session: { flow: 'fix' }, unit: { generation: 'first', base: 'c1' }, verifyFile: '{"always":[["./check"]]}', spawnCode: 7, spawnOutput: 'boom output' }
+  options.approvedConfig = options.verifyFile!
+  const world = createWorld(on, { branch: 'fix', ahead: 2, isDirty: true, tree: 'changed' }, options)
+  const identity = { branch: 'fix', issues: [1] }
+  await seedGeneration(world, identity, 'first')
+  const path = await declarationFile(identity)
+  options.afterSpawn = () => { world.files.set(path, JSON.stringify({ ...JSON.parse(world.files.get(path) ?? '{}') as object, generation: 'second' })) }
+  const result = String((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result)
+  expect(result).toContain(`Verify stopped: the commands ran (failed); no record written: the unit was re-declared meanwhile. Log: ${records}/runs/`)
+  expect(result).toContain('boom output')
+  expect(result).not.toContain('change the tree')
+})
+
+// contract: a Verify whose unit declaration cannot be read once its commands end writes no record, and says whether the lifetime ended is unknown and how to check
+test('verify whose declaration cannot be read after its commands says whether the unit ended is unknown', async ($, on) => {
+  const options: Options = { session: { flow: 'fix' }, unit: { generation: 'first' }, verifyFile: '{"always":[["./check"]]}', spawnCode: 7 }
+  options.approvedConfig = options.verifyFile!
+  const world = createWorld(on, { branch: 'fix', isDirty: true, tree: 'changed' }, options)
+  const identity = { branch: 'fix', issues: [1] }
+  await seedGeneration(world, identity, 'first')
+  const path = await declarationFile(identity)
+  options.afterSpawn = () => { options.failRead = read => read === path }
+  const result = String((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result)
+  expect(result).toContain('Verify stopped: the commands ran (failed); no record written: the unit\'s records could not be read, so whether it was concluded or re-declared '
+    + `is unknown; check /flow status and call verify again. Log: ${records}/runs/`)
+  expect(world.sessions.get('sid')?.units.every(unit => unit.verifyRuns.length === 0)).toBe(true)
+})
+
+// contract: a Verify whose unit declaration holds no valid record once its commands end says whether the lifetime ended is unknown, never that the unit was concluded
+test('verify whose declaration holds no valid record after its commands says whether the unit ended is unknown', async ($, on) => {
+  const options: Options = { session: { flow: 'fix' }, unit: { generation: 'first' }, verifyFile: '{"always":[["./check"]]}', spawnCode: 7 }
+  options.approvedConfig = options.verifyFile!
+  const world = createWorld(on, { branch: 'fix', isDirty: true, tree: 'changed' }, options)
+  const identity = { branch: 'fix', issues: [1] }
+  await seedGeneration(world, identity, 'first')
+  const path = await declarationFile(identity)
+  options.afterSpawn = () => { world.files.set(path, '{"v":1}') }
+  const result = String((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result)
+  expect(result).toContain('Verify stopped: the commands ran (failed); no record written: the unit\'s records could not be read, so whether it was concluded or re-declared '
+    + `is unknown; check /flow status and call verify again. Log: ${records}/runs/`)
+  expect(result).not.toContain('was concluded meanwhile')
+})
+
+// contract: a run whose record is written but whose session mirror cannot be replaced says it is recorded and the mirror not updated, never that it could not run
+test('a run whose session mirror write fails after its record says it is recorded and the mirror was not updated', async ($, on) => {
+  const options: Options = { session: { flow: 'fix' }, spawnCode: 7 }
+  const world = createWorld(on, { branch: 'fix', isDirty: true, tree: 'changed' }, options)
+  options.afterSpawn = () => { options.renameFails = target => target === `${records}/s/sid.json` }
+  const result = String((await $.tool.call({ tool: 'mcp__working-agreement__run', argv })).result)
+  expect(result).toContain('red recorded on tree changed')
+  expect(result).toContain('recorded; the session mirror was not updated (')
+  expect(result).not.toContain('could not run')
+  expect(world.sessions.get('sid')?.units[0]?.runs).toHaveLength(1)
+})
 
 for (const script of ['./check | head', './check; true', './check || true', './check &', './check > out.log', 'if ./check; then :; fi', '[ -f a ]', 'test -f a', 'echo $(./check)', 'echo `./check`', './a && ./b', 'cd x && ./a && ./b', 'cd x && ./a | grep fail']) {
   test(`run refuses a shell wrapper that can mask the test's exit status: ${script}`, async ($, on) => {

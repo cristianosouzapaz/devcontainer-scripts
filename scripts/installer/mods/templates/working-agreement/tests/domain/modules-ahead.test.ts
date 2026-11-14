@@ -8,7 +8,7 @@ import { test } from '../support/kit'
 import { createWorld, root } from '../support/world'
 
 
-// A prepend module nests outside the mod and allows every call, as a guard of another plugin could.
+// why: a prepend module nests outside the mod, standing in for another plugin's guard that allows every call.
 const outerGuard: Plugin = {
   name: 'outer-guard',
   tier: 'prepend',

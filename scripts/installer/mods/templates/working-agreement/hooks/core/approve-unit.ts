@@ -1,6 +1,7 @@
 import { coversIssues } from '../domain/delegation'
 import { describeDiagnoseNeed } from '../domain/instruction'
-import { findLatestRedBefore } from '../domain/records'
+import { pinDiagnosedRed } from '../domain/records'
+import { describeUnpinned, parseArgvJson } from '../domain/user-step'
 import { fail, succeed } from '../lib/result'
 import type { Result } from '../lib/result'
 import { readDiagnoseWait } from './approval-gate'
@@ -9,7 +10,7 @@ import { readOwnScope } from './delegation'
 import type { EnginePort } from './engine-port'
 import { readDeclaration, readSessionMirrors } from './record-store'
 
-/** A coordinator's approval of a unit's diagnosis, as a typed message: the decision that approves, the diagnosis it read and the red that diagnosis explains. */
+/** A coordinator's approval of a unit's diagnosis, as a typed message: the decision that approves, the diagnosis it read and the red that diagnosis explains, as its argv joined by spaces or as its argv JSON. */
 export interface ApproveMessage { kind: 'approve'; decision: string; diagnosis: string; red: string }
 
 const commentUrl = /^https:\/\/\S+#issuecomment-\d+$/
@@ -46,14 +47,14 @@ export async function approveUnit(port: EnginePort, issue: number, message: Appr
   const wait = await readDiagnoseWait(port, record.unit, declaration?.flow ?? null)
   if (!wait) return fail(`#${issue}'s unit has no Diagnose to approve`)
   if (wait.judgement.done) return fail(`#${issue}'s Diagnose is already approved`)
-  if (!wait.judgement.isWaitingApproval) return fail(`#${issue}'s Diagnose is not waiting for approval: ${describeDiagnoseNeed(wait.judgement.need, record.unit.issues)}`)
+  if (!wait.judgement.isWaitingApproval) return fail(wait.unread ?? `#${issue}'s Diagnose is not waiting for approval: ${describeDiagnoseNeed(wait.judgement.need, record.unit.issues)}`)
   const diagnosis = wait.comments.find(comment => comment.url === message.diagnosis)
   if (!diagnosis) return fail(`${message.diagnosis} is not a comment of #${issue}`)
-  const red = findLatestRedBefore(wait.unit.runs, Date.parse(diagnosis.createdAt))
-  if (!red) return fail(`${message.diagnosis} precedes the unit's red run, so it diagnoses no red`)
-  const recorded = red.argv.join(' ')
-  if (message.red !== recorded) return fail(`red is not the red command the diagnosis was written on, which the unit recorded as: ${recorded}`)
+  const cited = parseArgvJson(message.red) ?? message.red
+  const pin = pinDiagnosedRed(wait.unit.runs, Date.parse(diagnosis.createdAt), cited)
+  if (pin.kind !== 'pinned') return fail(describeUnpinned(pin, message.diagnosis, cited))
+  const recorded = pin.red.argv.join(' ')
   const decision = wait.comments.find(comment => comment.url === message.decision)
   if (!decision || Date.parse(decision.createdAt) <= Date.parse(diagnosis.createdAt)) return fail(`${message.decision} is not a comment of #${issue} posted after the diagnosis`)
-  return relayStep(port, issue, message.decision, { kind: 'approve', diagnosis: message.diagnosis }, recorded)
+  return relayStep(port, issue, message.decision, { kind: 'approve', diagnosis: message.diagnosis, red: pin.red.argv }, recorded)
 }

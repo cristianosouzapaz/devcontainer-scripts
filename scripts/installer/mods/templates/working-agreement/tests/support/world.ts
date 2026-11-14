@@ -1,4 +1,4 @@
-import type { Args, CommandSpec, On, PaneOpenArgs, ProcessRunResult, SessionContextUsage, ToolSpec, UiLogSink } from 'claude-code'
+import type { Args, CommandSpec, On, PaneOpenArgs, HookStream, ProcessRunResult, ProcessSpawnChunk, ProcessSpawnResult, SessionContextUsage, ToolSpec, UiLogSink } from 'claude-code'
 import { mock } from 'claude-code/testing'
 import type { FlowView, ReadFailure, RunView } from '../../types'
 import type { ProcessPort } from '../../hooks/lib/process'
@@ -7,6 +7,8 @@ import { createEmptySession } from '../../hooks/domain/records'
 import type { Identity, SessionRecord } from '../../hooks/domain/records'
 import type { MockClock } from 'claude-code/testing'
 import { githubSamples } from './github-samples'
+import { createHostLocks, isHostLockArgv } from './host-locks'
+import type { HostLocks } from './host-locks'
 
 type CheckRun = (typeof githubSamples)['check-runs'][number]['body'][number]
 type Status = (typeof githubSamples)['statuses'][number]['body'][number]
@@ -38,6 +40,8 @@ export interface Graph {
   trees?: Record<string, Record<string, string>>; blobs?: Record<string, string>; upstreams?: Record<string, string>
   created?: Record<string, string>
   moved?: string[]
+  /** The commit a moved branch's oldest reflog entry records, by branch; a branch that never moved records its tip. */
+  cuts?: Record<string, string>
   /** The git aliases `git config` lists, by name; none when unset. */
   aliases?: Record<string, string>
 }
@@ -66,13 +70,21 @@ interface DelegationSeed {
 /** The records and external responses that replace a world's defaults. */
 export interface Options {
   herdrEnv?: Record<string, string>
+  /** Makes reading this environment variable throw, asked at each read, as an engine whose environment read fails does. */
+  envFails?: (name: string) => boolean
   beforeHerdr?: () => void
-  /** Runs before every process call is answered, such as another session reacting to what the mod just wrote. */
-  beforeRun?: (argv: string[]) => void
+  /** Runs before every process call is answered, such as another session reacting to what the mod just wrote; the call waits for a returned promise. */
+  beforeRun?: (argv: string[]) => void | Promise<void>
+  /** Answers a process call in place of the world, as a host whose command failed would; the world answers it when this returns undefined. */
+  failRun?: (argv: string[]) => { exitCode: number; stdout?: string; stderr?: string } | undefined
   herdrGate?: Promise<void>
   ghResponse?: GhResponse
   /** Answers a gh call ahead of every modelled one; undefined leaves it to them. */
   gh?: (args: string[]) => CliAnswer | undefined
+  /** The value the engine's `/config` Model row holds, as the menu shows it; the row reads as the default when unset. */
+  configModel?: string
+  /** The mod's `allowRemoteCommands` row in `/config`; the row is absent when unset, and the read throws on 'unreadable'. */
+  allowRemoteCommands?: boolean | 'unreadable'
   /** How long, in clock milliseconds, a gh call with these arguments takes before it is answered; none when unset. */
   ghDelayMs?: (args: string[]) => number
   /** Answers a claude CLI call, such as spawn's model check; a valid one-turn reply when unset. */
@@ -89,10 +101,16 @@ export interface Options {
   spawnCode?: number | null | (() => number | null)
   spawnSignal?: string | null
   spawnGate?: Promise<void>
+  /** The first stdout text a spawned command's wrapper prints, its start token when unset, or `fork-fails` for a spawn that fails before it. */
+  spawnStart?: string
   spawnOutput?: string
   afterSpawn?: () => void
   beforeSessionId?: () => void
   beforePromptSubmit?: (text: string) => void
+  /** Runs before the engine registers a mod tool: a throw fails that registration, and a returned promise holds it until it settles. */
+  beforeToolRegister?: () => void | Promise<void>
+  /** A slash command whose run the engine rejects. */
+  failedCommand?: string
   /** How the engine answers a submitted prompt instead of entering it: held without ever settling, or dropped with a reason; entered when unset. */
   promptAnswer?: (text: string) => 'held' | { drop: string } | undefined
   /** Whether the engine shows a proposed prompt suggestion; true when unset. */
@@ -106,7 +124,10 @@ export interface Options {
   prsHasNextPage?: boolean
   prFields?: Record<string, unknown>
   prReadError?: boolean
-  /** Answers a host `sleep` at once, without moving the clock, for a test the wait's length does not matter to. */
+  /**
+   * Answers a host `sleep` at once, without moving the clock, for a test the wait's length does not matter to; false makes
+   * even a retry's wait after a failed gh call wait for the test's clock. Left out, that wait moves the clock itself.
+   */
   isSleepInstant?: boolean
   afterTool?: () => void
   statusGate?: Promise<void>
@@ -114,16 +135,30 @@ export interface Options {
   removeExitCode?: number
   appendExitCode?: number
   listFailurePrefix?: string
+  /** Makes listing this directory fail, asked at each listing, as an I/O error that starts mid-test does. */
+  listFails?: (directory: string) => boolean
   /** The pid namespace `readlink /proc/self/ns/pid` prints, `hostNamespace` when unset; empty, the host exposes none. */
   pidNamespace?: string
   /** Makes reading a present file under this prefix reject, as an I/O error does. */
   readFailurePrefix?: string
+  /** Makes reading a present file reject while it returns true for its path, for a fault that comes and goes. */
+  failRead?: (path: string) => boolean
+  /** Fails a stat of this path, as an unreadable ancestor directory does. */
+  statFails?: (path: string) => boolean
+  /** Runs after a file write lands, as another process acting right after it would. */
+  afterWrite?: (path: string) => void
+  /** Answers an exists of this path: `reject` as an I/O error does, `absent` as a host that cannot see a present file does; undefined leaves it to the files. */
+  existsFault?: (path: string) => 'reject' | 'absent' | undefined
   /** Whether listing a directory no file lives under fails, as the engine's listing of a missing directory does. */
   isMissingListFailed?: boolean
   isLoggedOut?: boolean
   isOutsideRepo?: boolean
   renameFailures?: number
+  /** Fails a rename onto this target, asked at each rename, as a full disk does once it fills. */
+  renameFails?: (target: string) => boolean
   casMisses?: number
+  /** Makes every session write of this value miss its compare-and-set while it returns true, as a writer that never settles does. */
+  missSessionWrite?: (value: SessionRecord) => boolean
   watchPaths?: string[]
   isStateAbsent?: boolean
   /** Holds the first GitHub issue read until it opens. */
@@ -176,6 +211,12 @@ export interface World {
   boundaries: WorldBoundaries
   /** The session store of a direct-dispatch port, which runs mod code beside the engine and so reaches no engine store. */
   directSessionState: Pick<EnginePort, 'readSessionState' | 'writeSessionState'>
+  /** The direct-dispatch session store's value now, read with no call, as a dispatch moment takes it. */
+  peekSessionState: () => Awaited<ReturnType<EnginePort['readSessionState']>>
+  /** The process state a direct-dispatch port holds as the host holds it: kept across a reload, undefined in a new process. */
+  processState: { value: unknown }
+  /** What `$.session.usage()` answers for when the session began, read live; a set error makes a read with no breakdown, the start's read, throw it. */
+  usage: { startedAt: number; error?: string }
   herdrCalls: HerdrCall[]
   registeredCommands: CommandSpec[]
   registeredTools: Pick<ToolSpec, 'name' | 'isDeferred'>[]
@@ -207,6 +248,20 @@ export interface World {
   paneViews: PaneView[]
   opened: PaneOpenArgs[]
   approveConfig: (text: string) => void
+  /** The host locks `host-lock.pl` would hold, by lock file. */
+  hostLocks: HostLocks
+  /**
+   * Answers a spawned command other than the host-lock script, as the engine's spawn does in this world.
+   * @param argv - The spawn's argv.
+   * @param signal - The spawn's signal, which ends a gated spawn.
+   * @returns How the command ended.
+   */
+  spawnCommand: (argv: readonly string[], signal: AbortSignal) => Promise<ProcessSpawnResult>
+  /** The first chunk a spawned command's wrapper prints, as the engine's stream yields it: its start token, unless the spawn fails before it. */
+  startChunk: () => ProcessSpawnChunk
+  /** The load numbers the session's loads took, as the host's counter holds them, and the number of the load whose view stands. */
+  loadSeq: { value: number }
+  viewSeq: { value: number }
 }
 
 interface GraphCache { highest: number; linear?: Graph; indexed?: Graph }
@@ -234,6 +289,8 @@ interface GitContext {
   addCommit: (sha: string, commit: Commit) => void
   /** Adds a linked worktree with HEAD detached at a commit. */
   addDetachedWorktree: (path: string, sha: string) => void
+  /** Replaces the worktrees git keeps, as a move or a detached HEAD changes them. */
+  setWorktrees: (worktrees: Record<string, Worktree>) => void
 }
 interface GitEntry { name: string; pattern: RegExp; answer: (context: GitContext, match: readonly string[]) => GitAnswer | Promise<GitAnswer> }
 
@@ -267,6 +324,14 @@ const gitAnswers: GitEntry[] = [
   { name: 'reflog', pattern: /^log --walk-reflogs --format=%gs refs\/heads\/(\S+) --$/, answer: (c, m) =>
     isLocalBranch(c.graph, m[1] ?? '') ? ok([...c.graph.moved?.includes(m[1] ?? '') ? ['commit: work'] : [],
       c.graph.created?.[m[1] ?? ''] ? `branch: Created from ${c.graph.created[m[1] ?? '']}` : ''].join('\n')) : fatal },
+  { name: 'reflog-ids', pattern: /^log --walk-reflogs --format=%H%x09%gs refs\/heads\/(\S+) --$/, answer: (c, m) => {
+    const branch = m[1] ?? ''
+    const tip = c.resolve(branch) ?? ''
+    const isMoved = c.graph.moved?.includes(branch)
+    const created = c.graph.created?.[branch]
+    return isLocalBranch(c.graph, branch) ? ok([...isMoved ? [`${tip}\tcommit: work`] : [],
+      `${isMoved ? c.graph.cuts?.[branch] ?? '' : tip}\t${created ? `branch: Created from ${created}` : ''}`].join('\n')) : fatal
+  } },
   { name: 'show-ref', pattern: /^show-ref --verify --quiet refs\/heads\/(\S+)$/, answer: (c, m) =>
     isLocalBranch(c.graph, m[1] ?? '') ? ok('') : { exitCode: 1, stdout: '' } },
   { name: 'list', pattern: /^rev-list (--count )?(?:--min-age=(-?\d+) )?(.+) --not (.+)$/, answer: (c, m) =>
@@ -277,7 +342,7 @@ const gitAnswers: GitEntry[] = [
     const base = from && to ? findMergeBase(c.graph, from, to) : undefined
     return base ? ok(base) : { exitCode: from && to ? 1 : 128, stdout: '' }
   } },
-  // A conflicting merge moves no ref: it leaves the merge in progress, with the conflicted paths left to the staged overlay.
+  // why: a conflicting merge moves no ref: it leaves the merge in progress, with the conflicted paths left to the staged overlay.
   { name: 'merge-run', pattern: /^merge --no-gpg-sign --no-edit (--ff-only|--no-ff) (\S+)$/, answer: (c, m) => {
     const [head, theirs] = [c.resolve('HEAD'), c.resolve(m[2] ?? '')]
     if (!head || !theirs) return fatal
@@ -301,7 +366,7 @@ const gitAnswers: GitEntry[] = [
     const { files, conflicts } = mergeFiles(c, ours, theirs)
     return { exitCode: conflicts.length ? 1 : 0, stdout: [c.treeName(files), ...conflicts].join('\n') }
   } },
-  // Only the staged overlay is committed; with nothing staged git refuses, as it does with nothing to commit. A merge in progress concludes.
+  // why: only the staged overlay is committed; with nothing staged git refuses, as it does with nothing to commit. A merge in progress concludes.
   { name: 'commit', pattern: /^commit --no-gpg-sign -F -$/, answer: c => {
     const head = c.resolve('HEAD')
     const theirs = c.checkout.merging
@@ -332,7 +397,11 @@ const gitAnswers: GitEntry[] = [
     const blob = c.filesAt(m[2] ?? '')?.[m[3] ?? '']
     return blob ? ok(m[1] === 'rev-parse' ? blob : c.blobText(blob)) : fatal
   } },
-  // A blob is found by its id as git hashes it; the model names an unknown blob after itself, so that answer is no object.
+  { name: 'ls-tree-path', pattern: /^ls-tree --name-only (\S+) -- (.+)$/, answer: (c, m) => {
+    const files = c.filesAt(m[1] ?? '')
+    return files ? ok(files[m[2] ?? ''] ? `${m[2]}` : '') : fatal
+  } },
+  // why: a blob is found by its id as git hashes it; the model names an unknown blob after itself, so that answer is no object.
   { name: 'blob-id', pattern: /^cat-file blob ([^\s:]+)$/, answer: (c, m) => {
     const id = m[1] ?? ''
     const known = c.blobText(id)
@@ -363,7 +432,7 @@ const gitAnswers: GitEntry[] = [
     const ids = (m[1] ?? '').split(' ').map(revision => c.resolve(revision))
     return ids.every(id => id) ? ok(ids.map(id => `${id}:${c.graph.commits[id ?? '']?.isSigned ? 'G' : 'N'}`).join('\n')) : fatal
   } },
-  // With -m a merge is diffed against each parent in turn; a root commit has no parent to diff against, so git prints nothing for it.
+  // why: with -m a merge is diffed against each parent in turn; a root commit has no parent to diff against, so git prints nothing for it.
   { name: 'diff-tree', pattern: /^diff-tree -r --no-commit-id -m (\S+)$/, answer: (c, m) => {
     const id = c.resolve(m[1] ?? '')
     const parents = c.graph.commits[id ?? '']?.parents
@@ -378,7 +447,7 @@ const gitAnswers: GitEntry[] = [
   } },
   { name: 'aliases', pattern: /^config --get-regexp \^alias\\\.$/, answer: c => c.graph.aliases
     ? ok(Object.entries(c.graph.aliases).map(([name, value]) => `alias.${name} ${value}`).join('\n')) : { exitCode: 1, stdout: '' } },
-  // The index, not the worktree, decides: a file only staged is tracked, and a path outside the repository is fatal.
+  // why: the index, not the worktree, decides: a file only staged is tracked, and a path outside the repository is fatal.
   { name: 'tracked', pattern: /^ls-files --error-unmatch -- (.+)$/, answer: (c, m) => {
     const path = m[1] ?? ''
     if (!path.startsWith(`${c.owner[0]}/`)) return { exitCode: 128, stdout: '' }
@@ -386,7 +455,7 @@ const gitAnswers: GitEntry[] = [
     return { ...c.filesAt('HEAD'), ...c.checkout.staged }[relative] ? ok(relative) : { exitCode: 1, stdout: '' }
   } },
   { name: 'add', pattern: /^add -A$/, answer: () => ok('') },
-  // A safe delete leaves the graph alone: tests read the deletion from the recorded runs.
+  // why: a safe delete leaves the graph alone: tests read the deletion from the recorded runs.
   { name: 'branch-delete', pattern: /^branch -d (\S+)$/, answer: (c, m) => {
     const tip = isLocalBranch(c.graph, m[1] ?? '') ? c.resolve(m[1] ?? '') : undefined
     const head = c.resolve('HEAD')
@@ -396,14 +465,14 @@ const gitAnswers: GitEntry[] = [
     ok(c.treeName(Object.fromEntries(Object.entries(c.working).filter(([path]) => !isIgnored(c, path))), c.checkout.tree)) },
   { name: 'remotes', pattern: /^remote$/, answer: c => ok([...new Set(Object.keys(c.graph.refs)
     .flatMap(ref => ref.startsWith('origin/') ? ['origin'] : ref.startsWith('refs/remotes/') ? [ref.split('/')[2] ?? ''] : []))].sort().join('\n')) },
-  // An empty old value makes the update create-only: an existing branch is left alone.
+  // why: an empty old value makes the update create-only: an existing branch is left alone.
   { name: 'update-ref', pattern: /^update-ref (?:-m branch: Created from (\S+) )?refs\/heads\/(\S+) (\S+) $/, answer: (c, m) => {
     const id = c.resolve(m[3] ?? '')
     if (!id || c.resolve(m[2] ?? '')) return fatal
     c.createBranch(m[2] ?? '', id, m[1])
     return ok('')
   } },
-  // A ref outside refs/heads, written create-only, as a retirement archives a branch tip.
+  // why: a retirement archives a branch tip as a ref outside refs/heads, written create-only.
   { name: 'archive-ref', pattern: /^update-ref (refs\/(?!heads\/)\S+) (\S+) $/, answer: (c, m) => {
     const id = c.resolve(m[2] ?? '')
     if (!id || c.graph.refs[m[1] ?? '']) return fatal
@@ -416,25 +485,44 @@ const gitAnswers: GitEntry[] = [
     c.deleteRef(m[1] ?? '')
     return ok(`Deleted branch ${m[1]} (was ${tip}).`)
   } },
-  { name: 'worktree-remove', pattern: /^worktree remove --force (\S+)$/, answer: (c, m) => {
+  { name: 'worktree-remove', pattern: /^worktree remove --force (.+)$/, answer: (c, m) => {
     if (!c.worktrees[m[1] ?? ''] || m[1] === root) return fatal
     c.removeWorktree(m[1] ?? '')
     return ok('')
   } },
-  { name: 'worktree-add', pattern: /^worktree add --detach (\S+) (\S+)$/, answer: (c, m) => {
+  { name: 'worktree-move', pattern: /^worktree move (\S+) (\S+)$/, answer: (c, m) => {
+    const [from = '', to = ''] = [m[1], m[2]]
+    if (!c.worktrees[from] || from === root || c.worktrees[to]) return fatal
+    c.setWorktrees(Object.fromEntries(Object.entries(c.worktrees).map(([path, wt]) => [path === from ? to : path, wt])))
+    return ok('')
+  } },
+  { name: 'detach-head', pattern: /^update-ref --no-deref HEAD (\S+)$/, answer: (c, m) => {
+    const [id, own] = [c.resolve(m[1] ?? ''), c.worktrees[c.localRoot]]
+    if (!id || !own) return fatal
+    c.setWorktrees({ ...c.worktrees, [c.localRoot]: { ...own, branch: 'HEAD', head: id } })
+    return ok('')
+  } },
+  // why: an old value makes the delete conditional, so a branch that has moved since is kept.
+  { name: 'branch-delete-unmoved', pattern: /^update-ref -d refs\/heads\/(\S+) (\S+)$/, answer: (c, m) => {
+    const tip = isLocalBranch(c.graph, m[1] ?? '') ? c.resolve(m[1] ?? '') : undefined
+    if (!tip || tip !== c.resolve(m[2] ?? '')) return { exitCode: 1, stdout: '' }
+    c.deleteRef(m[1] ?? '')
+    return ok('')
+  } },
+  { name: 'worktree-add', pattern: /^worktree add --detach (.+) (\S+)$/, answer: (c, m) => {
     const id = c.resolve(m[2] ?? '')
     if (!id || c.worktrees[m[1] ?? ''] || m[1] === root) return fatal
     c.addDetachedWorktree(m[1] ?? '', id)
     return ok('')
   } },
-  // A merge commit is named after its second parent, as the modelled merge names one; no ref moves.
+  // why: a merge commit is named after its second parent, as the modelled merge names one; no ref moves.
   { name: 'commit-tree', pattern: /^commit-tree --no-gpg-sign (\S+) -p (\S+) -p (\S+) -F -$/, answer: (c, m) => {
     const [files, ours, theirs] = [c.filesAt(m[1] ?? ''), c.resolve(m[2] ?? ''), c.resolve(m[3] ?? '')]
     if (!files || !ours || !theirs) return fatal
     c.addCommit(`merge-${theirs}`, { parents: [ours, theirs], files })
     return ok(`merge-${theirs}`)
   } },
-  // The model stages nothing, so the index is the working files `add -A` would stage; each changed path prints as one file header.
+  // why: the model stages nothing, so the index is the working files `add -A` would stage; each changed path prints as one file header.
   { name: 'diff-cached', pattern: /^diff --cached --binary HEAD$/, answer: c => ok(diffFiles(c.filesAt('HEAD') ?? {}, c.working).filter(path => !isIgnored(c, path))
     .map(path => `diff --git a/${path} b/${path}\n`).join('')) },
   { name: 'worktrees', pattern: /^worktree list --porcelain$/, answer: c => ok(Object.entries(c.worktrees)
@@ -757,8 +845,15 @@ export function linearGraph(tips: Record<string, number>, config?: string, highe
  * @returns The world: its logs, files, sessions, views and clock.
  */
 export function createWorld(on: On, checkout: Checkout, options: Options = {}): World {
-  mock.env(on, options.herdrEnv ?? {})
-  // A test moves the session by setting options.cwd.
+  const { envFails } = options
+  // why: a test registers each event once, so a failing environment read answers in place of the mock rather than beside it.
+  if (envFails) {
+    on('env.get', (_$, e) => {
+      if (envFails(e.name)) throw new Error(`environment read failed: ${e.name}`)
+      return { value: options.herdrEnv?.[e.name] }
+    })
+  } else mock.env(on, options.herdrEnv ?? {})
+  // why: a getter, so a test moves the session by setting options.cwd.
   const session = { get cwd() { return options.cwd ?? root } }
   const chat = { id: 'sid' }
   const commands: string[] = []
@@ -774,7 +869,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   const suggestions: string[] = []
   const files = new Map<string, string>()
   const modified = new Map<string, number>()
-  // Directories a bare mkdir made; every other directory exists only while a file lives under it.
+  // why: only directories a bare mkdir made are kept; every other directory exists only while a file lives under it.
   const created = new Set<string>()
   /**
    * Seeds approval without exposing the approval record to scenarios.
@@ -791,7 +886,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   const engineStore = { isWritten: false }
   const failures = { renames: options.renameFailures ?? 0, compares: options.casMisses ?? 0 }
   const identity = { branch: checkout.branch, issues: (options.session?.flow === null && options.unit ? [1] : options.session?.issues ?? [1]) as number[] }
-  // Custom issue state does not inherit the default at-Code skill evidence.
+  // why: custom issue state does not inherit the default at-Code skill evidence.
   const seeded = { ...createEmptySession(chat.id), unit: identity, units: options.session?.flow === null && !options.unit ? [] : [{ identity, skills: options.session?.info === undefined ? ['to-spec'] : [], verifyRuns: [], runs: [], ...options.unit }],
     info: { 1: { title: 'feat', labels: ['ready-for-agent'] } }, gh: 'connected', ...options.session }
   const { flow: seededFlow, issues, ...record } = seeded
@@ -812,12 +907,12 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   const herdrActivity = { calls: 0, active: 0, maximum: 0 }
   const initialConfig = options.verifyFile
   const graphCache: GraphCache = { highest: 0 }
-  // Branches the mod created, laid over whichever graph the checkout holds without changing a shared fixture.
+  // why: branches the mod created are laid over whichever graph the checkout holds without changing a shared fixture.
   const createdRefs: { refs: Record<string, string>; created: Record<string, string>; base?: Graph; graph?: Graph } = { refs: {}, created: {} }
   const commitDates = new Map<string, number>()
   const treeFiles = new Map<string, Record<string, string>>()
   const treeNames = new Map<string, string>()
-  // The first alias wins; the canonical key indexes subsequent lookups.
+  // why: the first alias wins, so the canonical key indexes subsequent lookups.
   const treeName = (contents: Record<string, string>, alias?: string): string => {
     const key = nameTree(contents)
     const name = treeNames.get(key) ?? (alias && !treeFiles.has(alias) ? alias : key)
@@ -825,15 +920,14 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     treeFiles.set(name, contents)
     return name
   }
-  on('state.set', { plugin: 'working-agreement', key: 'view' }, (_$, e, next) => { views.push(e.value); return next(e) })
+  on('state.set', { plugin: 'working-agreement', key: 'view' }, (_$, e, next) => { views.push(e.value?.view ?? null); return next(e) })
   on('state.set', { plugin: 'working-agreement', key: 'liveRun' }, (_$, e, next) => { liveRuns.push(e.value); return next(e) })
-  // why: The kit hosts one engine session, so only the first chat has the engine's store; another chat is another
-  // session, and a direct-dispatch port runs beside the engine. The world holds those stores, so they answer live
-  // reads rather than one moment per dispatch; a held store and the engine's never share a record.
+  // why: the kit hosts one engine session, so only the first chat has the engine's store; another chat is another session, and a direct-dispatch port runs beside the engine, so the world holds those stores to answer live reads rather than one moment per dispatch; a held store and the engine's never share a record.
   const readHeld = (id: string): HeldSession => held.get(id) ?? { value: sessions.get(id), version: 0 }
   const writeHeld = (id: string, value: SessionRecord, expected: number): boolean => {
     const { version } = readHeld(id)
     if (failures.compares > 0) { failures.compares -= 1; return false }
+    if (options.missSessionWrite?.(value)) return false
     if (expected !== version) return false
     held.set(id, { value, version: version + 1 })
     sessions.set(id, value)
@@ -865,26 +959,73 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     if (chat.id !== engineChat) return { value: { isSet: writeHeld(chat.id, e.value, e.ifVersion ?? readHeld(chat.id).version), version: readHeld(chat.id).version } }
     refuseMixed()
     if (failures.compares > 0) { failures.compares -= 1; return { value: { isSet: false, version: e.ifVersion ?? 0 } } }
+    if (options.missSessionWrite?.(e.value)) return { value: { isSet: false, version: e.ifVersion ?? 0 } }
     const written = await next(e)
     if (written.value?.isSet) { engineStore.isWritten = true; sessions.set(engineChat, e.value) }
     return written
   })
   const clock = mock.clock(on)
+  // why: a holder's rename meets the same faults a record rename does, as the script's own rename would.
+  const renameFile = (source: string, target: string): string | null => {
+    if (failures.renames > 0) { failures.renames -= 1; return 'rename failed' }
+    if (options.renameFails?.(target)) return 'rename failed'
+    const text = files.get(source)
+    if (text === undefined) return 'missing temporary record'
+    files.set(target, text)
+    files.delete(source)
+    return null
+  }
+  const takeFile = (path: string): string | undefined => {
+    const text = files.get(path)
+    files.delete(path)
+    return text
+  }
+  const hostLocks = createHostLocks(clock, dir => [...files.keys()].filter(path => path.startsWith(`${dir}/`)).sort().join('\0'), { take: takeFile, rename: renameFile })
   on('session.id', async () => ({ value: await boundaries.readSessionId() }))
   on('session.cwd', () => ({ value: session.cwd }))
-  on('session.usage', (_$, e) => ({ value: { startedAt: 0, context: options.contextUsage?.(e) ?? { tokens: 0, window: 200000 }, rateLimits: [] } }))
+  on('config.list', () => {
+    if (options.allowRemoteCommands === 'unreadable') throw new Error('config unreadable')
+    const remote = options.allowRemoteCommands === undefined ? []
+      : [{ key: 'working-agreement.allowRemoteCommands', label: 'Allow remote commands', kind: 'boolean' as const, value: options.allowRemoteCommands, provider: { plugin: 'working-agreement', tier: 'user' as const }, isLocked: false }]
+    return { value: [{ key: 'model', label: 'Model', kind: 'choice', value: options.configModel ?? 'Default (recommended)', provider: { plugin: 'engine', tier: 'core' }, isLocked: false }, ...remote] }
+  })
+  const usage: World['usage'] = { startedAt: 0 }
+  on('session.usage', (_$, e) => {
+    if (usage.error && !e.breakdown) throw new Error(usage.error)
+    // why: only a read with a breakdown is a context read; the plain one reads the start, and its figures are the status line's.
+    return { value: { startedAt: usage.startedAt, context: (e.breakdown ? options.contextUsage?.(e) : undefined) ?? { tokens: 0, window: 200000 }, rateLimits: [] } }
+  })
   on('command.register', (_$, e) => {
     registeredCommands.push(e)
     return { value: { command: e.name } }
   })
-  on('tool.register', (_$, e) => {
+  on('tool.register', async (_$, e) => {
+    await options.beforeToolRegister?.()
     registeredTools.push({ name: e.name, isDeferred: e.isDeferred })
     return { value: { tool: `mcp__working-agreement__${e.name}` } }
   })
+  // why: a host `sleep` after failed gh calls, with only gh calls between, is a retry's or a read-back's wait: it moves the clock by its length itself, so even a loop mistaken for one ends; any other `sleep` waits for the test's clock, as a poll does.
+  const ghFailures = { pending: 0 }
   const run = async (e: Args<'process.run'>): Promise<{ value: ProcessRunResult }> => {
+    if (e.argv[0] === 'sleep' && ghFailures.pending > 0 && options.isSleepInstant === undefined) {
+      ghFailures.pending -= 1
+      await clock.advance(Number(e.argv[1]) * 1000)
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    if (e.argv[0] !== 'gh' && e.argv[0] !== 'sleep') ghFailures.pending = 0
+    try {
+      const answered = await answerRun(e)
+      if (e.argv[0] === 'gh' && answered.value.exitCode !== 0) ghFailures.pending += 1
+      return answered
+    } catch (error) {
+      if (e.argv[0] === 'gh') ghFailures.pending += 1
+      throw error
+    }
+  }
+  const answerRun = async (e: Args<'process.run'>): Promise<{ value: ProcessRunResult }> => {
     await ready
     if (e.argv[0] === 'herdr') herdrCalls.push({ argv: [...e.argv], timeoutMs: e.init?.timeoutMs })
-    options.beforeRun?.([...e.argv])
+    await options.beforeRun?.([...e.argv])
     const raw = e.argv.filter(arg => arg !== '--no-optional-locks')
     const withoutEnv = raw[0] === 'env' ? raw.slice(raw.indexOf('git')) : raw
     const normalized = withoutEnv.filter((arg, index, args) => arg !== '-c' && args[index - 1] !== '-c')
@@ -892,6 +1033,8 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     runs.push(command)
     if (options.failing !== undefined && command.startsWith(options.failing)) throw new Error(`${command} failed`)
     const buildResult = (stdout: string, exitCode = 0, stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
+    const answered = options.failRun?.([...e.argv])
+    if (answered) return buildResult(answered.stdout ?? '', answered.exitCode, answered.stderr ?? '')
     if (e.argv[0] === 'herdr') {
       herdrActivity.calls += 1
       herdrActivity.active += 1
@@ -905,6 +1048,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       } finally { herdrActivity.active -= 1 }
     }
     if (command === 'uname -s') return buildResult(options.platform ?? 'Linux')
+    if (isHostLockArgv(e.argv)) return buildResult(e.argv[2] === 'list' ? hostLocks.list(e.argv) : '', e.argv[2] === 'list' ? 0 : 2)
     if (e.argv[0] === 'tail') return buildResult((options.spawnOutput ?? '').replace(/\n$/, '').split('\n').slice(-4).join('\n'))
     if (e.argv[0] === 'sh') return buildResult(options.spawnOutput ?? '')
     if (e.argv[0] === 'claude') {
@@ -925,8 +1069,10 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       for (const path of e.argv.slice(2)) if (isPresent(path)) modified.set(path, clock.now())
       return buildResult('')
     }
+    // why: the modelled filesystem holds no symlinks, so every path is already canonical.
+    if (e.argv[0] === 'realpath') return buildResult(`${e.argv.at(-1) ?? ''}\n`)
     if (e.argv[0] === 'readlink') return (options.pidNamespace ?? hostNamespace) ? buildResult(`${options.pidNamespace ?? hostNamespace}\n`) : buildResult('', 1)
-    // A hard link fails on an existing target, unlike a rename.
+    // why: a hard link fails on an existing target, unlike a rename.
     if (e.argv[0] === 'ln' && e.argv[1] === '--') {
       const [source, target] = [e.argv[2] ?? '', e.argv[3] ?? '']
       const text = files.get(source)
@@ -968,14 +1114,8 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       return buildResult('')
     }
     if (e.argv[0] === 'mv') {
-      if (failures.renames > 0) { failures.renames -= 1; return buildResult('', 1, 'rename failed') }
-      const source = e.argv[3] ?? ''
-      const target = e.argv[4] ?? ''
-      const text = files.get(source)
-      if (text === undefined) return buildResult('', 1, 'missing temporary record')
-      files.set(target, text)
-      files.delete(source)
-      return buildResult('')
+      const failure = renameFile(e.argv[3] ?? '', e.argv[4] ?? '')
+      return failure === null ? buildResult('') : buildResult('', 1, failure)
     }
     const worktrees: Record<string, Worktree> = checkout.worktrees ?? { [root]: checkout }
     if (!checkout.graph && (tips.get(checkout.branch) !== (checkout.ahead ?? 0)
@@ -990,7 +1130,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     const graph = !Object.keys(createdRefs.refs).length ? base : createdRefs.graph ?? (createdRefs.graph = { ...base, refs: { ...base.refs, ...createdRefs.refs }, created: { ...base.created, ...createdRefs.created } })
     const isInitialGraph = commitDates.size === 0
     for (const [ordinal, [id, commit]] of Object.entries(graph.commits).entries()) {
-      // Seeded history matches the real conformance repo; later commits default to the live clock.
+      // why: seeded history matches the real conformance repo; later commits default to the live clock.
       commitDates.set(id, commit.committerDate ?? commitDates.get(id)
         ?? (isInitialGraph ? Date.UTC(2000, 0, 1, 0, 0, ordinal) / 1000 : Math.floor(clock.now() / 1000)))
     }
@@ -1044,6 +1184,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
           checkout.graph = { ...checkout.graph, commits: { ...checkout.graph.commits, [sha]: commit } }
         },
         addDetachedWorktree: (path, sha) => { checkout.worktrees = { ...checkout.worktrees ?? { [root]: checkout }, [path]: { branch: 'HEAD', head: sha } } },
+        setWorktrees: next => { checkout.worktrees = next },
         blobText: id => id === blob ? config ?? '' : graph.blobs?.[id] ?? `${id}\n`, stdin: e.init?.stdin ?? '',
       }, local.match(entry.pattern) ?? []) : fatal
       answeredEntries.add(entry.name)
@@ -1066,7 +1207,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     const subIssues = command.match(/^gh api repos\/\{owner\}\/\{repo\}\/issues\/(\d+)\/sub_issues --paginate --jq /)
     if (subIssues) return buildResult((options.subIssues?.[Number(subIssues[1])] ?? [])
       .map(subIssue => JSON.stringify({ state: subIssue.state, labels: subIssue.labels })).join('\n'))
-    // gh api --include prints the response head before the body, and on an error the body is GitHub's JSON message.
+    // why: gh api --include prints the response head before the body, and on an error the body is GitHub's JSON message.
     const rest = (status: number, body: unknown) => buildResult(`HTTP/2.0 ${status}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(body)}`,
       status < 300 ? 0 : 1, status < 300 ? '' : `gh: HTTP ${status}`)
     const compare = command.match(/^gh api --include repos\/\{owner\}\/\{repo\}\/compare\/(\S+)\.\.\.(\S+)$/)
@@ -1086,7 +1227,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       return rest(githubSamples.compare[0].status, { ...githubSamples.compare[0].body,
         status: from === to ? 'identical' : !behind ? 'ahead' : !ahead ? 'behind' : 'diverged', ahead_by: ahead, behind_by: behind, total_commits: ahead })
     }
-    // Each per-commit CI listing answers its rows for the commit, one JSON object per line.
+    // why: each per-commit CI listing's --jq prints its rows for the commit as one JSON object per line.
     for (const [pattern, rows] of [[/^gh api --paginate repos\/\{owner\}\/\{repo\}\/commits\/(\S+)\/check-runs --jq /, options.checkRuns],
       [/^gh api --paginate repos\/\{owner\}\/\{repo\}\/commits\/(\S+)\/status --jq /, options.statuses],
       [/^gh api --paginate repos\/\{owner\}\/\{repo\}\/actions\/runs\?head_sha=(\S+) --jq /, options.workflowRuns]] as const) {
@@ -1110,7 +1251,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
       const found = options.rulesets?.find(row => row['id'] === Number(ruleset[1]))
       return found ? rest(githubSamples.ruleset[0].status, { ...githubSamples.ruleset[0].body, ...found }) : rest(404, { message: 'Not Found' })
     }
-    // GitHub marks a branch protected for a ruleset too; only protection.enabled is classic protection.
+    // why: GitHub marks a branch protected for a ruleset too; only protection.enabled is classic protection.
     if (command.startsWith('gh api --include repos/{owner}/{repo}/branches/')) {
       const error = options.protectionError
       const isClassic = options.isProtected ?? githubSamples.branch[0].body.protection.enabled
@@ -1162,49 +1303,74 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
     return buildResult('')
   }
   on('process.run', (_$, e) => run(e))
-  on('process.spawn', async function* (_$, e, next) {
-    runs.push(JSON.stringify(e.argv.slice(6)))
+  // why: the wrapper prints its start token once its pgid file is written, before the command's own output goes to the log.
+  const startChunk = (): ProcessSpawnChunk => {
+    if (options.spawnStart === 'fork-fails') throw new Error('fork failed: resource temporarily unavailable')
+    return { stream: 'stdout', text: options.spawnStart ?? 'wa-started 4242\n' }
+  }
+  const spawnCommand = async (argv: readonly string[], signal: AbortSignal): Promise<ProcessSpawnResult> => {
+    runs.push(JSON.stringify(argv.slice(6)))
     if (options.spawnGate) {
       const stopped: { resolve?: () => void } = {}
       const abort = () => stopped.resolve?.()
       const cancelled = new Promise<void>(resolve => { stopped.resolve = resolve })
-      next.signal.addEventListener('abort', abort, { once: true })
-      if (next.signal.aborted) abort()
+      signal.addEventListener('abort', abort, { once: true })
+      if (signal.aborted) abort()
       try { await Promise.race([options.spawnGate, cancelled]) }
-      finally { next.signal.removeEventListener('abort', abort) }
+      finally { signal.removeEventListener('abort', abort) }
     }
     options.afterSpawn?.()
-    return { value: { code: typeof options.spawnCode === 'function' ? options.spawnCode() : options.spawnCode === undefined ? 0 : options.spawnCode, signal: options.spawnSignal ?? null } }
+    return { code: typeof options.spawnCode === 'function' ? options.spawnCode() : options.spawnCode === undefined ? 0 : options.spawnCode, signal: options.spawnSignal ?? null }
+  }
+  on('process.spawn', async function* (_$, e, next) {
+    if (isHostLockArgv(e.argv)) return { value: yield* hostLocks.hold(e.argv, next.signal) }
+    yield startChunk()
+    return { value: await spawnCommand(e.argv, next.signal) }
   })
+  /**
+   * Lists the directories the world holds whether or not a file lives under them.
+   * @returns The paths.
+   */
+  const listKnownDirectories = (): string[] => ['/', '/tmp', root, common, session.cwd, ...Object.keys(checkout.worktrees ?? {}),
+    ...Object.keys(options.repositories ?? {}), ...Object.values(options.repositories ?? {}).map(repo => repo.common)]
   const boundaries = {
     processes: { run: async (argv, init) => (await run({ argv, init })).value },
     files: {
       stat: async path => {
+        if (options.statFails?.(path)) throw new Error(`EACCES: permission denied, stat '${path}'`)
         const link = Object.entries(options.symlinks ?? {}).find(([name]) => path === name || path.startsWith(`${name}/`))
         if (link && link[1] === null) return { kind: 'other' as const, size: 0, mtimeMs: 0, isLink: true }
         const realPath = link ? `${link[1]}${path.slice(link[0].length)}` : path
-        const directories = ['/', '/tmp', root, common, session.cwd, ...Object.keys(checkout.worktrees ?? {}),
-          ...Object.keys(options.repositories ?? {}), ...Object.values(options.repositories ?? {}).map(repo => repo.common)]
-        const isDirectory = directories.includes(realPath) || created.has(realPath) || [...files.keys()].some(file => file.startsWith(`${realPath}/`))
+        const isDirectory = listKnownDirectories().includes(realPath) || created.has(realPath) || [...files.keys()].some(file => file.startsWith(`${realPath}/`))
         if (!isDirectory && !files.has(realPath)) throw new Error(`no such file: ${path}`)
         return { kind: isDirectory ? 'dir' as const : 'file' as const, realPath, size: 0, mtimeMs: modified.get(realPath) ?? clock.now(), isLink: !!link }
       },
-      exists: async path => files.has(path),
+      exists: async path => {
+        const fault = options.existsFault?.(path)
+        if (fault === 'reject') throw new Error(`EIO: i/o error, access '${path}'`)
+        return fault === 'absent' ? false : files.has(path)
+      },
       read: async path => {
         const text = files.get(path)
         if (text === undefined) throw new Error(`no such file: ${path}`)
-        if (options.readFailurePrefix && path.startsWith(options.readFailurePrefix)) throw new Error(`EIO: i/o error, read '${path}'`)
+        if ((options.readFailurePrefix && path.startsWith(options.readFailurePrefix)) || options.failRead?.(path)) throw new Error(`EIO: i/o error, read '${path}'`)
         return text
       },
-      write: async (path, text) => { files.set(path, text) },
+      write: async (path, text) => {
+        files.set(path, text)
+        options.afterWrite?.(path)
+        if (path.endsWith('.mv')) hostLocks.wake()
+      },
       list: async directory => {
-        if (options.listFailurePrefix && directory.startsWith(options.listFailurePrefix)) throw new Error('listing failed')
-        if (options.isMissingListFailed && ![...files.keys()].some(path => path.startsWith(`${directory}/`))) throw new Error(`no such directory: ${directory}`)
+        if ((options.listFailurePrefix && directory.startsWith(options.listFailurePrefix)) || options.listFails?.(directory)) throw new Error('listing failed')
+        // why: a directory the world knows exists, or that holds a file or a made directory, lists as the engine's listing of an existing directory does.
+        if (options.isMissingListFailed && !listKnownDirectories().includes(directory) && !created.has(directory)
+          && ![...files.keys(), ...created].some(path => path.startsWith(`${directory}/`))) throw new Error(`no such directory: ${directory}`)
         const names = [...new Set([...files.keys(), ...created].filter(path => path.startsWith(`${directory}/`)).map(path => path.slice(directory.length + 1).split('/')[0]!))]
         return names.map(name => files.has(`${directory}/${name}`)
           ? { name, kind: 'file' as const, isLink: false, size: files.get(`${directory}/${name}`)?.length ?? 0,
             mtimeMs: modified.get(`${directory}/${name}`) ?? clock.now() }
-          // The engine's listing gives no time for a directory; only a stat does.
+          // why: the engine's listing gives no time for a directory; only a stat does.
           : { name, kind: 'dir' as const, isLink: false, size: 0, mtimeMs: 0 })
       },
     },
@@ -1225,6 +1391,7 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   on('classic.Stop', () => ({}))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('command.run', (_$, e) => {
+    if (e.command === options.failedCommand) throw new Error(`${e.command} failed`)
     commands.push(e.command)
     return {}
   })
@@ -1234,7 +1401,11 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   on('ui.open', (_$, e) => { opened.push({ id: e.id, title: e.title, closeOnEscape: e.closeOnEscape }); return { value: { isPlaced: true } } })
   on('tool.call', () => { options.afterTool?.(); return { result: 'written' } })
   on('skill.prompt', (_$, e) => ({ text: e.text }))
-  on('prompt.submit', (_$, e) => {
+  on('prompt.submit', (_$, e, next) => {
+    // why: the engine skips the calling hook, so it never runs the mod's prompt.submit for a prompt the mod submits; a test that raises one takes a path the engine never takes, so it enters the prompt through classic.UserPromptSubmit instead.
+    if (next.origin.plugin === 'engine' && e.origin?.kind === 'plugin' && e.origin.name === 'working-agreement') {
+      throw new Error('the engine never raises prompt.submit for the mod\'s own prompt: enter it through classic.UserPromptSubmit')
+    }
     options.beforePromptSubmit?.(e.text)
     const answer = options.promptAnswer?.(e.text)
     if (answer === 'held') return new Promise<never>(() => {})
@@ -1249,24 +1420,57 @@ export function createWorld(on: On, checkout: Checkout, options: Options = {}): 
   on('turn.complete', () => ({ text: '' }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('classic.UserPromptSubmit', () => ({}))
-  return { ready, answeredEntries, herdrActivity, approveConfig, boundaries, directSessionState, herdrCalls, registeredCommands, registeredTools,
-    commands, prompts, suggestions, clock, files, modified, runs, chat, sessions, seedChat, views, liveRuns, paneViews, opened, logs, notifications, toasts }
+  return { ready, answeredEntries, herdrActivity, approveConfig, boundaries, directSessionState, processState: { value: undefined }, usage, herdrCalls, registeredCommands, registeredTools,
+    commands, prompts, suggestions, clock, files, modified, runs, chat, sessions, seedChat, views, liveRuns, paneViews, opened, logs, notifications, toasts, hostLocks, spawnCommand, startChunk, loadSeq: { value: 0 }, viewSeq: { value: 0 }, peekSessionState: () => readHeld(chat.id) }
 }
 
 /**
  * Adapts a world for direct dispatch when engine dispatch cannot preserve the scenario.
  * @param world - The test boundaries and observed state.
- * @returns A port that refuses unexpected command spawns.
+ * @returns A port whose spawns the world answers.
  */
 export function createTestPort(world: World): EnginePort {
+  const stale: { value: unknown } = { value: undefined }
   return {
     ...world.boundaries, ...world.directSessionState, cause: 'test',
+    readProcessState: async () => world.processState.value,
+    // why: the host keeps JSON data, so a write that kept a reference into the caller's object would hide a mutation the engine never sees; each change first runs on the value before the last write, as a missed compare-and-set runs its step on a stale value before the retry, so a step whose run on a stale value leaves an effect fails here; a throw there rejects the update, as `update` throws from its first run.
+    updateProcessState: async change => {
+      if (stale.value !== undefined) change(JSON.parse(JSON.stringify(stale.value)) as never)
+      stale.value = world.processState.value
+      world.processState.value = JSON.parse(JSON.stringify(change(world.processState.value))) as unknown
+      return world.processState.value as ReturnType<typeof change>
+    },
     logDebug: text => { world.logs.push({ text, to: 'debug' }) },
-    processes: { ...world.boundaries.processes, spawn: () => { throw new Error('unexpected spawn') } },
+    // why: a direct port waits for a host lock and runs a command as the engine's would, through the world's answers.
+    processes: { ...world.boundaries.processes, spawn: request => {
+      // why: leaving the stream aborts the holder at once, as the engine's signal does, rather than once its next wait ends.
+      const control = new AbortController()
+      const holder = isHostLockArgv(request.argv) ? world.hostLocks.hold(request.argv, control.signal)
+        : (async function* (): AsyncGenerator<ProcessSpawnChunk, ProcessSpawnResult> { yield world.startChunk(); return await world.spawnCommand(request.argv, control.signal) })()
+      const stream = {
+        next: () => holder.next(), throw: (error: unknown) => holder.throw(error), result: new Promise<never>(() => {}),
+        return: (value: ProcessSpawnResult | PromiseLike<ProcessSpawnResult>) => { control.abort(); return holder.return(value) },
+        [Symbol.asyncIterator]() { return this },
+      }
+      return stream as unknown as HookStream<ProcessSpawnChunk, ProcessSpawnResult>
+    } },
     clock: { sleep: delayMs => world.clock.sleep(delayMs) },
     now: async () => world.clock.now(), repeat: () => {}, defer: work => { work() },
-    readPluginRoot: async () => '/plugin', readContext: async () => ({ window: 200000 }), readView: async () => world.views.at(-1) ?? null,
-    writeView: async view => { world.views.push(view) }, readLiveRun: async () => world.liveRuns.at(-1) ?? null,
+    readPluginRoot: async () => '/plugin', readContext: async () => ({ window: 200000 }),
+    readSessionStart: async () => {
+      if (world.usage.error) throw new Error(world.usage.error)
+      return world.usage.startedAt
+    },
+    readModel: async () => null, readAllowRemoteCommands: async () => false, readView: async () => world.views.at(-1) ?? null,
+    writeView: async (view, seq) => {
+      if (world.viewSeq.value > seq) return false
+      world.viewSeq.value = seq
+      world.views.push(view)
+      return true
+    },
+    patchView: async change => { const current = world.views.at(-1); if (current) world.views.push(change(current)) },
+    claimLoadSeq: async () => { world.loadSeq.value += 1; return world.loadSeq.value }, readLiveRun: async () => world.liveRuns.at(-1) ?? null,
     writeLiveRun: async run => { world.liveRuns.push(run) }, readPaneView: async () => world.paneViews.at(-1) ?? 'flow',
     writePaneView: async view => { world.paneViews.push(view) }, openPane: async closeOnEscape => { world.opened.push({ id: 'working-agreement', title: 'Flow', closeOnEscape }) }, copy: async () => ({ isCopied: true }),
     runSlashCommand: async () => {}, submitPrompt: async () => {}, suggestPrompt: async () => false, registerSurface: async () => {},

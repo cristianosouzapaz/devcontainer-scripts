@@ -7,7 +7,10 @@ import type { Result } from './result'
 export interface ProcessOutput { exitCode: number; stdout: string; stderr: string }
 
 interface ProcessSuccess { isOk: true; value: ProcessOutput }
-interface ProcessFailure { isOk: false; error: string; cause: unknown }
+/** Why a run produced no output: the engine stopped it at its deadline, or it could not run at all. */
+type ProcessFailureKind = 'timeout' | 'spawn'
+
+interface ProcessFailure { isOk: false; error: string; cause: unknown; kind: ProcessFailureKind }
 
 /**
  * Retains a rejected process's original cause alongside its formatted failure.
@@ -19,14 +22,19 @@ interface ProcessOptions extends ProcessInput { timeoutMs: number }
 
 interface ProcessInput { cwd?: string; stdin?: string }
 
-/** The engine's process runner. */
-export interface ProcessPort { run: (commandLine: string[], options: ProcessOptions) => Promise<ProcessOutput> }
+/** A failed attempt a retry is about to repeat, with why it failed. */
+export interface RetryNotice { command: string; attempt: number; error: string }
+
+/** The engine's process runner, and where a retried run is reported. */
+export interface ProcessPort {
+  run: (commandLine: string[], options: ProcessOptions) => Promise<ProcessOutput>
+  onRetry?: (notice: RetryNotice) => void
+}
 
 /** How long a process runs when the caller sets no timeout. */
 const defaultTimeoutMs = 15000
 
-// why: The engine's timer and the clock read here are not the same reading, so a rejection the deadline caused can
-// read a few milliseconds early; a non-timeout failure this close to the deadline is too rare to be worth telling apart.
+// why: The engine's timer and the clock read here are not the same reading, so a rejection the deadline caused can read a few milliseconds early; a non-timeout failure this close to the deadline is too rare to be worth telling apart.
 const timeoutToleranceMs = 50
 
 /** A run the engine stopped because it outlived the timeout it was given. */
@@ -75,7 +83,8 @@ export async function runProcess(processes: ProcessPort, commandLine: string[], 
   try {
     return succeed(await executeProcess(processes, commandLine, { timeoutMs, ...options }))
   } catch (error) {
-    return { ...fail(error instanceof ProcessTimeoutError ? error.message : `${commandLine[0]} could not run: ${formatError(error)}`), cause: error }
+    const isTimeout = error instanceof ProcessTimeoutError
+    return { ...fail(isTimeout ? error.message : `${commandLine[0]} could not run: ${formatError(error)}`), cause: error, kind: isTimeout ? 'timeout' : 'spawn' }
   }
 }
 

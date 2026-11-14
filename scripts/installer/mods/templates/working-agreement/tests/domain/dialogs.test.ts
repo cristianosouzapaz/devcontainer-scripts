@@ -4,8 +4,8 @@ import { cutFlowPane, dialogCatalogue, identifyDialog } from '../../hooks/domain
 import { dialogScreens, dockScreen, noDialog, unknownDialog } from '../support/dialog-screens'
 import { test } from '../support/kit'
 
-// group: Identification
 for (const entry of dialogCatalogue) {
+  // group: Identification
   // contract: each catalogue entry is identified by its screen rows, with the Flow pane docked or not
   test(`${entry.id} is identified by its rows, docked or not`, () => {
     const rows = dialogScreens[entry.id] ?? []

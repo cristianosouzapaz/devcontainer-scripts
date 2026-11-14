@@ -20,6 +20,9 @@ import { readUnitSlice } from './unit-slice'
  */
 interface ParentPullRequest { state: 'open' | 'delivered' | 'stranded'; pullRequest: number }
 
+/** One child of a hand-over: its branch, and the commit to merge when the caller bound one, which the merge's message then names by its branch. */
+export interface MergeEntry { branch: string; sha?: string }
+
 /** Holds a parent with no PR into the default branch that bears on the child. */
 interface NoParentPullRequest { state: 'none' }
 
@@ -65,7 +68,7 @@ type ParentDelivery = ParentPullRequest | NoParentPullRequest
 export async function judgeChild(port: EnginePort, identity: Identity, unit: Unit, parent: string, git: GitState, slice: UnitSlice | null,
   isLocal = false, isForced = false, branches?: Set<string> | null): Promise<ChildJudgement> {
   const candidates = await readCandidates(port, identity.branch, isLocal, isForced)
-  // A child is delivered by its parent's PR into the default branch, so one read of the parent's PRs serves both its conclusion and its Integrate.
+  // why: a child is delivered by its parent's PR into the default branch, so one read of the parent's PRs serves both its conclusion and its Integrate.
   const parentCandidates = await readCandidates(port, parent, isLocal, isForced)
   const examined = examineCandidates(candidates, parentCandidates)
   const end = await readChildEnd(port, identity, unit, slice, branches)
@@ -82,7 +85,7 @@ export async function judgeChild(port: EnginePort, identity: Identity, unit: Uni
  * @returns The Integrate facts, with the merge command while the child is not integrated.
  */
 export async function guideMerge(port: EnginePort, integration: ChildIntegration, child: string): Promise<Integration> {
-  return integration.state === 'pending' ? { ...integration, command: await composeMergeCommand(port, integration.parent, child) } : integration
+  return integration.state === 'pending' ? { ...integration, command: await composeMergeCommand(port, integration.parent, [{ branch: child }]) } : integration
 }
 
 /**
@@ -216,15 +219,27 @@ async function readParentDelivery(port: EnginePort, base: string | undefined, en
 }
 
 /**
- * Writes the user's merge of the child into its parent, in the worktree that holds the parent; no path is ever assumed.
+ * Writes the user's merge of the children into their parent, one merge per child in the order given, in the worktree that holds the parent; no path is ever assumed.
  * @param port - The engine calls.
  * @param parent - The parent branch.
- * @param child - The child branch.
- * @returns A `git -C` merge in the parent's worktree, or a command naming both branches when no worktree holds the parent.
+ * @param children - The children, merged in this order: a bound commit is merged as itself, under the message its branch's merge would carry,
+ * so the command merges that commit whatever the branch points to when the user runs it.
+ * @returns `git -C` merges in the parent's worktree, or one switch to the parent followed by the merges when no worktree holds it.
  */
-export async function composeMergeCommand(port: EnginePort, parent: string, child: string): Promise<string> {
+export async function composeMergeCommand(port: EnginePort, parent: string, children: MergeEntry[]): Promise<string> {
   const root = await findWorktreeRoot(port.processes, parent)
-  return root ? `git -C ${quoteArgument(root)} merge --no-ff ${quoteArgument(child)}` : `git switch ${quoteArgument(parent)} && git merge --no-ff ${quoteArgument(child)}`
+  const merges = children.map(({ branch, sha }) => `${root ? `git -C ${quoteArgument(root)}` : 'git'} merge --no-ff `
+    + (sha ? `-m ${quoteMessage(`Merge branch '${branch}' into ${parent}`)} ${quoteArgument(sha)}` : quoteArgument(branch)))
+  return [...root ? [] : [`git switch ${quoteArgument(parent)}`], ...merges].join(' && ')
+}
+
+/**
+ * Quotes a merge message in double quotes, which keep its single-quoted branch name readable, unless it holds a character they would expand.
+ * @param message - The message.
+ * @returns The quoted message.
+ */
+function quoteMessage(message: string): string {
+  return /["$`\\!]/.test(message) ? `'${message.replace(/'/g, `'\\''`)}'` : `"${message}"`
 }
 
 /**
@@ -232,6 +247,6 @@ export async function composeMergeCommand(port: EnginePort, parent: string, chil
  * @param value - The argument.
  * @returns The argument, single-quoted when needed.
  */
-function quoteArgument(value: string): string {
+export function quoteArgument(value: string): string {
   return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`
 }

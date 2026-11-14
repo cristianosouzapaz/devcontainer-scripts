@@ -1,34 +1,35 @@
 import { expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { ackDeadlineMs, replyDeadlineMs, tickMs } from '../../hooks/core/timing'
+import { minuteMs, replyDeadlineMs, tickMs } from '../../hooks/core/timing'
 import { createEmptySession } from '../../hooks/domain/records'
 import { coordinator } from '../support/builders'
 import { callModTool, inside, runFlowCommand } from '../support/helpers'
 import { test } from '../support/kit'
 import { buildScope, buildStat, coordinatorHost, createWorld, markSpawned, records, root, scopeFile } from '../support/world'
-import type { World } from '../support/world'
+import type { Options, World } from '../support/world'
 
 /** A message as its file holds it. */
 interface Mail { id: string; kind: string; from: string; to: string; issue: number; in_reply_to: string; attempt: number; body: string; author: string }
 
 /** A dead letter as its record holds it. */
-interface DeadLetter { id: string; reason: string; replies: string[]; envelope: Mail }
+interface DeadLetter { id: string; reason: string; replies: string[]; envelope: Mail; untold?: string[] }
 
 const unitSession = 'unit-12'
 const coordinatorBox = `${records}/mail/coordinator-sid`
 const unitBox = `${records}/mail/12`
 const userBox = `${records}/mail/user`
-const doorbell = '[working-agreement] Mail arrived in this session\'s mailbox; it is delivered with this prompt.'
+const doorbell = '[working-agreement] Checking this session\'s mailbox; any mail comes with this prompt.'
 
 /**
  * Builds a coordinator world, session sid, that delegates issue 12 to the unit session spawn started for it, with the tick registered.
  * @param $ - The engine.
  * @param on - The test's hook registration.
+ * @param changes - Further world options.
  * @returns The world, in the coordinator's session.
  */
-async function arrange($: Engine, on: Parameters<typeof createWorld>[0]): Promise<World> {
-  const world = createWorld(on, { branch: 'main' }, { session: coordinator, herdrEnv: inside, herdrReply: () => '{}' })
+async function arrange($: Engine, on: Parameters<typeof createWorld>[0], changes: Options = {}): Promise<World> {
+  const world = createWorld(on, { branch: 'main' }, { session: coordinator, herdrEnv: inside, herdrReply: () => '{}', ...changes })
   world.files.set(scopeFile('sid'), buildScope('sid', [12]))
   // why: the coordinator's start records its own process in the scope, so it runs as the process the scope names.
   world.files.set('/proc/self/stat', buildStat(coordinatorHost.pid, coordinatorHost.pidStart))
@@ -154,6 +155,67 @@ test('an unanswered question is repeated once per deadline and dead-lettered to 
   expect(await readInboxRow($, world)).toBe('0 open questions for you · 1 dead letter')
 })
 
+// contract: a dead letter whose inform to the user fails is still recorded, its sender is told the user was not told, with the error, and the dead letter keeps who was not told
+test('a dead letter whose inform to the user fails tells its sender the user was not told', async ($, on) => {
+  const fault = { isArmed: false }
+  const world = await arrange($, on, { beforeRun: argv => {
+    if (!fault.isArmed || argv[0] !== 'ln' || !(argv.at(-1) ?? '').startsWith(`${userBox}/new/`)) return
+    fault.isArmed = false
+    throw new Error('disk full')
+  } })
+  const id = await askAndRead($, world)
+  await letRepeatArrive($, world)
+  await letRepeatArrive($, world)
+  fault.isArmed = true
+  await wait(world, replyDeadlineMs)
+  expect(readDeadLetter(world, id)).toMatchObject({ id, reason: 'not replied to after 3 attempts' })
+  expect(readBox(world, userBox, 'new')).toEqual([])
+  const told = readBox(world, unitBox, 'new').find(mail => mail.body.startsWith(`Your question ${id}`))
+  expect(told?.body).toMatch(/the user was not told \([^)]+\)/)
+  expect(told?.body).toContain('the dead letter is kept, and /flow status lists it')
+  expect(readDeadLetter(world, id)?.untold).toEqual([expect.stringMatching(/^the user was not told \(/)])
+})
+
+// contract: a dead letter that cannot keep who was not told tells its sender where it is, never that /flow status lists it
+test('a dead letter that cannot keep who was not told names its record to the sender instead of /flow status', async ($, on) => {
+  const fault = { isArmed: false }
+  const world = await arrange($, on, {
+    beforeRun: argv => {
+      if (!fault.isArmed || argv[0] !== 'ln' || !(argv.at(-1) ?? '').startsWith(`${userBox}/new/`)) return
+      fault.isArmed = false
+      throw new Error('disk full')
+    },
+    failRun: argv => fault.isArmed || argv[0] !== 'mv' || !(argv.at(-1) ?? '').startsWith(`${records}/deadletters/`) ? undefined : { exitCode: 1, stderr: 'read-only file system' },
+  })
+  const id = await askAndRead($, world)
+  await letRepeatArrive($, world)
+  await letRepeatArrive($, world)
+  fault.isArmed = true
+  await wait(world, replyDeadlineMs)
+  const told = readBox(world, unitBox, 'new').find(mail => mail.body.startsWith(`Your question ${id}`))
+  expect(told?.body).toContain(`the dead letter is at ${records}/deadletters/${id}.json, which /flow status cannot list (`)
+  expect(told?.body).not.toContain('/flow status lists it')
+})
+
+// contract: a dead letter whose notice to its sender fails is marked on the coordinator pane's dead-letter count and named by /flow status
+test('a dead letter whose notice to its sender fails is shown on the pane and by /flow status', async ($, on) => {
+  const fault = { isArmed: false }
+  const world = await arrange($, on, { beforeRun: argv => {
+    if (!fault.isArmed || argv[0] !== 'ln' || !(argv.at(-1) ?? '').startsWith(`${unitBox}/new/`)) return
+    fault.isArmed = false
+    throw new Error('disk full')
+  } })
+  const id = await askAndRead($, world)
+  await letRepeatArrive($, world)
+  await letRepeatArrive($, world)
+  fault.isArmed = true
+  await wait(world, replyDeadlineMs)
+  expect(readDeadLetter(world, id)).toBeDefined()
+  expect(readBox(world, unitBox, 'new').find(mail => mail.body.startsWith(`Your question ${id}`))).toBeUndefined()
+  expect(await readInboxRow($, world)).toBe('0 open questions for you · 1 dead letter · 1 with a notice not delivered · /flow status')
+  expect((await runFlowCommand($, 'status')).text).toMatch(new RegExp(`dead letter ${id} about #12 · 12 was not told \\(`))
+})
+
 // contract: a reply after its message's dead letter is delivered to the sender and recorded on the dead letter, never lost
 test('a reply after the dead letter reaches the sender and is recorded on the dead letter', async ($, on) => {
   const world = await arrange($, on)
@@ -185,30 +247,38 @@ test('a late answer after a repeat closes the question', async ($, on) => {
   expect(readBox(world, userBox, 'new')).toEqual([])
 })
 
-// contract: an assign not acked is repeated once per ack deadline, its unread attempt leaving new/ so the model never gets two, and dead-lettered after attempt 3
-test('an unacknowledged assign is repeated without a duplicate in new/ and dead-lettered after three attempts', async ($, on) => {
+// contract: an assign not acked waits in new/ on the receiver's liveness, never repeated nor dead-lettered however long its turn, and is delivered once
+test('an unacknowledged assign to a unit in one long turn stays in new/ and is delivered once at its Stop', async ($, on) => {
   const world = await arrange($, on)
+  become(world, 'unit')
+  await $.turn.start({ text: 'verify', turnId: 't' })
+  become(world, 'coordinator')
   expect((await callModTool($, 'unit_prompt', { number: 12, text: 'Then B.', kind: 'assign' })).isError).toBe(false)
   const [assign] = readBox(world, unitBox, 'new')
-  for (const attempt of [2, 3]) {
-    await wait(world, ackDeadlineMs)
-    expect(readBox(world, unitBox, 'new').map(mail => [mail.id, mail.attempt])).toEqual([[assign!.id, attempt]])
-  }
-  await wait(world, ackDeadlineMs)
-  expect(readDeadLetter(world, assign!.id)).toMatchObject({ reason: 'not acknowledged after 3 attempts' })
-  expect(readBox(world, userBox, 'new')[0]!.body).toContain(`Dead letter: an assign ${assign!.id} from coordinator-sid to 12`)
-  expect(readBox(world, coordinatorBox, 'new')[0]!.body).toContain('was dead-lettered')
+  await wait(world, 10 * minuteMs)
+  expect(readBox(world, unitBox, 'new').map(mail => [mail.id, mail.attempt])).toEqual([[assign!.id, 1]])
+  expect(readDeadLetter(world, assign!.id)).toBeUndefined()
+  expect(readBox(world, userBox, 'new')).toEqual([])
+  become(world, 'unit')
+  expect((await $.classic.Stop({ stop_hook_active: false, background_tasks: [] } as never)).block).toContain('Then B.')
+  expect(readBox(world, unitBox, 'new')).toEqual([])
+  expect(readBox(world, unitBox, 'cur').map(mail => mail.id)).toEqual([assign!.id])
 })
 
-// contract: spawn's start assignment is never repeated: it has its own start check, and a later spawn waits for that same message
-test('the start assignment spawn recorded is never repeated', async ($, on) => {
+// contract: a unit's inform, read by its coordinator and never answered, gets no new attempt and no dead letter
+test('a unit\'s inform read and never answered is neither repeated nor dead-lettered', async ($, on) => {
   const world = await arrange($, on)
-  expect((await callModTool($, 'unit_prompt', { number: 12, text: 'Start.', kind: 'assign' })).isError).toBe(false)
-  const [assign] = readBox(world, unitBox, 'new')
-  world.files.set(`${records}/spawn/12.json`, JSON.stringify({ isStarted: true, isPrompted: false, mode: 'default', sessionId: unitSession, assignId: assign!.id }))
-  await wait(world, 4 * ackDeadlineMs)
-  expect(readBox(world, unitBox, 'new').map(mail => mail.attempt)).toEqual([1])
-  expect(readDeadLetter(world, assign!.id)).toBeUndefined()
+  become(world, 'unit')
+  expect((await callModTool($, 'send', { kind: 'inform', body: 'Found a fact.' })).isError).toBe(false)
+  const [inform] = readBox(world, coordinatorBox, 'new')
+  become(world, 'coordinator')
+  expect(await ring($)).toContain('Found a fact.')
+  become(world, 'unit')
+  await wait(world, 4 * replyDeadlineMs)
+  expect(readBox(world, coordinatorBox, 'new')).toEqual([])
+  expect(readBox(world, coordinatorBox, 'cur').map(mail => [mail.id, mail.attempt])).toEqual([[inform!.id, 1]])
+  expect(readDeadLetter(world, inform!.id)).toBeUndefined()
+  expect(readBox(world, userBox, 'new')).toEqual([])
 })
 
 // contract: a done after a cancel is a valid terminal of the cancel: neither the cancel nor the assign it stopped is repeated or dead-lettered

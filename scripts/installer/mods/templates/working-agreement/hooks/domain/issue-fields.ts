@@ -132,7 +132,7 @@ export function parseIssuesConfig(section: unknown): IssuesConfig {
   })
   const types = value.types === undefined ? defaultTypes : names(value.types, 'issues.types')
   const priorities = value.priorities === undefined ? defaultPriorities : names(value.priorities, 'issues.priorities')
-  // types and priorities are the values an issue may take; a label key only styles one, so a key naming no value is a typo.
+  // why: types and priorities are the values an issue may take; a label key only styles one, so a key naming no value is a typo.
   const declared = new Set(listLabelFamilies({ types, priorities }).flatMap(({ allowed }) => allowed))
   const isUndeclared = (name: string): boolean => /^(type|priority)::/.test(name) && !declared.has(name)
   const stray = Object.keys(labels).find(isUndeclared)

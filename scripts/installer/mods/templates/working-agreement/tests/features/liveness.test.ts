@@ -1,19 +1,23 @@
 import { expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { reportStalledUnits } from '../../hooks/core/liveness'
+import { recordToolsOutcome, reportStalledUnits } from '../../hooks/core/liveness'
+import { clearFault, raiseFault } from '../../hooks/core/fault-registry'
 import { sessionMemory } from '../../hooks/core/session-memory'
 import { tickMs } from '../../hooks/core/timing'
 import { createEmptySession } from '../../hooks/domain/records'
 import { coordinator } from '../support/builders'
 import { dialogScreens, dockScreen, noDialog, unknownDialog } from '../support/dialog-screens'
-import { callModTool, inside } from '../support/helpers'
+import { callModTool, holdSpawnLock, inside, readFlowStatus, releaseSpawnLock } from '../support/helpers'
 import { test } from '../support/kit'
 import { buildScope, buildStat, coordinatorHost, createTestPort, createWorld, markSpawned, records, root, scopeFile } from '../support/world'
-import type { World } from '../support/world'
+import type { Options, World } from '../support/world'
 
-/** What the fake herdr host shows of the unit: whether its workspace is open, whether herdr reads its agent as blocked, and its visible screen. */
-interface FakeHost { isOpen: boolean; isBlocked: boolean; screen: string }
+/**
+ * What the fake herdr host shows of the unit: whether its workspace is open, whether a close ends once the next listing is answered,
+ * whether herdr reads its agent as blocked, and its visible screen.
+ */
+interface FakeHost { isOpen: boolean; isClosing: boolean; isBlocked: boolean; screen: string }
 
 /** A coordinator world delegating issue 12 to a running unit, and the unit's host as herdr shows it. */
 interface LivenessWorld { world: World; host: FakeHost }
@@ -29,21 +33,24 @@ const stallFile = `${records}/stalls/12.json`
 /**
  * Builds a coordinator world, session sid, that delegates issue 12 to the unit session spawn started for it, running in a herdr workspace.
  * @param on - The test's hook registration.
+ * @param options - Options added to the world's, such as a fault.
  * @returns The world, still in the coordinator's session, and the unit's fake host.
  */
-function arrange(on: Parameters<typeof createWorld>[0]): LivenessWorld {
-  const host: FakeHost = { isOpen: true, isBlocked: false, screen: '' }
+function arrange(on: Parameters<typeof createWorld>[0], options: Options = {}): LivenessWorld {
+  const host: FakeHost = { isOpen: true, isClosing: false, isBlocked: false, screen: '' }
   const herdrReply = (args: string[]): string | { exitCode: number; stderr: string } => {
     const [noun, verb] = args
     if (noun === 'workspace' && verb === 'list') {
-      return JSON.stringify({ result: { workspaces: host.isOpen ? [{ workspace_id: 'w1', label: 'wa-spawn:12', worktree: { checkout_path: '/wt/12' } }] : [] } })
+      const listed = JSON.stringify({ result: { workspaces: host.isOpen ? [{ workspace_id: 'w1', label: 'wa-spawn:12', worktree: { checkout_path: '/wt/12' } }] : [] } })
+      if (host.isClosing) host.isOpen = false
+      return listed
     }
     if (noun === 'pane' && verb === 'list') return JSON.stringify({ result: { panes: [{ pane_id: 'w1:p1', agent: 'claude' }] } })
     if (noun === 'agent' && verb === 'wait') return args.includes('blocked') && host.isBlocked ? '{}' : { exitCode: 1, stderr: 'timeout' }
     if (noun === 'agent' && verb === 'read') return host.screen
     return '{}'
   }
-  const world = createWorld(on, { branch: 'main' }, { session: coordinator, herdrEnv: inside, herdrReply })
+  const world = createWorld(on, { branch: 'main' }, { session: coordinator, herdrEnv: inside, herdrReply, ...options })
   world.files.set(scopeFile('sid'), buildScope('sid', [12]))
   markSpawned(world, [12], unitSession)
   world.seedChat(unitSession, createEmptySession(unitSession))
@@ -132,6 +139,36 @@ test('an idle unit holding unread mail past T is reported once, naming the claus
   expect(userReports(world)).toEqual(['#12 is stalled: it is idle and has held mail unread for over 5 min; read its pane.'])
 })
 
+// contract: a unit whose activity record is missing or unreadable, holding mail unread for longer than T, is reported with its turn state unknown, never as idle
+test('a unit with no readable activity record holding unread mail past T is reported with its turn state unknown', async ($, on) => {
+  const { world } = arrange(on)
+  seedUnreadMail(world, 6 * minuteMs)
+  await runTicks($, world, 2)
+  expect(userReports(world)).toEqual([`#12 is stalled: it has held mail unread for over 5 min and its turn state is unknown: its session left no readable activity record at ${records}/activity/${unitSession}.json; read its pane.`])
+})
+
+// contract: a unit whose mod's tools failed to register is reported for that cause, never as dead or as stalled on its unread mail
+test('a unit whose tools did not register is reported for it, not as a mail stall', async ($, on) => {
+  const { world } = arrange(on)
+  world.files.set(`${records}/activity/${unitSession}.json`, JSON.stringify({ v: 1, isTurn: false, at: world.clock.now() - 10 * minuteMs, isDialog: false, toolsError: 'registry closed' }))
+  seedUnreadMail(world, 6 * minuteMs)
+  await runTicks($, world, 2)
+  expect(userReports(world)).toEqual(['#12 is stalled: the mod\'s tools did not register in its session, so no mod prompt will start a turn, and a restart of its session retries the registration; read its pane.'])
+})
+
+// contract: a tools stall is one episode while its cause stands, so a unit the user drives by hand, whose activity keeps moving, is reported once
+test('a unit whose tools did not register is reported once while its activity moves', async ($, on) => {
+  const { world } = arrange(on)
+  const seedTools = (): void => { world.files.set(`${records}/activity/${unitSession}.json`, JSON.stringify({ v: 1, isTurn: true, at: world.clock.now(), isDialog: false, toolsError: 'registry closed' })) }
+  seedTools()
+  await runTicks($, world, 1)
+  seedTools()
+  await runTicks($, world, 1, true)
+  seedTools()
+  await runTicks($, world, 1, true)
+  expect(userReports(world)).toHaveLength(1)
+})
+
 // contract: unread mail younger than T is no stall, nor is mail a working unit has not reached yet
 test('mail younger than T, or waiting for a working unit, is not reported', async ($, on) => {
   const { world } = arrange(on)
@@ -161,6 +198,28 @@ test('a turn silent for longer than T2 is reported once', async ($, on) => {
   seedActivity(world, { isTurn: true, ageMs: turnLimitMs })
   await runTicks($, world, 2)
   expect(userReports(world)).toEqual(['#12 is stalled: its turn has shown no tool or turn event for over 65 min; read its pane.'])
+})
+
+// contract: a running record whose turn a reloaded load cannot vouch for is never reported as a silent turn, as no turn may be running
+test('an unknown running record silent past T2 is not reported as a silent turn', async ($, on) => {
+  const { world } = arrange(on)
+  world.files.set(`${records}/activity/${unitSession}.json`, JSON.stringify({ v: 1, isTurn: true, at: world.clock.now() - turnLimitMs, isDialog: false, isUnknown: true }))
+  await runTicks($, world, 2)
+  expect(userReports(world)).toEqual([])
+})
+
+// contract: recording whether the tools registered, failed or recovered, changes that field alone and keeps the record's reload uncertainty
+test('a registration outcome keeps an activity record unknown', async (_$, on) => {
+  const { world } = arrange(on)
+  const path = `${records}/activity/sid.json`
+  world.files.set(path, JSON.stringify({ v: 1, isTurn: false, at: world.clock.now(), isDialog: false, isUnknown: true, epoch: 3 }))
+  raiseFault('tools', { row: 'Tools', text: 'registry closed', cause: 'registry closed' })
+  await recordToolsOutcome(createTestPort(world))
+  const failed = JSON.parse(world.files.get(path) ?? '{}') as { isUnknown?: boolean; toolsError?: string }
+  clearFault('tools')
+  await recordToolsOutcome(createTestPort(world))
+  const recovered = JSON.parse(world.files.get(path) ?? '{}') as { isUnknown?: boolean; toolsError?: string }
+  expect({ failed: [failed.isUnknown, failed.toolsError], recovered: [recovered.isUnknown, recovered.toolsError] }).toEqual({ failed: [true, 'registry closed'], recovered: [true, undefined] })
 })
 
 // contract: a unit inside the longest legitimate Verify or Bash call, silent for up to T2, is never reported
@@ -224,11 +283,74 @@ test('a unit whose workspace is closed is not reported', async ($, on) => {
   expect(userReports(world)).toEqual([])
 })
 
+// contract: a dead unit judged while the spawn lock is held is reported neither now nor lost: once the lock is released, it is reported dead once
+test('a dead unit seen under a held spawn lock is reported once the lock is released', async ($, on) => {
+  const { world } = arrange(on)
+  seedActivity(world, { isTurn: false, ageMs: 0 })
+  world.files.delete(`/proc/${unitProcess.pid}/stat`)
+  holdSpawnLock(world)
+  await runTicks($, world, 2)
+  expect(userReports(world)).toEqual([])
+  expect(world.files.has(stallFile)).toBe(false)
+  releaseSpawnLock(world)
+  await runTicks($, world, 2, true)
+  expect(userReports(world)).toEqual(['#12 is dead: its session\'s process ended; spawn resumes it.'])
+})
+
+/**
+ * Makes the spawn lock's state unreadable while the fault is on, as the lock script exits on a lock file it cannot open.
+ * @param fault - Whether the fault is on.
+ * @returns The world's failing runs.
+ */
+const unreadableLock = (fault: { isOn: boolean }): Options => ({ failRun: argv => fault.isOn && argv[0] === 'perl' && argv[2] === 'list'
+  ? { exitCode: 2, stderr: 'host-lock: cannot open lock: Is a directory' } : undefined })
+
+// contract: a unit the sweep cannot tell spawn is starting is reported to the user once, naming why and how to check, and that report is cleared once the sweep judges the unit again
+test('a unit the stall check cannot tell spawn is starting is reported once, and the report cleared once it can', async ($, on) => {
+  const fault = { isOn: true }
+  const { world } = arrange(on, unreadableLock(fault))
+  seedActivity(world, { isTurn: false, ageMs: 0 })
+  world.files.set(`${records}/spawn/12.starting`, 'sid')
+  await runTicks($, world, 3)
+  expect(userReports(world)).toEqual([expect.stringContaining('The mod cannot tell whether spawn is starting #12 (the lock ')])
+  expect(userReports(world)[0]).toContain('Check that no spawn of #12 is still running')
+  expect(world.files.has(stallFile)).toBe(true)
+  fault.isOn = false
+  await runTicks($, world, 1, true)
+  expect(world.files.has(stallFile)).toBe(false)
+  expect(userReports(world)).toHaveLength(1)
+})
+
+// contract: a dead unit whose spawn lock cannot be read is reported to the user once as undecided, never dropped, and reported dead once the lock reads
+test('a dead unit whose spawn lock cannot be read is reported once as undecided, then dead once the lock reads', async ($, on) => {
+  const fault = { isOn: true }
+  const { world } = arrange(on, unreadableLock(fault))
+  seedActivity(world, { isTurn: false, ageMs: 0 })
+  world.files.delete(`/proc/${unitProcess.pid}/stat`)
+  await runTicks($, world, 3)
+  expect(userReports(world)).toEqual([expect.stringContaining('#12\'s session process has ended, but the mod cannot tell whether a close or retirement ended it on purpose')])
+  fault.isOn = false
+  await runTicks($, world, 2, true)
+  expect(userReports(world)).toEqual([expect.stringContaining('cannot tell'), '#12 is dead: its session\'s process ended; spawn resumes it.'])
+})
+
+// contract: a dead unit whose workspace a close removed after the sweep listed it is not reported, and its stall record is cleared
+test('a dead unit whose workspace closed during the sweep is not reported', async (_$, on) => {
+  const { world, host } = arrange(on)
+  seedActivity(world, { isTurn: false, ageMs: 0 })
+  world.files.set(stallFile, JSON.stringify({ v: 1, session: unitSession, stall: 'turn', key: `${unitSession}:turn:1` }))
+  world.files.delete(`/proc/${unitProcess.pid}/stat`)
+  host.isClosing = true
+  await reportStalledUnits(createTestPort(world))
+  expect(userReports(world)).toEqual([])
+  expect(world.files.has(stallFile)).toBe(false)
+})
+
 // group: Activity record
 // contract: a unit's own mod records a turn as running from its start, a permission dialog as holding it, and the turn's end as idle
 test('a unit records its turn, its permission dialog and its turn end', async ($, on) => {
   const { world } = arrange(on)
-  // The engine answers no classic hook itself; the session that hears the notification is the end of its chain.
+  // why: the engine answers no classic hook itself; the session that hears the notification is the end of its chain.
   on('classic.Notification', () => ({}))
   world.chat.id = unitSession
   const read = (): Record<string, unknown> => JSON.parse(world.files.get(`${records}/activity/${unitSession}.json`) ?? '{}') as Record<string, unknown>
@@ -240,13 +362,34 @@ test('a unit records its turn, its permission dialog and its turn end', async ($
   expect(read()).toMatchObject({ isTurn: false, isDialog: false })
 })
 
-// group: Reports across a coordinator restart
+// contract: a session start records the unit idle, so a turn its crashed process left marked running never hides its unread mail from the stall check
+test('a resumed unit whose process crashed mid-turn is recorded idle at its start', async ($, on) => {
+  const { world } = arrange(on)
+  seedActivity(world, { isTurn: true, ageMs: 10 * minuteMs })
+  world.chat.id = unitSession
+  // why: the resumed process can read its own identity, which tells it apart from the crashed one the host record names.
+  world.files.set('/proc/self/stat', buildStat(unitProcess.pid + 1, '9000'))
+  await $.session.start({ cwd: root, surface: null, isInteractive: false })
+  expect(JSON.parse(world.files.get(`${records}/activity/${unitSession}.json`) ?? '{}')).toMatchObject({ isTurn: false, isDialog: false })
+})
+
+// contract: a resumed process that cannot read its own identity never takes the turn its predecessor recorded for idle, and says why it holds
+test('a resumed unit that cannot read its own identity keeps the recorded turn and holds its prompts', async ($, on) => {
+  const { world } = arrange(on)
+  seedActivity(world, { isTurn: true, ageMs: 10 * minuteMs })
+  world.chat.id = unitSession
+  await $.session.start({ cwd: root, surface: null, isInteractive: false })
+  expect(JSON.parse(world.files.get(`${records}/activity/${unitSession}.json`) ?? '{}')).toMatchObject({ isTurn: true })
+  expect(await readFlowStatus($)).toContain('could not read its own identity')
+})
+
 for (const [clause, stall] of [
   ['mail', (world: World): void => { seedActivity(world, { isTurn: false, ageMs: 0 }); seedUnreadMail(world, 6 * minuteMs) }],
   ['blocked', (world: World, host: FakeHost): void => { seedActivity(world, { isTurn: true, ageMs: 0 }); host.isBlocked = true }],
   ['turn', (world: World): void => seedActivity(world, { isTurn: true, ageMs: turnLimitMs })],
   ['dead', (world: World): void => { seedActivity(world, { isTurn: false, ageMs: 0 }); world.files.delete(`/proc/${unitProcess.pid}/stat`) }],
 ] as const) {
+  // group: Reports across a coordinator restart
   // contract: a stall still in place after a coordinator restart is not reported again
   test(`a ${clause} stall still in place after a coordinator restart is not reported again`, async ($, on) => {
     const { world, host } = arrange(on)
@@ -335,6 +478,26 @@ test('a stall on the Settings Error dialog is named, with no key offered', async
   const { world, host } = arrange(on)
   await stallOn($, world, host, dialogScreens['settings-error'] ?? [])
   expect(userReports(world)[0]).toContain('its pane shows the Settings Error dialog (settings-error): the mod sends it no key: answer it in the unit\'s pane.')
+})
+
+// contract: a spawned unit with no process record is still judged: mail it holds unread past T is a stall, and the report names the dialog its pane shows
+test('a unit with no process record holding mail past T is reported, naming the dialog its pane shows', async ($, on) => {
+  const { world, host } = arrange(on)
+  world.files.delete(`${records}/host/${unitSession}.json`)
+  host.screen = dockScreen(dialogScreens['settings-error'] ?? [])
+  seedUnreadMail(world, 6 * minuteMs)
+  await runTicks($, world, 1)
+  expect(userReports(world)).toEqual([`#12 is stalled: it has held mail unread for over 5 min and its turn state is unknown: its session left no readable activity record at ${records}/activity/${unitSession}.json; its pane shows the Settings Error dialog (settings-error): `
+    + 'the mod sends it no key: answer it in the unit\'s pane.'])
+})
+
+// contract: a unit just spawned, with no process record or activity yet, is not reported while its start assignment is young
+test('a unit just spawned, with no process record or activity yet, is not reported', async ($, on) => {
+  const { world } = arrange(on)
+  world.files.delete(`${records}/host/${unitSession}.json`)
+  seedUnreadMail(world, minuteMs)
+  await runTicks($, world, 2)
+  expect(userReports(world)).toEqual([])
 })
 
 // contract: an unknown dialog is never touched: it becomes a question to the user carrying the pane excerpt, and no key is sent

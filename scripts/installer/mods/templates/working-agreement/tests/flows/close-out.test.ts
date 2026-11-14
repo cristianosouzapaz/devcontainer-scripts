@@ -2,10 +2,11 @@ import { expect } from 'claude-code/testing'
 
 import { test } from '../support/kit'
 import { buildParentGraph, buildParentPullRequest, noFlow, verifyFile } from '../support/builders'
-import { declareFlow, readCurrentStep, readFlowStatus, runFlowCommand } from '../support/helpers'
+import { approveVerify, callModTool, declareFlow, readCurrentStep, readFlowStatus, runFlowCommand } from '../support/helpers'
 import { completeDelivery } from '../support/delivery'
+import { createEmptySession } from '../../hooks/domain/records'
 import { buildChildEntry, buildRoundPullRequest, observedEndFile, parentCheckout, roundCloseOut, seedChildren, seedObservedEnd, withCommit, withoutBranch } from '../support/parallel-worktrees'
-import { createWorld, linearGraph, root } from '../support/world'
+import { createWorld, linearGraph, root, seedDelegation } from '../support/world'
 import type { Checkout, Options } from '../support/world'
 
 test('a Close out starts at Verify', async ($, on) => {
@@ -15,6 +16,41 @@ test('a Close out starts at Verify', async ($, on) => {
   await declareFlow($, 'close-out', [1])
   expect(await readCurrentStep($)).toBe('Verify')
 
+})
+
+test('a delegated unit\'s commit made outside its tools after Verify sets Verify aside on the pane only, until a pass on its tree', async ($, on) => {
+  const branch = 'feat/1-close'
+  const graph = linearGraph({ [branch]: 1 }, verifyFile, 1)
+  const outside = { ...graph, commits: { ...graph.commits, c2: { parents: ['c1'], files: { ...graph.commits.c1!.files, 'src/a.ts': 'two' } } } }
+  const git: Checkout = { branch, graph }
+  const world = createWorld(on, git, { session: noFlow, verifyFile })
+  seedDelegation(world, 'coord', [1])
+  world.seedChat('coord', { ...createEmptySession('coord'), role: 'coordinator' })
+  await declareFlow($, 'close-out', [1])
+  // why: work committed before any Verify of the unit is still verified first.
+  expect(await readCurrentStep($)).toBe('Verify')
+  approveVerify(world)
+  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('Verify passed')
+  git.graph = { ...outside, refs: { ...outside.refs, [branch]: 'c2' } }
+  const aside = await readFlowStatus($)
+  expect(aside).toContain('↷ Verify · committed outside Verify')
+  expect(aside).toContain('✓ Commit')
+  expect(await readCurrentStep($)).toBe('PR')
+  /**
+   * Reads the unit's state as the coordinator's plan reports it.
+   * @returns The plan's line for the unit's issue.
+   */
+  const readPlan = async (): Promise<string> => {
+    world.chat.id = 'coord'
+    const line = (await callModTool($, 'plan')).text.split('\n').find(each => each.startsWith('#1 ')) ?? ''
+    world.chat.id = 'sid'
+    return line
+  }
+  // why: the set-aside frees the pane only: a tip no Verify ran on is not finished for spawn and plan.
+  expect(await readPlan()).toContain('unit working')
+  expect((await $.tool.call({ tool: 'mcp__working-agreement__verify' })).result).toContain('Verify passed')
+  expect(await readFlowStatus($)).toContain('✓ Verify')
+  expect(await readPlan()).toContain('unit finished')
 })
 
 test('a Close out unit runs from Verify to a merged PR', async ($, on) => {

@@ -3,6 +3,9 @@ import type { IssueInfo } from '../../types'
 import { readJson } from '../lib/json'
 import { isRecord } from '../lib/guards'
 import { bestEffort } from './best-effort'
+import { readKeptStarts, readProcessState } from './process-state'
+import { readHolds } from './gate'
+import { describeHoldRow, describeStartNotices } from './start-notices'
 import type { ErrorWindow } from './session-memory'
 import { describeViolation } from './guarantees'
 import type { EnginePort } from './engine-port'
@@ -21,10 +24,15 @@ import { describeBaseMismatch, readCandidates, selectBasePullRequest } from './u
 import { readDismissals } from './violation-store'
 import { fail } from '../lib/result'
 import { describeGuardChecks } from './check-retry'
+import { listUntoldDeadLetters } from './mail-retry'
+import { listStuckDones } from './owed-done'
+import { AddressReadError } from './mailbox'
 import { keyedLine } from '../ui/status-text'
 import { handoffNotes } from '../ui/view-model'
 import type { KeyLabel } from '../ui/theme'
 import { formatLocalTime } from '../lib/time'
+import { describeFaultRows } from './fault-registry'
+import { describeWaitingStarts, loadSuperseded } from '../domain/instruction'
 
 /**
  * Keeps object identifiers compact in diagnostic status rows.
@@ -81,10 +89,10 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
   const statusPort = createReadPort(port)
   const git = await readGit(statusPort)
   const control = new AbortController()
-  // An abort ends the wait.
+  // why: an abort rejects the sleep, which ends the wait as not timed out.
   const deadline = port.clock.sleep(30000, control.signal).then(() => true).catch(() => false)
   const shown = { base: git?.base }
-  // The unit's PR base, once it has a PR, is the branch whose rules apply.
+  // why: the unit's PR base, once it has a PR, is the branch whose rules apply.
   const target = git ? readUnitBase(statusPort, git.base).then(base => { shown.base = base; return base }) : null
   const reads = Promise.all([
     bestEffort(port, 'status reread', () => reread(statusPort, true, true), undefined),
@@ -119,21 +127,20 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
     if (config.kind === 'valid') {
       const approved = await isVerifyApproved(port, config.blob)
       const selection = await selectVerify(statusPort, config.config, slice?.baseTree ?? null, slice?.tree ?? '', 'unit')
-      // Code spans keep a glob's `**` from reading as markdown bold.
+      // why: code spans keep a glob's `**` from reading as markdown bold.
       const reason = selection.paths.length ? `rules ${selection.paths.map(path => `\`${path}\``).join(', ')} · ${selection.stageNote}` : selection.description
       groups.push([keyedLine('Config', `${configPath} @ blob ${short(config.blob)} · ${approved ? 'approved' : `needs approval from your own terminal: ${await composeApprovalCommand(port, config.blob)}`}`), keyedLine('Selection', selection.commands.length ? `${selection.commands.map(command => command.join(' ')).join(' · ')} · ${reason}` : `none: ${reason}`)])
-    } else groups.push([keyedLine('Config', `${configPath} · ${config.kind === 'missing' ? 'not found in the unit tree' : `invalid: ${config.fact}`}`), keyedLine('Selection', 'none: verify refuses until a config exists')])
+    } else groups.push([keyedLine('Config', `${configPath} · ${config.kind === 'missing' ? 'not found in the unit tree' : config.kind === 'unreadable' ? config.fact : `invalid: ${config.fact}`}`), keyedLine('Selection', config.kind === 'unreadable' ? 'unknown until the config can be read' : 'none: verify refuses until a config exists')])
   }
   const root = await readRepositoryRoot(statusPort)
   const repository = await readRepositoryConfig(statusPort, root)
-  // The working tree's file, which the pane flags with or without a unit; the unit tree's copy is the Config row above.
+  // why: the pane flags the working tree's file with or without a unit, so it gets its own row; the unit tree's copy is the Config row above.
   if (repository.kind === 'invalid') groups.push([keyedLine('Config', `${configPath} in the working tree · invalid: ${repository.fact} · fix that field, or update the mod to the version the file was written for`)])
   else if (repository.kind === 'valid' && !await isVerifyApproved(port, repository.blob)) {
     groups.push([keyedLine('Issues', `${configPath} in the working tree is not approved · issue writes use the built-in defaults until it is approved · /flow approve verify shows it and the command that approves it`)])
   }
   const lastOk = `last ok ${time(sessionMemory.githubLastOk)}`
   const failure = timedOut ? null : readGithubFailure(result.github)
-  // The pane's phrase, with the dates a diagnostic row needs.
   const github = timedOut ? `${lastOk} · timed out after 30 s` : !failure ? lastOk
     : `${lastOk} · read failed (${failure.reason})${failure.readAt === null ? '' : ` · facts from ${time(failure.readAt)}`}`
   const base = shown.base
@@ -148,10 +155,20 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
   // why: /flow status prints the pane's rows above these, so the pane's Handoff note is shown here only when no pane is printed.
   const isPaneShown = !!session.flow && !!await port.readView()
   const handoff = isPaneShown ? [] : handoffNotes(session).map(row => keyedLine(row.key, row.value))
+  const process = await readProcessState(port)
+  const hold = describeHoldRow(readHolds(process))
+  const waiting = process ? readKeptStarts(process).length : 0
+  // why: an address read that failed raised the Mail fault shown below, so the owed dones are left out; any other failure stays one.
+  const stuck = await listStuckDones(port).catch((error: unknown) => { if (error instanceof AddressReadError) return []; throw error })
   const errors = [formatErrorWindow('herdr', 'report-metadata', sessionMemory.herdrError),
     formatErrorWindow('herdr', 'worktree create', sessionMemory.worktreeError),
     formatErrorWindow('Records', 'record write', sessionMemory.recordError),
-    formatErrorWindow('Log', 'log append', sessionMemory.logError), ...handoff].filter((value): value is string => value !== null)
+    formatErrorWindow('Log', 'log append', sessionMemory.logError), ...stuck.map(line => keyedLine('Records', line)), ...(await listUntoldDeadLetters(port)).map(line => keyedLine('Inbox', line)), ...describeFaultRows(['tools', 'process-read', 'process-write', 'publish:', 'mail-addresses']).map(fault => keyedLine(fault.row, fault.text)),
+    hold ? keyedLine('Process', hold) : null,
+    waiting ? keyedLine('Process', describeWaitingStarts(waiting)) : null,
+    ...describeFaultRows(['load-id']).map(fault => keyedLine(fault.row, fault.text)),
+    sessionMemory.isLoadSuperseded ? keyedLine('Process', loadSuperseded) : null,
+    ...describeStartNotices(process).map(text => keyedLine('Start', text)), ...handoff].filter((value): value is string => value !== null)
   if (errors.length) groups.push(errors)
   // why: A missing or unreadable manifest shows the version unknown, the safe direction for a display-only record; bestEffort logs a failure.
   const manifest = await bestEffort(port, 'manifest read', async () => readJson(port.files, `${await port.readPluginRoot()}/.claude-plugin/plugin.json`), undefined)
@@ -159,6 +176,6 @@ export async function renderFlowStatus(port: EnginePort): Promise<string> {
   groups.push([keyedLine('Mod', isRecord(manifest) && typeof manifest.version === 'string' ? manifest.version : 'unknown'),
     keyedLine('Guards', ahead === null ? 'module order unknown after a plugin refresh · coordinator and delegation refused until the session restarts'
       : ahead.length ? `overridden by ${ahead.join(', ')}, hooks modules ahead · coordinator and delegation refused` : 'outermost hooks module'),
-    keyedLine('Checks', describeGuardChecks())])
+    keyedLine('Checks', describeGuardChecks()), keyedLine('Retries', `${sessionMemory.githubRetries} GitHub call${sessionMemory.githubRetries === 1 ? '' : 's'} retried`)])
   return groups.map(group => group.join('\n')).join('\n\n')
 }

@@ -1,5 +1,4 @@
 import type { DialogKey } from '../domain/dialogs'
-import { findWorktreeRoot } from '../lib/git'
 import { isIssueNumber } from '../lib/guards'
 import type { EnginePort } from './engine-port'
 import { isInsideHerdr, listHerdrWorktrees, readField, runHerdr, runHerdrText } from './herdr-worktrees'
@@ -7,19 +6,22 @@ import { isInsideHerdr, listHerdrWorktrees, readField, runHerdr, runHerdrText } 
 /** A spawned unit's workspace in its host. */
 export interface UnitWorkspace { issue: number; workspaceId: string; path: string }
 
-/** What starting a unit session needs: the coordinator's checkout, the unit, its branch, its workspace if one is open, and the claude arguments. */
-interface StartRequest { root: string; issue: number; branch: string; workspace: UnitWorkspace | undefined; argv: string[] }
+/**
+ * What starting a unit session needs: the coordinator's checkout, the unit, its branch, its workspace if one is open, the branch's
+ * checkout git lists, which the host opens instead of creating one, and the claude arguments.
+ */
+interface StartRequest { root: string; issue: number; branch: string; workspace: UnitWorkspace | undefined; checkout: string | undefined; argv: string[] }
 
 /**
  * The session host's lifecycle, the only part of a host the mod drives: no message ever travels through it.
  * The claude arguments a start carries are opaque to the host, which passes them on unchanged.
  */
 export interface UnitHost {
-  list: (port: EnginePort) => Promise<UnitWorkspace[]>
-  state: (port: EnginePort, workspace: UnitWorkspace | undefined, idleWaitMs: number) => Promise<SessionState>
+  list: (port: EnginePort, isStrict?: boolean) => Promise<UnitWorkspace[]>
+  state: (port: EnginePort, workspace: UnitWorkspace | undefined, idleWaitMs: number, isStrict?: boolean) => Promise<SessionState>
   isBlocked: (port: EnginePort, workspace: UnitWorkspace) => Promise<boolean>
   start: (port: EnginePort, request: StartRequest) => Promise<void>
-  name: (port: EnginePort, workspace: UnitWorkspace) => Promise<void>
+  name: (port: EnginePort, workspace: UnitWorkspace) => Promise<boolean>
   close: (port: EnginePort, workspace: UnitWorkspace) => Promise<void>
   screen: (port: EnginePort, workspace: UnitWorkspace) => Promise<string>
   keys: (port: EnginePort, workspace: UnitWorkspace, key: DialogKey) => Promise<void>
@@ -38,10 +40,13 @@ const blockedWaitMs = 1000
  * that pane, since herdr names an agent only when its start wait succeeds, and a slow start leaves a running session unnamed.
  */
 const herdrHost: UnitHost = {
-  list: async port => (await listHerdrWorktrees(port, labelPrefix)).flatMap(({ name, workspaceId, path }) =>
-    isIssueNumber(Number(name)) ? [{ issue: Number(name), workspaceId, path }] : []),
-  state: async (port, workspace, idleWaitMs) => {
-    const pane = workspace ? (await listLivePanes(port, workspace.workspaceId)).find(hasAgent) : undefined
+  list: async (port, isStrict) => (await listHerdrWorktrees(port, labelPrefix, isStrict)).flatMap(({ name, workspaceId, path }) => {
+    if (isIssueNumber(Number(name))) return [{ issue: Number(name), workspaceId, path }]
+    if (isStrict) throw new Error(`herdr lists workspace ${workspaceId} labelled ${labelPrefix}${name}, which names no issue`)
+    return []
+  }),
+  state: async (port, workspace, idleWaitMs, isStrict) => {
+    const pane = workspace ? (await listLivePanes(port, workspace.workspaceId, isStrict)).find(hasAgent) : undefined
     if (!pane) return 'none'
     if (idleWaitMs <= 0) return 'working'
     const isIdle = await runHerdrText(port, ['agent', 'wait', String(readField(pane, 'pane_id')), '--until', 'idle', '--until', 'done', '--timeout', String(idleWaitMs)],
@@ -54,15 +59,17 @@ const herdrHost: UnitHost = {
     if (typeof pane !== 'string') return false
     return runHerdrText(port, ['agent', 'wait', pane, '--until', 'blocked', '--timeout', String(blockedWaitMs)], blockedWaitMs + 5000).then(() => true, () => false)
   },
-  start: async (port, { root, issue, branch, workspace, argv }) => {
-    const pane = workspace ? await findIdlePane(port, workspace.workspaceId) : await openWorktree(port, root, issue, branch)
+  start: async (port, { root, issue, branch, workspace, checkout, argv }) => {
+    const pane = workspace ? await findIdlePane(port, workspace.workspaceId) : await openWorktree(port, root, issue, branch, checkout)
     await runHerdrText(port, ['agent', 'start', unitAgent(issue), '--kind', 'claude', '--pane', pane, '--timeout', String(agentStartTimeoutMs), '--', ...argv],
       agentStartTimeoutMs + 15000)
   },
   // why: herdr names an agent only when its start wait succeeds; a rename of the agent in the pane names one that wait missed.
   name: async (port, workspace) => {
-    const pane = readField((await listLivePanes(port, workspace.workspaceId)).find(hasAgent), 'pane_id')
-    if (typeof pane === 'string') await runHerdrText(port, ['agent', 'rename', pane, unitAgent(workspace.issue)]).catch(() => undefined)
+    const pane = readField((await listLivePanes(port, workspace.workspaceId, true)).find(hasAgent), 'pane_id')
+    if (typeof pane !== 'string') return false
+    await runHerdrText(port, ['agent', 'rename', pane, unitAgent(workspace.issue)])
+    return true
   },
   close: async (port, workspace) => {
     await runHerdrText(port, ['workspace', 'close', workspace.workspaceId])
@@ -123,11 +130,11 @@ async function readAgentPane(port: EnginePort, workspace: UnitWorkspace): Promis
  * @param root - The coordinator's checkout.
  * @param issue - The issue number.
  * @param branch - The unit branch.
+ * @param path - The branch's checkout, as its caller read it strictly; undefined creates one.
  * @returns The workspace's root pane.
  * @throws When herdr fails or names no pane.
  */
-async function openWorktree(port: EnginePort, root: string, issue: number, branch: string): Promise<string> {
-  const path = await findWorktreeRoot(port.processes, branch)
+async function openWorktree(port: EnginePort, root: string, issue: number, branch: string, path: string | undefined): Promise<string> {
   const label = ['--label', `${labelPrefix}${issue}`, '--no-focus']
   const reply = await runHerdr(port, path
     ? ['worktree', 'open', '--cwd', root, '--path', path, ...label]
@@ -154,14 +161,15 @@ async function findIdlePane(port: EnginePort, workspaceId: string): Promise<stri
  * Lists a unit workspace's panes; a workspace closed since it was listed has none.
  * @param port - The engine calls.
  * @param workspaceId - The workspace.
+ * @param isStrict - Whether an answer without a pane list throws instead of reading as none.
  * @returns The panes, empty when the workspace is gone.
  * @throws When herdr fails while the workspace still exists.
  */
-async function listLivePanes(port: EnginePort, workspaceId: string): Promise<unknown[]> {
+async function listLivePanes(port: EnginePort, workspaceId: string, isStrict = false): Promise<unknown[]> {
   try {
-    return await listPanes(port, workspaceId)
+    return await listPanes(port, workspaceId, isStrict)
   } catch (error) {
-    if ((await herdrHost.list(port)).some(workspace => workspace.workspaceId === workspaceId)) throw error
+    if ((await herdrHost.list(port, isStrict)).some(workspace => workspace.workspaceId === workspaceId)) throw error
     return []
   }
 }
@@ -170,11 +178,13 @@ async function listLivePanes(port: EnginePort, workspaceId: string): Promise<unk
  * Lists a workspace's panes as herdr reports them.
  * @param port - The engine calls.
  * @param workspaceId - The workspace.
+ * @param isStrict - Whether an answer without a pane list throws instead of reading as none.
  * @returns The panes, empty when herdr names none.
- * @throws When herdr fails.
+ * @throws When herdr fails, or, when strict, answers without a pane list.
  */
-async function listPanes(port: EnginePort, workspaceId: string): Promise<unknown[]> {
+async function listPanes(port: EnginePort, workspaceId: string, isStrict = false): Promise<unknown[]> {
   const panes = readField(await runHerdr(port, ['pane', 'list', '--workspace', workspaceId]), 'result', 'panes')
+  if (isStrict && !Array.isArray(panes)) throw new Error(`herdr answered pane list of workspace ${workspaceId} without a pane list`)
   return Array.isArray(panes) ? panes as unknown[] : []
 }
 

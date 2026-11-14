@@ -10,9 +10,7 @@ import { createTestPort, createWorld } from '../support/world'
 import type { Gate, Options, World } from '../support/world'
 import type { EnginePort } from '../../hooks/core/engine-port'
 
-// A Small feature on issue 1 whose Spec is done on GitHub's labels.
 const specDone: Options = { unit: { skills: ['grilling', 'to-spec'] }, issueLabels: { 1: ['ready-for-agent'] } }
-// Past the issue sync's TTL.
 const pastTtl = 61000
 
 /**
@@ -70,7 +68,7 @@ for (const [failure, fail, reason] of [
     await readFlowStatus($)
     expect(paneGithub(world)).toBeUndefined()
     fail(options)
-    // Past the second within which a forced read reuses the last probe.
+    // why: past the second within which a forced read reuses the last probe.
     await world.clock.advance(2000)
     const status = await readFlowStatus($)
     expect(paneGithub(world)).toMatch(/^read failed \(.+\) · facts from \d{2}:\d{2}$/)
@@ -126,10 +124,10 @@ test('an issue never read successfully shows its read error as the current step\
   expect(await readFlowStatus($)).toContain('▸ Grill · GitHub read failed (not authenticated — run gh auth login)')
 })
 
-test('a probe that outlives its timeout is worded as a timeout on the pane', async (_$, on) => {
-  const world = createWorld(on, { branch: 'feat' }, { ...specDone })
+test('a probe that outlives its timeout on every attempt is worded as a timeout on the pane', async (_$, on) => {
+  const world = createWorld(on, { branch: 'feat' }, { ...specDone, isSleepInstant: true })
   const port = createTestPort(world)
-  // The engine clock moves past the deadline while the probe runs, as a real one does before the engine rejects it.
+  // why: the engine clock moves past the deadline while the probe runs, as a real one does before the engine rejects it.
   const clock = { at: pastTtl }
   const run: ProcessPort['run'] = async (argv, options) => {
     if (!argv.join(' ').startsWith('gh api user')) return port.processes.run(argv, options)
@@ -138,12 +136,35 @@ test('a probe that outlives its timeout is worded as a timeout on the pane', asy
   }
   const now = async (): Promise<number> => clock.at
   await refreshView({ ...port, now, processes: { ...port.processes, run: (argv, options) => runWithDeadline(run, now, argv, options) } }, { isForced: true })
-  expect(paneGithub(world)).toMatch(/^read failed \(gh timed out after 8 s\)/)
+  expect(paneGithub(world)).toMatch(/^read failed \(GitHub unreachable after 3 attempts: gh timed out after 8 s\)/)
 })
 
 test('an issue never read successfully shows a failed issue read with the same prefix as a failed probe', async ($, on) => {
   createWorld(on, { branch: 'feat' }, { ...specDone, session: { info: {} }, missing: [1] })
   expect(await readFlowStatus($)).toContain('▸ Grill · GitHub read failed (not found)')
+})
+
+// contract: a failed issue read whose gh error spans lines shows its first line on the pane's GitHub row, and /flow status's GitHub row keeps the whole error
+test('a multi-line read error shows its first line on the pane\'s GitHub row and stays whole on /flow status', async ($, on) => {
+  const options: Options = { ...specDone }
+  const world = createWorld(on, { branch: 'feat' }, options)
+  await world.clock.advance(pastTtl)
+  await readFlowStatus($)
+  options.gh = args => args.join(' ').includes('issue(number:1)') ? { exitCode: 1, stderr: 'GraphQL: Something went wrong while executing your query.\nsecond line detail' } : undefined
+  // why: past the second within which a forced read reuses the last probe.
+  await world.clock.advance(2000)
+  const status = await readFlowStatus($)
+  expect(paneGithub(world)).toMatch(/^read failed \(GraphQL: Something went wrong while executing your query\.\) · facts from \d{2}:\d{2}$/)
+  expect(status).toContain('GraphQL: Something went wrong while executing your query.')
+  expect(status).toContain('second line detail')
+})
+
+// contract: an issue never read successfully shows the first line of a multi-line gh error as its step fact
+test('an issue never read successfully shows the first line of a multi-line read error as its step fact', async ($, on) => {
+  createWorld(on, { branch: 'feat' }, { ...specDone, session: { info: {} },
+    gh: args => args.join(' ').includes('issue(number:1)') ? { exitCode: 1, stderr: 'GraphQL: Something went wrong while executing your query.\nsecond line detail' } : undefined })
+  const grill = stepLines(await readFlowStatus($)).find(line => line.startsWith('▸ Grill')) ?? ''
+  expect(grill).toBe('▸ Grill · GitHub read failed (GraphQL: Something went wrong while executing your query.)')
 })
 
 test('/flow status probes GitHub once during an outage', async ($, on) => {
@@ -166,6 +187,15 @@ test('a re-declaration whose comments read fails keeps Diagnose done and shows t
   await declareFlow($, 'fix', [1])
   expect(paneGithub(world)).toMatch(/^read failed \(comments unreadable\)/)
   expect(stepLines(await readFlowStatus($))).toContain('✓ Diagnose')
+})
+
+// contract: a comments read that never succeeded shows the first line of a multi-line gh error as its step fact
+test('a comments read that never succeeded shows the first line of a multi-line read error as its step fact', async ($, on) => {
+  createWorld(on, { branch: 'fix' }, { session: noFlow, unit: diagnosed, comments: { 1: { error: 'GraphQL: comments went away.\nsecond line detail' } }, issueLabels: { 1: ['ready-for-agent'] } })
+  await declareFlow($, 'fix', [1])
+  const diagnose = stepLines(await readFlowStatus($)).find(line => line.includes('Diagnose')) ?? ''
+  expect(diagnose).toContain('GraphQL: comments went away.')
+  expect(diagnose).not.toContain('second line detail')
 })
 
 /**
